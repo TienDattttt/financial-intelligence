@@ -150,6 +150,7 @@ def test_expired_key_blocks_online_but_allows_file_source(
         (403, SourceEntitlementError),
         (429, RateLimitOrCircuitOpenError),
         (None, TransientSourceError),
+        (500, TransientSourceError),
         (502, TransientSourceError),
         (503, TransientSourceError),
         (504, TransientSourceError),

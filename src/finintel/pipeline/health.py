@@ -118,7 +118,7 @@ def _check_connection(probe: FhscProbe) -> None:
             raise SourceEntitlementError(
                 "FHSC credentials were rejected. Check or rotate the key."
             ) from None
-        if status in (502, 503, 504) or isinstance(error, errors.NetworkError):
+        if status in (500, 502, 503, 504) or isinstance(error, errors.NetworkError):
             raise TransientSourceError("FHSC is temporarily unreachable.") from None
         raise ContractViolationError(
             "FHSC health check did not return success."

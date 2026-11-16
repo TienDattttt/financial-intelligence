@@ -6,7 +6,7 @@ class FinIntelError(Exception):
 
 
 class TransientSourceError(FinIntelError):
-    """Lỗi mạng tạm thời như timeout, mất kết nối hoặc HTTP 502/503/504."""
+    """Lỗi mạng tạm thời như timeout, mất kết nối hoặc HTTP 500/502/503/504."""
 
 
 class RateLimitOrCircuitOpenError(FinIntelError):
