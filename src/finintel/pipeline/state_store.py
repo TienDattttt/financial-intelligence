@@ -226,7 +226,7 @@ class StateStore:
                    ORDER BY (a.run_id IS NOT NULL) DESC, r.snapshot_publish_order DESC,
                             r.finished_at DESC, r.rowid DESC"""
             ).fetchall()
-        return [str(row[0]) for row in rows]
+        return list(dict.fromkeys(str(row[0]) for row in rows))
 
     def start_step(self, run_id: str, stage: str) -> int:
         with self.connection() as conn:
