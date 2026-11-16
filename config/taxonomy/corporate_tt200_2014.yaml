@@ -1,0 +1,185 @@
+# TT200 Appendix 2, B01-DN, B02-DN, B03-DN.
+# https://congbao.chinhphu.vn/van-ban/thong-tu-so-200-2014-tt-btc-6697/3529.htm
+taxonomy_version: VAS_TT200_2014
+metrics:
+  BS_CURRENT_ASSETS:
+    code: "100"
+    labels: ["Tài sản ngắn hạn"]
+    fhsc: ["taisannganhan"]
+  BS_CASH_AND_EQUIVALENTS:
+    code: "110"
+    labels: ["Tiền và các khoản tương đương tiền"]
+    fhsc: ["tienvacackhoantuongduongtien"]
+  BS_SHORT_TERM_INVESTMENTS:
+    code: "120"
+    labels: ["Đầu tư tài chính ngắn hạn"]
+    fhsc: ["cackhoandaututaichinhnganhan"]
+  BS_SHORT_TERM_RECEIVABLES:
+    code: "130"
+    labels: ["Các khoản phải thu ngắn hạn"]
+    fhsc: ["cackhoanphaithunganhan"]
+  BS_INVENTORIES:
+    code: "140"
+    labels: ["IV. Hàng tồn kho"]
+    fhsc: ["hangtonkho_tong"]
+  BS_NONCURRENT_ASSETS:
+    code: "200"
+    labels: ["Tài sản dài hạn"]
+    fhsc: ["taisandaihan"]
+  BS_FIXED_ASSETS:
+    code: "220"
+    labels: ["Tài sản cố định"]
+    fhsc: ["taisancodinh"]
+  BS_TANGIBLE_FIXED_ASSETS:
+    code: "221"
+    labels: ["Tài sản cố định hữu hình"]
+    fhsc: ["taisancodinhhuuhinh"]
+  BS_INTANGIBLE_FIXED_ASSETS:
+    code: "227"
+    labels: ["Tài sản cố định vô hình"]
+    fhsc: ["taisancodinhvohinh"]
+  BS_OTHER_NONCURRENT_ASSETS:
+    code: "260"
+    labels: ["VI. Tài sản dài hạn khác"]
+    fhsc: ["taisandaihankhac_tong"]
+  BS_TOTAL_ASSETS:
+    code: "270"
+    labels: ["Tổng cộng tài sản"]
+    fhsc: ["tongcongtaisan"]
+  BS_TOTAL_LIABILITIES:
+    code: "300"
+    labels: ["Nợ phải trả"]
+    fhsc: ["nophaitra"]
+  BS_CURRENT_LIABILITIES:
+    code: "310"
+    labels: ["Nợ ngắn hạn"]
+    fhsc: ["nonganhan"]
+  BS_SHORT_TERM_BORROWINGS:
+    code: "320"
+    labels: ["Vay và nợ thuê tài chính ngắn hạn"]
+    fhsc: ["vayvanothuetaichinhnganhan"]
+  BS_NONCURRENT_LIABILITIES:
+    code: "330"
+    labels: ["Nợ dài hạn"]
+    fhsc: ["nodaihan"]
+  BS_LONG_TERM_BORROWINGS:
+    code: "338"
+    labels: ["Vay và nợ thuê tài chính dài hạn"]
+    fhsc: ["vayvanothuetaichinhdaihan"]
+  BS_TOTAL_EQUITY:
+    code: "400"
+    labels: ["Vốn chủ sở hữu"]
+    fhsc: ["vonchusohuu_tong"]
+  BS_TOTAL_LIABILITIES_AND_EQUITY:
+    code: "440"
+    labels: ["Tổng cộng nguồn vốn"]
+    fhsc: ["tongcongnguonvon"]
+  IS_GROSS_REVENUE:
+    code: "01"
+    labels: ["Doanh thu bán hàng và cung cấp dịch vụ"]
+    fhsc: ["doanhthubanhangvacungcapdichvu"]
+  IS_REVENUE_DEDUCTIONS:
+    code: "02"
+    labels: ["Các khoản giảm trừ doanh thu"]
+    fhsc: ["cackhoangiamtrudoanhthu"]
+  IS_NET_REVENUE:
+    code: "10"
+    labels: ["Doanh thu thuần về bán hàng và cung cấp dịch vụ"]
+    fhsc: ["doanhthuthuanvebanhangvacungcapdichvu"]
+  IS_COST_OF_GOODS_SOLD:
+    code: "11"
+    labels: ["Giá vốn hàng bán"]
+    fhsc: ["giavonhangban"]
+  IS_GROSS_PROFIT:
+    code: "20"
+    labels: ["Lợi nhuận gộp về bán hàng và cung cấp dịch vụ"]
+    fhsc: ["loinhuangopvebanhangvacungcapdichvu"]
+  IS_FINANCIAL_REVENUE:
+    code: "21"
+    labels: ["Doanh thu hoạt động tài chính"]
+    fhsc: ["doanhthuhoatdongtaichinh"]
+  IS_FINANCIAL_EXPENSES:
+    code: "22"
+    labels: ["Chi phí tài chính"]
+    fhsc: ["chiphitaichinh"]
+  IS_INTEREST_EXPENSE:
+    code: "23"
+    labels: ["Chi phí lãi vay"]
+    fhsc: ["trongdochiphilaivay"]
+  IS_SELLING_EXPENSES:
+    code: "25"
+    labels: ["Chi phí bán hàng"]
+    fhsc: ["chiphibanhang"]
+  IS_ADMINISTRATIVE_EXPENSES:
+    code: "26"
+    labels: ["Chi phí quản lý doanh nghiệp"]
+    fhsc: ["chiphiquanlydoanhnghiep"]
+  IS_OPERATING_PROFIT:
+    code: "30"
+    labels: ["Lợi nhuận thuần từ hoạt động kinh doanh"]
+    fhsc: ["loinhuanthuantuhoatdongkinhdoanh"]
+  IS_OTHER_INCOME:
+    code: "31"
+    labels: ["Thu nhập khác"]
+    fhsc: ["thunhapkhac"]
+  IS_OTHER_EXPENSES:
+    code: "32"
+    labels: ["Chi phí khác"]
+    fhsc: ["chiphikhac"]
+  IS_OTHER_PROFIT:
+    code: "40"
+    labels: ["Lợi nhuận khác"]
+    fhsc: ["loinhuankhac"]
+  IS_PROFIT_BEFORE_TAX:
+    code: "50"
+    labels: ["Tổng lợi nhuận kế toán trước thuế"]
+    fhsc: ["tongloinhuanketoantruocthue"]
+  IS_CURRENT_INCOME_TAX:
+    code: "51"
+    labels: ["Chi phí thuế TNDN hiện hành"]
+    fhsc: ["chiphithuetndnhienhanh"]
+  IS_DEFERRED_INCOME_TAX:
+    code: "52"
+    labels: ["Chi phí thuế TNDN hoãn lại"]
+    fhsc: ["chiphithuetndnhoanlai"]
+  IS_NET_INCOME:
+    code: "60"
+    labels: ["Lợi nhuận sau thuế thu nhập doanh nghiệp"]
+    fhsc: ["loinhuansauthuethunhapdoanhnghiep"]
+  CF_SUPPLIER_PAYMENTS:
+    code: "02"
+    labels: ["Tiền chi trả cho người cung cấp hàng hóa, dịch vụ"]
+    cash_flow_method: DIRECT
+  CF_DEPRECIATION_AMORTIZATION:
+    code: "02"
+    labels: ["Khấu hao TSCĐ", "Khấu hao TSCĐ và BĐSĐT"]
+    fhsc: ["khauhaotaisancodinh"]
+    cash_flow_method: INDIRECT
+  CF_OPERATING_CASH_FLOW:
+    code: "20"
+    labels: ["Lưu chuyển tiền thuần từ hoạt động kinh doanh"]
+    fhsc: ["luuchuyentienthuantuhoatdongkinhdoanh"]
+  CF_CAPITAL_EXPENDITURE:
+    code: "21"
+    labels: ["Tiền chi để mua sắm, xây dựng TSCĐ và các tài sản dài hạn khác"]
+    fhsc: ["tienchidemuasamxaydungtaisancodinh"]
+  CF_INVESTING_CASH_FLOW:
+    code: "30"
+    labels: ["Lưu chuyển tiền thuần từ hoạt động đầu tư"]
+    fhsc: ["luuchuyentienthuantuhoatdongdautu"]
+  CF_PROCEEDS_FROM_BORROWINGS:
+    code: "33"
+    labels: ["Tiền thu từ đi vay"]
+    fhsc: ["tienvaynganhandaihannhanduoc"]
+  CF_REPAYMENT_OF_BORROWINGS:
+    code: "34"
+    labels: ["Tiền trả nợ gốc vay"]
+    fhsc: ["tienchitranogocvay"]
+  CF_FINANCING_CASH_FLOW:
+    code: "40"
+    labels: ["Lưu chuyển tiền thuần từ hoạt động tài chính"]
+    fhsc: ["luuchuyentienthuantusudungvaohoatdongtaichinh"]
+  CF_NET_CASH_CHANGE:
+    code: "50"
+    labels: ["Lưu chuyển tiền thuần trong kỳ"]
+    fhsc: ["luuchuyentienthuantrongnam"]

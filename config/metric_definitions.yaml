@@ -1,0 +1,425 @@
+# Corporate MVP metrics verified against the circulars and FHSC Spike fixtures.
+metrics:
+  BS_CURRENT_ASSETS:
+    canonical_id: BS_CURRENT_ASSETS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "100"
+    tt99_code: "100"
+    comparable_across_taxonomy: false
+  BS_CASH_AND_EQUIVALENTS:
+    canonical_id: BS_CASH_AND_EQUIVALENTS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "110"
+    tt99_code: "110"
+    comparable_across_taxonomy: true
+  BS_SHORT_TERM_INVESTMENTS:
+    canonical_id: BS_SHORT_TERM_INVESTMENTS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "120"
+    tt99_code: "120"
+    comparable_across_taxonomy: false
+  BS_SHORT_TERM_RECEIVABLES:
+    canonical_id: BS_SHORT_TERM_RECEIVABLES
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "130"
+    tt99_code: "130"
+    comparable_across_taxonomy: false
+  BS_INVENTORIES:
+    canonical_id: BS_INVENTORIES
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "140"
+    tt99_code: "140"
+    comparable_across_taxonomy: false
+  BS_NONCURRENT_ASSETS:
+    canonical_id: BS_NONCURRENT_ASSETS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "200"
+    tt99_code: "200"
+    comparable_across_taxonomy: false
+  BS_FIXED_ASSETS:
+    canonical_id: BS_FIXED_ASSETS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "220"
+    tt99_code: "220"
+    comparable_across_taxonomy: false
+  BS_TANGIBLE_FIXED_ASSETS:
+    canonical_id: BS_TANGIBLE_FIXED_ASSETS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "221"
+    tt99_code: "221"
+    comparable_across_taxonomy: false
+  BS_INTANGIBLE_FIXED_ASSETS:
+    canonical_id: BS_INTANGIBLE_FIXED_ASSETS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "227"
+    tt99_code: "227"
+    comparable_across_taxonomy: false
+  BS_OTHER_NONCURRENT_ASSETS:
+    canonical_id: BS_OTHER_NONCURRENT_ASSETS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "260"
+    tt99_code: "270"
+    comparable_across_taxonomy: false
+  BS_TOTAL_ASSETS:
+    canonical_id: BS_TOTAL_ASSETS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "270"
+    tt99_code: "280"
+    comparable_across_taxonomy: true
+  BS_TOTAL_LIABILITIES:
+    canonical_id: BS_TOTAL_LIABILITIES
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "300"
+    tt99_code: "300"
+    comparable_across_taxonomy: true
+  BS_CURRENT_LIABILITIES:
+    canonical_id: BS_CURRENT_LIABILITIES
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "310"
+    tt99_code: "310"
+    comparable_across_taxonomy: false
+  BS_SHORT_TERM_BORROWINGS:
+    canonical_id: BS_SHORT_TERM_BORROWINGS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "320"
+    tt99_code: "321"
+    comparable_across_taxonomy: false
+  BS_NONCURRENT_LIABILITIES:
+    canonical_id: BS_NONCURRENT_LIABILITIES
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "330"
+    tt99_code: "330"
+    comparable_across_taxonomy: false
+  BS_LONG_TERM_BORROWINGS:
+    canonical_id: BS_LONG_TERM_BORROWINGS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "338"
+    tt99_code: "339"
+    comparable_across_taxonomy: false
+  BS_TOTAL_EQUITY:
+    canonical_id: BS_TOTAL_EQUITY
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "400"
+    tt99_code: "400"
+    comparable_across_taxonomy: true
+  BS_TOTAL_LIABILITIES_AND_EQUITY:
+    canonical_id: BS_TOTAL_LIABILITIES_AND_EQUITY
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "440"
+    tt99_code: "440"
+    comparable_across_taxonomy: true
+  IS_GROSS_REVENUE:
+    canonical_id: IS_GROSS_REVENUE
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: POSITIVE_REVENUE
+    tt200_code: "01"
+    tt99_code: "01"
+    comparable_across_taxonomy: false
+  IS_REVENUE_DEDUCTIONS:
+    canonical_id: IS_REVENUE_DEDUCTIONS
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: POSITIVE_MAGNITUDE
+    tt200_code: "02"
+    tt99_code: "02"
+    comparable_across_taxonomy: false
+  IS_NET_REVENUE:
+    canonical_id: IS_NET_REVENUE
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: POSITIVE_REVENUE
+    tt200_code: "10"
+    tt99_code: "10"
+    comparable_across_taxonomy: true
+  IS_COST_OF_GOODS_SOLD:
+    canonical_id: IS_COST_OF_GOODS_SOLD
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "11"
+    tt99_code: "11"
+    comparable_across_taxonomy: false
+  IS_GROSS_PROFIT:
+    canonical_id: IS_GROSS_PROFIT
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "20"
+    tt99_code: "20"
+    comparable_across_taxonomy: false
+  IS_INVESTMENT_PROPERTY_DISPOSAL_GAIN_LOSS:
+    canonical_id: IS_INVESTMENT_PROPERTY_DISPOSAL_GAIN_LOSS
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: null
+    tt99_code: "21"
+    comparable_across_taxonomy: false
+  IS_FINANCIAL_REVENUE:
+    canonical_id: IS_FINANCIAL_REVENUE
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: POSITIVE_REVENUE
+    tt200_code: "21"
+    tt99_code: "22"
+    comparable_across_taxonomy: false
+  IS_FINANCIAL_EXPENSES:
+    canonical_id: IS_FINANCIAL_EXPENSES
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "22"
+    tt99_code: "23"
+    comparable_across_taxonomy: false
+  IS_INTEREST_EXPENSE:
+    canonical_id: IS_INTEREST_EXPENSE
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: POSITIVE_MAGNITUDE
+    tt200_code: "23"
+    tt99_code: null
+    comparable_across_taxonomy: false
+  IS_BORROWING_COSTS:
+    canonical_id: IS_BORROWING_COSTS
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: POSITIVE_MAGNITUDE
+    tt200_code: null
+    tt99_code: "24"
+    comparable_across_taxonomy: false
+  IS_SELLING_EXPENSES:
+    canonical_id: IS_SELLING_EXPENSES
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "25"
+    tt99_code: "25"
+    comparable_across_taxonomy: false
+  IS_ADMINISTRATIVE_EXPENSES:
+    canonical_id: IS_ADMINISTRATIVE_EXPENSES
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "26"
+    tt99_code: "26"
+    comparable_across_taxonomy: false
+  IS_OPERATING_PROFIT:
+    canonical_id: IS_OPERATING_PROFIT
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "30"
+    tt99_code: "30"
+    comparable_across_taxonomy: false
+  IS_OTHER_INCOME:
+    canonical_id: IS_OTHER_INCOME
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "31"
+    tt99_code: "31"
+    comparable_across_taxonomy: false
+  IS_OTHER_EXPENSES:
+    canonical_id: IS_OTHER_EXPENSES
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "32"
+    tt99_code: "32"
+    comparable_across_taxonomy: false
+  IS_OTHER_PROFIT:
+    canonical_id: IS_OTHER_PROFIT
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "40"
+    tt99_code: "40"
+    comparable_across_taxonomy: false
+  IS_PROFIT_BEFORE_TAX:
+    canonical_id: IS_PROFIT_BEFORE_TAX
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "50"
+    tt99_code: "50"
+    comparable_across_taxonomy: true
+  IS_CURRENT_INCOME_TAX:
+    canonical_id: IS_CURRENT_INCOME_TAX
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "51"
+    tt99_code: "51"
+    comparable_across_taxonomy: false
+  IS_DEFERRED_INCOME_TAX:
+    canonical_id: IS_DEFERRED_INCOME_TAX
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "52"
+    tt99_code: "52"
+    comparable_across_taxonomy: false
+  IS_NET_INCOME:
+    canonical_id: IS_NET_INCOME
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "60"
+    tt99_code: "60"
+    comparable_across_taxonomy: true
+  CF_SUPPLIER_PAYMENTS:
+    canonical_id: CF_SUPPLIER_PAYMENTS
+    statement_type: CASH_FLOW
+    value_type: FLOW
+    unit: VND
+    sign_convention: NEGATIVE_OUTFLOW
+    tt200_code: "02"
+    tt99_code: "02"
+    comparable_across_taxonomy: false
+  CF_DEPRECIATION_AMORTIZATION:
+    canonical_id: CF_DEPRECIATION_AMORTIZATION
+    statement_type: CASH_FLOW
+    value_type: FLOW
+    unit: VND
+    sign_convention: POSITIVE_MAGNITUDE
+    tt200_code: "02"
+    tt99_code: "02"
+    comparable_across_taxonomy: true
+  CF_OPERATING_CASH_FLOW:
+    canonical_id: CF_OPERATING_CASH_FLOW
+    statement_type: CASH_FLOW
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "20"
+    tt99_code: "20"
+    comparable_across_taxonomy: true
+  CF_CAPITAL_EXPENDITURE:
+    canonical_id: CF_CAPITAL_EXPENDITURE
+    statement_type: CASH_FLOW
+    value_type: FLOW
+    unit: VND
+    sign_convention: NEGATIVE_OUTFLOW
+    tt200_code: "21"
+    tt99_code: "21"
+    comparable_across_taxonomy: false
+  CF_INVESTING_CASH_FLOW:
+    canonical_id: CF_INVESTING_CASH_FLOW
+    statement_type: CASH_FLOW
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "30"
+    tt99_code: "30"
+    comparable_across_taxonomy: false
+  CF_PROCEEDS_FROM_BORROWINGS:
+    canonical_id: CF_PROCEEDS_FROM_BORROWINGS
+    statement_type: CASH_FLOW
+    value_type: FLOW
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "33"
+    tt99_code: "33"
+    comparable_across_taxonomy: false
+  CF_REPAYMENT_OF_BORROWINGS:
+    canonical_id: CF_REPAYMENT_OF_BORROWINGS
+    statement_type: CASH_FLOW
+    value_type: FLOW
+    unit: VND
+    sign_convention: NEGATIVE_OUTFLOW
+    tt200_code: "34"
+    tt99_code: "34"
+    comparable_across_taxonomy: false
+  CF_FINANCING_CASH_FLOW:
+    canonical_id: CF_FINANCING_CASH_FLOW
+    statement_type: CASH_FLOW
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "40"
+    tt99_code: "40"
+    comparable_across_taxonomy: false
+  CF_NET_CASH_CHANGE:
+    canonical_id: CF_NET_CASH_CHANGE
+    statement_type: CASH_FLOW
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "50"
+    tt99_code: "50"
+    comparable_across_taxonomy: false

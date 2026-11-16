@@ -76,10 +76,10 @@ class FileAdapter(FinancialStatementProvider):
     def fetch(self) -> Iterator[RawFilingBundle]:
         try:
             content = self.path.read_bytes()
-            fetched_at = datetime.now(UTC)
-            metrics = self._read_metrics(content)
-        except (OSError, ValueError, csv.Error, BadZipFile, ParseError):
+        except OSError:
             raise ContractViolationError("Unable to read the offline filing.") from None
+        fetched_at = datetime.now(UTC)
+        metrics = self.read_metrics(content)
         yield RawFilingBundle(
             RawPayload(
                 content,
@@ -98,6 +98,13 @@ class FileAdapter(FinancialStatementProvider):
             ),
             (RawFiling(self.metadata, metrics),),
         )
+
+    def read_metrics(self, content: bytes) -> dict[str, object]:
+        """Read the configured column pair from supplied original filing bytes."""
+        try:
+            return self._read_metrics(content)
+        except (OSError, ValueError, csv.Error, BadZipFile, ParseError):
+            raise ContractViolationError("Unable to read the offline filing.") from None
 
     def _read_metrics(self, content: bytes) -> dict[str, object]:
         metrics: dict[str, object] = {}
