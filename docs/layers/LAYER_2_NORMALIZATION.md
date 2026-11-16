@@ -1,0 +1,127 @@
+# ĐẶC TẢ XÂY DỰNG TẦNG 2: CANONICAL NORMALIZATION & ACCOUNTING PERIOD ENGINE
+
+* **Mã tài liệu:** `LAYER-2`
+* **Module đích:** `src/finintel/normalization/` và `config/taxonomy/`
+* **Phụ thuộc đầu vào:** Payload từ `data/raw/` và metadata từ `filings_manifest` (Tầng 1).
+
+---
+
+## 1. BÀI TOÁN & PHẠM VI TRÁCH NHIỆM
+
+Tầng 2 là trái tim nghiệp vụ kế toán của hệ thống, chịu trách nhiệm chuyển đổi các bảng số liệu từ nhiều nguồn và nhiều thời kỳ về một **Canonical Financial Fact Schema** thống nhất cho doanh nghiệp phi tài chính (`CORPORATE`), giải quyết triệt để 4 bài toán thực tế tại Việt Nam:
+1. **Chuyển giao Chế độ Kế toán từ Thông tư 200/2014/TT-BTC sang Thông tư 99/2025/TT-BTC:** Xác định đúng chế độ kế toán theo ngày bắt đầu năm tài chính (`fiscal_year_start_date`), xử lý số liệu so sánh được trình bày lại (`RESTATED_REGIME_CHANGE`) và kiểm soát tính tương thích khi cộng trượt 4 quý (`TTM`) xuyên qua mốc 01/01/2026.
+2. **Ánh xạ Chỉ tiêu Tất định (Deterministic Exact Mapping):** Tuyệt đối không dùng so khớp mờ (fuzzy matching); tận dụng mã chuẩn của nguồn nếu đã khớp và ghi nhận mọi chỉ tiêu lạ vào `unmapped_metrics`.
+3. **Đồng bộ Kỳ Kế toán & Tách số liệu Quý rời rạc:** Xử lý sự khác biệt giữa chỉ tiêu thời điểm (`STOCK` - Bảng CĐKT) và chỉ tiêu thời kỳ (`FLOW` - Bảng KQKD, LCTT), tách số lũy kế đầu năm (`YTD`) thành số phát sinh quý rời và gắn cờ cảnh báo khi tách Quý 4 từ báo cáo năm đã kiểm toán trừ 9 tháng chưa kiểm toán.
+4. **Chuẩn hóa Đơn vị & Dấu Kế toán:** Đưa toàn bộ giá trị tiền tệ về đơn vị chuẩn (**Đồng - VND**) và chuẩn hóa quy ước dấu của các khoản mục chi phí, khấu hao, dòng tiền chi ra.
+
+---
+
+## 2. NGUỒN HỌC ĐÃ KIỂM CHỨNG & CÁCH TÁI SỬ DỤNG
+
+1. **Văn bản Pháp quy Bộ Tài chính Việt Nam:**
+   * **Thông tư 200/2014/TT-BTC:** Hệ thống mã số chỉ tiêu BCTC áp dụng cho các năm tài chính bắt đầu trước ngày `01/01/2026` (Bảng CĐKT: Mã `100` đến `440`; Bảng KQKD: Mã `01` đến `71`; Bảng LCTT: Mã `01` đến `70`).
+   * **Thông tư 99/2025/TT-BTC:** Có hiệu lực từ ngày `01/01/2026`, áp dụng cho các năm tài chính bắt đầu từ hoặc sau ngày `01/01/2026`.
+2. **`JerBouma/FinanceToolkit` & `dgunning/edgartools`:**
+   * *Cách áp dụng:* Học kiến trúc tách biệt hoàn toàn từ điển ánh xạ (`config/taxonomy/*.yaml`) khỏi bộ máy xử lý kỳ thời gian (`periods.py`). Học cách kiểm tra độ dài kỳ (`period_days`) và tính liên tục của ngày đầu kỳ – cuối kỳ trước khi thực hiện phép trừ tách quý hoặc phép cộng trượt 4 quý (`TTM`).
+
+---
+
+## 3. KIẾN TRÚC MODULE & CẤU HÌNH TAXONOMY
+
+### 3.1. Cấu trúc File
+```text
+config/
+├── metric_definitions.yaml            # Định nghĩa tập Canonical Metric IDs nội bộ
+└── taxonomy/
+    ├── corporate_tt200_2014.yaml      # Ánh xạ mã số TT200 & mã vnstock -> Canonical ID
+    └── corporate_tt99_2025.yaml       # Ánh xạ mã số TT99 & mã vnstock -> Canonical ID
+src/finintel/normalization/
+├── __init__.py
+├── regime_resolver.py                 # Xác định TT200 hay TT99 dựa trên fiscal_year_start_date
+├── mapper.py                          # Exact mapping, chuẩn hóa dấu/đơn vị, xuất unmapped_metrics
+├── periods.py                         # Tách YTD -> Quý rời, suy diễn Q4 kèm cờ derivation_method, tính TTM
+└── restatement.py                     # Xử lý cột "Số đầu năm / Kỳ trước" trình bày lại khi đổi chế độ
+```
+
+### 3.2. Cấu trúc Chuẩn của `config/metric_definitions.yaml`
+Mọi chỉ tiêu chuẩn trong hệ thống phải được định nghĩa tường minh với các thuộc tính sau:
+
+```yaml
+metrics:
+  BS_TOTAL_ASSETS:
+    canonical_id: "BS_TOTAL_ASSETS"
+    statement_type: "BALANCE_SHEET"
+    value_type: "STOCK"                        # Giá trị tại một thời điểm (không cộng dồn TTM)
+    unit: "VND"
+    sign_convention: "POSITIVE_NORMAL"
+    tt200_code: "270"
+    tt99_code: "270"
+    comparable_across_taxonomy: true           # Được phép tính trung bình và YoY xuyên qua ranh giới TT200 -> TT99
+
+  IS_NET_REVENUE:
+    canonical_id: "IS_NET_REVENUE"
+    statement_type: "INCOME_STATEMENT"
+    value_type: "FLOW"                         # Giá trị phát sinh trong kỳ (cần tách quý rời và cộng TTM 4 quý)
+    unit: "VND"
+    sign_convention: "POSITIVE_REVENUE"
+    tt200_code: "10"
+    tt99_code: "10"
+    comparable_across_taxonomy: true
+
+  CF_DEPRECIATION_AMORTIZATION:
+    canonical_id: "CF_DEPRECIATION_AMORTIZATION"
+    statement_type: "CASH_FLOW"
+    value_type: "FLOW"
+    unit: "VND"
+    sign_convention: "POSITIVE_MAGNITUDE"      # Luôn chuẩn hóa về độ lớn dương khi dùng trong EBITDA/Beneish
+    tt200_code: "02"                           # Chỉ xuất hiện trên LCTT phương pháp gián tiếp
+    tt99_code: "02"
+    comparable_across_taxonomy: true
+```
+
+---
+
+## 4. QUY TẮC NGHIỆP VỤ CHUẨN HÓA KẾ TOÁN (BẮT BUỘC TUÂN THỦ)
+
+### 4.1. Quy tắc Xác định Chế độ Kế toán (`regime_resolver.py`)
+* **Không dùng `calendar_year` của `period_end_date` để chọn Thông tư!**
+* Phải kiểm tra `fiscal_year_start_date` của kỳ báo cáo đó:
+  * Nếu $\text{fiscal\_year\_start\_date} < \text{'2026-01-01'}$ $\rightarrow$ Áp dụng `taxonomy_version = 'VAS_TT200_2014'`. (Ví dụ: Doanh nghiệp có niên độ tài chính từ `01/04/2025` đến `31/03/2026`, báo cáo Quý 4 kết thúc ngày `31/03/2026` vẫn lập theo **Thông tư 200**).
+  * Nếu $\text{fiscal\_year\_start\_date} \ge \text{'2026-01-01'}$ $\rightarrow$ Áp dụng `taxonomy_version = 'VAS_TT99_2025'`.
+
+### 4.2. Quy tắc Xử lý Số liệu So sánh Trình bày lại (`restatement.py`)
+Khi một báo cáo năm tài chính 2026 (lập theo `VAS_TT99_2025`) chứa cột "Số đầu năm" hoặc "Kỳ trước tương ứng" (tức số liệu của năm 2025 được phân loại lại theo biểu mẫu TT99):
+* Không được ghi đè lên bản ghi năm 2025 gốc (vốn mang `taxonomy_version = 'VAS_TT200_2014'`).
+* Phải lưu thành một bản ghi mới cho kỳ 2025 với:
+  * `taxonomy_version = 'VAS_TT99_2025'`
+  * `revision_reason = 'RESTATED_REGIME_CHANGE'`
+  * `filing_id` trỏ về chính tờ khai năm 2026 nơi con số trình bày lại đó được công bố (đảm bảo tính Point-in-Time: tại năm 2025 người dùng chỉ thấy số TT200; từ thời điểm công bố báo cáo 2026 trở đi, hệ thống có số năm 2025 đã quy đổi sang TT99 để tính tăng trưởng `YoY` đồng nhất cùng chế độ!).
+
+### 4.3. Quy tắc Tách Quý rời rạc & Cờ Suy diễn Quý 4 (`periods.py`)
+Đối với các chỉ tiêu `value_type == 'FLOW'` (Bảng KQKD và LCTT), mỗi bản ghi sau chuẩn hóa phải được gắn cột `derivation_method` nhận 1 trong 3 giá trị:
+1. **`'REPORTED_DIRECTLY'`:** Nguồn dữ liệu cung cấp trực tiếp con số phát sinh của riêng quý đó ($\text{period\_days} \in [80, 100]$ ngày).
+2. **`'DERIVED_YTD_DIFF'`:** Nguồn chỉ cung cấp số lũy kế từ đầu năm tài chính ($YTD_q$). Khi đó số phát sinh quý $q$ ($q \in \{2, 3, 4\}$) được tính bằng:
+   $$\text{QuarterValue}_q = YTD_q - YTD_{q-1}$$
+   *Điều kiện bắt buộc:* Cả hai kỳ $q$ và $q-1$ phải có cùng `issuer_id`, cùng `statement_scope`, cùng `fiscal_year_start_date` và cùng `audit_status`.
+3. **`'DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX'`:** Khi doanh nghiệp không công bố báo cáo Quý 4 riêng lẻ mà chỉ công bố Báo cáo Kiểm toán Năm (`AUDITED`) trong khi 3 quý đầu năm (`Q1, Q2, Q3`) là số liệu tự lập/soát xét:
+   $$\text{QuarterValue}_4 = \text{AnnualAudited} - (Q_1 + Q_2 + Q_3)$$
+   *Cảnh báo nghiệp vụ:* Phép trừ này sẽ dồn toàn bộ các bút toán điều chỉnh kiểm toán của cả 3 quý đầu năm vào Quý 4. Vì vậy **bắt buộc** phải gắn cờ `derivation_method = 'DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX'` để Tầng 4 và Tầng 5 hiển thị chú thích cảnh báo rõ ràng cho người phân tích.
+
+### 4.4. Quy tắc Tính Trượt 4 Quý (`TTM - Trailing Twelve Months`)
+Hàm `compute_ttm(facts_df)` chỉ tính tổng 4 quý liên tiếp ($t-3, t-2, t-1, t$) cho một chỉ tiêu `FLOW` khi thỏa mãn **đồng thời 4 điều kiện**:
+1. Có đủ đúng 4 quý liên tiếp không bị khuyết bất kỳ quý nào ở giữa (`count(non_null_quarters) == 4`).
+2. Tổng số ngày bao phủ của 4 quý nằm trong khoảng $[350, 380]$ ngày và không chồng lấn nhau.
+3. Cả 4 quý có cùng `statement_scope` (`CONSOLIDATED` hoặc `SEPARATE`).
+4. **Kiểm tra tương thích chế độ kế toán:** Nếu 4 quý có cùng `taxonomy_version` $\rightarrow$ hợp lệ. Nếu 4 quý nằm vắt qua ranh giới `VAS_TT200_2014` và `VAS_TT99_2025` (ví dụ TTM tại Q2/2026 gồm Q3/2025, Q4/2025 theo TT200 và Q1/2026, Q2/2026 theo TT99):
+   * Nếu chỉ tiêu có `comparable_across_taxonomy == true` (hoặc đã có bản ghi năm 2025 `RESTATED_REGIME_CHANGE` sang TT99) $\rightarrow$ Cho phép tính TTM.
+   * Nếu `comparable_across_taxonomy == false` và không có số trình bày lại $\rightarrow$ Trả về `NULL` kèm cờ `computation_note = 'MIXED_TAXONOMY'`.
+
+---
+
+## 5. TIÊU CHÍ NGHIỆM THU TẦNG 2 (DEFINITION OF DONE)
+
+Agent phải viết và chạy xanh `tests/unit/test_layer2_normalization.py`:
+1. **Test Fiscal Regime Boundary:** Doanh nghiệp có niên độ `2025-04-01` đến `2026-03-31` phải được phân loại vào `VAS_TT200_2014`, trong khi niên độ `2026-01-01` đến `2026-12-31` được phân loại vào `VAS_TT99_2025`.
+2. **Test Unmapped Metric Isolation:** Đưa vào một dòng chỉ tiêu lạ `"Phải thu nội bộ đặc thù XYZ"` không có trong file YAML $\rightarrow$ `mapper.py` không được tự đoán mà phải ghi vào bảng `unmapped_metrics` kèm `filing_id`.
+3. **Test Missing Quarter in TTM:** Chuỗi dữ liệu chỉ có `Q1, Q2, Q4` (khuyết `Q3`) $\rightarrow$ Giá trị `TTM` tại `Q4` bắt buộc phải là `NULL` (cấm cộng 3 quý thành TTM).
+4. **Test Cross-Taxonomy TTM:** Kiểm tra chỉ tiêu có `comparable_across_taxonomy = false` đi qua mốc 2025–2026 phải trả về `NULL` và `computation_note == 'MIXED_TAXONOMY'`.

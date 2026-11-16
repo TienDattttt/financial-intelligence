@@ -1,0 +1,40 @@
+[project]
+name = "finintel"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mypy==1.19.1",
+    "pytest==9.0.2",
+    "ruff==0.14.14",
+]
+spike = [
+    "vnstock==6.0.1",
+    "vnstock-oapi==0.1.2",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+vnstock = { index = "vnstock" }
+vnstock-oapi = { index = "vnstock" }
+
+[[tool.uv.index]]
+name = "vnstock"
+url = "https://vnstocks.com/api/packages"
+explicit = true
+
+[tool.pytest.ini_options]
+pythonpath = [".", "src"]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+explicit_package_bases = true
+mypy_path = "src"
+
+[tool.ruff]
+target-version = "py311"

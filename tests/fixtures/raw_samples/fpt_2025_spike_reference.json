@@ -1,0 +1,123 @@
+{
+  "symbol": "FPT",
+  "unit": "VND",
+  "sources": {
+    "CONSOLIDATED": {
+      "2025-Q1": "https://fpt.com/api/media/20250422_FPT_Consolidated_Financial_Statements_for_Quarter_1_2025_5823acbe80.pdf",
+      "2025-Q2": "https://fpt.com/api/media/20250722_FPT_Consolidated_Financial_Statements_for_Quarter_2_2025_bdbe2a000f.pdf",
+      "2025-Q3": "https://fpt.com/api/media/20251023_FPT_Consolidated_Financial_Statements_for_Quarter_3_2025_f0bc04923e.pdf",
+      "2025-Q4": "https://fpt.com/api/media/20260126_FPT_Consolidated_Financial_Statements_for_Quarter_4_2025_ffb77b8ae9.pdf"
+    },
+    "SEPARATE": {
+      "2025-Q1": "https://fpt.com/api/media/20250422_FPT_Separate_Financial_Statements_for_Quarter_1_2025_8c4724ec3b.pdf",
+      "2025-Q2": "https://fpt.com/api/media/20250722_FPT_Separate_Financial_Statements_for_Quarter_2_2025_8aab07716c.pdf",
+      "2025-Q3": "https://fpt.com/api/media/20251023_FPT_Separate_Financial_Statements_for_Quarter_3_2025_e5d073eccb.pdf",
+      "2025-Q4": "https://fpt.com/api/media/20260126_FPT_Separate_Financial_Statements_for_Quarter_4_2025_2838538c4f.pdf"
+    }
+  },
+  "lines": {
+    "balance_sheet": {
+      "line_code": "270",
+      "label": "Total assets",
+      "pdf_pages": {
+        "CONSOLIDATED": 5,
+        "SEPARATE": 5
+      },
+      "expected_vnd": {
+        "CONSOLIDATED": {
+          "point_in_time": {
+            "2025-Q1": 73997673121789,
+            "2025-Q2": 81601597008376,
+            "2025-Q3": 82738304930449,
+            "2025-Q4": 88089621779862
+          }
+        },
+        "SEPARATE": {
+          "point_in_time": {
+            "2025-Q1": 27669722113845,
+            "2025-Q2": 28386268686624,
+            "2025-Q3": 28870318169069,
+            "2025-Q4": 33222360872841
+          }
+        }
+      }
+    },
+    "income_statement": {
+      "line_code": "10",
+      "label": "Net revenue",
+      "pdf_pages": {
+        "CONSOLIDATED": 8,
+        "SEPARATE": 7
+      },
+      "expected_vnd": {
+        "CONSOLIDATED": {
+          "quarter": {
+            "2025-Q1": 16058140942460,
+            "2025-Q2": 16624713040067,
+            "2025-Q3": 17204521225302,
+            "2025-Q4": 20225450357409
+          },
+          "ytd": {
+            "2025-Q1": 16058140942460,
+            "2025-Q2": 32682853982527,
+            "2025-Q3": 49887375207829,
+            "2025-Q4": 70112825565238
+          }
+        },
+        "SEPARATE": {
+          "quarter": {
+            "2025-Q1": 187288720339,
+            "2025-Q2": 213182891878,
+            "2025-Q3": 225321705503,
+            "2025-Q4": 235999945930
+          },
+          "ytd": {
+            "2025-Q1": 187288720339,
+            "2025-Q2": 400471612217,
+            "2025-Q3": 625793317720,
+            "2025-Q4": 861793263650
+          }
+        }
+      }
+    },
+    "cash_flow": {
+      "line_code": "20",
+      "label": "Net cash from operating activities",
+      "pdf_pages": {
+        "CONSOLIDATED": 10,
+        "SEPARATE": 9
+      },
+      "quarter_method": "Q1 equals YTD. Q2-Q4 equal current YTD minus prior quarter YTD.",
+      "expected_vnd": {
+        "CONSOLIDATED": {
+          "quarter": {
+            "2025-Q1": -2506903722401,
+            "2025-Q2": 4157557313295,
+            "2025-Q3": 4376939748214,
+            "2025-Q4": 4161409627438
+          },
+          "ytd": {
+            "2025-Q1": -2506903722401,
+            "2025-Q2": 1650653590894,
+            "2025-Q3": 6027593339108,
+            "2025-Q4": 10189002966546
+          }
+        },
+        "SEPARATE": {
+          "quarter": {
+            "2025-Q1": -247611690665,
+            "2025-Q2": 10056324435,
+            "2025-Q3": 42772982115,
+            "2025-Q4": 163053424981
+          },
+          "ytd": {
+            "2025-Q1": -247611690665,
+            "2025-Q2": -237555366230,
+            "2025-Q3": -194782384115,
+            "2025-Q4": -31728959134
+          }
+        }
+      }
+    }
+  }
+}
