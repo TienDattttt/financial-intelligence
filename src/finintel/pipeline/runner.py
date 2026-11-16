@@ -14,6 +14,7 @@ from uuid import uuid4
 from filelock import FileLock, Timeout
 
 from finintel.exceptions import (
+    ArchiveIntegrityError,
     ContractViolationError,
     CriticalDataQualityError,
     RateLimitOrCircuitOpenError,
@@ -143,6 +144,7 @@ Handler = Callable[[StepContext], StepOutcome]
 def _error_message(error: BaseException) -> str:
     # Provider exception messages may contain credentials or arbitrary remote text.
     messages: tuple[tuple[type[BaseException], str], ...] = (
+        (ArchiveIntegrityError, "Raw filing bytes differ from the manifest hash."),
         (TransientSourceError, "Transient source error after retry."),
         (
             RateLimitOrCircuitOpenError,

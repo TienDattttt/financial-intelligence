@@ -24,6 +24,13 @@ Tầng 2 là trái tim nghiệp vụ kế toán của hệ thống, chịu trác
 2. **`JerBouma/FinanceToolkit` & `dgunning/edgartools`:**
    * *Cách áp dụng:* Học kiến trúc tách biệt hoàn toàn từ điển ánh xạ (`config/taxonomy/*.yaml`) khỏi bộ máy xử lý kỳ thời gian (`periods.py`). Học cách kiểm tra độ dài kỳ (`period_days`) và tính liên tục của ngày đầu kỳ – cuối kỳ trước khi thực hiện phép trừ tách quý hoặc phép cộng trượt 4 quý (`TTM`).
 
+### Đối chiếu khi triển khai
+
+* Mẫu B01 của TT200 dùng mã `270` cho tổng cộng tài sản. Mẫu B01 của TT99 dùng mã `280` cho tổng cộng tài sản và mã `270` cho nhóm tài sản dài hạn khác. Mẫu B02 của TT99 bổ sung lãi/lỗ bán bất động sản đầu tư ở mã `21`, chuyển doanh thu và chi phí tài chính sang mã `22` và `23`. Mã `02` của B03 cần biết phương pháp trực tiếp hoặc gián tiếp nếu đầu vào chỉ có mã số. [TT200, B01/B02](https://congbao.chinhphu.vn/tai-ve-van-ban-so-200-2014-tt-btc-6697-3551?format=pdf) · [TT200, B03](https://congbao.chinhphu.vn/tai-ve-van-ban-so-200-2014-tt-btc-6697-3553?format=pdf) · [TT99, Phụ lục IV](https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59652?format=pdf)
+* Bộ Tài chính xác nhận doanh nghiệp có năm tài chính từ 01/07 đến 30/06 bắt đầu áp dụng TT99 từ 01/07/2026. [Giải đáp của Bộ Tài chính](https://ttcg.mof.gov.vn/hoidapcstc/home/cthoidap/159555)
+* FinanceToolkit nạp bảng ánh xạ từ tệp riêng. EdgarTools đối chiếu khoảng ngày và độ dài khi chọn kỳ. Layer 2 áp dụng hai cách tổ chức này với YAML và Polars, tính số ngày bao gồm cả ngày đầu lẫn ngày cuối và kiểm tra các quý kề nhau theo ngày. [FinanceToolkit, normalization_model.py](https://github.com/JerBouma/FinanceToolkit/blob/main/financetoolkit/normalization_model.py) · [EdgarTools, period_selector.py](https://github.com/dgunning/edgartools/blob/main/edgar/xbrl/period_selector.py)
+* Mã FHSC lấy từ payload thực nghiệm ở Chặng 0. Mẫu trích FPT 2025 khớp số năm đã kiểm toán cho doanh thu thuần, lợi nhuận sau thuế và lưu chuyển tiền thuần từ hoạt động kinh doanh. Chặng 0 cũng ghi nhận ngoại lệ về quy ước quý, nên ngày bắt đầu và kết thúc đã xác minh trong manifest quyết định một giá trị là quý rời hay lũy kế. [BCTC hợp nhất FPT 2025](https://fpt.com/-/media/project/fpt-corporation/fpt/ir/information-disclosures/year-report/2026/march/20260319---fpt---audited-consolidated-financial-statements-for-2025.pdf)
+
 ---
 
 ## 3. KIẾN TRÚC MODULE & CẤU HÌNH TAXONOMY
@@ -55,7 +62,7 @@ metrics:
     unit: "VND"
     sign_convention: "POSITIVE_NORMAL"
     tt200_code: "270"
-    tt99_code: "270"
+    tt99_code: "280"
     comparable_across_taxonomy: true           # Được phép tính trung bình và YoY xuyên qua ranh giới TT200 -> TT99
 
   IS_NET_REVENUE:
@@ -113,8 +120,14 @@ Hàm `compute_ttm(facts_df)` chỉ tính tổng 4 quý liên tiếp ($t-3, t-2, 
 2. Tổng số ngày bao phủ của 4 quý nằm trong khoảng $[350, 380]$ ngày và không chồng lấn nhau.
 3. Cả 4 quý có cùng `statement_scope` (`CONSOLIDATED` hoặc `SEPARATE`).
 4. **Kiểm tra tương thích chế độ kế toán:** Nếu 4 quý có cùng `taxonomy_version` $\rightarrow$ hợp lệ. Nếu 4 quý nằm vắt qua ranh giới `VAS_TT200_2014` và `VAS_TT99_2025` (ví dụ TTM tại Q2/2026 gồm Q3/2025, Q4/2025 theo TT200 và Q1/2026, Q2/2026 theo TT99):
-   * Nếu chỉ tiêu có `comparable_across_taxonomy == true` (hoặc đã có bản ghi năm 2025 `RESTATED_REGIME_CHANGE` sang TT99) $\rightarrow$ Cho phép tính TTM.
+   * Nếu chỉ tiêu có `comparable_across_taxonomy == true` hoặc đã có số liệu `RESTATED_REGIME_CHANGE` sang TT99 cho từng quý TT200 xuất hiện trong cửa sổ $\rightarrow$ Cho phép tính TTM. Giá trị so sánh cả năm có phạm vi cả năm và chỉ được dùng cho phép tính có cùng phạm vi.
    * Nếu `comparable_across_taxonomy == false` và không có số trình bày lại $\rightarrow$ Trả về `NULL` kèm cờ `computation_note = 'MIXED_TAXONOMY'`.
+
+Mã và nhãn giống nhau chưa đủ để xác nhận tính tương đương. Ví dụ, doanh thu bán hàng mã `01` theo TT200 có thể gồm doanh thu bán bất động sản đầu tư. TT99 loại giao dịch này khỏi mã `01` và trình bày lãi/lỗ ở mã `21`. Cờ `false` giữ nguyên khi phạm vi thay đổi hoặc chưa có bằng chứng tương đương. [TT200, Điều 113](https://congbao.chinhphu.vn/tai-ve-van-ban-so-200-2014-tt-btc-6697-3551?format=pdf) · [TT99, Phụ lục IV](https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59655?format=pdf)
+
+### 4.5. Quy ước dấu doanh thu và chi phí trên B02
+
+`SIGNED_EXPENSE` áp dụng cho `IS_COST_OF_GOODS_SOLD`, `IS_FINANCIAL_EXPENSES`, `IS_SELLING_EXPENSES` và `IS_ADMINISTRATIVE_EXPENSES`. Chi phí thông thường có dấu dương và được trừ trong công thức B02. Layer 2 nhân số đã báo cáo với hệ số đơn vị VND và giữ nguyên dấu để bảo toàn các khoản hoàn nhập hoặc ghi giảm chi phí. `SIGNED_EXPENSE` giữ nguyên số 0 và `NULL`; quy ước doanh thu hiện hành `POSITIVE_REVENUE` không bị thay đổi trong lần chuẩn hóa này. [TT200, Điều 113](https://congbao.chinhphu.vn/tai-ve-van-ban-so-200-2014-tt-btc-6697-3551?format=pdf) · [TT99, Phụ lục IV](https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59655?format=pdf)
 
 ---
 
@@ -125,3 +138,34 @@ Agent phải viết và chạy xanh `tests/unit/test_layer2_normalization.py`:
 2. **Test Unmapped Metric Isolation:** Đưa vào một dòng chỉ tiêu lạ `"Phải thu nội bộ đặc thù XYZ"` không có trong file YAML $\rightarrow$ `mapper.py` không được tự đoán mà phải ghi vào bảng `unmapped_metrics` kèm `filing_id`.
 3. **Test Missing Quarter in TTM:** Chuỗi dữ liệu chỉ có `Q1, Q2, Q4` (khuyết `Q3`) $\rightarrow$ Giá trị `TTM` tại `Q4` bắt buộc phải là `NULL` (cấm cộng 3 quý thành TTM).
 4. **Test Cross-Taxonomy TTM:** Kiểm tra chỉ tiêu có `comparable_across_taxonomy = false` đi qua mốc 2025–2026 phải trả về `NULL` và `computation_note == 'MIXED_TAXONOMY'`.
+
+## 6. CHẠY CHUẨN HÓA TỪ RAW ARCHIVE
+
+```sh
+PYTHONPATH=src uv run --locked python -m finintel.pipeline.cli run --stage normalize --source fhsc --ticker FPT --period 2026-Q2
+```
+
+```powershell
+$env:PYTHONPATH = 'src'
+uv run --locked python -m finintel.pipeline.cli run --stage normalize --source fhsc --ticker FPT --period 2026-Q2
+```
+
+Lệnh đọc các phiên bản trong `filings_manifest`, xác minh mã băm và dùng các kỳ lịch sử cùng mã doanh nghiệp để tính quý rời. Mỗi lần chạy thành công ghi một batch tại `data/curated/financial_facts/<run_id>/` với `financial_facts.parquet` và `unmapped_metrics.parquet`. Batch lưu số báo cáo gốc, vùng số so sánh đã cấu hình và quý suy diễn kèm `source_filing_ids`. Các batch chạy lại có thể chứa cùng phiên bản báo cáo.
+
+FHSC dùng VND theo bằng chứng khảo sát. Với `--source file`, `unit_multiplier` là bắt buộc cho từng filing và phải là số nguyên dương đã xác minh; thiếu hoặc sai kiểu là vi phạm hợp đồng và phải dừng chuẩn hóa. Thêm `cash_flow_method: DIRECT` hoặc `INDIRECT` cho báo cáo LCTT dùng mã số cần phân biệt phương pháp. Khai báo `comparative` khi tệp TT99 có cột số so sánh đã xác minh. Ví dụ báo cáo kết quả kinh doanh năm 2026 công bố lại số năm 2025 trong cột `prior`.
+
+```yaml
+normalization:
+  filings:
+    "<filing_id>":
+      unit_multiplier: 1000
+      comparative:
+        value_column: prior
+        fiscal_year: 2025
+        fiscal_year_start_date: 2025-01-01
+        period_type: ANNUAL
+        period_start_date: 2025-01-01
+        period_end_date: 2025-12-31
+```
+
+`derive_quarters(facts, as_of=...)` và `compute_ttm(facts, as_of=...)` dùng ngày có dữ liệu muộn nhất của các đầu vào. Dùng `as_of` khi cần tái hiện thông tin đã công bố tại một ngày cụ thể. Mỗi chuỗi kỳ dùng cùng nguồn, doanh nghiệp và phạm vi báo cáo đã xác minh.

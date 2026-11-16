@@ -1,0 +1,16 @@
+{
+  "symbol": "FPT",
+  "period": "year",
+  "unit": "VND",
+  "income-statement-year-001.json": {
+    "year": 2025,
+    "doanhthuthuanvebanhangvacungcapdichvu": 70112825100710,
+    "loinhuansauthuethunhapdoanhnghiep": 11232339450734
+  },
+  "cash-flow-year-001.json": {
+    "year": 2025,
+    "luuchuyentienthuantuhoatdongkinhdoanh": 10136043915911,
+    "khauhaotaisancodinh": 2914178360732,
+    "tienchidemuasamxaydungtaisancodinh": -5097919349856
+  }
+}
