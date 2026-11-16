@@ -124,7 +124,7 @@ $env:PYTHONPATH = 'src'
 uv run --locked python -m finintel.pipeline.cli health --source file
 ```
 
-`health --source fhsc` kiểm tra phiên bản connector đã duyệt, tuổi khóa và kết nối FHSC. Cấu hình mặc định dùng `data/metadata/state.sqlite` và yêu cầu 100 MiB đĩa trống. CLI ghi log JSONL ra stderr.
+`health --source fhsc` kiểm tra phiên bản connector đã duyệt, tuổi khóa và kết nối FHSC. Cấu hình mặc định dùng `data/metadata/state.sqlite` và yêu cầu 100 MiB đĩa trống. `state_path` tương đối được tính từ thư mục chứa tệp cấu hình. CLI ghi log JSONL ra stderr.
 
 `run` nhận các bộ lọc `--ticker`, `--period` và `--stage`. Cấu hình mặc định dành các bước nghiệp vụ cho handler được nối vào `Runner`. CLI báo lỗi khi một bước được yêu cầu thiếu handler. Handler ingest phải lưu raw trước khi trả kết quả thành công. Handler publish nhận ID snapshot hiện tại để giữ dữ liệu ngoài phạm vi chạy lại và trả ID snapshot sau khi xuất bản thành công.
 

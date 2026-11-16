@@ -123,6 +123,8 @@ class StateStore:
     def finish_run(
         self, run_id: str, status: str, snapshot_id: str | None = None
     ) -> None:
+        if status not in {"SUCCEEDED", "PARTIAL_SUCCESS"}:
+            snapshot_id = None
         now = _now()
         with self._connection() as conn:
             conn.execute(

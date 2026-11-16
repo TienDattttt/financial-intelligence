@@ -20,7 +20,7 @@ from finintel.exceptions import (
     SourceEntitlementError,
     TransientSourceError,
 )
-from finintel.pipeline.health import health_check
+from finintel.pipeline.health import InsufficientDiskSpaceError, health_check
 from finintel.pipeline.retry_policy import run_with_retry
 from finintel.pipeline.state_store import StateStore
 
@@ -151,6 +151,10 @@ def _error_message(error: BaseException) -> str:
             "A pipeline input or stage outcome violated its contract.",
         ),
         (CriticalDataQualityError, "A critical data quality check failed."),
+        (
+            InsufficientDiskSpaceError,
+            "Free disk space is below the configured minimum.",
+        ),
         (KeyboardInterrupt, "The operator interrupted the pipeline."),
     )
     return next(

@@ -1,9 +1,12 @@
+import json
 import multiprocessing
+import shutil
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -15,8 +18,8 @@ from finintel.exceptions import (
     SourceEntitlementError,
     TransientSourceError,
 )
-from finintel.pipeline import runner
-from finintel.pipeline.cli import main
+from finintel.pipeline import health, runner
+from finintel.pipeline.cli import load_settings, main
 from finintel.pipeline.health import health_check
 from finintel.pipeline.runner import (
     Runner,
@@ -268,8 +271,6 @@ def test_rate_limit_stops_more_ingestion_and_continues_only_archived_scope(
 def test_cli_routes_a_scoped_replay_and_writes_json_logs(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import json
-
     config = tmp_path / "settings.yaml"
     config.write_text(
         f'state_path: "{(tmp_path / "state.sqlite").as_posix()}"\nmin_free_bytes: 0\n',
@@ -380,3 +381,116 @@ def test_missed_publish_contract_leaves_existing_active_snapshot(
     )
     active = store.active_snapshot()
     assert active is not None and active["snapshot_id"] == "existing"
+
+
+def test_relative_state_path_follows_config_and_defaults_to_disk_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config" / "settings.yaml"
+    config.parent.mkdir()
+    config.write_text("state_path: ../data/metadata/state.sqlite\n", encoding="utf-8")
+    expected = tmp_path / "data" / "metadata" / "state.sqlite"
+    assert load_settings(config).state_path == expected
+
+    monkeypatch.chdir(tmp_path)
+    settings = load_settings(Path("config/settings.yaml"))
+    assert settings.state_path == expected
+    assert settings.min_free_bytes == 100 * 1024**2
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "message"),
+    [("[", "Unable to read"), ("[]", "YAML mapping")],
+)
+def test_settings_reject_malformed_or_nonmapping_yaml(
+    tmp_path: Path, yaml_text: str, message: str
+) -> None:
+    config = tmp_path / "settings.yaml"
+    config.write_text(yaml_text, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_settings(config)
+
+
+@pytest.mark.parametrize("status", [RunStatus.FAILED, RunStatus.ABORTED_CIRCUIT_OPEN])
+def test_unsuccessful_runs_cannot_promote_a_snapshot(
+    tmp_path: Path, status: RunStatus
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite")
+    store.initialize()
+    store.start_run("previous", "CLI_MANUAL", {}, None)
+    store.finish_run("previous", RunStatus.SUCCEEDED, "existing")
+    store.start_run("unsuccessful", "CLI_MANUAL", {}, None)
+
+    store.finish_run("unsuccessful", status, "invalid")
+
+    record = store.get_run("unsuccessful")
+    assert record is not None
+    assert record["status"] == status
+    assert record["published_snapshot_id"] is None
+    active = store.active_snapshot()
+    assert active is not None and active["snapshot_id"] == "existing"
+
+
+def test_health_rejects_naive_time_before_contacting_provider(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.sqlite")
+    store.initialize()
+    store.register_fhsc_key("test-key", datetime(2026, 11, 16, tzinfo=UTC))
+
+    def unexpected_check() -> None:
+        pytest.fail("Invalid timestamps must fail before the connectivity check")
+
+    with pytest.raises(ContractViolationError, match="timezone"):
+        health_check(
+            store,
+            online=True,
+            now=datetime(2026, 11, 17),
+            connectivity_check=unexpected_check,
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "cause", "error_type", "message"),
+    [
+        ("file", "disk", "InsufficientDiskSpaceError", "Free disk space"),
+        (
+            "fhsc",
+            "version",
+            "SourceEntitlementError",
+            "approved version of vnstock-oapi",
+        ),
+        ("fhsc", "import", "ImportError", "The pipeline operation failed."),
+    ],
+)
+def test_health_cli_logs_failures_as_json_without_provider_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    source: str,
+    cause: str,
+    error_type: str,
+    message: str,
+) -> None:
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        f'state_path: "{(tmp_path / "state.sqlite").as_posix()}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("VNSTOCK_FHSC_KEY_CREATED_AT", raising=False)
+
+    def fail_import(name: str) -> object:
+        raise ImportError("private connector detail")
+
+    if cause == "disk":
+        monkeypatch.setattr(shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
+    elif cause == "version":
+        monkeypatch.setattr(health, "version", lambda _: "0.0.0")
+    else:
+        monkeypatch.setattr(health, "version", lambda _: "0.1.2")
+        monkeypatch.setattr(health, "import_module", fail_import)
+
+    assert main(["--config", str(config), "health", "--source", source]) == 1
+    stderr = capsys.readouterr().err
+    record = json.loads(stderr.splitlines()[-1])
+    assert record["details"]["error_type"] == error_type
+    assert message in record["details"]["message"]
+    assert "private connector detail" not in stderr

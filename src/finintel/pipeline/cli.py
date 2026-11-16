@@ -6,16 +6,16 @@ import argparse
 import json
 import logging
 import re
-import sqlite3
 import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
+from typing import Protocol, cast
 
 from finintel.exceptions import FinIntelError
-from finintel.pipeline.health import health_check
+from finintel.pipeline.health import DEFAULT_MIN_FREE_BYTES, health_check
 from finintel.pipeline.runner import (
     Handler,
     Runner,
@@ -29,6 +29,12 @@ from finintel.pipeline.state_store import StateStore
 logger = logging.getLogger("finintel.pipeline")
 
 
+class _YamlModule(Protocol):
+    YAMLError: type[Exception]
+
+    def safe_load(self, stream: str, /) -> object: ...
+
+
 @dataclass(frozen=True)
 class Settings:
     state_path: Path
@@ -37,15 +43,15 @@ class Settings:
 
 
 def load_settings(path: Path) -> Settings:
-    yaml = import_module("yaml")
+    yaml = cast(_YamlModule, import_module("yaml"))
     try:
         content = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError):
         raise ValueError("Unable to read the YAML settings file.") from None
     if not isinstance(content, dict):
         raise ValueError("Settings must be a YAML mapping.")
-    state_path = content.get("state_path", "data/metadata/state.sqlite")
-    min_space = content.get("min_free_bytes", 0)
+    state_path = content.get("state_path", "../data/metadata/state.sqlite")
+    min_space = content.get("min_free_bytes", DEFAULT_MIN_FREE_BYTES)
     tickers = content.get("tickers", [])
     if not isinstance(state_path, str) or not state_path.strip():
         raise ValueError("state_path must be a nonempty path.")
@@ -55,7 +61,9 @@ def load_settings(path: Path) -> Settings:
         not isinstance(ticker, str) for ticker in tickers
     ):
         raise ValueError("tickers must be a list of strings.")
-    return Settings(Path(state_path), min_space, tuple(tickers))
+    return Settings(
+        (path.resolve().parent / state_path).resolve(), min_space, tuple(tickers)
+    )
 
 
 class JsonFormatter(logging.Formatter):
@@ -104,7 +112,7 @@ def main(
         "--config",
         type=Path,
         default=Path("config/settings.yaml"),
-        help="YAML settings path. Relative paths resolve from the current working directory.",
+        help="YAML settings file. Relative state_path values resolve from this file's directory.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="Run the pipeline or replay selected stages.")
@@ -172,9 +180,17 @@ def main(
             .run(request)
             .exit_code
         )
-    except (FinIntelError, OSError, sqlite3.Error) as error:
+    except Exception as error:
+        # The built-in health checks wrap provider failures in fixed messages.
+        message = (
+            str(error)
+            if request is None
+            and connectivity_check is None
+            and isinstance(error, FinIntelError)
+            else _error_message(error)
+        )
         logger.error(
-            _error_message(error),
+            message,
             extra={
                 "event": "operation_failed",
                 "details": {"error_type": type(error).__name__},

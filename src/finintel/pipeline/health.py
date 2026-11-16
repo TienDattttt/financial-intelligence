@@ -13,6 +13,7 @@ from typing import Protocol, cast
 
 from finintel.exceptions import (
     ContractViolationError,
+    FinIntelError,
     RateLimitOrCircuitOpenError,
     SourceEntitlementError,
     TransientSourceError,
@@ -25,6 +26,11 @@ from finintel.pipeline.state_store import (
 )
 
 logger = logging.getLogger("finintel.pipeline")
+DEFAULT_MIN_FREE_BYTES = 100 * 1024**2
+
+
+class InsufficientDiskSpaceError(FinIntelError):
+    """The state volume has less free space than required."""
 
 
 class FhscProbe(Protocol):
@@ -127,11 +133,15 @@ def health_check(
     if min_free_bytes < 0:
         raise ContractViolationError("min_free_bytes must be non-negative.")
     if shutil.disk_usage(store.path.parent).free < min_free_bytes:
-        raise ContractViolationError("Free disk space is below the configured minimum.")
+        raise InsufficientDiskSpaceError(
+            "Free disk space is below the configured minimum."
+        )
     if not online:
         return
 
     checked_at = now if now is not None else datetime.now(UTC)
+    if checked_at.utcoffset() is None:
+        raise ContractViolationError("The health check time must include a timezone.")
     expires = _key_expiry(store)
     if expires is not None or connectivity_check is not None:
         _check_expiry(expires, checked_at, run_id)
