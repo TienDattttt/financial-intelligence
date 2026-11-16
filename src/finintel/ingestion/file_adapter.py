@@ -173,21 +173,89 @@ class FileAdapter(FinancialStatementProvider):
             )
         except (KeyError, openpyxl.utils.exceptions.InvalidFileException):
             raise ContractViolationError("Invalid XLSX filing.") from None
+
         try:
-            sheet = book[self.sheet or book.sheetnames[0]]
-            rows = cast(
-                Iterator[Sequence[object]],
-                sheet.iter_rows(
-                    min_row=self.header_row,
-                    values_only=True,
-                ),
+            formula_book = openpyxl.load_workbook(
+                BytesIO(content), read_only=True, data_only=False, keep_links=False
             )
-            yield from self._table_pairs(rows)
+        except (KeyError, openpyxl.utils.exceptions.InvalidFileException):
+            raise ContractViolationError("Invalid XLSX filing.") from None
+
+        try:
+            sheet_name = self.sheet or book.sheetnames[0]
+            sheet = book[sheet_name]
+            formula_sheet = formula_book[sheet_name]
+
+            # Reset worksheet dimensions so openpyxl does not rely on
+            # declared dimensions that might understate the data extent.
+            sheet.reset_dimensions()
+            formula_sheet.reset_dimensions()
+
+            # Determine the parsed header width from the header row.
+            header_iter = sheet.iter_rows(
+                min_row=self.header_row,
+                max_row=self.header_row,
+                values_only=True,
+            )
+            header_tuple = next(header_iter, ())
+            header_width = len(header_tuple)
+
+            # Limit columns to the parsed header width and pad trailing empty
+            # cells that openpyxl read-only mode trims after reset_dimensions.
+            data_rows = [
+                tuple(
+                    list(row)[:header_width] + [None] * max(0, header_width - len(row))
+                )
+                for row in sheet.iter_rows(
+                    min_row=self.header_row,
+                    max_col=header_width if header_width > 0 else None,
+                    values_only=True,
+                )
+            ]
+            formula_rows = [
+                tuple(
+                    list(row)[:header_width] + [None] * max(0, header_width - len(row))
+                )
+                for row in formula_sheet.iter_rows(
+                    min_row=self.header_row,
+                    max_col=header_width if header_width > 0 else None,
+                    values_only=True,
+                )
+            ]
+
+            if len(data_rows) != len(formula_rows):
+                raise ContractViolationError(
+                    "Row count mismatch between data and formula views of the XLSX."
+                )
+
+            # Inspect formula cells: reject formulas that lack usable cached values
+            # while distinguishing them from genuinely blank cells.
+            for row_idx in range(1, len(data_rows)):
+                d_row = data_rows[row_idx]
+                f_row = formula_rows[row_idx]
+                col_limit = min(len(d_row), len(f_row), header_width)
+                for col_idx in range(col_limit):
+                    formula_val = f_row[col_idx]
+                    data_val = d_row[col_idx]
+                    if (
+                        isinstance(formula_val, str)
+                        and formula_val.startswith("=")
+                        and data_val is None
+                    ):
+                        raise ContractViolationError(
+                            f"Formula without cached value at row "
+                            f"{self.header_row + row_idx}, column {col_idx + 1}. "
+                            f"Open and save the workbook in Excel to populate cached "
+                            f"formula results before ingestion."
+                        )
+
+            yield from self._table_pairs(iter(data_rows))
         except (KeyError, IndexError):
             raise ContractViolationError(
                 "The requested XLSX sheet is missing."
             ) from None
         finally:
+            formula_book.close()
             book.close()
 
     def _parquet_pairs(self, content: bytes) -> Iterator[tuple[object, object]]:

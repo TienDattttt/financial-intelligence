@@ -493,3 +493,132 @@ def test_concurrent_reingestion_allocates_only_one_revision(
     assert first.filing_id == second.filing_id
     assert {first.status, second.status} == {"ARCHIVED", "SKIPPED_UNCHANGED"}
     assert len(read_manifest(archive.state)) == 1
+
+
+def test_xlsx_formula_without_cached_value_is_rejected(tmp_path: Path) -> None:
+    """A formula cell without a cached result must be rejected with a clear error."""
+    openpyxl = import_module("openpyxl")
+    path = tmp_path / "formula_no_cache.xlsx"
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.append(["raw_metric_key", "raw_value"])
+    sheet.append(["001", 100])
+    # Write a formula directly — the cached value is not populated because
+    # openpyxl does not evaluate formulas.
+    sheet["B3"] = "=SUM(B2:B2)"
+    sheet["A3"] = "002"
+    book.save(path)
+    book.close()
+    with pytest.raises(ContractViolationError, match="Formula without cached value"):
+        next(FileAdapter(path, metadata(), source_provider="manual_audit").fetch())
+
+
+def test_xlsx_formula_with_cached_value_is_accepted(tmp_path: Path) -> None:
+    """A formula cell that has a usable cached value should be ingested normally."""
+    import zipfile
+    from io import BytesIO
+
+    openpyxl = import_module("openpyxl")
+    staging = tmp_path / "staging_formula.xlsx"
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.append(["raw_metric_key", "raw_value"])
+    sheet.append(["001", 100])
+    sheet["A3"] = "002"
+    sheet["B3"] = "=SUM(B2:B2)"
+    book.save(staging)
+    book.close()
+
+    # Inject a cached value <v>100</v> into the formula cell B3 in XML
+    # to simulate a workbook saved by Excel with evaluated formula cache.
+    original_bytes = staging.read_bytes()
+    modified = BytesIO()
+    with zipfile.ZipFile(BytesIO(original_bytes), "r") as zin:
+        with zipfile.ZipFile(modified, "w") as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename == "xl/worksheets/sheet1.xml":
+                    text = data.decode("utf-8")
+                    text = text.replace("<v />", "<v>100</v>")
+                    data = text.encode("utf-8")
+                zout.writestr(item, data)
+
+    path = tmp_path / "formula_with_cache.xlsx"
+    path.write_bytes(modified.getvalue())
+
+    bundle = next(FileAdapter(path, metadata(), source_provider="manual_audit").fetch())
+    assert set(bundle.filings[0].metrics) == {"001", "002"}
+    assert bundle.filings[0].metrics["002"] == 100
+
+
+def test_xlsx_understated_dimensions_reads_all_rows(tmp_path: Path) -> None:
+    """When a worksheet's declared dimensions understate its data, all rows
+    must still be read (via reset_dimensions) or the workbook rejected."""
+    import zipfile
+
+    openpyxl = import_module("openpyxl")
+    staging = tmp_path / "staging.xlsx"
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.append(["raw_metric_key", "raw_value"])
+    sheet.append(["001", 10])
+    sheet.append(["002", 20])
+    sheet.append(["003", 30])
+    book.save(staging)
+    book.close()
+
+    # Manually understate the declared sheet dimension in the XLSX ZIP so that
+    # iter_rows without reset_dimensions would only see the header + 1 data row.
+    from io import BytesIO
+
+    original_bytes = staging.read_bytes()
+    modified = BytesIO()
+    with zipfile.ZipFile(BytesIO(original_bytes), "r") as zin:
+        with zipfile.ZipFile(modified, "w") as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename == "xl/worksheets/sheet1.xml":
+                    text = data.decode("utf-8")
+                    text = text.replace("A1:B4", "A1:B2")
+                    data = text.encode("utf-8")
+                zout.writestr(item, data)
+
+    path = tmp_path / "understated.xlsx"
+    path.write_bytes(modified.getvalue())
+
+    bundle = next(FileAdapter(path, metadata(), source_provider="manual_audit").fetch())
+    # All three data rows must be present despite understated dimensions.
+    assert set(bundle.filings[0].metrics) == {"001", "002", "003"}
+    assert bundle.filings[0].metrics["001"] == 10
+    assert bundle.filings[0].metrics["002"] == 20
+    assert bundle.filings[0].metrics["003"] == 30
+
+
+def test_unchanged_hash_updates_audit_metadata(archive: RawArchive) -> None:
+    """When canonical content hash is unchanged but audit_status or published_at
+    changes, the existing record's metadata should be updated in-place."""
+    original = FIXTURES / "fpt_2025_balance_sheet_extract.json"
+    # First ingest with UNKNOWN audit status
+    filing_unknown = metadata(
+        statement_scope="CONSOLIDATED",
+        audit_status="UNKNOWN",
+    )
+    adapter = FileAdapter(original, filing_unknown, source_provider="manual_audit")
+    (initial,) = archive.store(next(adapter.fetch()))
+    assert initial.status == "ARCHIVED"
+
+    # Re-ingest with same content but AUDITED status
+    filing_audited = metadata(
+        statement_scope="CONSOLIDATED",
+        audit_status="AUDITED",
+    )
+    adapter = FileAdapter(original, filing_audited, source_provider="manual_audit")
+    (second,) = archive.store(next(adapter.fetch()))
+    assert second.status == "SKIPPED_UNCHANGED"
+    assert second.filing_id == initial.filing_id
+
+    # Verify that the manifest record was updated with the new audit status
+    rows = read_manifest(archive.state)
+    assert len(rows) == 1
+    assert rows[0]["audit_status"] == "AUDITED"
+    assert rows[0]["filing_id"] == initial.filing_id

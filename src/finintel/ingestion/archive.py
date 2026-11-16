@@ -57,7 +57,8 @@ ON filings_manifest (
 """
 
 LATEST = """
-SELECT filing_id, revision_no, canonical_content_sha256, audit_status
+SELECT filing_id, revision_no, canonical_content_sha256,
+       audit_status, published_at
 FROM filings_manifest
 WHERE source_provider = :source_provider
   AND issuer_id = :issuer_id
@@ -66,6 +67,17 @@ WHERE source_provider = :source_provider
   AND period_type = :period_type
   AND period_end_date = :period_end_date
 ORDER BY revision_no DESC LIMIT 1
+"""
+
+METADATA_UPDATE = """
+UPDATE filings_manifest
+SET audit_status = :audit_status,
+    audit_opinion = :audit_opinion,
+    published_at = :published_at,
+    published_at_basis = :published_at_basis,
+    effective_available_at = :effective_available_at,
+    is_filed_late = :is_filed_late
+WHERE filing_id = :filing_id
 """
 
 INSERT = """
@@ -180,6 +192,34 @@ class RawArchive:
                     previous is not None
                     and previous["canonical_content_sha256"] == canonical
                 ):
+                    # When canonical content is unchanged, propagate
+                    # audit-status and published_at improvements to the
+                    # existing record without creating a new revision.
+                    # This keeps the spec rule "hash trùng → SKIPPED_UNCHANGED"
+                    # while still capturing metadata-only transitions
+                    # (e.g. UNKNOWN → AUDITED after an audit confirms
+                    # the same figures).
+                    prev_audit = previous["audit_status"]
+                    prev_pub = previous["published_at"]
+                    new_audit = meta.audit_status
+                    new_pub = (
+                        meta.published_at.isoformat()
+                        if meta.published_at is not None
+                        else None
+                    )
+                    if new_audit != prev_audit or new_pub != prev_pub:
+                        conn.execute(
+                            METADATA_UPDATE,
+                            {
+                                "filing_id": str(previous["filing_id"]),
+                                "audit_status": new_audit,
+                                "audit_opinion": meta.audit_opinion,
+                                "published_at": new_pub,
+                                "published_at_basis": meta.published_at_basis,
+                                "effective_available_at": meta.effective_available_at.isoformat(),
+                                "is_filed_late": meta.is_filed_late,
+                            },
+                        )
                     outcomes.append(
                         ArchiveOutcome(
                             str(previous["filing_id"]),
