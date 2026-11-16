@@ -59,6 +59,7 @@ class RunStatus(StrEnum):
 class StepStatus(StrEnum):
     SUCCEEDED = "SUCCEEDED"
     QUARANTINED = "QUARANTINED"
+    INCOMPLETE = "INCOMPLETE"
     SKIPPED_UNCHANGED = "SKIPPED_UNCHANGED"
 
 
@@ -317,7 +318,7 @@ class Runner:
                     status = RunStatus.PARTIAL_SUCCESS
                     continue
                 raise
-            if outcome.status == StepStatus.QUARANTINED:
+            if outcome.status in {StepStatus.QUARANTINED, StepStatus.INCOMPLETE}:
                 return RunStatus.PARTIAL_SUCCESS, None
             if stage == Stage.INGEST and archived:
                 tickers = tuple(archived)
@@ -343,7 +344,7 @@ class Runner:
                 if batch.request.continue_on_partial_ingest and completed:
                     return tuple(completed), RunStatus.PARTIAL_SUCCESS
                 raise
-            if outcome.status == StepStatus.QUARANTINED:
+            if outcome.status in {StepStatus.QUARANTINED, StepStatus.INCOMPLETE}:
                 status = RunStatus.PARTIAL_SUCCESS
             else:
                 completed.append(ticker)

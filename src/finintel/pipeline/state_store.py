@@ -69,7 +69,7 @@ class StateStore:
         self.path = path.resolve()
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def connection(self) -> Iterator[sqlite3.Connection]:
         with closing(sqlite3.connect(self.path, timeout=5)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout = 5000")
@@ -80,13 +80,13 @@ class StateStore:
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connection() as conn:
+        with self.connection() as conn:
             conn.executescript(SCHEMA)
 
     def recover_interrupted_runs(self) -> None:
         """Close abandoned RUNNING records while holding the pipeline file lock."""
         now = _now()
-        with self._connection() as conn:
+        with self.connection() as conn:
             conn.execute(
                 """UPDATE pipeline_steps SET status = 'FAILED', finished_at = ?,
                    error_type = 'InterruptedRun',
@@ -106,7 +106,7 @@ class StateStore:
         arguments: Mapping[str, object],
         git_commit_sha: str | None,
     ) -> None:
-        with self._connection() as conn:
+        with self.connection() as conn:
             conn.execute(
                 """INSERT INTO pipeline_runs
                    (run_id, started_at, status, trigger_mode, cli_args_json, git_commit_sha)
@@ -126,7 +126,7 @@ class StateStore:
         if status not in {"SUCCEEDED", "PARTIAL_SUCCESS"}:
             snapshot_id = None
         now = _now()
-        with self._connection() as conn:
+        with self.connection() as conn:
             conn.execute(
                 """UPDATE pipeline_runs SET status = ?, finished_at = ?, published_snapshot_id = ?
                    WHERE run_id = ?""",
@@ -142,7 +142,7 @@ class StateStore:
                 )
 
     def start_step(self, run_id: str, stage: str) -> int:
-        with self._connection() as conn:
+        with self.connection() as conn:
             result = conn.execute(
                 """INSERT INTO pipeline_steps (run_id, stage_name, started_at, status)
                    VALUES (?, ?, ?, 'RUNNING')""",
@@ -152,7 +152,7 @@ class StateStore:
             return result.lastrowid
 
     def record_attempt(self, step_id: int, attempt: int) -> None:
-        with self._connection() as conn:
+        with self.connection() as conn:
             conn.execute(
                 "UPDATE pipeline_steps SET attempt_count = ? WHERE step_id = ?",
                 (attempt, step_id),
@@ -168,7 +168,7 @@ class StateStore:
         error_type: str | None = None,
         error_message: str | None = None,
     ) -> None:
-        with self._connection() as conn:
+        with self.connection() as conn:
             conn.execute(
                 """UPDATE pipeline_steps SET status = ?, finished_at = ?, issuer_id = ?,
                    filing_id = ?, error_type = ?, error_message = ? WHERE step_id = ?""",
@@ -189,7 +189,7 @@ class StateStore:
                 "Provide a key and a timezone-aware provisioning timestamp."
             )
         provisioned_at = provisioned_at.astimezone(UTC)
-        with self._connection() as conn:
+        with self.connection() as conn:
             conn.execute(
                 """INSERT INTO api_key_registry VALUES ('fhsc', ?, ?, ?, ?)
                    ON CONFLICT(provider_name) DO UPDATE SET
@@ -212,7 +212,7 @@ class StateStore:
         return self._one("SELECT * FROM pipeline_runs WHERE run_id = ?", (run_id,))
 
     def list_steps(self, run_id: str) -> list[dict[str, object]]:
-        with self._connection() as conn:
+        with self.connection() as conn:
             return [
                 dict(row)
                 for row in conn.execute(
@@ -227,6 +227,6 @@ class StateStore:
     def _one(
         self, query: str, parameters: tuple[object, ...]
     ) -> dict[str, object] | None:
-        with self._connection() as conn:
+        with self.connection() as conn:
             row = conn.execute(query, parameters).fetchone()
             return dict(row) if row is not None else None

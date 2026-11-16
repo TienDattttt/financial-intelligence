@@ -20,8 +20,9 @@ Tầng 1 chịu trách nhiệm thu thập Báo cáo Tài chính (Bảng Cân đ�
 1. **FHSC Open API và `vnstock-oapi`.** Dùng `source("fhsc")` rồi lập truy vấn bằng `Source.plan("financials", ticker, statement=..., period=...)`. `Source.raw()` trả về các `Envelope` theo trang, với payload FHSC trong `Envelope.body`. Dùng `PROVIDER_RAW_JSON` cho dữ liệu này và `TRUE_ORIGINAL_DOCUMENT` cho tài liệu BCTC gốc. [Tài liệu endpoint FHSC](https://developers.fhsc.com.vn/api-reference/phan-tich-co-ban/bao-cao-tai-chinh) · [Tài liệu Python của vnstock-oapi](https://www.vnstocks.com/docs/vnstock-oapi/python)
 2. **`dgunning/edgartools` (GitHub):**
    * *Cách áp dụng:* Học cách tách lớp đối tượng định danh tờ khai (`FilingMetadata`) khỏi nội dung số liệu (`RawPayload`) để có thể kiểm tra xem một báo cáo đã tồn tại trong kho chưa trước khi thực hiện bước chuẩn hóa nặng.
-3. **Thông tư 96/2020/TT-BTC (Điều 10, 11) & Thông tư 68/2024/TT-BTC:**
+3. **Thông tư 96/2020/TT-BTC (Điều 10 và Điều 14) & Thông tư 68/2024/TT-BTC:**
    * *Cách áp dụng:* Quy định trần thời hạn công bố thông tin BCTC tại Việt Nam để tính mốc `effective_available_at` khi nguồn dữ liệu không trả về ngày công bố thực tế.
+   * Đối chiếu Điều 10 về BCTC năm và Điều 14 về BCTC quý, bán niên trong [Văn bản hợp nhất 10/VBHN-BTC](https://congbaocdn.chinhphu.vn/180507251028987904/2026/5/29/469540-1779783184_v1_1780016936_signed.pdf).
 
 ---
 
@@ -118,3 +119,47 @@ Agent phải viết và chạy xanh `tests/unit/test_layer1_ingestion.py`:
 3. **Test Statutory Lag Calculation:** Với báo cáo Hợp nhất kỳ `period_end_date = '2025-12-31'` không có `published_at`, kiểm tra `effective_available_at` bằng `'2026-03-31'` ($+90$ ngày cho báo cáo năm).
 4. **Test FileAdapter.** Dùng BCTC mẫu `.xlsx` hoặc `.json` trong `tests/fixtures/raw_samples/` để kiểm thử nạp ngoại tuyến.
 5. **Test phân trang và provenance FHSC.** Dùng mẫu có nhiều trang, trang kết thúc rỗng và giá trị `null`. Kiểm tra trang lưu giữ payload gốc, mỗi bản ghi manifest trỏ đúng kỳ và phạm vi thiếu bằng chứng được ghi `UNKNOWN`.
+
+---
+
+## 6. CHẠY TẦNG 1 VÀ KIỂM TRA KHO RAW
+
+Chạy FHSC từ thư mục gốc sau khi cấu hình khóa qua cơ chế của SDK. Có thể bỏ `--period` để tải cả lịch sử quý và năm của các mã đã chọn.
+
+```powershell
+$env:PYTHONPATH = "src"
+uv run --locked python -m finintel.pipeline.cli run --stage ingest --source fhsc --ticker FPT --period 2025
+```
+
+Trong YAML cấu hình, `ingestion.fhsc_filings` nhận danh sách metadata đã đối chiếu theo mã, loại báo cáo và kỳ. Mỗi mục có cùng cấu trúc như `metadata` ở ví dụ bên dưới. Các trường `statement_scope`, `published_at`, `audit_status` và `audit_opinion` chỉ lấy từ bằng chứng cho đúng phiên bản. Khi thiếu metadata kỳ, trang vẫn được lưu với các JSON Pointer cần bổ sung trong `deferred_locators`. Trang rỗng có `pagination_status: COMPLETE`. Khi chạm giới hạn trang, bước ghi `INCOMPLETE`. Nếu connector đã gửi lại một lần theo `Retry-After` và tải thành công, ứng dụng lưu trang đó rồi dừng luồng FHSC.
+
+`ingestion.files` nhận từng file cho một loại báo cáo, phạm vi và kỳ. JSON dùng mảng đối tượng, CSV và XLSX dùng dòng tiêu đề, Parquet dùng schema cột. Mặc định hai trường là `raw_metric_key` và `raw_value`. Có thể đặt `metric_column` và `value_column` để dùng đúng tên cột của tài liệu. XLSX hỗ trợ `sheet` và `header_row` (bắt đầu từ 1) và đọc giá trị công thức đã lưu trong workbook. Mã chỉ tiêu là văn bản để giữ số 0 ở đầu. File gốc được lưu nguyên byte. Đường dẫn tương đối trong YAML tính từ thư mục chứa file cấu hình.
+
+Ví dụ bổ sung vào cấu hình nằm trong `config/`. File mẫu JSON trích mã 270 và giá trị tổng tài sản từ mẫu đối chiếu BCTC năm FPT đã lưu ở Chặng 0.
+
+```yaml
+ingestion:
+  raw_path: ../data/raw
+  files:
+    - path: ../tests/fixtures/raw_samples/fpt_2025_balance_sheet_extract.json
+      source_provider: manual_audit
+      metadata:
+        issuer_id: FPT-ISSUER
+        ticker_at_filing: FPT
+        statement_type: BALANCE_SHEET
+        statement_scope: CONSOLIDATED
+        period_type: ANNUAL
+        fiscal_year: 2025
+        fiscal_year_start_date: 2025-01-01
+        period_start_date: 2025-01-01
+        period_end_date: 2025-12-31
+        audit_status: AUDITED
+```
+
+```powershell
+uv run --locked python -m finintel.pipeline.cli --config config/settings.yaml run --stage ingest --source file --ticker FPT --period 2025
+```
+
+Kho raw mặc định nằm tại `data/raw/` khi dùng cấu hình mặc định. `sha256/` lưu payload theo hash byte. `provenance/` lưu thông tin từng lần truy xuất, kể cả trang rỗng và lần nạp lại có nội dung kỳ không đổi. `filings_manifest` trong `state.sqlite` trỏ về payload và vị trí của kỳ. BCTC quý soát xét được cộng 45 ngày theo Điều 14, với Q2 soát xét bán niên dùng 60 ngày theo mục 4.2. `STATUTORY_LAG` biểu diễn mốc ước tính theo kỳ. Với một bản đính chính thiếu ngày công bố đã xác minh, `fetched_at` lưu thời điểm hệ thống quan sát phiên bản đó.
+
+Các fixture `fhsc_fpt_bs_2026q*.json` giữ một số mã và giá trị nguyên bản từ trang đầu của mẫu Spike bảng cân đối FPT theo quý, với trace ID giả lập. Fixture `fhsc_empty_page.json` giữ cấu trúc trang cuối của cùng truy vấn.

@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, cast
 
 from finintel.exceptions import (
     ContractViolationError,
@@ -28,14 +29,13 @@ from finintel.pipeline.state_store import (
 logger = logging.getLogger("finintel.pipeline")
 DEFAULT_MIN_FREE_BYTES = 100 * 1024**2
 
+if TYPE_CHECKING:
+    from vnstock_oapi import Source
+    from vnstock_oapi.core.envelope import Envelope
+
 
 class InsufficientDiskSpaceError(FinIntelError):
     """The state volume has less free space than required."""
-
-
-class FhscProbe(Protocol):
-    def status(self) -> dict[str, object]: ...
-    def raw(self, operation: str, *, exchange: str) -> object: ...
 
 
 def _parse_stamp(value: object) -> datetime:
@@ -84,7 +84,7 @@ def _check_expiry(expires: datetime | None, now: datetime, run_id: str | None) -
         )
 
 
-def _load_fhsc_probe() -> FhscProbe:
+def load_fhsc_source() -> Source:
     try:
         installed_version = version("vnstock-oapi")
     except PackageNotFoundError:
@@ -96,21 +96,19 @@ def _load_fhsc_probe() -> FhscProbe:
             "Install the Gate 0 approved version of vnstock-oapi."
         )
     client = import_module("vnstock_oapi")
-    return cast(FhscProbe, client.source("fhsc"))
+    return cast("Source", client.source("fhsc"))
 
 
-def _check_connection(probe: FhscProbe) -> None:
+@contextmanager
+def fhsc_source_errors() -> Iterator[None]:
+    """Translate connector exceptions without copying remote error text."""
     errors = import_module("vnstock_oapi.errors")
     try:
-        # Use the same lightweight operation as Source.check(), which drops the
-        # structured HTTP status when it converts a failure to text.
-        probe.raw("trading/market/session", exchange="HOSE")
+        yield
     except errors.OapiError as error:
         status = getattr(error, "http_status", None)
         if status == 429 or isinstance(error, errors.RateLimitError):
-            raise RateLimitOrCircuitOpenError(
-                "FHSC is throttling the health check."
-            ) from None
+            raise RateLimitOrCircuitOpenError("FHSC is throttling requests.") from None
         if status in (401, 403) or isinstance(
             error,
             (errors.CredentialError, errors.AuthError),
@@ -121,8 +119,22 @@ def _check_connection(probe: FhscProbe) -> None:
         if status in (500, 502, 503, 504) or isinstance(error, errors.NetworkError):
             raise TransientSourceError("FHSC is temporarily unreachable.") from None
         raise ContractViolationError(
-            "FHSC health check did not return success."
+            "FHSC did not return a successful response."
         ) from None
+
+
+def fhsc_retried_rate_limit(envelope: Envelope) -> bool:
+    # In vnstock-oapi 0.1.2, Transport only resends for HTTP 429.
+    count = (envelope.transport or {}).get("request_count")
+    return type(count) is int and count > 1
+
+
+def _check_connection(probe: Source) -> None:
+    with fhsc_source_errors():
+        # Source.check() converts the structured HTTP status to text.
+        pages = probe.raw("trading/market/session", exchange="HOSE")
+    if any(fhsc_retried_rate_limit(page) for page in pages):
+        raise RateLimitOrCircuitOpenError("FHSC is throttling requests.")
 
 
 def health_check(
@@ -154,7 +166,7 @@ def health_check(
         connectivity_check()
         return
 
-    probe = _load_fhsc_probe()
+    probe = load_fhsc_source()
     if expires is None:
         rotation = probe.status().get("key_rotation")
         if isinstance(rotation, dict) and rotation.get("due_on") is not None:
