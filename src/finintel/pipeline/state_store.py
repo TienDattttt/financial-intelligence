@@ -141,6 +141,30 @@ class StateStore:
                     (snapshot_id, run_id, now),
                 )
 
+    def publish_snapshot(self, run_id: str, snapshot_id: str) -> None:
+        """Atomically mark a completed run and its snapshot as active."""
+
+        now = _now()
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT status FROM pipeline_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Unknown pipeline run: {run_id}")
+            conn.execute(
+                """UPDATE pipeline_runs
+                   SET status = 'SUCCEEDED', finished_at = ?, published_snapshot_id = ?
+                   WHERE run_id = ?""",
+                (now, snapshot_id, run_id),
+            )
+            conn.execute(
+                """INSERT INTO active_snapshot (singleton, snapshot_id, run_id, published_at)
+                   VALUES (1, ?, ?, ?)
+                   ON CONFLICT(singleton) DO UPDATE SET snapshot_id = excluded.snapshot_id,
+                   run_id = excluded.run_id, published_at = excluded.published_at""",
+                (snapshot_id, run_id, now),
+            )
+
     def start_step(self, run_id: str, stage: str) -> int:
         with self.connection() as conn:
             result = conn.execute(

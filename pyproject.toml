@@ -4,8 +4,10 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "filelock==4.2.10",
+    "duckdb==1.4.2",
     "openpyxl==3.1.5",
     "polars==1.35.2",
+    "pyarrow==22.0.0",
     "pyyaml==6.0.3",
     "tenacity==9.2.1",
     "vnstock-oapi==0.1.2",
