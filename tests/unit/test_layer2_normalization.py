@@ -226,14 +226,21 @@ def test_ytd_retains_latest_revision_per_audit_status(mapper: TaxonomyMapper) ->
     ).row(0) == (16.0, AuditStatus.UNAUDITED, ["filing-0", "filing-2"])
 
 
-def test_preexisting_derived_quarter_cannot_override_recalculation(mapper: TaxonomyMapper) -> None:
+def test_preexisting_derived_quarter_cannot_override_recalculation(
+    mapper: TaxonomyMapper,
+) -> None:
     q1, q2 = [filing(2025, q, ytd=True) for q in (1, 2)]
     original = facts(mapper, [(q1, 10), (q2, 26)])
     stored = derive_quarters(original).filter(pl.col("fiscal_quarter") == 2)
     revised = pl.concat([facts(mapper, [(q1, 12), (q2, 30)]), stored])
-    assert derive_quarters(revised).tail(1).select(
+    assert derive_quarters(revised).tail(1).select("value", "derivation_method").row(
+        0
+    ) == (18.0, "DERIVED_YTD_DIFF")
+    direct_q2 = facts(mapper, [(filing(2025, 2), 20)])
+    collision = pl.concat([revised, direct_q2])
+    assert derive_quarters(collision).filter(pl.col("fiscal_quarter") == 2).select(
         "value", "derivation_method"
-    ).row(0) == (18.0, "DERIVED_YTD_DIFF")
+    ).row(0) == (20.0, "REPORTED_DIRECTLY")
 
 
 def test_audited_q4_fallback_and_filing_availability(mapper: TaxonomyMapper) -> None:
@@ -527,15 +534,30 @@ def test_normalize_cli_replays_verified_fhsc_page(
 @pytest.mark.parametrize(
     ("manifest_edits", "filing_settings", "message"),
     [
-        ({"raw_archive_path": "../income.csv"}, {"unit_multiplier": 1}, "Raw filing path is outside its archive"),
-        ({"canonical_content_sha256": "0" * 64}, {"unit_multiplier": 1}, "Raw metrics differ from the filing manifest hash"),
-        ({"connector_name": "unsupported"}, {"unit_multiplier": 1}, "Unsupported raw filing connector"),
+        (
+            {"raw_archive_path": "../income.csv"},
+            {"unit_multiplier": 1},
+            "Raw filing path is outside its archive",
+        ),
+        (
+            {"canonical_content_sha256": "0" * 64},
+            {"unit_multiplier": 1},
+            "Raw metrics differ from the filing manifest hash",
+        ),
+        (
+            {"connector_name": "unsupported"},
+            {"unit_multiplier": 1},
+            "Unsupported raw filing connector",
+        ),
         ({}, {}, "Normalization requires integer unit_multiplier"),
     ],
 )
 def test_file_archive_enforces_manifest_guards_and_required_unit(
-    mapper: TaxonomyMapper, tmp_path: Path, manifest_edits: dict[str, str],
-    filing_settings: dict[str, int], message: str,
+    mapper: TaxonomyMapper,
+    tmp_path: Path,
+    manifest_edits: dict[str, str],
+    filing_settings: dict[str, int],
+    message: str,
 ) -> None:
     source = tmp_path / "income.csv"
     source.write_text("raw_metric_key,raw_value\n10,135\n", encoding="utf-8")
@@ -552,7 +574,10 @@ def test_file_archive_enforces_manifest_guards_and_required_unit(
             )
     with pytest.raises(ContractViolationError, match=message):
         normalize_archive(
-            state, root, mapper, source="file",
+            state,
+            root,
+            mapper,
+            source="file",
             filing_settings={stored.filing_id: filing_settings},
         )
 

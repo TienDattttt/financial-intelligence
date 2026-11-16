@@ -198,9 +198,7 @@ def normalize_archive(
     if source not in {"fhsc", "file"}:
         raise ContractViolationError("Unsupported normalization source.")
     conditions = [
-        "source_provider = 'fhsc'"
-        if source == "fhsc"
-        else "source_provider != 'fhsc'"
+        "source_provider = 'fhsc'" if source == "fhsc" else "source_provider != 'fhsc'"
     ]
     if tickers:
         placeholders = ", ".join("?" for _ in tickers)

@@ -176,6 +176,7 @@ def derive_quarters(facts: pl.DataFrame, *, as_of: date | None = None) -> pl.Dat
                 "period_start_date",
                 "period_end_date",
                 "audit_status",
+                "derivation_method",
             ],
             keep="last",
         )
