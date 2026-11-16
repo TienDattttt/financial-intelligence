@@ -1,0 +1,15 @@
+{
+  "error_code": "0",
+  "message": "success",
+  "data": [
+    {
+      "year": 2026,
+      "quarter": 3,
+      "tongcongtaisan": 75329492718303,
+      "nophaitra": 31290111378462,
+      "vonchusohuu_tong": 44039381339841,
+      "phaithuvechovaynganhan": null
+    }
+  ],
+  "traceId": "fixture-q3"
+}

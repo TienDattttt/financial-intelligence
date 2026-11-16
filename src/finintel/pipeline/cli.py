@@ -8,7 +8,7 @@ import logging
 import re
 import subprocess
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
@@ -16,6 +16,7 @@ from typing import Protocol, cast
 
 from finintel.exceptions import FinIntelError
 from finintel.pipeline.health import DEFAULT_MIN_FREE_BYTES, health_check
+from finintel.pipeline.ingest import IngestHandler
 from finintel.pipeline.runner import (
     Handler,
     Runner,
@@ -40,6 +41,7 @@ class Settings:
     state_path: Path
     min_free_bytes: int
     tickers: tuple[str, ...]
+    ingestion: Mapping[str, object] = field(default_factory=dict)
 
 
 def load_settings(path: Path) -> Settings:
@@ -53,6 +55,7 @@ def load_settings(path: Path) -> Settings:
     state_path = content.get("state_path", "../data/metadata/state.sqlite")
     min_space = content.get("min_free_bytes", DEFAULT_MIN_FREE_BYTES)
     tickers = content.get("tickers", [])
+    ingestion = content.get("ingestion", {})
     if not isinstance(state_path, str) or not state_path.strip():
         raise ValueError("state_path must be a nonempty path.")
     if type(min_space) is not int or min_space < 0:
@@ -61,8 +64,15 @@ def load_settings(path: Path) -> Settings:
         not isinstance(ticker, str) for ticker in tickers
     ):
         raise ValueError("tickers must be a list of strings.")
+    if not isinstance(ingestion, dict) or any(
+        not isinstance(key, str) for key in ingestion
+    ):
+        raise ValueError("ingestion must be a YAML mapping.")
     return Settings(
-        (path.resolve().parent / state_path).resolve(), min_space, tuple(tickers)
+        (path.resolve().parent / state_path).resolve(),
+        min_space,
+        tuple(tickers),
+        ingestion,
     )
 
 
@@ -169,10 +179,19 @@ def main(
             )
             logger.info("Health check passed", extra={"event": "health_passed"})
             return 0
+        configured = (
+            handlers
+            if handlers is not None
+            else {
+                Stage.INGEST: IngestHandler(
+                    store, args.config.resolve().parent, settings.ingestion
+                )
+            }
+        )
         return (
             Runner(
                 store,
-                handlers or {},
+                configured,
                 min_free_bytes=settings.min_free_bytes,
                 connectivity_check=connectivity_check,
                 git_commit_sha=_git_commit(),
