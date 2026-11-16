@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
@@ -252,12 +253,84 @@ def test_gc_uses_state_store_and_rejects_failed_promotion(tmp_path: Path) -> Non
     failed_run = "failed-run"
     store.start_run(failed_run, "manual", {}, None)
     store.finish_run(failed_run, "FAILED", "snap_failed")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not publishable"):
         publisher.publish(
             "snap_failed",
             {"latest_facts.parquet": _facts().head(1)},
             run_id=failed_run,
         )
+    assert not (root / "snap_failed").exists()
+    assert not list(root.glob("_tmp_*"))
+    active = store.active_snapshot()
+    assert active is not None and active["snapshot_id"] == "snap_3"
+
+
+@pytest.mark.parametrize("late_status", ["FAILED", "SUCCEEDED"])
+def test_gc_keeps_publication_order_after_late_run_finalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, late_status: str
+) -> None:
+    store = StateStore(tmp_path / "metadata" / "state.sqlite")
+    store.initialize()
+    root = tmp_path / "snapshots"
+
+    class PublisherWithoutGC(SnapshotPublisher):
+        def _collect_garbage_unlocked(self) -> None:
+            pass
+
+    publisher = PublisherWithoutGC(root, state_store=store)
+    for index in (1, 2, 3):
+        store.start_run(f"run-{index}", "manual", {}, None)
+    # Publication order follows their commits even with ties or a clock correction.
+    times = iter(
+        (
+            "2026-01-01T03:00:00+00:00",
+            "2026-01-01T02:00:00+00:00",
+            "2026-01-01T02:00:00+00:00",
+            "2026-01-01T04:00:00+00:00",
+        )
+    )
+    monkeypatch.setattr("finintel.pipeline.state_store._now", lambda: next(times))
+    tables = {"latest_facts.parquet": _facts().head(1)}
+    for index in (1, 2, 3):
+        publisher.publish(f"snap_{index}", tables, run_id=f"run-{index}")
+
+    store.finish_run(
+        "run-1", late_status, "snap_1"
+    )  # Finalize a previously committed run.
+    os.utime(root / "snap_1", (2_000_000_000, 2_000_000_000))
+    SnapshotPublisher(root, state_store=store).collect_garbage()
+
+    assert sorted(path.name for path in root.glob("snap_*")) == ["snap_2", "snap_3"]
+    assert store.published_snapshot_ids() == ["snap_3", "snap_2", "snap_1"]
+    active = store.active_snapshot()
+    assert active is not None and active["snapshot_id"] == "snap_3"
+    run = store.get_run("run-1")
+    assert run is not None and run["status"] == late_status
+    assert run["finished_at"] == "2026-01-01T04:00:00+00:00"
+
+
+def test_state_store_migrates_legacy_publication_order(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.sqlite")
+    store.initialize()
+    for index in (1, 2, 3):
+        store.start_run(f"run-{index}", "manual", {}, None)
+        store.publish_snapshot(f"run-{index}", f"snap_{index}")
+    with store.connection() as conn:
+        conn.execute("ALTER TABLE pipeline_runs DROP COLUMN snapshot_publish_order")
+        conn.execute(
+            "UPDATE pipeline_runs SET published_snapshot_id = NULL WHERE run_id = 'run-3'"
+        )
+
+    store.initialize()
+    store.initialize()
+    store.finish_run("run-1", "FAILED")
+    store.start_run("run-4", "manual", {}, None)
+    store.publish_snapshot("run-4", "snap_4")
+
+    assert store.published_snapshot_ids() == ["snap_4", "snap_3", "snap_2", "snap_1"]
+    active_before_upgrade = store.get_run("run-3")
+    assert active_before_upgrade is not None
+    assert active_before_upgrade["published_snapshot_id"] == "snap_3"
 
 
 def test_state_store_serializes_concurrent_snapshot_promotion(tmp_path: Path) -> None:
@@ -435,6 +508,36 @@ def test_repository_uses_curated_facts_when_state_has_no_active_facts(
         curated / "financial_facts.parquet"
     )
 
-    result = ParquetRepository(tmp_path).get_facts_as_of(date(2026, 2, 15))
+    repository = ParquetRepository(tmp_path)
+    result = repository.get_facts_as_of(date(2026, 2, 15))
 
     assert result["value"].to_list() == [1.0]
+    if has_active_snapshot:
+        assert repository.get_latest_facts()["value"].to_list() == [100_000_000_000.0]
+
+
+@pytest.mark.parametrize("has_snapshot_root", [False, True])
+def test_repository_rejects_missing_active_snapshot(
+    tmp_path: Path, has_snapshot_root: bool
+) -> None:
+    root = tmp_path / "published" / "snapshots"
+    if has_snapshot_root:
+        root.mkdir(parents=True)
+    store = StateStore(tmp_path / "metadata" / "state.sqlite")
+    store.initialize()
+    store.start_run("active", "manual", {}, None)
+    store.publish_snapshot("active", "snap_missing")
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    _facts().head(1).write_parquet(curated / "financial_facts.parquet")
+    _facts().head(1).write_parquet(curated / "latest_facts.parquet")
+    repository = ParquetRepository(tmp_path)
+
+    with pytest.raises(
+        ContractViolationError, match="Active snapshot directory is missing"
+    ):
+        repository.get_facts_as_of(date(2026, 2, 15))
+    with pytest.raises(
+        ContractViolationError, match="Active snapshot directory is missing"
+    ):
+        repository.get_latest_facts()

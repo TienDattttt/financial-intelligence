@@ -47,7 +47,7 @@ class ParquetRepository:
             return path.resolve()
 
     @contextmanager
-    def _read_path(self) -> Iterator[Path]:
+    def _read_path(self, table_name: str | None = None) -> Iterator[Path]:
         source = self._source
         snapshot = source if self._is_directory else source.parent
         snapshots = None
@@ -59,11 +59,19 @@ class ParquetRepository:
                 snapshots = self._find_snapshot_root(source)
             lock_root = snapshots
         with snapshot_lock(lock_root) if lock_root is not None else nullcontext():
-            yield (
-                self._discover_facts_file(source, snapshots)
-                if self._is_directory
-                else source
+            if not self._is_directory:
+                yield source if table_name is None else source.with_name(table_name)
+                return
+
+            candidates = (
+                self._snapshot_candidates(snapshots) if snapshots is not None else []
             )
+            if table_name is not None and candidates:
+                yield candidates[0] / table_name
+                return
+
+            facts_path = self._discover_facts_file(source, candidates)
+            yield facts_path if table_name is None else facts_path.with_name(table_name)
 
     @staticmethod
     def _find_snapshot_root(source: Path) -> Path | None:
@@ -75,10 +83,18 @@ class ParquetRepository:
                 source / "data" / "published" / "snapshots",
             )
         )
-        return next((root.resolve() for root in candidates if root.is_dir()), None)
+        for root in candidates:
+            if not root.is_dir():
+                # SQLite can still point to an active snapshot after the root is lost.
+                try:
+                    ParquetRepository._snapshot_state_path(root).stat()
+                except FileNotFoundError:
+                    continue
+            return root.resolve()
+        return None
 
-    @classmethod
-    def _discover_facts_file(cls, root: Path, snapshots: Path | None) -> Path:
+    @staticmethod
+    def _discover_facts_file(root: Path, snapshots: list[Path]) -> Path:
         direct = [root / "financial_facts.parquet"]
         if root.name.startswith("snap_"):
             direct.append(root / "latest_facts.parquet")
@@ -86,11 +102,10 @@ class ParquetRepository:
             if candidate.is_file():
                 return candidate
 
-        if snapshots is not None:
-            for snapshot in cls._snapshot_candidates(snapshots):
-                candidate = snapshot / "financial_facts.parquet"
-                if candidate.is_file():
-                    return candidate
+        for snapshot in snapshots:
+            candidate = snapshot / "financial_facts.parquet"
+            if candidate.is_file():
+                return candidate
 
         curated = root / "curated" / "financial_facts.parquet"
         if curated.is_file():
@@ -105,12 +120,17 @@ class ParquetRepository:
         return root / "financial_facts.parquet"
 
     @staticmethod
-    def _snapshot_candidates(snapshot_root: Path) -> list[Path]:
-        data_root = snapshot_root.parent.parent
-        state_path = data_root / "metadata" / "state.sqlite"
+    def _snapshot_state_path(snapshot_root: Path) -> Path:
+        return snapshot_root.parent.parent / "metadata" / "state.sqlite"
+
+    @classmethod
+    def _snapshot_candidates(cls, snapshot_root: Path) -> list[Path]:
+        state_path = cls._snapshot_state_path(snapshot_root)
         try:
             state_path.stat()
         except FileNotFoundError:
+            if not snapshot_root.is_dir():
+                return []
             return sorted(
                 (
                     path
@@ -137,7 +157,12 @@ class ParquetRepository:
         snapshot_id = str(row[0])
         if not snapshot_id.startswith("snap_") or Path(snapshot_id).name != snapshot_id:
             raise ContractViolationError(f"Invalid active snapshot ID in {state_path}.")
-        return [snapshot_root / snapshot_id]
+        active = snapshot_root / snapshot_id
+        if not active.is_dir():
+            raise ContractViolationError(
+                f"Active snapshot directory is missing: {active}."
+            )
+        return [active]
 
     def get_facts_as_of(
         self, as_of_date: date, require_exact_filing_date: bool = False
@@ -196,9 +221,8 @@ class ParquetRepository:
 
         if not table_name or Path(table_name).name != table_name:
             raise ValueError("table_name must be a filename without a path component.")
-        with self._read_path() as facts_path:
-            path = facts_path.parent / table_name
-            if not path.exists():
+        with self._read_path(table_name) as path:
+            if not path.is_file():
                 raise FileNotFoundError(path)
             with duckdb.connect(":memory:") as connection:
                 arrow = connection.execute(
@@ -207,7 +231,7 @@ class ParquetRepository:
             return cast(pl.DataFrame, pl.from_arrow(arrow))
 
     def get_latest_facts(self) -> pl.DataFrame:
-        """Read the latest facts table from the repository's parent directory."""
+        """Read the latest facts table from the selected snapshot."""
 
         return self.read_table("latest_facts.parquet")
 

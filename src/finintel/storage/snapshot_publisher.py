@@ -108,45 +108,32 @@ class SnapshotPublisher:
         """Run garbage collection while the caller holds ``self._lock``."""
 
         self._remove_staging_directories()
-        snapshots = [
-            path
+        snapshots = {
+            path.name: path
             for path in self.root.iterdir()
             if path.is_dir() and path.name.startswith("snap_")
-        ]
-        committed_ids = (
-            self.state_store.published_snapshot_ids()
-            if self.state_store is not None
-            else [path.name for path in snapshots]
-        )
-        committed_set = set(committed_ids)
-        for uncommitted in [
-            path for path in snapshots if path.name not in committed_set
-        ]:
-            self._remove_snapshot(uncommitted)
-        snapshots = [path for path in snapshots if path.name in committed_set]
-        snapshots.sort(
-            key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True
-        )
-        protected: set[str] = set()
-        if self.state_store is not None and committed_ids:
-            active = self.state_store.active_snapshot()
-            if active is not None:
-                active_id = str(active["snapshot_id"])
-                protected.add(active_id)
-                predecessor = next(
-                    (
-                        snapshot_id
-                        for snapshot_id in committed_ids
-                        if snapshot_id != active_id
-                    ),
-                    None,
+        }
+        if self.state_store is None:
+            ordered_ids = sorted(
+                snapshots,
+                key=lambda snapshot_id: (
+                    snapshots[snapshot_id].stat().st_mtime_ns,
+                    snapshot_id,
+                ),
+                reverse=True,
+            )
+        else:
+            ordered_ids = list(
+                dict.fromkeys(
+                    snapshot_id
+                    for snapshot_id in self.state_store.published_snapshot_ids()
+                    if snapshot_id in snapshots
                 )
-                if predecessor is not None:
-                    protected.add(predecessor)
-        keep = set(path.name for path in snapshots[: self.keep_snapshots]) | protected
-        for old in snapshots:
-            if old.name not in keep:
-                self._remove_snapshot(old)
+            )
+        keep = set(ordered_ids[: self.keep_snapshots])
+        for snapshot_id, path in snapshots.items():
+            if snapshot_id not in keep:
+                self._remove_snapshot(path)
 
     @staticmethod
     def _remove_snapshot(path: Path) -> None:
