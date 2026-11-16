@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+import sqlite3
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -14,7 +15,14 @@ from uuid import uuid4
 from filelock import FileLock
 
 from finintel.exceptions import ContractViolationError
-from finintel.ingestion.base import AuditStatus, RawFilingBundle, RevisionReason
+from finintel.ingestion.base import (
+    AuditOpinion,
+    AuditStatus,
+    FilingMetadata,
+    RawFiling,
+    RawFilingBundle,
+    RevisionReason,
+)
 from finintel.ingestion.hasher import canonical_content_sha256, payload_file_sha256
 from finintel.pipeline.state_store import StateStore
 
@@ -58,7 +66,7 @@ ON filings_manifest (
 
 LATEST = """
 SELECT filing_id, revision_no, canonical_content_sha256,
-       audit_status, published_at
+       fiscal_quarter, audit_status, audit_opinion, published_at, provider_attrs_json
 FROM filings_manifest
 WHERE source_provider = :source_provider
   AND issuer_id = :issuer_id
@@ -76,7 +84,8 @@ SET audit_status = :audit_status,
     published_at = :published_at,
     published_at_basis = :published_at_basis,
     effective_available_at = :effective_available_at,
-    is_filed_late = :is_filed_late
+    is_filed_late = :is_filed_late,
+    provider_attrs_json = :provider_attrs_json
 WHERE filing_id = :filing_id
 """
 
@@ -127,6 +136,69 @@ def _write_immutable(path: Path, content: bytes) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _provided_evidence(metadata: FilingMetadata) -> dict[str, str]:
+    evidence: dict[str, str] = {}
+    if metadata.audit_status != AuditStatus.UNKNOWN:
+        evidence["audit_status"] = metadata.audit_status
+    if metadata.audit_opinion != AuditOpinion.UNKNOWN:
+        evidence["audit_opinion"] = metadata.audit_opinion
+    if metadata.published_at is not None:
+        evidence["published_at"] = metadata.published_at.isoformat()
+    return evidence
+
+
+def _refresh_metadata(
+    conn: sqlite3.Connection,
+    previous: sqlite3.Row,
+    filing: RawFiling,
+    receipt_sha256: str,
+) -> None:
+    changes = {
+        name: value
+        for name, value in _provided_evidence(filing.metadata).items()
+        if value != previous[name]
+    }
+    if not changes:
+        return
+
+    publication = changes.get("published_at", previous["published_at"])
+    merged = replace(
+        filing.metadata,
+        fiscal_quarter=previous["fiscal_quarter"],
+        audit_status=AuditStatus(changes.get("audit_status", previous["audit_status"])),
+        audit_opinion=AuditOpinion(
+            changes.get("audit_opinion", previous["audit_opinion"])
+        ),
+        published_at=date.fromisoformat(publication)
+        if publication is not None
+        else None,
+    )
+    # Keep the original raw payload and retrieval time for this revision.
+    # Each changed field points to the receipt that supplied its current value.
+    attrs = json.loads(previous["provider_attrs_json"] or "{}")
+    evidence = attrs.setdefault("metadata_evidence", {})
+    for name in changes:
+        evidence[name] = {
+            "receipt_sha256": receipt_sha256,
+            "raw_record_locator": filing.locator,
+        }
+    conn.execute(
+        METADATA_UPDATE,
+        {
+            "filing_id": previous["filing_id"],
+            "audit_status": merged.audit_status,
+            "audit_opinion": merged.audit_opinion,
+            "published_at": publication,
+            "published_at_basis": merged.published_at_basis,
+            "effective_available_at": merged.effective_available_at.isoformat(),
+            "is_filed_late": merged.is_filed_late,
+            "provider_attrs_json": json.dumps(
+                attrs, ensure_ascii=False, allow_nan=False
+            ),
+        },
+    )
+
+
 class RawArchive:
     def __init__(self, root: Path, state: StateStore) -> None:
         self.root = root.resolve()
@@ -156,16 +228,24 @@ class RawArchive:
             "provider_attrs": dict(payload.provider_attrs),
             "pagination_status": bundle.pagination_status,
             "deferred_locators": bundle.deferred_locators,
+            "filing_metadata": [
+                {
+                    "raw_record_locator": filing.locator,
+                    **_provided_evidence(filing.metadata),
+                }
+                for filing in bundle.filings
+            ],
             "run_id": run_id,
         }
         receipt = json.dumps(
             provenance, ensure_ascii=False, sort_keys=True, allow_nan=False
         ).encode("utf-8")
+        receipt_sha256 = payload_file_sha256(receipt)
         self.root.mkdir(parents=True, exist_ok=True)
         with FileLock(self.root / ".archive.lock", timeout=5):
             _write_immutable(self.root / relative_path, payload.content)
             _write_immutable(
-                self.root / "provenance" / f"{payload_file_sha256(receipt)}.json",
+                self.root / "provenance" / f"{receipt_sha256}.json",
                 receipt,
             )
         if not bundle.filings:
@@ -192,34 +272,7 @@ class RawArchive:
                     previous is not None
                     and previous["canonical_content_sha256"] == canonical
                 ):
-                    # When canonical content is unchanged, propagate
-                    # audit-status and published_at improvements to the
-                    # existing record without creating a new revision.
-                    # This keeps the spec rule "hash trùng → SKIPPED_UNCHANGED"
-                    # while still capturing metadata-only transitions
-                    # (e.g. UNKNOWN → AUDITED after an audit confirms
-                    # the same figures).
-                    prev_audit = previous["audit_status"]
-                    prev_pub = previous["published_at"]
-                    new_audit = meta.audit_status
-                    new_pub = (
-                        meta.published_at.isoformat()
-                        if meta.published_at is not None
-                        else None
-                    )
-                    if new_audit != prev_audit or new_pub != prev_pub:
-                        conn.execute(
-                            METADATA_UPDATE,
-                            {
-                                "filing_id": str(previous["filing_id"]),
-                                "audit_status": new_audit,
-                                "audit_opinion": meta.audit_opinion,
-                                "published_at": new_pub,
-                                "published_at_basis": meta.published_at_basis,
-                                "effective_available_at": meta.effective_available_at.isoformat(),
-                                "is_filed_late": meta.is_filed_late,
-                            },
-                        )
+                    _refresh_metadata(conn, previous, filing, receipt_sha256)
                     outcomes.append(
                         ArchiveOutcome(
                             str(previous["filing_id"]),

@@ -513,6 +513,27 @@ def test_xlsx_formula_without_cached_value_is_rejected(tmp_path: Path) -> None:
         next(FileAdapter(path, metadata(), source_provider="manual_audit").fetch())
 
 
+def test_xlsx_ignores_uncached_formula_outside_selected_columns(tmp_path: Path) -> None:
+    path = tmp_path / "formula_in_notes.xlsx"
+    book = import_module("openpyxl").Workbook()
+    sheet = book.active
+    sheet.append(["Filing title"])
+    sheet.append(["Amount", "Notes", "Code"])
+    sheet.append([100, "=SUM(A3:A3)", "001"])
+    book.save(path)
+    book.close()
+
+    adapter = FileAdapter(
+        path,
+        metadata(),
+        source_provider="manual_audit",
+        value_column="Amount",
+        metric_column="Code",
+        header_row=2,
+    )
+    assert next(adapter.fetch()).filings[0].metrics == {"001": 100}
+
+
 def test_xlsx_formula_with_cached_value_is_accepted(tmp_path: Path) -> None:
     """A formula cell that has a usable cached value should be ingested normally."""
     import zipfile
@@ -622,3 +643,99 @@ def test_unchanged_hash_updates_audit_metadata(archive: RawArchive) -> None:
     assert len(rows) == 1
     assert rows[0]["audit_status"] == "AUDITED"
     assert rows[0]["filing_id"] == initial.filing_id
+
+
+def test_unchanged_hash_merges_and_links_evidence_by_field(
+    archive: RawArchive, tmp_path: Path
+) -> None:
+    original = FIXTURES / "fpt_2025_balance_sheet_extract.json"
+    metrics = json.loads(original.read_bytes())
+    audit_copy = tmp_path / "audited.json"
+    audit_copy.write_text(json.dumps(metrics, separators=(",", ":")), encoding="utf-8")
+    opinion_copy = tmp_path / "opinion.json"
+    opinion_copy.write_text(json.dumps(metrics, indent=4), encoding="utf-8")
+    publication = date(2026, 4, 1)
+
+    filings = (
+        (original, metadata(published_at=publication)),
+        (audit_copy, metadata(audit_status="AUDITED", audit_opinion="UNMODIFIED")),
+        (
+            opinion_copy,
+            metadata(
+                audit_status="AUDITED",
+                audit_opinion="ADVERSE",
+                published_at=publication,
+            ),
+        ),
+        (original, metadata()),
+    )
+    snapshots = []
+    outcomes = []
+    for path, filing_metadata in filings:
+        adapter = FileAdapter(path, filing_metadata, source_provider="manual_audit")
+        (outcome,) = archive.store(next(adapter.fetch()))
+        (row,) = read_manifest(archive.state)
+        snapshots.append(dict(row))
+        outcomes.append(outcome)
+
+    initial, audited, revised_opinion, replay = snapshots
+    assert [item.status for item in outcomes] == ["ARCHIVED"] + [
+        "SKIPPED_UNCHANGED"
+    ] * 3
+    assert {item.filing_id for item in outcomes} == {initial["filing_id"]}
+    assert {row["revision_no"] for row in snapshots} == {1}
+    assert audited["audit_status"] == revised_opinion["audit_status"] == "AUDITED"
+    assert audited["audit_opinion"] == "UNMODIFIED"
+    assert revised_opinion["audit_opinion"] == "ADVERSE"
+    for snapshot in snapshots:
+        assert (
+            snapshot["published_at"]
+            == snapshot["effective_available_at"]
+            == publication.isoformat()
+        )
+        assert snapshot["published_at_basis"] == "EXACT_FILING"
+        assert snapshot["is_filed_late"] == 1
+        for key in ("raw_archive_path", "payload_file_sha256", "fetched_at"):
+            assert snapshot[key] == initial[key]
+    assert replay == revised_opinion
+
+    providers = json.loads(replay["provider_attrs_json"])
+    assert providers["filename"] == original.name
+    assert set(providers["metadata_evidence"]) == {"audit_status", "audit_opinion"}
+    for field, value, path in (
+        ("audit_status", "AUDITED", audit_copy),
+        ("audit_opinion", "ADVERSE", opinion_copy),
+    ):
+        reference = providers["metadata_evidence"][field]
+        digest = reference["receipt_sha256"]
+        receipt_bytes = (archive.root / "provenance" / f"{digest}.json").read_bytes()
+        assert hashlib.sha256(receipt_bytes).hexdigest() == digest
+        receipt = json.loads(receipt_bytes)
+        assert reference["raw_record_locator"] is None
+        assert receipt["filing_metadata"][0][field] == value
+        assert (
+            receipt["payload_file_sha256"]
+            == hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+        assert (
+            archive.root / receipt["raw_archive_path"]
+        ).read_bytes() == path.read_bytes()
+
+
+def test_unchanged_hash_recomputes_lateness_from_merged_metadata(
+    archive: RawArchive,
+) -> None:
+    original = FIXTURES / "fpt_2025_balance_sheet_extract.json"
+    publication = date(2026, 2, 5)
+    for filing in (
+        metadata(4, published_at=publication),
+        metadata(4, audit_status="REVIEWED"),
+    ):
+        adapter = FileAdapter(original, filing, source_provider="manual_audit")
+        archive.store(next(adapter.fetch()))
+    (row,) = read_manifest(archive.state)
+    assert (
+        row["published_at"] == row["effective_available_at"] == publication.isoformat()
+    )
+    assert row["published_at_basis"] == "EXACT_FILING"
+    assert row["is_filed_late"] == 0

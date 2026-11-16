@@ -149,15 +149,17 @@ class FileAdapter(FinancialStatementProvider):
         else:
             yield from self._parquet_pairs(content)
 
+    def _column_indexes(self, header: Sequence[object]) -> tuple[int, int]:
+        columns = (self.metric_column, self.value_column)
+        if any(header.count(name) != 1 for name in columns):
+            raise ContractViolationError("Missing or duplicate raw metric columns.")
+        return header.index(self.metric_column), header.index(self.value_column)
+
     def _table_pairs(
         self, rows: Iterable[Sequence[object]]
     ) -> Iterator[tuple[object, object]]:
         rows = iter(rows)
-        header = next(rows, ())
-        columns = (self.metric_column, self.value_column)
-        if any(header.count(name) != 1 for name in columns):
-            raise ContractViolationError("Missing or duplicate raw metric columns.")
-        code_index, value_index = (header.index(name) for name in columns)
+        code_index, value_index = self._column_indexes(next(rows, ()))
         for row in rows:
             if all(cell is None or cell == "" for cell in row):
                 continue
@@ -198,6 +200,7 @@ class FileAdapter(FinancialStatementProvider):
                 values_only=True,
             )
             header_tuple = next(header_iter, ())
+            column_indexes = self._column_indexes(header_tuple)
             header_width = len(header_tuple)
 
             # Limit columns to the parsed header width and pad trailing empty
@@ -228,13 +231,11 @@ class FileAdapter(FinancialStatementProvider):
                     "Row count mismatch between data and formula views of the XLSX."
                 )
 
-            # Inspect formula cells: reject formulas that lack usable cached values
-            # while distinguishing them from genuinely blank cells.
+            # Check caches only for cells that contribute a raw metric.
             for row_idx in range(1, len(data_rows)):
                 d_row = data_rows[row_idx]
                 f_row = formula_rows[row_idx]
-                col_limit = min(len(d_row), len(f_row), header_width)
-                for col_idx in range(col_limit):
+                for col_idx in column_indexes:
                     formula_val = f_row[col_idx]
                     data_val = d_row[col_idx]
                     if (
