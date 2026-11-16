@@ -82,6 +82,39 @@ FINANCIAL_FACTS_KEY = (
     "filing_id",
 )
 OPTIONAL_FINANCIAL_FACT_COLUMNS = frozenset({"ttm_value", "computation_note"})
+ALLOWED_VALUES: dict[str, frozenset[str]] = {
+    "statement_scope": frozenset({"CONSOLIDATED", "SEPARATE", "UNKNOWN"}),
+    "period_type": frozenset({"QUARTER", "SEMI_ANNUAL", "ANNUAL"}),
+    "taxonomy_version": frozenset({"VAS_TT200_2014", "VAS_TT99_2025"}),
+    "published_at_basis": frozenset(
+        {"EXACT_FILING", "STATUTORY_LAG", "UNKNOWN", "LATEST_INPUT_AVAILABILITY"}
+    ),
+    "revision_reason": frozenset(
+        {"ORIGINAL", "AUDITED_UPDATE", "CORRECTION", "RESTATED_REGIME_CHANGE"}
+    ),
+    "derivation_method": frozenset(
+        {
+            "REPORTED_DIRECTLY",
+            "DERIVED_YTD_DIFF",
+            "DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX",
+        }
+    ),
+    "audit_status": frozenset({"UNAUDITED", "REVIEWED", "AUDITED", "UNKNOWN"}),
+    "audit_opinion": frozenset(
+        {
+            "UNMODIFIED",
+            "EXCEPT_FOR",
+            "ADVERSE",
+            "DISCLAIMER",
+            "NOT_APPLICABLE",
+            "UNKNOWN",
+        }
+    ),
+}
+ISSUER_ALLOWED_VALUES: dict[str, frozenset[str]] = {
+    "exchange": frozenset({"HOSE", "HNX", "UPCOM", "DELISTED"}),
+    "accounting_regime": frozenset({"CORPORATE", "BANK", "SECURITIES", "INSURANCE"}),
+}
 NON_NULL_FINANCIAL_FACT_COLUMNS = frozenset(
     name
     for name in FINANCIAL_FACTS_SCHEMA
@@ -127,6 +160,7 @@ def validate_required_columns(
             raise ContractViolationError(
                 "Financial facts contain duplicate composite business keys."
             )
+        _validate_allowed_values(frame, ALLOWED_VALUES)
     elif schema is ISSUERS_SCHEMA:
         null_columns = [
             name
@@ -145,6 +179,7 @@ def validate_required_columns(
                 + ", ".join(null_columns)
                 + "."
             )
+        _validate_allowed_values(frame, ISSUER_ALLOWED_VALUES)
 
 
 def canonicalize_financial_facts(frame: pl.DataFrame) -> pl.DataFrame:
@@ -170,8 +205,32 @@ def canonicalize_financial_facts(frame: pl.DataFrame) -> pl.DataFrame:
         raise ContractViolationError(
             "Financial facts contain values that cannot be cast to the storage schema."
         ) from exc
+    for name in ("value", "ttm_value"):
+        if canonical.select(
+            (pl.col(name).is_not_null() & ~pl.col(name).is_finite()).any()
+        ).item():
+            raise ContractViolationError(
+                f"Financial facts contain a non-finite {name} value."
+            )
     validate_required_columns(canonical)
     return canonical
+
+
+def _validate_allowed_values(
+    frame: pl.DataFrame, allowed_values: Mapping[str, frozenset[str]]
+) -> None:
+    invalid: list[str] = []
+    for name, allowed in allowed_values.items():
+        values = frame.get_column(name).drop_nulls().unique().to_list()
+        invalid_values = [value for value in values if value not in allowed]
+        if invalid_values:
+            invalid.append(f"{name}={invalid_values!r}")
+    if invalid:
+        raise ContractViolationError(
+            "Storage table contains invalid categorical values: "
+            + ", ".join(invalid)
+            + "."
+        )
 
 
 def canonicalize_table(

@@ -1,6 +1,6 @@
 from datetime import date
 from pathlib import Path
-from threading import Event, Thread
+from threading import Barrier, Event, Thread
 
 import polars as pl
 import pytest
@@ -25,7 +25,7 @@ def _facts() -> pl.DataFrame:
             "IS_NET_INCOME",
             "IS_NET_REVENUE",
         ],
-        "taxonomy_version": ["TT200"] * 4,
+        "taxonomy_version": ["VAS_TT200_2014"] * 4,
         "revision_no": [1, 2, 1, 1],
         "filing_id": [
             "filing-original",
@@ -41,7 +41,7 @@ def _facts() -> pl.DataFrame:
             "EXACT_FILING",
             "EXACT_FILING",
             "EXACT_FILING",
-            "PROVIDER_ESTIMATE",
+            "STATUTORY_LAG",
         ],
         "effective_available_at": [
             date(2026, 1, 25),
@@ -52,7 +52,7 @@ def _facts() -> pl.DataFrame:
         "revision_reason": ["ORIGINAL", "AUDITED_UPDATE", "ORIGINAL", "ORIGINAL"],
         "derivation_method": ["REPORTED_DIRECTLY"] * 4,
         "audit_status": ["UNAUDITED", "AUDITED", "UNAUDITED", "UNAUDITED"],
-        "audit_opinion": ["NONE", "UNQUALIFIED", "NONE", "NONE"],
+        "audit_opinion": ["UNKNOWN", "UNMODIFIED", "UNKNOWN", "UNKNOWN"],
         "value": [
             100_000_000_000.0,
             80_000_000_000.0,
@@ -199,6 +199,22 @@ def test_storage_contract_rejects_duplicates_cast_failures_and_partial_snapshots
     with pytest.raises(ContractViolationError):
         canonicalize_financial_facts(missing_availability)
 
+    non_finite = (
+        _facts()
+        .head(1)
+        .with_columns(
+            pl.lit(float("nan")).alias("value"), pl.lit(float("inf")).alias("ttm_value")
+        )
+    )
+    with pytest.raises(ContractViolationError):
+        canonicalize_financial_facts(non_finite)
+
+    invalid_enum = (
+        _facts().head(1).with_columns(pl.lit("INVALID_SCOPE").alias("statement_scope"))
+    )
+    with pytest.raises(ContractViolationError):
+        canonicalize_financial_facts(invalid_enum)
+
     invalid_path = tmp_path / "invalid.parquet"
     pl.DataFrame({"value": [1.0]}).write_parquet(invalid_path)
     publisher = SnapshotPublisher(tmp_path / "snapshots")
@@ -254,6 +270,33 @@ def test_gc_uses_state_store_and_rejects_failed_promotion(tmp_path: Path) -> Non
             {"latest_facts.parquet": _facts().head(1)},
             run_id=failed_run,
         )
+
+
+def test_state_store_serializes_concurrent_snapshot_promotion(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "metadata" / "state.sqlite")
+    store.initialize()
+    store.start_run("run", "manual", {}, None)
+    barrier = Barrier(2)
+    errors: list[BaseException] = []
+
+    def promote(snapshot_id: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            store.publish_snapshot("run", snapshot_id)
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = Thread(target=promote, args=("snap_a",))
+    second = Thread(target=promote, args=("snap_b",))
+    first.start()
+    second.start()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert store.active_snapshot() is not None
 
 
 def test_repository_discovery_ignores_staging_and_uses_active_snapshot(

@@ -10,6 +10,7 @@ from typing import cast
 
 import duckdb
 import polars as pl
+from filelock import FileLock
 
 from finintel.exceptions import ContractViolationError
 
@@ -38,7 +39,9 @@ class ParquetRepository:
 
     @classmethod
     def _discover_facts_file(cls, root: Path) -> Path:
-        direct = [root / "financial_facts.parquet", root / "latest_facts.parquet"]
+        direct = [root / "financial_facts.parquet"]
+        if root.name.startswith("snap_"):
+            direct.append(root / "latest_facts.parquet")
         for candidate in direct:
             if candidate.is_file():
                 return candidate
@@ -52,27 +55,28 @@ class ParquetRepository:
         ):
             snapshot_root = root / "data" / "published" / "snapshots"
         if snapshot_root.is_dir():
-            snapshot_dirs = sorted(
-                (
-                    path
-                    for path in snapshot_root.iterdir()
-                    if path.is_dir() and path.name.startswith("snap_")
-                ),
-                key=lambda path: (path.stat().st_mtime_ns, path.name),
-                reverse=True,
-            )
-            active_id = cls._active_snapshot_id(snapshot_root)
-            if active_id is not None:
-                snapshot_dirs.sort(
-                    key=lambda path: (
-                        path.name != active_id,
-                        -path.stat().st_mtime_ns,
-                        path.name,
+            lock_path = snapshot_root.parent / f".{snapshot_root.name}.publish.lock"
+            with FileLock(str(lock_path)):
+                snapshot_dirs = sorted(
+                    (
+                        path
+                        for path in snapshot_root.iterdir()
+                        if path.is_dir() and path.name.startswith("snap_")
                     ),
+                    key=lambda path: (path.stat().st_mtime_ns, path.name),
+                    reverse=True,
                 )
-            for snapshot in snapshot_dirs:
-                for filename in ("financial_facts.parquet", "latest_facts.parquet"):
-                    candidate = snapshot / filename
+                active_id = cls._active_snapshot_id(snapshot_root)
+                if active_id is not None:
+                    snapshot_dirs.sort(
+                        key=lambda path: (
+                            path.name != active_id,
+                            -path.stat().st_mtime_ns,
+                            path.name,
+                        ),
+                    )
+                for snapshot in snapshot_dirs:
+                    candidate = snapshot / "financial_facts.parquet"
                     if candidate.is_file():
                         return candidate
 

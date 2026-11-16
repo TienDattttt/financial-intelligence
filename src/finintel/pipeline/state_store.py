@@ -146,6 +146,7 @@ class StateStore:
 
         now = _now()
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT status FROM pipeline_runs WHERE run_id = ?", (run_id,)
             ).fetchone()
