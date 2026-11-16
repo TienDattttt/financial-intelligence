@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     trigger_mode TEXT NOT NULL,
     cli_args_json TEXT NOT NULL,
     git_commit_sha TEXT,
-    published_snapshot_id TEXT
+    published_snapshot_id TEXT,
+    snapshot_publish_order INTEGER
 );
 CREATE TABLE IF NOT EXISTS pipeline_steps (
     step_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,6 +83,27 @@ class StateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as conn:
             conn.executescript(SCHEMA)
+            conn.execute("BEGIN IMMEDIATE")
+            columns = conn.execute("PRAGMA table_info(pipeline_runs)")
+            if not any(
+                column["name"] == "snapshot_publish_order" for column in columns
+            ):
+                conn.execute(
+                    "ALTER TABLE pipeline_runs ADD COLUMN snapshot_publish_order INTEGER"
+                )
+                conn.execute(
+                    """WITH ranked AS (
+                           SELECT r.run_id, COALESCE(a.snapshot_id, r.published_snapshot_id) AS snapshot_id,
+                                  ROW_NUMBER() OVER (
+                                      ORDER BY (a.run_id IS NOT NULL), r.finished_at, r.rowid
+                                  ) AS publish_order
+                           FROM pipeline_runs AS r LEFT JOIN active_snapshot AS a ON a.run_id = r.run_id
+                           WHERE r.published_snapshot_id IS NOT NULL OR a.snapshot_id IS NOT NULL
+                       )
+                       UPDATE pipeline_runs SET published_snapshot_id = ranked.snapshot_id,
+                           snapshot_publish_order = ranked.publish_order
+                       FROM ranked WHERE pipeline_runs.run_id = ranked.run_id"""
+                )
 
     def recover_interrupted_runs(self) -> None:
         """Close abandoned RUNNING records while holding the pipeline file lock."""
@@ -127,19 +149,84 @@ class StateStore:
             snapshot_id = None
         now = _now()
         with self.connection() as conn:
+            # Publication can commit before GC fails and the runner marks the run failed.
             conn.execute(
-                """UPDATE pipeline_runs SET status = ?, finished_at = ?, published_snapshot_id = ?
-                   WHERE run_id = ?""",
-                (status, now, snapshot_id, run_id),
+                "UPDATE pipeline_runs SET status = ?, finished_at = ? WHERE run_id = ?",
+                (status, now, run_id),
             )
             if snapshot_id is not None:
-                conn.execute(
-                    """INSERT INTO active_snapshot (singleton, snapshot_id, run_id, published_at)
-                       VALUES (1, ?, ?, ?)
-                       ON CONFLICT(singleton) DO UPDATE SET snapshot_id = excluded.snapshot_id,
-                       run_id = excluded.run_id, published_at = excluded.published_at""",
-                    (snapshot_id, run_id, now),
+                self._set_active_snapshot(conn, snapshot_id, run_id, now)
+
+    def publish_snapshot(self, run_id: str, snapshot_id: str) -> None:
+        """Atomically mark a completed run and its snapshot as active."""
+
+        now = _now()
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT status FROM pipeline_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Unknown pipeline run: {run_id}")
+            if row["status"] != "RUNNING":
+                raise ValueError(
+                    f"Pipeline run {run_id} is not publishable from status {row['status']}."
                 )
+            conn.execute(
+                "UPDATE pipeline_runs SET status = 'SUCCEEDED', finished_at = ? WHERE run_id = ?",
+                (now, run_id),
+            )
+            self._set_active_snapshot(conn, snapshot_id, run_id, now)
+
+    @staticmethod
+    def _set_active_snapshot(
+        conn: sqlite3.Connection, snapshot_id: str, run_id: str, published_at: str
+    ) -> None:
+        # Record the previous active promotion before replacing its pointer.
+        conn.execute(
+            """UPDATE pipeline_runs
+               SET published_snapshot_id = COALESCE(published_snapshot_id, (
+                   SELECT snapshot_id FROM active_snapshot WHERE singleton = 1
+               )), snapshot_publish_order = COALESCE(snapshot_publish_order, (
+                   SELECT COALESCE(MAX(snapshot_publish_order), 0) + 1 FROM pipeline_runs
+               ))
+               WHERE run_id = (SELECT run_id FROM active_snapshot WHERE singleton = 1)
+                 AND (published_snapshot_id IS NULL OR snapshot_publish_order IS NULL)"""
+        )
+        previous = conn.execute(
+            "SELECT published_snapshot_id FROM pipeline_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if previous is not None and previous["published_snapshot_id"] == snapshot_id:
+            return  # Repeated finalization cannot reactivate an older publication.
+        conn.execute(
+            """UPDATE pipeline_runs SET published_snapshot_id = ?, snapshot_publish_order = (
+                   SELECT COALESCE(MAX(snapshot_publish_order), 0) + 1 FROM pipeline_runs
+               )
+               WHERE run_id = ?""",
+            (snapshot_id, run_id),
+        )
+        conn.execute(
+            """INSERT INTO active_snapshot (singleton, snapshot_id, run_id, published_at)
+               VALUES (1, ?, ?, ?)
+               ON CONFLICT(singleton) DO UPDATE SET snapshot_id = excluded.snapshot_id,
+               run_id = excluded.run_id, published_at = excluded.published_at""",
+            (snapshot_id, run_id, published_at),
+        )
+
+    def published_snapshot_ids(self) -> list[str]:
+        """Return promoted snapshot IDs, newest first."""
+
+        with self.connection() as conn:
+            # Legacy rows without a recorded order fall back to their stored timestamps.
+            rows = conn.execute(
+                """SELECT COALESCE(a.snapshot_id, r.published_snapshot_id)
+                   FROM pipeline_runs AS r LEFT JOIN active_snapshot AS a ON a.run_id = r.run_id
+                   WHERE r.published_snapshot_id IS NOT NULL OR a.snapshot_id IS NOT NULL
+                   ORDER BY (a.run_id IS NOT NULL) DESC, r.snapshot_publish_order DESC,
+                            r.finished_at DESC, r.rowid DESC"""
+            ).fetchall()
+        return list(dict.fromkeys(str(row[0]) for row in rows))
 
     def start_step(self, run_id: str, stage: str) -> int:
         with self.connection() as conn:
