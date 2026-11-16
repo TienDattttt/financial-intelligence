@@ -137,8 +137,7 @@ class StateStore:
                     """INSERT INTO active_snapshot (singleton, snapshot_id, run_id, published_at)
                        VALUES (1, ?, ?, ?)
                        ON CONFLICT(singleton) DO UPDATE SET snapshot_id = excluded.snapshot_id,
-                       run_id = excluded.run_id, published_at = excluded.published_at
-                       WHERE active_snapshot.snapshot_id <> excluded.snapshot_id""",
+                       run_id = excluded.run_id, published_at = excluded.published_at""",
                     (snapshot_id, run_id, now),
                 )
 

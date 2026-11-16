@@ -123,7 +123,7 @@ def test_expired_key_blocks_online_but_allows_file_source(
     monkeypatch.delenv("VNSTOCK_FHSC_KEY_CREATED_AT", raising=False)
     store = StateStore(tmp_path / "state.sqlite")
     store.initialize()
-    now = datetime(2026, 11, 16, 9, tzinfo=UTC)
+    now = datetime.now(UTC)
     secret = "fake-key-used-by-test"
     store.register_fhsc_key(secret, now - timedelta(days=31))
     record = store.get_key("fhsc")
@@ -136,6 +136,11 @@ def test_expired_key_blocks_online_but_allows_file_source(
     with pytest.raises(SourceEntitlementError, match="(?i)rotate"):
         health_check(store, online=True, now=now, connectivity_check=unreachable)
     health_check(store, online=False, now=now, connectivity_check=unreachable)
+    result = Runner(
+        store, {Stage.INGEST: lambda _: StepOutcome()}, connectivity_check=unreachable
+    ).run(RunRequest(source="file", stage=Stage.INGEST))
+    assert result.run_id is not None and result.status == RunStatus.SUCCEEDED
+    assert store.list_steps(result.run_id)[0]["status"] == "SUCCEEDED"
 
 
 @pytest.mark.parametrize(
@@ -144,12 +149,17 @@ def test_expired_key_blocks_online_but_allows_file_source(
         (200, None),
         (403, SourceEntitlementError),
         (429, RateLimitOrCircuitOpenError),
+        (None, TransientSourceError),
+        (502, TransientSourceError),
+        (503, TransientSourceError),
+        (504, TransientSourceError),
+        (302, ContractViolationError),
     ],
 )
 def test_fhsc_health_uses_the_locked_sdk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    http_status: int,
+    http_status: int | None,
     expected_error: type[Exception] | None,
 ) -> None:
     monkeypatch.setenv("FHSC_API_KEY", "test-fhsc-key")
@@ -162,6 +172,8 @@ def test_fhsc_health_uses_the_locked_sdk(
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if http_status is None:
+            raise httpx.ReadTimeout("test timeout", request=request)
         return httpx.Response(http_status, json={"data": []})
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
@@ -189,16 +201,44 @@ def test_fhsc_health_reads_sdk_rotation_date_before_checking_the_connection(
     store.initialize()
     source_class = type(import_module("vnstock_oapi").source("fhsc"))
 
-    def unexpected_check(source: object) -> dict[str, object]:
+    def unexpected_check(source: object, *args: object, **kwargs: object) -> None:
         pytest.fail("The connector must not check the connection after its key expires")
 
     monkeypatch.setattr(
         source_class, "key_rotation", lambda _: {"due_on": "2026-11-16"}
     )
     monkeypatch.setattr(source_class, "check", unexpected_check)
+    monkeypatch.setattr(source_class, "raw", unexpected_check)
 
     with pytest.raises(SourceEntitlementError, match="(?i)rotate"):
         health_check(store, online=True, now=datetime(2026, 11, 16, tzinfo=UTC))
+
+
+def test_runner_retries_transient_fhsc_preflight_before_ingest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("VNSTOCK_FHSC_KEY_CREATED_AT", raising=False)
+    calls: list[str] = []
+    waits: list[float] = []
+
+    def check_connection() -> None:
+        calls.append("preflight")
+        if len(calls) == 1:
+            raise TransientSourceError()
+
+    def ingest(context: StepContext) -> StepOutcome:
+        calls.append("ingest")
+        return StepOutcome()
+
+    result = Runner(
+        StateStore(tmp_path / "state.sqlite"),
+        {Stage.INGEST: ingest},
+        connectivity_check=check_connection,
+        retry_sleep=waits.append,
+    ).run(RunRequest(source="fhsc", stage=Stage.INGEST))
+    assert result.status == RunStatus.SUCCEEDED
+    assert calls == ["preflight", "preflight", "ingest"]
+    assert len(waits) == 1
 
 
 def test_expiring_environment_key_warns_before_online_check(
@@ -344,6 +384,72 @@ def test_partial_ingest_with_discovered_tickers_only_forwards_archived_scope(
     )
     assert result.status == RunStatus.PARTIAL_SUCCESS
     assert remaining == [("FPT",)] * (len(Stage) - 1)
+
+
+def test_successful_batch_ingest_forwards_discovered_tickers(tmp_path: Path) -> None:
+    def ingest(context: StepContext) -> StepOutcome:
+        assert context.tickers == ()
+        assert context.record_archived is not None
+        for ticker in ("fpt", "VNM", "FPT"):
+            context.record_archived(ticker)
+        return StepOutcome()
+
+    remaining: list[tuple[str, ...]] = []
+
+    def stage(context: StepContext) -> StepOutcome:
+        remaining.append(context.tickers)
+        return StepOutcome(
+            snapshot_id="new" if context.stage == Stage.PUBLISH else None
+        )
+
+    handlers = dict.fromkeys(Stage, stage)
+    handlers[Stage.INGEST] = ingest
+    result = Runner(StateStore(tmp_path / "state.sqlite"), handlers).run(
+        RunRequest(source="file")
+    )
+    assert result.status == RunStatus.SUCCEEDED
+    assert remaining == [("FPT", "VNM")] * (len(Stage) - 1)
+
+
+def test_runner_enforces_default_disk_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda _: SimpleNamespace(free=100 * 1024**2 - 1)
+    )
+    store = StateStore(tmp_path / "state.sqlite")
+
+    def unexpected(context: StepContext) -> StepOutcome:
+        pytest.fail("The handler must not run when disk space is below the default")
+
+    run = Runner(store, {Stage.INGEST: unexpected}).run(
+        RunRequest(source="file", stage=Stage.INGEST)
+    )
+    assert run.status == RunStatus.FAILED
+    assert "Free disk space is below the configured minimum." in caplog.text
+    with pytest.raises(health.InsufficientDiskSpaceError):
+        health_check(store, online=False)
+
+
+def test_republishing_same_snapshot_refreshes_active_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite")
+    store.initialize()
+    store.start_run("first", "CLI_MANUAL", {}, None)
+    store.start_run("second", "CLI_MANUAL", {}, None)
+    timestamps = iter(("2026-11-16T00:00:00+00:00", "2026-11-16T01:00:00+00:00"))
+    monkeypatch.setattr("finintel.pipeline.state_store._now", lambda: next(timestamps))
+
+    store.finish_run("first", RunStatus.SUCCEEDED, "snapshot")
+    store.finish_run("second", RunStatus.SUCCEEDED, "snapshot")
+
+    assert store.active_snapshot() == {
+        "singleton": 1,
+        "snapshot_id": "snapshot",
+        "run_id": "second",
+        "published_at": "2026-11-16T01:00:00+00:00",
+    }
 
 
 def test_sqlite_uses_wal_and_recovers_an_interrupted_run(tmp_path: Path) -> None:

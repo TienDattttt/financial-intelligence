@@ -20,7 +20,11 @@ from finintel.exceptions import (
     SourceEntitlementError,
     TransientSourceError,
 )
-from finintel.pipeline.health import InsufficientDiskSpaceError, health_check
+from finintel.pipeline.health import (
+    DEFAULT_MIN_FREE_BYTES,
+    InsufficientDiskSpaceError,
+    health_check,
+)
 from finintel.pipeline.retry_policy import run_with_retry
 from finintel.pipeline.state_store import StateStore
 
@@ -128,6 +132,7 @@ class RunResult:
 
     @property
     def exit_code(self) -> int:
+        # Layer 0 treats lock contention as a successful skip.
         return int(self.status in {RunStatus.FAILED, RunStatus.ABORTED_CIRCUIT_OPEN})
 
 
@@ -169,7 +174,7 @@ class Runner:
         store: StateStore,
         handlers: Mapping[Stage, Handler],
         *,
-        min_free_bytes: int = 0,
+        min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
         connectivity_check: Callable[[], None] | None = None,
         retry_sleep: Callable[[float], None] = sleep,
         git_commit_sha: str | None = None,
@@ -229,12 +234,16 @@ class Runner:
                 )
                 status = RunStatus.FAILED
             else:
-                health_check(
-                    self.store,
-                    online=request.source == "fhsc" and Stage.INGEST in stages,
-                    min_free_bytes=self.min_free_bytes,
-                    connectivity_check=self.connectivity_check,
-                    run_id=run_id,
+                run_with_retry(
+                    lambda: health_check(
+                        self.store,
+                        online=request.source == "fhsc" and Stage.INGEST in stages,
+                        min_free_bytes=self.min_free_bytes,
+                        connectivity_check=self.connectivity_check,
+                        run_id=run_id,
+                    ),
+                    lambda _: None,
+                    wait=self.retry_sleep,
                 )
                 active = self.store.active_snapshot()
                 previous_snapshot = (
@@ -310,6 +319,8 @@ class Runner:
                 raise
             if outcome.status == StepStatus.QUARANTINED:
                 return RunStatus.PARTIAL_SUCCESS, None
+            if stage == Stage.INGEST and archived:
+                tickers = tuple(archived)
             if stage == Stage.PUBLISH:
                 snapshot_id = outcome.snapshot_id
         return status, snapshot_id

@@ -35,7 +35,7 @@ class InsufficientDiskSpaceError(FinIntelError):
 
 class FhscProbe(Protocol):
     def status(self) -> dict[str, object]: ...
-    def check(self) -> dict[str, object]: ...
+    def raw(self, operation: str, *, exchange: str) -> object: ...
 
 
 def _parse_stamp(value: object) -> datetime:
@@ -100,31 +100,36 @@ def _load_fhsc_probe() -> FhscProbe:
 
 
 def _check_connection(probe: FhscProbe) -> None:
-    result = probe.check()
-    if result.get("ok") is True:
-        return
-    failure = str(result.get("error", "")).partition(":")[0]
-    if failure == "RateLimitError":
-        raise RateLimitOrCircuitOpenError("FHSC is throttling the health check.")
-    if failure in {
-        "CredentialError",
-        "AuthError",
-        "SessionExpiredError",
-        "OtpRequiredError",
-    }:
-        raise SourceEntitlementError(
-            "FHSC credentials were rejected. Check or rotate the key."
-        )
-    if failure == "NetworkError":
-        raise TransientSourceError("FHSC is temporarily unreachable.")
-    raise ContractViolationError("FHSC health check did not return success.")
+    errors = import_module("vnstock_oapi.errors")
+    try:
+        # Use the same lightweight operation as Source.check(), which drops the
+        # structured HTTP status when it converts a failure to text.
+        probe.raw("trading/market/session", exchange="HOSE")
+    except errors.OapiError as error:
+        status = getattr(error, "http_status", None)
+        if status == 429 or isinstance(error, errors.RateLimitError):
+            raise RateLimitOrCircuitOpenError(
+                "FHSC is throttling the health check."
+            ) from None
+        if status in (401, 403) or isinstance(
+            error,
+            (errors.CredentialError, errors.AuthError),
+        ):
+            raise SourceEntitlementError(
+                "FHSC credentials were rejected. Check or rotate the key."
+            ) from None
+        if status in (502, 503, 504) or isinstance(error, errors.NetworkError):
+            raise TransientSourceError("FHSC is temporarily unreachable.") from None
+        raise ContractViolationError(
+            "FHSC health check did not return success."
+        ) from None
 
 
 def health_check(
     store: StateStore,
     *,
     online: bool,
-    min_free_bytes: int = 0,
+    min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
     now: datetime | None = None,
     run_id: str | None = None,
     connectivity_check: Callable[[], None] | None = None,
