@@ -162,20 +162,26 @@ def _refresh_metadata(
     if not isinstance(evidence, dict):
         evidence = {}
     changes: dict[str, str] = {}
+    refreshed: dict[str, str] = {}
     incoming = datetime.fromisoformat(fetched_at)
     for name, value in _provided_evidence(filing.metadata).items():
-        if value == previous[name]:
-            continue
         reference = evidence.get(name)
         prior = reference.get("fetched_at") if isinstance(reference, dict) else None
         if not isinstance(prior, str):
             # Values captured before field-level evidence existed got their
             # timestamp from the revision itself.
             prior = previous["fetched_at"]
-        if incoming < datetime.fromisoformat(prior):
+        prior_at = datetime.fromisoformat(prior)
+        if incoming < prior_at:
+            continue
+        if value == previous[name]:
+            # A newer receipt may confirm an unchanged value; move the field's
+            # freshness marker so an older replay still cannot replace it.
+            if incoming > prior_at:
+                refreshed[name] = value
             continue
         changes[name] = value
-    if not changes:
+    if not changes and not refreshed:
         return
 
     publication = changes.get("published_at", previous["published_at"])
@@ -193,7 +199,7 @@ def _refresh_metadata(
     # Keep the original raw payload and retrieval time for this revision.
     # Each changed field points to the receipt that supplied its current value.
     attrs["metadata_evidence"] = evidence
-    for name in changes:
+    for name in [*changes, *refreshed]:
         evidence[name] = {
             "receipt_sha256": receipt_sha256,
             "raw_record_locator": filing.locator,

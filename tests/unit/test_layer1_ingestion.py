@@ -649,9 +649,10 @@ def test_unchanged_hash_updates_audit_metadata(archive: RawArchive) -> None:
 def test_older_receipt_does_not_roll_back_metadata(archive: RawArchive) -> None:
     """A replayed older capture cannot overwrite newer filing evidence."""
     original = FIXTURES / "fpt_2025_balance_sheet_extract.json"
-    newer = datetime(2026, 2, 1, tzinfo=UTC)
-    older = datetime(2026, 1, 1, tzinfo=UTC)
-    latest = datetime(2026, 3, 1, tzinfo=UTC)
+    february = datetime(2026, 2, 1, tzinfo=UTC)
+    march = datetime(2026, 3, 1, tzinfo=UTC)
+    april = datetime(2026, 4, 1, tzinfo=UTC)
+    may = datetime(2026, 5, 1, tzinfo=UTC)
 
     def captured(
         filing_metadata: FilingMetadata, fetched_at: datetime
@@ -661,20 +662,30 @@ def test_older_receipt_does_not_roll_back_metadata(archive: RawArchive) -> None:
         ).fetch()
         return replace(bundle, payload=replace(bundle.payload, fetched_at=fetched_at))
 
-    (initial,) = archive.store(captured(metadata(audit_status="AUDITED"), newer))
+    (initial,) = archive.store(captured(metadata(audit_status="AUDITED"), february))
     assert initial.status == "ARCHIVED"
 
-    (stale,) = archive.store(captured(metadata(audit_status="UNAUDITED"), older))
+    # A newer receipt confirming the unchanged value must advance its freshness
+    # marker, otherwise the March replay below would still be accepted.
+    (confirmed,) = archive.store(captured(metadata(audit_status="AUDITED"), april))
+    assert confirmed.status == "SKIPPED_UNCHANGED"
+    (row,) = read_manifest(archive.state)
+    evidence = json.loads(row["provider_attrs_json"])["metadata_evidence"]
+    assert evidence["audit_status"]["fetched_at"] == april.isoformat()
+
+    (stale,) = archive.store(captured(metadata(audit_status="UNAUDITED"), march))
     assert stale.status == "SKIPPED_UNCHANGED"
     (row,) = read_manifest(archive.state)
     assert row["audit_status"] == "AUDITED"
+    evidence = json.loads(row["provider_attrs_json"])["metadata_evidence"]
+    assert evidence["audit_status"]["fetched_at"] == april.isoformat()
 
-    (fresh,) = archive.store(captured(metadata(audit_status="UNAUDITED"), latest))
+    (fresh,) = archive.store(captured(metadata(audit_status="UNAUDITED"), may))
     assert fresh.status == "SKIPPED_UNCHANGED"
     (row,) = read_manifest(archive.state)
     assert row["audit_status"] == "UNAUDITED"
     evidence = json.loads(row["provider_attrs_json"])["metadata_evidence"]
-    assert evidence["audit_status"]["fetched_at"] == latest.isoformat()
+    assert evidence["audit_status"]["fetched_at"] == may.isoformat()
 
 
 def test_unchanged_hash_merges_and_links_evidence_by_field(
@@ -693,11 +704,7 @@ def test_unchanged_hash_merges_and_links_evidence_by_field(
         (audit_copy, metadata(audit_status="AUDITED", audit_opinion="UNMODIFIED")),
         (
             opinion_copy,
-            metadata(
-                audit_status="AUDITED",
-                audit_opinion="ADVERSE",
-                published_at=publication,
-            ),
+            metadata(audit_opinion="ADVERSE", published_at=publication),
         ),
         (original, metadata()),
     )
@@ -733,10 +740,15 @@ def test_unchanged_hash_merges_and_links_evidence_by_field(
 
     providers = json.loads(replay["provider_attrs_json"])
     assert providers["filename"] == original.name
-    assert set(providers["metadata_evidence"]) == {"audit_status", "audit_opinion"}
+    assert set(providers["metadata_evidence"]) == {
+        "audit_status",
+        "audit_opinion",
+        "published_at",
+    }
     for field, value, path in (
         ("audit_status", "AUDITED", audit_copy),
         ("audit_opinion", "ADVERSE", opinion_copy),
+        ("published_at", publication.isoformat(), opinion_copy),
     ):
         reference = providers["metadata_evidence"][field]
         digest = reference["receipt_sha256"]
