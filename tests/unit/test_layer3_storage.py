@@ -1,11 +1,21 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from threading import Barrier, Event, Thread
 
 import polars as pl
 import pytest
+from filelock import FileLock, Timeout
 
 from finintel.exceptions import ContractViolationError
+from finintel.pipeline.runner import (
+    Runner,
+    RunRequest,
+    RunStatus,
+    Stage,
+    StepContext,
+    StepOutcome,
+)
 from finintel.pipeline.state_store import StateStore
 from finintel.storage.repository import ParquetRepository
 from finintel.storage.schemas import canonicalize_financial_facts
@@ -104,76 +114,54 @@ def test_atomic_publish_and_garbage_collection(tmp_path: Path) -> None:
     assert not list(root.glob("_tmp_*"))
 
 
-def test_reader_can_read_while_publishing(tmp_path: Path) -> None:
-    facts = _facts()
-    source = tmp_path / "facts.parquet"
-    facts.write_parquet(source)
-    root = tmp_path / "snapshots"
+@pytest.mark.parametrize("explicit_file", [False, True])
+def test_reader_can_read_while_publishing(tmp_path: Path, explicit_file: bool) -> None:
+    facts = _facts().head(1)
+    root = tmp_path / "data" / "published" / "snapshots"
+    # The legacy project-root layout is used until the direct snapshot root exists.
+    (tmp_path / "published").mkdir()
     publisher = SnapshotPublisher(root)
-    publisher.publish("snap_1", {"latest_facts.parquet": facts})
-    repository = ParquetRepository(root / "snap_1" / "latest_facts.parquet")
-    publication_started = Event()
+    publisher.publish("snap_1", {"financial_facts.parquet": facts})
     query_started = Event()
-    query_in_progress = Event()
-    allow_read_complete = Event()
-    reader_finished = Event()
-    garbage_started = Event()
-    read_values: list[float] = []
-    read_errors: list[BaseException] = []
+    release_query = Event()
+    as_of = date(2026, 2, 15)
 
-    class CoordinatedPublisher(SnapshotPublisher):
-        def _write_table(
-            self, staging: Path, filename: str, table: pl.DataFrame | Path
-        ) -> None:
-            publication_started.set()
-            assert query_started.wait(timeout=5)
-            super()._write_table(staging, filename, table)
-
-        def _collect_garbage_unlocked(self) -> None:
-            garbage_started.set()
-            assert query_in_progress.wait(timeout=5)
-            allow_read_complete.set()
-            assert reader_finished.wait(timeout=5)
-            super()._collect_garbage_unlocked()
-
-    def read_worker() -> None:
-        try:
-            assert publication_started.wait(timeout=5)
+    class CoordinatedRepository(ParquetRepository):
+        def _query_facts(
+            self, path: Path, as_of_date: date, require_exact_filing_date: bool
+        ) -> pl.DataFrame:
             query_started.set()
-            query_in_progress.set()
-            result = (
-                repository.get_facts_as_of(date(2026, 2, 15))
-                .filter(pl.col("metric_id") == "IS_NET_INCOME")
-                .filter(pl.col("statement_scope") == "CONSOLIDATED")["value"]
-            )
-            assert allow_read_complete.wait(timeout=5)
-            read_values.extend(result.to_list())
-            reader_finished.set()
-        except BaseException as exc:
-            read_errors.append(exc)
+            assert release_query.wait(timeout=5)
+            return super()._query_facts(path, as_of_date, require_exact_filing_date)
 
-    reader = Thread(target=read_worker)
-    reader.start()
-    writer_errors: list[BaseException] = []
+    path = root / "snap_1" / "financial_facts.parquet" if explicit_file else tmp_path
+    repository = CoordinatedRepository(path)
 
-    def write_worker() -> None:
+    def publish_new_snapshots() -> None:
+        updated = facts.with_columns(pl.lit(1.0).alias("value"))
+        publisher.publish("snap_2", {"financial_facts.parquet": updated})
+        publisher.publish("snap_3", {"financial_facts.parquet": updated})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        read = executor.submit(repository.get_facts_as_of, as_of)
         try:
-            CoordinatedPublisher(root).publish(
-                "snap_2", {"latest_facts.parquet": source}
-            )
-        except BaseException as exc:
-            writer_errors.append(exc)
-
-    writer = Thread(target=write_worker)
-    writer.start()
-    writer.join(timeout=5)
-    reader.join(timeout=5)
-    assert not writer.is_alive()
-    assert not reader.is_alive()
-    assert garbage_started.is_set()
-    assert not writer_errors
-    assert not read_errors
-    assert read_values == [100_000_000_000.0]
+            assert query_started.wait(timeout=5)
+            with (
+                pytest.raises(Timeout),
+                FileLock(root.parent / ".snapshots.publish.lock", timeout=0),
+            ):
+                pytest.fail("The reader must hold the publisher and GC lock")
+            publish = executor.submit(publish_new_snapshots)
+        finally:
+            release_query.set()
+        assert read.result(timeout=5)["value"].to_list() == [100_000_000_000.0]
+        publish.result(timeout=5)
+    assert not (root / "snap_1").exists()
+    if explicit_file:
+        with pytest.raises(FileNotFoundError):
+            repository.get_facts_as_of(as_of)
+    else:
+        assert repository.get_facts_as_of(as_of)["value"].to_list() == [1.0]
 
 
 def test_storage_contract_rejects_duplicates_cast_failures_and_partial_snapshots(
@@ -297,6 +285,77 @@ def test_state_store_serializes_concurrent_snapshot_promotion(tmp_path: Path) ->
     assert len(errors) == 1
     assert isinstance(errors[0], ValueError)
     assert store.active_snapshot() is not None
+
+
+def test_runner_preserves_snapshot_after_post_promotion_gc_failure(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    root = data_root / "published" / "snapshots"
+    store = StateStore(data_root / "metadata" / "state.sqlite")
+
+    class FailingPublisher(SnapshotPublisher):
+        def _collect_garbage_unlocked(self) -> None:
+            raise OSError("injected garbage collection failure")
+
+    publisher = FailingPublisher(root, state_store=store)
+    tables = {"financial_facts.parquet": _facts().head(1)}
+
+    def publish(context: StepContext) -> StepOutcome:
+        destination = publisher.publish("snap_committed", tables, run_id=context.run_id)
+        return StepOutcome(snapshot_id=destination.name)
+
+    result = Runner(store, {Stage.PUBLISH: publish}, min_free_bytes=0).run(
+        RunRequest(source="file", stage=Stage.PUBLISH)
+    )
+    assert result.status == RunStatus.FAILED
+    assert result.run_id is not None
+    run = store.get_run(result.run_id)
+    assert run is not None and run["status"] == RunStatus.FAILED
+    assert run["published_snapshot_id"] == "snap_committed"
+    assert store.published_snapshot_ids() == ["snap_committed"]
+    active = store.active_snapshot()
+    assert active is not None and active["snapshot_id"] == run["published_snapshot_id"]
+    assert active["run_id"] == result.run_id
+
+    healthy_publisher = SnapshotPublisher(root, state_store=store)
+    healthy_publisher.collect_garbage()
+    repository = ParquetRepository(data_root)
+    as_of = date(2026, 2, 15)
+    assert repository.get_facts_as_of(as_of)["value"].to_list() == [100_000_000_000.0]
+
+    store.start_run("next", "manual", {}, None)
+    healthy_publisher.publish(
+        "snap_next",
+        {
+            "financial_facts.parquet": _facts()
+            .head(1)
+            .with_columns(pl.lit(1.0).alias("value"))
+        },
+        run_id="next",
+    )
+    assert (root / "snap_committed" / "financial_facts.parquet").is_file()
+    assert repository.get_facts_as_of(as_of)["value"].to_list() == [1.0]
+
+
+def test_gc_protects_legacy_active_snapshot_with_missing_published_id(
+    tmp_path: Path,
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite")
+    store.initialize()
+    store.start_run("run", "manual", {}, None)
+    publisher = SnapshotPublisher(tmp_path / "snapshots", state_store=store)
+    published = publisher.publish(
+        "snap_committed", {"financial_facts.parquet": _facts().head(1)}, run_id="run"
+    )
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE pipeline_runs SET status = 'FAILED', published_snapshot_id = NULL WHERE run_id = 'run'"
+        )
+
+    publisher.collect_garbage()
+
+    assert (published / "financial_facts.parquet").is_file()
 
 
 def test_repository_discovery_ignores_staging_and_uses_active_snapshot(

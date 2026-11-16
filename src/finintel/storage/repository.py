@@ -3,24 +3,24 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager, nullcontext
 from datetime import date
 from pathlib import Path
 from typing import cast
 
 import duckdb
 import polars as pl
-from filelock import FileLock
 
 from finintel.exceptions import ContractViolationError
+from finintel.storage.snapshot_publisher import snapshot_lock
 
 
 class ParquetRepository:
     """Query Parquet files through a fresh in-memory DuckDB connection.
 
-    A repository never opens a persistent DuckDB database.  Each call gets an
-    independent in-memory connection, so readers do not contend with a
-    publisher replacing a completed snapshot directory.
+    Each call opens an independent in-memory connection. Snapshot reads hold
+    the publication lock until DuckDB has finished reading the selected file.
     """
 
     def __init__(
@@ -33,12 +33,52 @@ class ParquetRepository:
         selected = financial_facts_path or path or data_root
         if selected is None:
             raise ValueError("Provide a Parquet path or data_root.")
-        if selected.is_dir():
-            selected = self._discover_facts_file(selected)
-        self.path = selected.resolve()
+        self._source = selected.resolve()
+        self._is_directory = (
+            self._source.is_dir()
+            or (financial_facts_path is None and path is None)
+            or self._source.name == "snapshots"
+        )
+
+    @property
+    def path(self) -> Path:
+        """Return the facts path selected at the time of access."""
+        with self._read_path() as path:
+            return path.resolve()
+
+    @contextmanager
+    def _read_path(self) -> Iterator[Path]:
+        source = self._source
+        snapshot = source if self._is_directory else source.parent
+        snapshots = None
+        lock_root: Path | None
+        if snapshot.name.startswith("snap_"):
+            lock_root = snapshot.parent
+        else:
+            if self._is_directory:
+                snapshots = self._find_snapshot_root(source)
+            lock_root = snapshots
+        with snapshot_lock(lock_root) if lock_root is not None else nullcontext():
+            yield (
+                self._discover_facts_file(source, snapshots)
+                if self._is_directory
+                else source
+            )
+
+    @staticmethod
+    def _find_snapshot_root(source: Path) -> Path | None:
+        candidates = (
+            (source,)
+            if source.name == "snapshots"
+            else (
+                source / "published" / "snapshots",
+                source / "data" / "published" / "snapshots",
+            )
+        )
+        return next((root.resolve() for root in candidates if root.is_dir()), None)
 
     @classmethod
-    def _discover_facts_file(cls, root: Path) -> Path:
+    def _discover_facts_file(cls, root: Path, snapshots: Path | None) -> Path:
         direct = [root / "financial_facts.parquet"]
         if root.name.startswith("snap_"):
             direct.append(root / "latest_facts.parquet")
@@ -46,39 +86,29 @@ class ParquetRepository:
             if candidate.is_file():
                 return candidate
 
-        snapshot_root = root / "published" / "snapshots"
-        if root.name == "snapshots":
-            snapshot_root = root
-        elif (
-            not snapshot_root.is_dir()
-            and (root / "data" / "published" / "snapshots").is_dir()
-        ):
-            snapshot_root = root / "data" / "published" / "snapshots"
-        if snapshot_root.is_dir():
-            lock_path = snapshot_root.parent / f".{snapshot_root.name}.publish.lock"
-            with FileLock(str(lock_path)):
-                snapshot_dirs = sorted(
-                    (
-                        path
-                        for path in snapshot_root.iterdir()
-                        if path.is_dir() and path.name.startswith("snap_")
+        if snapshots is not None:
+            snapshot_dirs = sorted(
+                (
+                    path
+                    for path in snapshots.iterdir()
+                    if path.is_dir() and path.name.startswith("snap_")
+                ),
+                key=lambda path: (path.stat().st_mtime_ns, path.name),
+                reverse=True,
+            )
+            active_id = cls._active_snapshot_id(snapshots)
+            if active_id is not None:
+                snapshot_dirs.sort(
+                    key=lambda path: (
+                        path.name != active_id,
+                        -path.stat().st_mtime_ns,
+                        path.name,
                     ),
-                    key=lambda path: (path.stat().st_mtime_ns, path.name),
-                    reverse=True,
                 )
-                active_id = cls._active_snapshot_id(snapshot_root)
-                if active_id is not None:
-                    snapshot_dirs.sort(
-                        key=lambda path: (
-                            path.name != active_id,
-                            -path.stat().st_mtime_ns,
-                            path.name,
-                        ),
-                    )
-                for snapshot in snapshot_dirs:
-                    candidate = snapshot / "financial_facts.parquet"
-                    if candidate.is_file():
-                        return candidate
+            for snapshot in snapshot_dirs:
+                candidate = snapshot / "financial_facts.parquet"
+                if candidate.is_file():
+                    return candidate
 
         curated = root / "curated" / "financial_facts.parquet"
         if curated.is_file():
@@ -117,7 +147,14 @@ class ParquetRepository:
         respected even where the source did not expose an exact filing date.
         """
 
-        self._require_file()
+        with self._read_path() as path:
+            if not path.is_file():
+                raise FileNotFoundError(path)
+            return self._query_facts(path, as_of_date, require_exact_filing_date)
+
+    def _query_facts(
+        self, path: Path, as_of_date: date, require_exact_filing_date: bool
+    ) -> pl.DataFrame:
         date_column = (
             "published_at" if require_exact_filing_date else "effective_available_at"
         )
@@ -144,11 +181,11 @@ class ParquetRepository:
         try:
             with duckdb.connect(":memory:") as connection:
                 result = connection.execute(
-                    query, [str(self.path), as_of_date]
+                    query, [str(path), as_of_date]
                 ).fetch_arrow_table()
         except (duckdb.Error, OSError) as exc:
             raise ContractViolationError(
-                f"Unable to query financial facts at {self.path}."
+                f"Unable to query financial facts at {path}."
             ) from exc
         return cast(pl.DataFrame, pl.from_arrow(result))
 
@@ -157,23 +194,20 @@ class ParquetRepository:
 
         if not table_name or Path(table_name).name != table_name:
             raise ValueError("table_name must be a filename without a path component.")
-        path = self.path.parent / table_name
-        if not path.exists():
-            raise FileNotFoundError(path)
-        with duckdb.connect(":memory:") as connection:
-            arrow = connection.execute(
-                "SELECT * FROM read_parquet(?)", [str(path)]
-            ).fetch_arrow_table()
-        return cast(pl.DataFrame, pl.from_arrow(arrow))
+        with self._read_path() as facts_path:
+            path = facts_path.parent / table_name
+            if not path.exists():
+                raise FileNotFoundError(path)
+            with duckdb.connect(":memory:") as connection:
+                arrow = connection.execute(
+                    "SELECT * FROM read_parquet(?)", [str(path)]
+                ).fetch_arrow_table()
+            return cast(pl.DataFrame, pl.from_arrow(arrow))
 
     def get_latest_facts(self) -> pl.DataFrame:
         """Read the latest facts table from the repository's parent directory."""
 
         return self.read_table("latest_facts.parquet")
-
-    def _require_file(self) -> None:
-        if not self.path.is_file():
-            raise FileNotFoundError(self.path)
 
 
 Repository = ParquetRepository

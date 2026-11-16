@@ -127,8 +127,10 @@ class StateStore:
             snapshot_id = None
         now = _now()
         with self.connection() as conn:
+            # Publication can commit before GC fails and the runner marks the run failed.
             conn.execute(
-                """UPDATE pipeline_runs SET status = ?, finished_at = ?, published_snapshot_id = ?
+                """UPDATE pipeline_runs SET status = ?, finished_at = ?,
+                   published_snapshot_id = COALESCE(?, published_snapshot_id)
                    WHERE run_id = ?""",
                 (status, now, snapshot_id, run_id),
             )
@@ -171,14 +173,15 @@ class StateStore:
             )
 
     def published_snapshot_ids(self) -> list[str]:
-        """Return successfully promoted snapshot IDs, newest first."""
+        """Return promoted snapshot IDs, newest first."""
 
         with self.connection() as conn:
+            # Older runs may still have an active pointer after losing their run record's ID.
             rows = conn.execute(
-                """SELECT published_snapshot_id FROM pipeline_runs
-                   WHERE status IN ('SUCCEEDED', 'PARTIAL_SUCCESS')
-                     AND published_snapshot_id IS NOT NULL
-                   ORDER BY finished_at DESC, rowid DESC"""
+                """SELECT COALESCE(r.published_snapshot_id, a.snapshot_id)
+                   FROM pipeline_runs AS r LEFT JOIN active_snapshot AS a ON a.run_id = r.run_id
+                   WHERE r.published_snapshot_id IS NOT NULL OR a.snapshot_id IS NOT NULL
+                   ORDER BY r.finished_at DESC, r.rowid DESC"""
             ).fetchall()
         return [str(row[0]) for row in rows]
 

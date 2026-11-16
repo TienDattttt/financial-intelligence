@@ -24,6 +24,11 @@ from finintel.storage.schemas import (
 TableInput: TypeAlias = pl.DataFrame | Path
 
 
+def snapshot_lock(root: Path) -> FileLock:
+    """Return the lock shared by snapshot readers, publication and GC."""
+    return FileLock(root.parent / f".{root.name}.publish.lock")
+
+
 class SnapshotPublisher:
     """Stage a complete snapshot, atomically activate it, then retain two."""
 
@@ -39,7 +44,7 @@ class SnapshotPublisher:
         self.root = snapshots_root.resolve()
         self.state_store = state_store
         self.keep_snapshots = keep_snapshots
-        self._lock = FileLock(str(self.root.parent / f".{self.root.name}.publish.lock"))
+        self._lock = snapshot_lock(self.root)
 
     def publish(
         self,
