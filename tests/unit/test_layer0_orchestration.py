@@ -2,9 +2,11 @@ import multiprocessing
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from finintel.exceptions import (
@@ -131,6 +133,69 @@ def test_expired_key_blocks_online_but_allows_file_source(
     with pytest.raises(SourceEntitlementError, match="(?i)rotate"):
         health_check(store, online=True, now=now, connectivity_check=unreachable)
     health_check(store, online=False, now=now, connectivity_check=unreachable)
+
+
+@pytest.mark.parametrize(
+    ("http_status", "expected_error"),
+    [
+        (200, None),
+        (403, SourceEntitlementError),
+        (429, RateLimitOrCircuitOpenError),
+    ],
+)
+def test_fhsc_health_uses_the_locked_sdk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    http_status: int,
+    expected_error: type[Exception] | None,
+) -> None:
+    monkeypatch.setenv("FHSC_API_KEY", "test-fhsc-key")
+    monkeypatch.delenv("VNSTOCK_FHSC_KEY_CREATED_AT", raising=False)
+    store = StateStore(tmp_path / "state.sqlite")
+    store.initialize()
+    source = import_module("vnstock_oapi").source("fhsc")
+    transport_class = import_module("vnstock_oapi.core.transport").Transport
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(http_status, json={"data": []})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        transport = transport_class("fhsc", source.spec.hosts, client=client)
+        monkeypatch.setattr(type(source), "transport", property(lambda _: transport))
+        if expected_error is None:
+            health_check(store, online=True)
+        else:
+            with pytest.raises(expected_error):
+                health_check(store, online=True)
+
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert requests[0].url.host == "open-api.fhsc.com.vn"
+    assert requests[0].url.path == "/trading/market/session"
+    assert requests[0].url.params["exchange"] == "HOSE"
+
+
+def test_fhsc_health_reads_sdk_rotation_date_before_checking_the_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FHSC_API_KEY", "test-fhsc-key")
+    monkeypatch.delenv("VNSTOCK_FHSC_KEY_CREATED_AT", raising=False)
+    store = StateStore(tmp_path / "state.sqlite")
+    store.initialize()
+    source_class = type(import_module("vnstock_oapi").source("fhsc"))
+
+    def unexpected_check(source: object) -> dict[str, object]:
+        pytest.fail("The connector must not check the connection after its key expires")
+
+    monkeypatch.setattr(
+        source_class, "key_rotation", lambda _: {"due_on": "2026-11-16"}
+    )
+    monkeypatch.setattr(source_class, "check", unexpected_check)
+
+    with pytest.raises(SourceEntitlementError, match="(?i)rotate"):
+        health_check(store, online=True, now=datetime(2026, 11, 16, tzinfo=UTC))
 
 
 def test_expiring_environment_key_warns_before_online_check(
