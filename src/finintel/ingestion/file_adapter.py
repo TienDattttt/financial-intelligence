@@ -181,6 +181,7 @@ class FileAdapter(FinancialStatementProvider):
                 BytesIO(content), read_only=True, data_only=False, keep_links=False
             )
         except (KeyError, openpyxl.utils.exceptions.InvalidFileException):
+            book.close()
             raise ContractViolationError("Invalid XLSX filing.") from None
 
         try:

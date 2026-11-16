@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sqlite3
+from calendar import monthrange
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -39,8 +40,13 @@ SdkStub = Callable[[Callable[[httpx.Request], httpx.Response]], list[httpx.Reque
 
 
 def metadata(quarter: int | None = None, **overrides: object) -> FilingMetadata:
-    end = date(2025, 12, 31) if quarter in (None, 4) else date(2025, 9, 30)
-    start = date(2025, 1, 1) if quarter is None else date(end.year, end.month - 2, 1)
+    if quarter is None:
+        end = date(2025, 12, 31)
+        start = date(2025, 1, 1)
+    else:
+        end_month = quarter * 3
+        end = date(2025, end_month, monthrange(2025, end_month)[1])
+        start = date(2025, end_month - 2, 1)
     return FilingMetadata.from_mapping(
         {
             "issuer_id": "FPT-ISSUER",
