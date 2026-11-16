@@ -2,24 +2,22 @@
 
 * **Mã tài liệu:** `LAYER-1`
 * **Module đích:** `src/finintel/ingestion/`
-* **Điều kiện tiên quyết:** Đã chạy xong kịch bản `scripts/spike_vnstock6.py` (Chặng 0) để xác nhận cấu trúc thực tế của nguồn dữ liệu.
+* **Điều kiện tiên quyết:** Người phụ trách đã duyệt Gate 0 dựa trên `data/metadata/spike_report.json`.
 
 ---
 
 ## 1. BÀI TOÁN & PHẠM VI TRÁCH NHIỆM
 
 Tầng 1 chịu trách nhiệm thu thập Báo cáo Tài chính (Bảng Cân đối kế toán, Kết quả kinh doanh, Lưu chuyển tiền tệ) của các doanh nghiệp niêm yết và lưu trữ vào kho nguyên bản bất biến (`data/raw/`), đảm bảo:
-1. **Đa nguồn qua Adapter Pattern:** Hỗ trợ cả nguồn thư viện `vnstock` Gen 6 và nguồn nhập file trực tiếp (`FileAdapter` cho Excel/CSV/Parquet/JSON) với tư cách là **hai đường dữ liệu hạng nhất ngang hàng nhau (First-Class Data Paths)**.
-2. **Chống sinh bản sửa đổi giả (Anti-False-Revision Hashing):** Tách biệt mã băm toàn vẹn file vật lý và mã băm nội dung số liệu đã chuẩn hóa để không tạo ra phiên bản báo cáo mới khi nhà cung cấp chỉ đổi thứ tự cột hoặc dấu thời gian truy xuất.
-3. **Mô hình hóa trung thực Ngày công bố (`published_at`) và Ý kiến kiểm toán (`audit_opinion`):** Phản ánh đúng thực tế nguồn dữ liệu có cung cấp ngày công bố thực hay phải ước tính theo trần thời hạn luật định.
+1. **Nguồn chính FHSC.** `FhscOapiAdapter` dùng `vnstock-oapi==0.1.2` để truy xuất JSON gốc của API, chạy được trên Windows với Windows Application Control. `FileAdapter` tiếp tục là đường nhập BCTC gốc từ Excel, CSV, Parquet hoặc JSON và là nguồn dự phòng.
+2. **Phiên bản dữ liệu.** Tách mã băm file vật lý khỏi mã băm nội dung một kỳ theo mã chỉ tiêu gốc. Cách này giữ nguyên payload và tránh tăng phiên bản khi chỉ có thứ tự trường hoặc metadata truy xuất thay đổi.
+3. **Phân công Tầng 1 và Tầng 2.** Tầng 1 lưu trang nguyên bản và thông tin truy xuất. Tầng 2 ánh xạ chính xác theo nguồn, loại báo cáo, mã chỉ tiêu gốc và chế độ kế toán. Tầng 2 xử lý giá trị thiếu, đơn vị, phạm vi và quy ước kỳ dựa trên bằng chứng trước khi xuất số liệu chuẩn.
 
 ---
 
 ## 2. NGUỒN HỌC ĐÃ KIỂM CHỨNG & CÁCH TÁI SỬ DỤNG
 
-1. **Tài liệu chính thức `vnstock` Thế hệ 6 (`v6.0.1`):**
-   * *Cách áp dụng:* Gọi các hàm `balance_sheet()`, `income_statement()`, `cash_flow()` theo lô (mỗi lần gọi lấy toàn bộ chuỗi lịch sử nhiều kỳ của một mã cổ phiếu thay vì gọi lặp từng quý). Đọc thông tin kiểm tra đẳng thức kế toán và danh sách mã chưa ánh xạ từ `df.attrs` (theo đúng tên khóa đã xác nhận trong `spike_report.json`).
-   * *Lưu ý bản chất dữ liệu:* Vì gói `vnstock` thực hiện chuẩn hóa cây chỉ tiêu VAS ngay trên máy trạm (trừ khi dùng trực tiếp lớp `vnstock-oapi`), dữ liệu thu được từ `vnstock` phải được gắn nhãn `payload_nature = 'PROVIDER_NORMALIZED_TABLE'`, phân biệt với `'TRUE_ORIGINAL_DOCUMENT'` khi nạp từ file BCTC gốc qua `FileAdapter`.
+1. **FHSC Open API và `vnstock-oapi`.** Dùng `source("fhsc")` rồi lập truy vấn bằng `Source.plan("financials", ticker, statement=..., period=...)`. `Source.raw()` trả về các `Envelope` theo trang, với payload FHSC trong `Envelope.body`. Dùng `PROVIDER_RAW_JSON` cho dữ liệu này và `TRUE_ORIGINAL_DOCUMENT` cho tài liệu BCTC gốc. [Tài liệu endpoint FHSC](https://developers.fhsc.com.vn/api-reference/phan-tich-co-ban/bao-cao-tai-chinh) · [Tài liệu Python của vnstock-oapi](https://www.vnstocks.com/docs/vnstock-oapi/python)
 2. **`dgunning/edgartools` (GitHub):**
    * *Cách áp dụng:* Học cách tách lớp đối tượng định danh tờ khai (`FilingMetadata`) khỏi nội dung số liệu (`RawPayload`) để có thể kiểm tra xem một báo cáo đã tồn tại trong kho chưa trước khi thực hiện bước chuẩn hóa nặng.
 3. **Thông tư 96/2020/TT-BTC (Điều 10, 11) & Thông tư 68/2024/TT-BTC:**
@@ -34,7 +32,7 @@ Tầng 1 chịu trách nhiệm thu thập Báo cáo Tài chính (Bảng Cân đ�
 src/finintel/ingestion/
 ├── __init__.py
 ├── base.py              # FinancialStatementProvider (ABC), RawFilingBundle, FilingMetadata
-├── vnstock6_adapter.py  # Adapter kết nối vnstock Gen 6 (chỉ gọi sau khi pass health_check)
+├── fhsc_oapi_adapter.py # Adapter đọc JSON FHSC thông qua vnstock-oapi
 ├── file_adapter.py      # Adapter hạng nhất đọc file Excel (.xlsx), CSV, JSON, Parquet chuẩn
 ├── hasher.py            # Tính payload_file_sha256 và canonical_content_sha256
 └── archive.py           # Lưu file bất biến vào data/raw/ và ghi bảng filings_manifest
@@ -48,9 +46,10 @@ CREATE TABLE IF NOT EXISTS filings_manifest (
     issuer_id TEXT NOT NULL,                     -- Mã định danh cố định của tổ chức phát hành
     ticker_at_filing TEXT NOT NULL,              -- Mã chứng khoán tại thời điểm báo cáo (VD: 'FPT')
     source_provider TEXT NOT NULL,               -- Nguồn dữ liệu gốc (VD: 'fhsc', 'hsx_filing', 'manual_audit')
-    connector_name TEXT NOT NULL,                -- Công cụ nạp (VD: 'vnstock==6.0.1', 'file_adapter_v1')
-    payload_nature TEXT NOT NULL,                -- 'TRUE_ORIGINAL_DOCUMENT' | 'PROVIDER_NORMALIZED_TABLE'
-    statement_scope TEXT NOT NULL,               -- 'CONSOLIDATED' | 'SEPARATE'
+    connector_name TEXT NOT NULL,                -- Ví dụ 'vnstock-oapi==0.1.2', 'file_adapter_v1'
+    payload_nature TEXT NOT NULL,                -- 'TRUE_ORIGINAL_DOCUMENT' | 'PROVIDER_RAW_JSON'
+    statement_type TEXT NOT NULL,                -- 'BALANCE_SHEET' | 'INCOME_STATEMENT' | 'CASH_FLOW'
+    statement_scope TEXT NOT NULL,               -- 'CONSOLIDATED' | 'SEPARATE' | 'UNKNOWN'
     period_type TEXT NOT NULL,                   -- 'QUARTER' | 'SEMI_ANNUAL' | 'ANNUAL'
     fiscal_year INTEGER NOT NULL,
     fiscal_quarter INTEGER,                      -- 1, 2, 3, 4 (NULL nếu chỉ là báo cáo năm không tách quý)
@@ -67,9 +66,10 @@ CREATE TABLE IF NOT EXISTS filings_manifest (
     revision_reason TEXT NOT NULL,               -- 'ORIGINAL' | 'AUDITED_UPDATE' | 'CORRECTION' | 'RESTATED_REGIME_CHANGE'
     fetched_at TEXT NOT NULL,                    -- ISO-8601 UTC timestamp khi tải về
     payload_file_sha256 TEXT NOT NULL,           -- Hash toàn vẹn của file vật lý lưu trên đĩa
-    canonical_content_sha256 TEXT NOT NULL,      -- Hash trên tập (metric_code, period_end, scope, value) đã sắp xếp
+    canonical_content_sha256 TEXT NOT NULL,      -- Hash nội dung một kỳ theo mã chỉ tiêu gốc đã sắp xếp
     raw_archive_path TEXT NOT NULL,              -- Đường dẫn tương đối trong data/raw/
-    provider_attrs_json TEXT                     -- Lưu nguyên trạng df.attrs hoặc metadata của nguồn
+    raw_record_locator TEXT,                     -- JSON Pointer tới kỳ trong trang FHSC, ví dụ '/data/2'
+    provider_attrs_json TEXT                     -- Tham số truy vấn, traceId, HTTP status và metadata truy xuất
 );
 ```
 
@@ -77,16 +77,25 @@ CREATE TABLE IF NOT EXISTS filings_manifest (
 
 ## 4. QUY TẮC NGHIỆP VỤ THU THẬP & LƯU TRỮ RAW
 
+### Truy vấn, lưu trang và bàn giao
+
+* Endpoint `financial-statement/statement` nhận `symbol`, `type`, `period` (`quarterly` hoặc `annual`), `page`, `limit` từ 1 đến 5 và bộ lọc `year` tùy chọn. Duyệt từ trang mới nhất cho tới trang rỗng đã được kiểm chứng. Ghi trạng thái chưa hoàn tất nếu chạm giới hạn trang của client. Dừng nếu nguồn trả 401/403/429 hoặc circuit breaker đang mở.
+* Lưu mỗi payload nguyên bản theo trang với mã chỉ tiêu, giá trị, `null` và thứ tự mảng do FHSC trả về. Giữ thông tin nguồn, tham số truy vấn đã lọc, mã HTTP, giờ tải và mã băm phản hồi trong metadata. Một trang có thể phục vụ nhiều bản ghi manifest qua `raw_record_locator`. Gói `vnstock-oapi` là thư viện kết nối duy nhất trong đường dẫn FHSC.
+* FHSC trả `year` và, với báo cáo quý, `quarter`. Lấy ticker, loại báo cáo và loại kỳ từ yêu cầu. Lấy `fetched_at` từ envelope. Ngày đầu kỳ và cuối kỳ cần lịch tài chính đã xác nhận. Nếu chưa đủ thông tin để lập bản ghi manifest, giữ trang trong kho raw để bổ sung metadata sau.
+* Mặc định giữ `statement_scope = 'UNKNOWN'` khi thiếu bằng chứng. Sáu chỉ tiêu năm 2025 của FPT khớp BCTC hợp nhất kiểm toán. Bộ lọc `statement_scope=separate` cho cùng dữ liệu trong phép thử FPT. Phạm vi được xác nhận theo kỳ từ bằng chứng đối chiếu trước khi Tầng 2 ghép chuỗi.
+* Tầng 2 dùng mã FHSC chính xác để ánh xạ VAS. Ba chỉ tiêu dòng đã kiểm tra ở FPT khớp tổng bốn quý với năm trong giai đoạn 2022–2025. Giữ riêng số năm và số Q4, ghi rõ các chênh lệch lịch sử, và chuyển các kỳ vi phạm đẳng thức sang kiểm tra chất lượng. Các mã chưa khớp đi vào `unmapped_metrics`.
+
 ### 4.1. Quy tắc Hai Mã Băm (Dual SHA-256 Hashing) trong `hasher.py`
-Để tránh việc mỗi lần gọi lại API lại sinh ra một `revision_no` mới chỉ vì trường `retrieved_at` trong metadata thay đổi:
-1. **`payload_file_sha256`:** Băm trực tiếp trên chuỗi byte của file vật lý lưu xuống đĩa (`.parquet`, `.json.zst` hoặc `.xlsx`) để kiểm tra lỗi hỏng file (bit-rot).
-2. **`canonical_content_sha256`:**
+`traceId` và thời điểm truy xuất có thể thay đổi sau mỗi lần gọi API.
+
+1. **`payload_file_sha256`** băm byte của file vật lý đã lưu. Khi JSON được ghi lại từ `Envelope.body`, lưu riêng `Envelope.body_sha256` vì đây là mã băm byte phản hồi của FHSC.
+2. **`canonical_content_sha256`** băm nội dung số liệu một kỳ theo mã gốc.
    * Trích xuất bộ tứ `(raw_metric_key, statement_scope, period_end_date, rounded_numeric_value)` của tất cả các dòng có giá trị khác `NULL`.
    * Chuẩn hóa số thực về chuỗi có độ chính xác cố định (ví dụ làm tròn tới $10^{-4}$), sắp xếp tăng dần theo thứ tự từ điển của `(raw_metric_key, statement_scope, period_end_date)`, nối thành chuỗi chuẩn UTF-8 rồi băm SHA-256.
-   * **Quy tắc tạo Revision mới:** Khi thu thập lại cùng một `(issuer_id, statement_scope, period_type, period_end_date)`, nếu `canonical_content_sha256` **trùng khớp** với bản ghi mới nhất đã có trong `filings_manifest`, hệ thống đánh dấu bước đó là `'SKIPPED_UNCHANGED'` và không tăng `revision_no`. Chỉ khi `canonical_content_sha256` thay đổi thực sự về mặt con số kế toán mới tạo `filing_id` mới với `revision_no = max_revision + 1`.
+   * Khi thu thập lại cùng `(source_provider, issuer_id, statement_type, statement_scope, period_type, period_end_date)`, đối chiếu hash với bản ghi mới nhất. Hash trùng thì ghi `SKIPPED_UNCHANGED`. Hash đổi thì tạo phiên bản mới và giữ các phiên bản đã lưu. Phạm vi chưa xác minh giữ định danh riêng.
 
 ### 4.2. Quy tắc Xác định `effective_available_at` (Chống Look-Ahead Bias)
-Vì `vnstock` Gen 6 chỉ trả về nhãn kỳ kế toán (`2025-Q3`) mà không có ngày công bố thực tế:
+Mẫu FHSC chỉ cung cấp nhãn kỳ kế toán cho mỗi dòng. Khởi tạo `published_at = NULL`, `audit_status = 'UNKNOWN'` và `audit_opinion = 'UNKNOWN'` cho các kỳ chỉ có dữ liệu API. Áp dụng các quy tắc sau khi xác định được ngày cuối kỳ.
 * **Trường hợp 1 (`published_at` có giá trị thực từ văn bản CBTT / FileAdapter):**
   * `published_at_basis = 'EXACT_FILING'`
   * `effective_available_at = published_at`
@@ -104,7 +113,8 @@ Vì `vnstock` Gen 6 chỉ trả về nhãn kỳ kế toán (`2025-Q3`) mà khôn
 ## 5. TIÊU CHÍ NGHIỆM THU TẦNG 1 (DEFINITION OF DONE)
 
 Agent phải viết và chạy xanh `tests/unit/test_layer1_ingestion.py`:
-1. **Test Idempotent Re-ingestion (Chống Revision giả):** Nạp cùng một bảng dữ liệu hai lần nhưng thay đổi thứ tự cột và thay đổi dấu thời gian `retrieved_at` trong `df.attrs` $\rightarrow$ `canonical_content_sha256` phải giữ nguyên 100%, không tạo bản ghi `revision_no = 2`.
+1. **Test Idempotent Re-ingestion.** Nạp cùng một trang JSON hai lần, đổi thứ tự trường, `traceId` và thời điểm truy xuất. `canonical_content_sha256` của từng kỳ giữ nguyên và lần nạp lại được đánh dấu `SKIPPED_UNCHANGED`.
 2. **Test True Revision Detection:** Thay đổi giá trị của một chỉ tiêu (ví dụ `BS_TOTAL_ASSETS` thay đổi sau kiểm toán) $\rightarrow$ `canonical_content_sha256` thay đổi, hệ thống tạo `filing_id` mới với `revision_no = 2` và giữ nguyên file của `revision_no = 1` trong `data/raw/`.
 3. **Test Statutory Lag Calculation:** Với báo cáo Hợp nhất kỳ `period_end_date = '2025-12-31'` không có `published_at`, kiểm tra `effective_available_at` bằng `'2026-03-31'` ($+90$ ngày cho báo cáo năm).
-4. **Test First-Class FileAdapter:** Nạp thành công một bộ BCTC chuẩn từ file `.xlsx` / `.json` trong `tests/fixtures/raw_samples/` mà không cần kết nối mạng hay gọi `vnstock`.
+4. **Test FileAdapter.** Dùng BCTC mẫu `.xlsx` hoặc `.json` trong `tests/fixtures/raw_samples/` để kiểm thử nạp ngoại tuyến.
+5. **Test phân trang và provenance FHSC.** Dùng mẫu có nhiều trang, trang kết thúc rỗng và giá trị `null`. Kiểm tra trang lưu giữ payload gốc, mỗi bản ghi manifest trỏ đúng kỳ và phạm vi thiếu bằng chứng được ghi `UNKNOWN`.

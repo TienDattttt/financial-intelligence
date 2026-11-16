@@ -1,6 +1,17 @@
 {
   "symbol": "FPT",
   "unit": "VND",
+  "audited_annual_2025": {
+    "source": "https://fpt.com/api/media/20260319_FPT_Audited_Consolidated_Financial_Statements_for_2025_dd62a35162.pdf",
+    "values_vnd": {
+      "total_assets": { "value": 88141991634625, "pdf_page": 9 },
+      "total_liabilities": { "value": 44393950887086, "pdf_page": 10 },
+      "total_equity": { "value": 43748040747539, "pdf_page": 11 },
+      "net_revenue": { "value": 70112825100710, "pdf_page": 12 },
+      "net_income": { "value": 11232339450734, "pdf_page": 12 },
+      "operating_cash_flow": { "value": 10136043915911, "pdf_page": 13 }
+    }
+  },
   "sources": {
     "CONSOLIDATED": {
       "2025-Q1": "https://fpt.com/api/media/20250422_FPT_Consolidated_Financial_Statements_for_Quarter_1_2025_5823acbe80.pdf",

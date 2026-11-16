@@ -1,7 +1,3 @@
-import json
-import warnings
-from importlib.metadata import PackageNotFoundError
-from pathlib import Path
 from types import SimpleNamespace
 
 from pytest import MonkeyPatch
@@ -9,127 +5,122 @@ from pytest import MonkeyPatch
 from scripts import spike_vnstock6 as spike
 
 
-def test_missing_sdk_writes_fallback_report(
-    monkeypatch: MonkeyPatch, tmp_path: Path
-) -> None:
-    def missing(name: str) -> str:
-        raise PackageNotFoundError(name)
-
-    monkeypatch.setattr(spike, "version", missing)
-    path = tmp_path / "spike_report.json"
-    assert spike.main(["--output", str(path)]) == 1
-
-    report = json.loads(path.read_text(encoding="utf-8"))
-    assert report["next_source"] == "FileAdapter"
-    assert report["entitlement"]["status"] == "not_tested"
-    assert report["stress"]["attempted_calls"] == 0
-
-
-def test_checks_fhsc_key_even_when_windows_blocks_sdk(monkeypatch: MonkeyPatch) -> None:
-    def load(name: str) -> SimpleNamespace:
-        if name == "vnstock_oapi":
-            return SimpleNamespace(
-                source=lambda _: SimpleNamespace(status=lambda: {"keys": "missing"}),
-            )
-        raise ImportError(
-            "DLL load failed: An Application Control policy has blocked this file."
-        )
-
-    monkeypatch.setattr(spike, "version", lambda _: spike.EXPECTED_VERSION)
-    monkeypatch.setattr(spike, "import_module", load)
-    report = spike.survey(spike.SYMBOLS)
-
-    assert report["blocked_reason"] == "application_control_blocked_vnstock"
-    assert report["entitlement"]["fhsc_key_present"] is False
-    assert report["stress"]["attempted_calls"] == 0
-
-
-def test_stops_on_rate_limit_and_records_warning_without_message() -> None:
-    class RateLimitError(Exception):
-        http_status = 429
-        retry_after = 60
-
-    class KeyRotationWarning(UserWarning):
-        code = "VNSTOCK_KEY_ROTATION"
-
-    attempted: list[str] = []
-
-    def balance_sheet(*, period: str, source: str, format: str, compat: str) -> None:
-        attempted.append(source)
-        warnings.warn("untrusted warning text", KeyRotationWarning, stacklevel=1)
-        raise RateLimitError("untrusted error text")
-
-    api = SimpleNamespace(equity=lambda _: SimpleNamespace(balance_sheet=balance_sheet))
-    report = spike.new_report(spike.SYMBOLS)
-    spike.probe(api, spike.SYMBOLS, report)
-
-    assert attempted == ["fhsc"]
-    assert report["stress"]["stop_reason"] == "rate_limit"
-    assert report["stress"]["attempted_calls"] == 1
-    assert report["entitlement"]["key_rotation_warning_observed"] is True
-    assert report["stress"]["calls"][0]["error"]["retry_after_seconds"] == 60
-    assert "untrusted" not in json.dumps(report)
-
-
-def test_stress_attempts_three_calls_per_symbol(monkeypatch: MonkeyPatch) -> None:
-    def statement(**options: str) -> list[int]:
-        assert options == {
-            "period": "quarter",
-            "source": "fhsc",
-            "format": "long",
-            "compat": "v6",
-        }
-        return [1]
-
-    api = SimpleNamespace(
-        equity=lambda _: SimpleNamespace(**dict.fromkeys(spike.STATEMENTS, statement)),
+def test_inventory_distinguishes_missing_fields_from_explicit_null() -> None:
+    fields = spike.inventory_fields(
+        [
+            {"year": 2025, "metric": 120, "nullable": None},
+            {"year": 2024, "metric": None},
+        ]
     )
-    monkeypatch.setattr(spike, "inspect_sample", lambda *_: None)
-    report = spike.new_report(spike.SYMBOLS)
-    spike.probe(api, spike.SYMBOLS, report)
+    assert fields["metric"] == {"types": {"integer": 1, "null": 1}, "missing": 0}
+    assert fields["nullable"] == {"types": {"null": 1}, "missing": 1}
 
-    stress = report["stress"]
-    assert stress["status"] == "completed"
-    assert stress["attempted_calls"] == stress["successful_calls"] == 150
-    assert [(call["symbol"], call["statement"]) for call in stress["calls"]] == [
-        (symbol, statement)
-        for symbol in spike.SYMBOLS
-        for statement in spike.STATEMENTS
+
+def test_flow_comparison_distinguishes_discrete_ytd_and_mismatches() -> None:
+    field = "metric"
+    values = {2022: (1, 2, 3, 4), 2023: (1, 3, 6, 10), 2024: (1, 2, 3, 5)}
+    quarters = [
+        {"year": year, "quarter": q, field: value}
+        for year, four in values.items()
+        for q, value in enumerate(four, start=1)
     ]
-
-
-def test_reference_comparison_identifies_scope_and_convention() -> None:
-    expected = {
-        "CONSOLIDATED": {
-            "quarter": {"2025-Q2": 20, "2025-Q3": 30},
-            "ytd": {"2025-Q2": 30, "2025-Q3": 60},
-        },
-        "SEPARATE": {
-            "quarter": {"2025-Q2": 2, "2025-Q3": 3},
-            "ytd": {"2025-Q2": 3, "2025-Q3": 6},
-        },
+    years = [{"year": year, field: 10} for year in values]
+    result = spike.compare_flow(quarters, years, field, tolerance=0)
+    assert result["counts"] == {
+        "discrete_only": 1,
+        "ytd_only": 1,
+        "ambiguous": 0,
+        "neither": 1,
+        "missing": 0,
     }
-    assert spike.match_reference({"2025-Q2": 30, "2025-Q3": 60}, expected) == [
-        {"scope": "CONSOLIDATED", "convention": "ytd"},
-    ]
-    assert spike.match_reference({"2025-Q2": 30, "2025-Q3": None}, expected) == []
-    assert spike.match_reference(
-        {"2025-Q2": 30, "2025-Q3": 60, "2025-Q4": 99}, expected
-    ) == [
-        {"scope": "CONSOLIDATED", "convention": "ytd"},
-    ]
-    assert (
-        spike.match_reference({"2025-Q2": 30, "2025-Q3": 60}, {"SEPARATE": {"ytd": {}}})
-        == []
+    assert result["by_year"][-1]["sum_minus_annual_vnd"] == 1
+
+
+def test_balance_identity_records_missing_and_violations() -> None:
+    assets, liabilities, equity = spike.BALANCE_FIELDS.values()
+    result = spike.check_balance(
+        {
+            "quarter": [
+                {"year": 2025, "quarter": 1, assets: 101, liabilities: 60, equity: 40},
+                {"year": 2025, "quarter": 2, assets: 150, liabilities: 60, equity: 40},
+                {
+                    "year": 2025,
+                    "quarter": 3,
+                    assets: 150,
+                    liabilities: None,
+                    equity: 40,
+                },
+            ],
+            "year": [],
+        }
     )
+    assert result["counts"] == {"pass": 1, "fail": 1, "missing": 1}
+    assert result["max_absolute_residual_vnd"] == 50
+    assert result["by_period"][-1]["residual_vnd"] is None
 
 
-def test_cash_flow_quarters_reconcile_to_fpt_pdf_ytd() -> None:
-    reference = json.loads(spike.REFERENCE_PATH.read_text(encoding="utf-8"))
-    assert reference["symbol"] == "FPT"
-    assert reference["unit"] == "VND"
-    for scope in reference["lines"]["cash_flow"]["expected_vnd"].values():
-        cumulative = 0
-        for period in spike.QUARTERS:
-            cumulative += scope["quarter"][period]
-            assert scope["ytd"][period] == cumulative
+def test_benchmark_fetches_150_distinct_first_pages(monkeypatch: MonkeyPatch) -> None:
+    calls: list[tuple[str, str, str]] = []
+    traffic = spike.HttpObservations()
+
+    def plan(
+        name: str, symbol: str, *, statement: str, period: str
+    ) -> list[SimpleNamespace]:
+        assert name == "financials"
+        return [
+            SimpleNamespace(
+                operation="financial-statement/statement",
+                params={
+                    "symbol": symbol,
+                    "type": statement,
+                    "period": period,
+                    "page": 1,
+                },
+            ),
+        ]
+
+    def raw(
+        operation: str, *, only_page: int, **kwargs: object
+    ) -> list[SimpleNamespace]:
+        assert operation == "financial-statement/statement"
+        assert only_page == 1
+        assert kwargs["limit"] == 5
+        calls.append(
+            (str(kwargs["symbol"]), str(kwargs["type"]), str(kwargs["period"]))
+        )
+        traffic.on_response(SimpleNamespace(status_code=200, headers={}))
+        return [SimpleNamespace(http_status=200, body={"data": [{"year": 2025}]})]
+
+    monkeypatch.setattr(spike, "sleep", lambda _: None)
+    result = spike.benchmark(SimpleNamespace(plan=plan, raw=raw), traffic)
+    assert len(calls) == len(set(calls)) == 150
+    assert result["successful_calls"] == 150
+    assert result["http_status_distribution"] == {"200": 150}
+    assert result["http_requests_observed"] == 150
+
+
+def test_benchmark_keeps_original_429_even_if_sdk_retry_succeeds() -> None:
+    traffic = spike.HttpObservations()
+
+    def raw(*args: object, **kwargs: object) -> list[SimpleNamespace]:
+        traffic.on_response(
+            SimpleNamespace(
+                status_code=429,
+                headers={
+                    "retry-after": "3",
+                    "set-cookie": "private",
+                },
+            )
+        )
+        traffic.on_response(SimpleNamespace(status_code=200, headers={}))
+        return [SimpleNamespace(http_status=200, body={"data": [{"year": 2025}]})]
+
+    source = SimpleNamespace(
+        plan=lambda *a, **kw: [SimpleNamespace(operation="financials", params={})],
+        raw=raw,
+    )
+    result = spike.benchmark(source, traffic)
+    assert result["attempted_calls"] == 1
+    assert result["stop_reason"] == "rate_limit"
+    assert result["http_status_distribution"] == {"429": 1, "200": 1}
+    assert result["rate_limit_headers_observed"] == {"retry-after": ["3"]}

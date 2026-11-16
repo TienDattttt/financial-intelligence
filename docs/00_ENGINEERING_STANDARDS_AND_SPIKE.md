@@ -38,7 +38,7 @@ financial-intelligence/
 │       ├── domain/
 │       │   └── schemas.py                    # Dataclasses/Enums định nghĩa Hợp đồng Dữ liệu giữa các tầng
 │       ├── pipeline/                         # [Tầng 0] CLI, Runner, FileLock, Retry Policy, SQLite State Store
-│       ├── ingestion/                        # [Tầng 1] Provider ABC, Vnstock6Adapter, FileAdapter, Raw Archive
+│       ├── ingestion/                        # [Tầng 1] Provider ABC, FhscOapiAdapter, FileAdapter, Raw Archive
 │       ├── normalization/                    # [Tầng 2] Exact Mapper, TT200/TT99 Regime Resolver, Period & Q4 Deriver
 │       ├── storage/                          # [Tầng 3] Snapshot Publisher, GC, Stateless DuckDB Query Repository
 │       ├── analytics/                        # [Tầng 4A] Ratios Engine, DuPont 5-Step, Peer Benchmarking, Red Flags
@@ -88,7 +88,7 @@ class TransientSourceError(FinIntelError):
     """Lỗi mạng tạm thời (Timeout, Connection reset, HTTP 502/503/504). Được phép retry ngắn."""
 
 class RateLimitOrCircuitOpenError(FinIntelError):
-    """Nguồn dữ liệu trả về HTTP 429 hoặc vnstock mở Circuit Breaker.
+    """Nguồn dữ liệu trả về HTTP 429 hoặc circuit breaker của nguồn đang mở.
     TUYỆT ĐỐI KHÔNG retry dồn dập trong cùng một bước; phải dừng hoặc chờ cool-down dài."""
 
 class SourceEntitlementError(FinIntelError):
@@ -110,23 +110,27 @@ class CriticalDataQualityError(FinIntelError):
 
 ## 3. GIAO THỨC SPIKE CHẶNG 0 — KHẢO SÁT THỰC NGHIỆM TRƯỚC KHI VIẾT CODE TẦNG 1
 
-Trước khi viết bất kỳ dòng code nào của `Vnstock6Adapter`, Agent phải viết và thực thi kịch bản khảo sát `scripts/spike_vnstock6.py` để xác minh thực tế hành vi của `vnstock==6.0.1` trên môi trường máy chủ hiện tại.
+Kiến trúc Option 3 chọn `vnstock-oapi==0.1.2` làm connector chính của Tầng 1. Windows Application Control chặn phần mở rộng `_core.pyd` của gói `vnstock==6.0.1`. Spike và connector FHSC chỉ sử dụng `vnstock_oapi` để lấy phản hồi JSON. Tầng 1 lưu payload nguồn và thông tin truy xuất. Tầng 2 ánh xạ mã FHSC sang mã VAS chuẩn, xác định chế độ kế toán và xử lý quy ước kỳ.
 
-### 3.1. Năm Câu hỏi Kỹ thuật Bắt buộc Phải Trả lời Bằng Thực nghiệm
-Kịch bản `scripts/spike_vnstock6.py` phải kiểm tra và xuất ra báo cáo `data/metadata/spike_report.json` trả lời 5 câu hỏi sau:
+### 3.1. Bằng chứng cần thu thập
 
-1. **Quyền truy cập & Khóa `fhsc` (Entitlement & Key TTL):**
-   * Môi trường hiện tại đã có khóa API của nguồn `fhsc` chưa? Khóa thuộc gói nào (Community hay trả phí)?
-   * Khi gọi `balance_sheet()`, `income_statement()`, `cash_flow()`, thư viện có phát cảnh báo `KeyRotationWarning` (khóa sắp hết hạn 30 ngày) hoặc lỗi giới hạn gói không?
-2. **Cấu trúc Bảng & Metadata thực tế (`df.columns` và `df.attrs`):**
-   * Tên chính xác của các cột trả về và các khóa bên trong `df.attrs` là gì? (Xác nhận xem thư viện dùng tên `unmapped_codes` hay `unmapped_keys`, có trường `retrieved_at`, `taxonomy_version` hay kết quả kiểm tra đẳng thức kế toán đi kèm không?).
-3. **Phân biệt Báo cáo Hợp nhất vs. Riêng lẻ (`statement_scope`):**
-   * API `vnstock` Gen 6 có tham số hoặc trường dữ liệu nào phân biệt Báo cáo Hợp nhất (`CONSOLIDATED`) và Báo cáo Công ty mẹ (`SEPARATE`) không? Nếu mặc định chỉ trả về một loại thì đó là loại nào?
-4. **Quy ước Số liệu Quý trên Bảng KQKD & LCTT (`Flow Convention`):**
-   * Số liệu các quý (`Q1, Q2, Q3, Q4`) trả về từ `income_statement()` và `cash_flow()` là **số phát sinh rời của riêng từng quý** hay **số lũy kế từ đầu năm (YTD)**? (Kiểm tra bằng cách lấy 1 công ty cụ thể như `FPT` hoặc `VNM`, đối chiếu trực tiếp con số Q2, Q3 từ API với file PDF BCTC gốc của doanh nghiệp đó).
-5. **Giới hạn Tần suất & Hành vi Circuit Breaker (Stress Test vừa phải):**
-   * Chạy thử nghiệm lấy 3 bảng BCTC cho 50–70 mã cổ phiếu liên tiếp (tương đương 150–210 lời gọi hàm) có gắn bộ đếm thời gian để đo tốc độ phản hồi, giới hạn request/phút và cách thư viện ném ngoại lệ khi chạm ngưỡng rate-limit.
+1. **Quyền truy cập, schema và phân trang.** Đọc ba loại BCTC quý và năm của FPT. Ghi các chữ ký Python, tham số endpoint, số trang, miền thời gian và toàn bộ tên trường, kiểu dữ liệu, trường thiếu và giá trị `null`. Xác nhận tối thiểu 16 quý, 4 năm và trang kết thúc. Ghi HTTP 401/403 nếu nguồn từ chối. Gói tài khoản và hạn khóa chỉ được ghi khi nguồn cung cấp bằng chứng. [Tài liệu endpoint FHSC](https://developers.fhsc.com.vn/api-reference/phan-tich-co-ban/bao-cao-tai-chinh)
+2. **Phạm vi báo cáo và ngày công bố.** Kiểm tra trường và bộ lọc phạm vi. Đối chiếu số liệu với BCTC công bố độc lập và ghi kỳ nào có bằng chứng `CONSOLIDATED` hoặc `SEPARATE`. Kỳ chưa có bằng chứng giữ `UNKNOWN`. `year` và `quarter` là nhãn kỳ. Ngày công bố và trạng thái kiểm toán cần bằng chứng riêng.
+3. **Quy ước quý và đẳng thức kế toán.** Đối chiếu riêng `Q1 + Q2 + Q3 + Q4` và `Q4` với số năm cho doanh thu thuần, lợi nhuận sau thuế và lưu chuyển tiền thuần từ hoạt động kinh doanh. Kiểm tra `Tổng tài sản − Nợ phải trả − Vốn chủ sở hữu` trên toàn bộ kỳ FPT theo ngưỡng 1 VND. Lưu mã gốc, số liệu đối chiếu và từng sai lệch.
+4. **Benchmark.** Gọi 25 mã phi tài chính × 3 loại báo cáo × 2 kỳ ở trang đầu, giãn tối thiểu 2 giây giữa hai lượt bắt đầu. Ghi thời gian toàn lượt, p50/p95 mỗi lời gọi, mã HTTP ở cả lần gửi đầu và lần gọi lại, header giới hạn tần suất và thời gian chờ của SDK. Dừng khi ghi nhận 401/403/429 hoặc circuit breaker. Hạn mức tài khoản chỉ được kết luận khi có bằng chứng từ FHSC. [Tài liệu giới hạn tần suất FHSC](https://developers.fhsc.com.vn/rate-limits)
 
-### 3.2. Tiêu chí Nghiệm thu Chặng 0 (Gate 0)
-* Sau khi chạy `scripts/spike_vnstock6.py`, Agent phải kiểm tra `git status --porcelain CLAUDE.md AGENTS.md` để đảm bảo thư viện không tự ý sửa file cấu hình.
-* Nếu nguồn `vnstock` Gen 6 không cấp quyền truy cập hoặc thiếu thông tin trọng yếu, Agent phải báo cáo ngay kết quả trong `spike_report.json` và chuyển sang sử dụng `FileAdapter` (nạp từ bộ mẫu Excel/JSON/Parquet chuẩn trong `tests/fixtures/raw_samples/`) làm nguồn chính để phát triển thông suốt các tầng 2, 3, 4A, 5, 6 mà không bị chặn tiến độ.
+### 3.2. Chạy và duyệt Gate 0
+
+```sh
+uv run --locked --group spike python scripts/spike_vnstock6.py --prompt-key
+```
+
+Script nhận khóa FHSC qua môi trường cục bộ hoặc lời nhắc ẩn. `--reuse-history` dùng lại các trang đã khảo sát để chạy lại benchmark. `--history-dir` chỉ định thư mục đã lưu khi dùng lại lịch sử. `--history-only` dừng sau phần khảo sát và đối chiếu kế toán.
+
+* Đọc `data/metadata/spike_report.json` và kiểm tra `git status --porcelain CLAUDE.md AGENTS.md` sau khi chạy. Thư mục `data/` giữ báo cáo và trang khảo sát trên máy.
+* `ready_for_signoff` nghĩa là lịch sử và benchmark đã được thu thập để người phụ trách duyệt, kể cả các ngoại lệ dữ liệu. Bắt đầu Tầng 1 sau khi Gate 0 được duyệt.
+* `FileAdapter` là nguồn dự phòng khi truy cập FHSC bị chặn hoặc một kỳ cần đối chiếu với BCTC gốc.
+
+### 3.3. Phê duyệt Gate 0
+
+Ngày 16/11/2026, người phụ trách phê duyệt Option 3 với `vnstock-oapi==0.1.2` làm connector FHSC. Lần khảo sát xác nhận 55 quý và 22 năm cho mỗi loại BCTC FPT, cùng 150/150 phản hồi HTTP 200 trong benchmark. Các sai lệch bảng cân đối FPT ở Q1–Q3/2015 và phạm vi báo cáo chưa xác minh vẫn cần kiểm tra trước khi sử dụng số liệu chuẩn hóa.

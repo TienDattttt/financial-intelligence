@@ -11,7 +11,7 @@ dev = [
     "ruff==0.14.14",
 ]
 spike = [
-    "vnstock==6.0.1",
+    "httpx==0.28.1",
     "vnstock-oapi==0.1.2",
 ]
 
@@ -19,7 +19,6 @@ spike = [
 package = false
 
 [tool.uv.sources]
-vnstock = { index = "vnstock" }
 vnstock-oapi = { index = "vnstock" }
 
 [[tool.uv.index]]
