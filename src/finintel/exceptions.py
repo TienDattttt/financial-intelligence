@@ -21,5 +21,9 @@ class ContractViolationError(FinIntelError):
     """Dữ liệu vi phạm schema bắt buộc hoặc hợp đồng giữa các tầng. Dừng ngay."""
 
 
+class ArchiveIntegrityError(ContractViolationError):
+    """A raw archive payload no longer matches its immutable manifest entry."""
+
+
 class CriticalDataQualityError(FinIntelError):
     """Sai đẳng thức kế toán nghiêm trọng hoặc tỷ lệ bản ghi lỗi vượt ngưỡng batch."""

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import polars as pl
 
-from finintel.exceptions import ContractViolationError
+from finintel.exceptions import ArchiveIntegrityError, ContractViolationError
 from finintel.ingestion.base import FilingMetadata
 from finintel.ingestion.file_adapter import FileAdapter
 from finintel.ingestion.hasher import canonical_content_sha256, payload_file_sha256
@@ -200,7 +200,7 @@ def normalize_archive(
     conditions = [
         "source_provider = 'fhsc'"
         if source == "fhsc"
-        else "connector_name = 'file_adapter_v1'"
+        else "source_provider != 'fhsc'"
     ]
     if tickers:
         placeholders = ", ".join("?" for _ in tickers)
@@ -239,7 +239,7 @@ def normalize_archive(
                 "Raw filing is missing or unreadable."
             ) from None
         if payload_file_sha256(content) != digest:
-            raise ContractViolationError(
+            raise ArchiveIntegrityError(
                 "Raw filing bytes differ from the manifest hash."
             )
         return path, content

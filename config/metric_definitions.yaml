@@ -194,7 +194,7 @@ metrics:
     statement_type: INCOME_STATEMENT
     value_type: FLOW
     unit: VND
-    sign_convention: SIGNED
+    sign_convention: SIGNED_EXPENSE
     tt200_code: "11"
     tt99_code: "11"
     comparable_across_taxonomy: false
@@ -230,7 +230,7 @@ metrics:
     statement_type: INCOME_STATEMENT
     value_type: FLOW
     unit: VND
-    sign_convention: SIGNED
+    sign_convention: SIGNED_EXPENSE
     tt200_code: "22"
     tt99_code: "23"
     comparable_across_taxonomy: false
@@ -257,7 +257,7 @@ metrics:
     statement_type: INCOME_STATEMENT
     value_type: FLOW
     unit: VND
-    sign_convention: SIGNED
+    sign_convention: SIGNED_EXPENSE
     tt200_code: "25"
     tt99_code: "25"
     comparable_across_taxonomy: false
@@ -266,7 +266,7 @@ metrics:
     statement_type: INCOME_STATEMENT
     value_type: FLOW
     unit: VND
-    sign_convention: SIGNED
+    sign_convention: SIGNED_EXPENSE
     tt200_code: "26"
     tt99_code: "26"
     comparable_across_taxonomy: false

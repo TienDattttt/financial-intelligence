@@ -123,6 +123,12 @@ Hàm `compute_ttm(facts_df)` chỉ tính tổng 4 quý liên tiếp ($t-3, t-2, 
    * Nếu chỉ tiêu có `comparable_across_taxonomy == true` hoặc đã có số liệu `RESTATED_REGIME_CHANGE` sang TT99 cho từng quý TT200 xuất hiện trong cửa sổ $\rightarrow$ Cho phép tính TTM. Giá trị so sánh cả năm có phạm vi cả năm và chỉ được dùng cho phép tính có cùng phạm vi.
    * Nếu `comparable_across_taxonomy == false` và không có số trình bày lại $\rightarrow$ Trả về `NULL` kèm cờ `computation_note = 'MIXED_TAXONOMY'`.
 
+Mã và nhãn giống nhau chưa đủ để xác nhận tính tương đương. Ví dụ, doanh thu bán hàng mã `01` theo TT200 có thể gồm doanh thu bán bất động sản đầu tư. TT99 loại giao dịch này khỏi mã `01` và trình bày lãi/lỗ ở mã `21`. Cờ `false` giữ nguyên khi phạm vi thay đổi hoặc chưa có bằng chứng tương đương. [TT200, Điều 113](https://congbao.chinhphu.vn/tai-ve-van-ban-so-200-2014-tt-btc-6697-3551?format=pdf) · [TT99, Phụ lục IV](https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59655?format=pdf)
+
+### 4.5. Quy ước dấu doanh thu và chi phí trên B02
+
+`SIGNED_EXPENSE` áp dụng cho `IS_COST_OF_GOODS_SOLD`, `IS_FINANCIAL_EXPENSES`, `IS_SELLING_EXPENSES` và `IS_ADMINISTRATIVE_EXPENSES`. Chi phí thông thường có dấu dương và được trừ trong công thức B02. Layer 2 nhân số đã báo cáo với hệ số đơn vị VND và giữ nguyên dấu để bảo toàn các khoản hoàn nhập hoặc ghi giảm chi phí. `SIGNED_EXPENSE` giữ nguyên số 0 và `NULL`; quy ước doanh thu hiện hành `POSITIVE_REVENUE` không bị thay đổi trong lần chuẩn hóa này. [TT200, Điều 113](https://congbao.chinhphu.vn/tai-ve-van-ban-so-200-2014-tt-btc-6697-3551?format=pdf) · [TT99, Phụ lục IV](https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59655?format=pdf)
+
 ---
 
 ## 5. TIÊU CHÍ NGHIỆM THU TẦNG 2 (DEFINITION OF DONE)
@@ -136,12 +142,17 @@ Agent phải viết và chạy xanh `tests/unit/test_layer2_normalization.py`:
 ## 6. CHẠY CHUẨN HÓA TỪ RAW ARCHIVE
 
 ```sh
+PYTHONPATH=src uv run --locked python -m finintel.pipeline.cli run --stage normalize --source fhsc --ticker FPT --period 2026-Q2
+```
+
+```powershell
+$env:PYTHONPATH = 'src'
 uv run --locked python -m finintel.pipeline.cli run --stage normalize --source fhsc --ticker FPT --period 2026-Q2
 ```
 
-Chạy với `PYTHONPATH=src`. Lệnh đọc các phiên bản trong `filings_manifest`, xác minh mã băm và dùng các kỳ lịch sử cùng mã doanh nghiệp để tính quý rời. Mỗi lần chạy thành công ghi một batch tại `data/curated/financial_facts/<run_id>/` với `financial_facts.parquet` và `unmapped_metrics.parquet`. Batch lưu số báo cáo gốc, vùng số so sánh đã cấu hình và quý suy diễn kèm `source_filing_ids`. Các batch chạy lại có thể chứa cùng phiên bản báo cáo.
+Lệnh đọc các phiên bản trong `filings_manifest`, xác minh mã băm và dùng các kỳ lịch sử cùng mã doanh nghiệp để tính quý rời. Mỗi lần chạy thành công ghi một batch tại `data/curated/financial_facts/<run_id>/` với `financial_facts.parquet` và `unmapped_metrics.parquet`. Batch lưu số báo cáo gốc, vùng số so sánh đã cấu hình và quý suy diễn kèm `source_filing_ids`. Các batch chạy lại có thể chứa cùng phiên bản báo cáo.
 
-FHSC dùng VND theo bằng chứng khảo sát. Với `--source file`, khai báo hệ số đơn vị đã xác minh theo `filing_id` trong tệp settings. Thêm `cash_flow_method: DIRECT` hoặc `INDIRECT` cho báo cáo LCTT dùng mã số cần phân biệt phương pháp. Khai báo `comparative` khi tệp TT99 có cột số so sánh đã xác minh. Ví dụ báo cáo kết quả kinh doanh năm 2026 công bố lại số năm 2025 trong cột `prior`.
+FHSC dùng VND theo bằng chứng khảo sát. Với `--source file`, `unit_multiplier` là bắt buộc cho từng filing và phải là số nguyên dương đã xác minh; thiếu hoặc sai kiểu là vi phạm hợp đồng và phải dừng chuẩn hóa. Thêm `cash_flow_method: DIRECT` hoặc `INDIRECT` cho báo cáo LCTT dùng mã số cần phân biệt phương pháp. Khai báo `comparative` khi tệp TT99 có cột số so sánh đã xác minh. Ví dụ báo cáo kết quả kinh doanh năm 2026 công bố lại số năm 2025 trong cột `prior`.
 
 ```yaml
 normalization:

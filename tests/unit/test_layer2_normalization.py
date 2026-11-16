@@ -22,6 +22,7 @@ from finintel.ingestion.base import (
     StatementType,
 )
 from finintel.ingestion.file_adapter import FileAdapter
+from finintel.normalization.archive import normalize_archive
 from finintel.normalization.mapper import TaxonomyMapper
 from finintel.normalization.periods import compute_ttm, derive_quarters
 from finintel.normalization.regime_resolver import resolve_regime
@@ -65,6 +66,8 @@ def filing(
 def test_fiscal_regime_boundary() -> None:
     assert resolve_regime(date(2025, 4, 1)) == "VAS_TT200_2014"
     assert resolve_regime(date(2026, 1, 1)) == "VAS_TT99_2025"
+    assert resolve_regime(date(2025, 7, 1)) == "VAS_TT200_2014"
+    assert resolve_regime(date(2026, 7, 1)) == "VAS_TT99_2025"
 
 
 def test_exact_codes_units_and_unmapped(mapper: TaxonomyMapper) -> None:
@@ -207,6 +210,30 @@ def test_ytd_diff_requires_audit_and_duration(mapper: TaxonomyMapper) -> None:
             ],
         )
     )["fiscal_quarter"].to_list() == [1]
+
+
+def test_ytd_retains_latest_revision_per_audit_status(mapper: TaxonomyMapper) -> None:
+    unaudited = replace(filing(2025, 1), published_at=date(2025, 4, 15))
+    reviewed = replace(
+        unaudited,
+        audit_status=AuditStatus.REVIEWED,
+        published_at=date(2025, 5, 1),
+    )
+    q2 = filing(2025, 2, ytd=True)
+    table = facts(mapper, [(unaudited, 10), (reviewed, 12), (q2, 26)])
+    assert derive_quarters(table).filter(pl.col("fiscal_quarter") == 2).select(
+        "value", "audit_status", "source_filing_ids"
+    ).row(0) == (16.0, AuditStatus.UNAUDITED, ["filing-0", "filing-2"])
+
+
+def test_preexisting_derived_quarter_cannot_override_recalculation(mapper: TaxonomyMapper) -> None:
+    q1, q2 = [filing(2025, q, ytd=True) for q in (1, 2)]
+    original = facts(mapper, [(q1, 10), (q2, 26)])
+    stored = derive_quarters(original).filter(pl.col("fiscal_quarter") == 2)
+    revised = pl.concat([facts(mapper, [(q1, 12), (q2, 30)]), stored])
+    assert derive_quarters(revised).tail(1).select(
+        "value", "derivation_method"
+    ).row(0) == (18.0, "DERIVED_YTD_DIFF")
 
 
 def test_audited_q4_fallback_and_filing_availability(mapper: TaxonomyMapper) -> None:
@@ -433,7 +460,9 @@ def test_fhsc_annual_flows_match_fpt_filing(mapper: TaxonomyMapper) -> None:
             )
 
 
-def test_normalize_cli_replays_verified_fhsc_page(tmp_path: Path) -> None:
+def test_normalize_cli_replays_verified_fhsc_page(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     payload = (ROOT / "tests/fixtures/raw_samples/fhsc_fpt_bs_2026q2.json").read_bytes()
     row = json.loads(payload)["data"][0]
     archive_root = tmp_path / "raw"
@@ -489,8 +518,43 @@ def test_normalize_cli_replays_verified_fhsc_page(tmp_path: Path) -> None:
     ].to_list() == [stored.filing_id]
     (raw_file,) = archive_root.glob("sha256/*/*.json")
     raw_file.write_bytes(payload + b" ")
+    capsys.readouterr()
     assert main(args) == 1
+    assert "Raw filing bytes differ from the manifest hash." in capsys.readouterr().err
     assert list(batches.iterdir()) == [batch]
+
+
+@pytest.mark.parametrize(
+    ("manifest_edits", "filing_settings", "message"),
+    [
+        ({"raw_archive_path": "../income.csv"}, {"unit_multiplier": 1}, "Raw filing path is outside its archive"),
+        ({"canonical_content_sha256": "0" * 64}, {"unit_multiplier": 1}, "Raw metrics differ from the filing manifest hash"),
+        ({"connector_name": "unsupported"}, {"unit_multiplier": 1}, "Unsupported raw filing connector"),
+        ({}, {}, "Normalization requires integer unit_multiplier"),
+    ],
+)
+def test_file_archive_enforces_manifest_guards_and_required_unit(
+    mapper: TaxonomyMapper, tmp_path: Path, manifest_edits: dict[str, str],
+    filing_settings: dict[str, int], message: str,
+) -> None:
+    source = tmp_path / "income.csv"
+    source.write_text("raw_metric_key,raw_value\n10,135\n", encoding="utf-8")
+    state = StateStore(tmp_path / "metadata/state.sqlite")
+    root = tmp_path / "raw"
+    (stored,) = RawArchive(root, state).store(
+        next(FileAdapter(source, filing(2025), source_provider="issuer").fetch())
+    )
+    with state.connection() as conn:
+        for key, value in manifest_edits.items():
+            conn.execute(
+                f"UPDATE filings_manifest SET {key} = ? WHERE filing_id = ?",
+                (value, stored.filing_id),
+            )
+    with pytest.raises(ContractViolationError, match=message):
+        normalize_archive(
+            state, root, mapper, source="file",
+            filing_settings={stored.filing_id: filing_settings},
+        )
 
 
 def test_normalize_cli_offline_comparative_column(tmp_path: Path) -> None:

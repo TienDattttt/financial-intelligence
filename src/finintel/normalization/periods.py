@@ -175,6 +175,7 @@ def derive_quarters(facts: pl.DataFrame, *, as_of: date | None = None) -> pl.Dat
                 "period_type",
                 "period_start_date",
                 "period_end_date",
+                "audit_status",
             ],
             keep="last",
         )
@@ -187,6 +188,7 @@ def derive_quarters(facts: pl.DataFrame, *, as_of: date | None = None) -> pl.Dat
     )
     direct = flow.filter(
         (pl.col("period_type") == "QUARTER")
+        & (pl.col("derivation_method") == "REPORTED_DIRECTLY")
         & Q.is_between(1, 4)
         & DAYS.is_between(80, 100)
         & (DAYS == _days(START, END))
