@@ -14,7 +14,12 @@ import polars as pl
 from filelock import FileLock
 
 from finintel.pipeline.state_store import StateStore
-from finintel.storage.schemas import canonicalize_financial_facts
+from finintel.storage.schemas import (
+    ISSUERS_SCHEMA,
+    UNMAPPED_METRICS_SCHEMA,
+    canonicalize_financial_facts,
+    canonicalize_table,
+)
 
 TableInput: TypeAlias = pl.DataFrame | Path
 
@@ -34,7 +39,7 @@ class SnapshotPublisher:
         self.root = snapshots_root.resolve()
         self.state_store = state_store
         self.keep_snapshots = keep_snapshots
-        self._lock = FileLock(str(self.root / ".publish.lock"))
+        self._lock = FileLock(str(self.root.parent / f".{self.root.name}.publish.lock"))
 
     def publish(
         self,
@@ -48,6 +53,8 @@ class SnapshotPublisher:
         self._validate_snapshot_id(snapshot_id)
         if not tables:
             raise ValueError("A snapshot must contain at least one Parquet table.")
+        if self.state_store is not None and run_id is None:
+            raise ValueError("run_id is required when publishing with a StateStore.")
         self.root.mkdir(parents=True, exist_ok=True)
         with self._lock:
             self._remove_staging_directories()
@@ -80,7 +87,7 @@ class SnapshotPublisher:
                 except BaseException:
                     shutil.rmtree(destination, ignore_errors=True)
                     raise
-            self.collect_garbage()
+            self._collect_garbage_unlocked()
             return destination
 
     publish_snapshot = publish
@@ -88,50 +95,120 @@ class SnapshotPublisher:
     def collect_garbage(self) -> None:
         """Delete abandoned staging directories and all but newest snapshots."""
 
-        if not self.root.exists():
-            return
+        self.root.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self._collect_garbage_unlocked()
+
+    def _collect_garbage_unlocked(self) -> None:
+        """Run garbage collection while the caller holds ``self._lock``."""
+
         self._remove_staging_directories()
         snapshots = [
             path
             for path in self.root.iterdir()
             if path.is_dir() and path.name.startswith("snap_")
         ]
+        committed_ids = (
+            self.state_store.published_snapshot_ids()
+            if self.state_store is not None
+            else [path.name for path in snapshots]
+        )
+        committed_set = set(committed_ids)
+        for uncommitted in [
+            path for path in snapshots if path.name not in committed_set
+        ]:
+            self._remove_snapshot(uncommitted)
+        snapshots = [path for path in snapshots if path.name in committed_set]
         snapshots.sort(
             key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True
         )
-        for old in snapshots[self.keep_snapshots :]:
-            try:
-                shutil.rmtree(old)
-            except OSError:
-                # A dashboard reader may still hold a Windows file handle. The
-                # next successful publication retries this best-effort cleanup.
-                continue
+        protected: set[str] = set()
+        if self.state_store is not None and committed_ids:
+            active = self.state_store.active_snapshot()
+            if active is not None:
+                active_id = str(active["snapshot_id"])
+                protected.add(active_id)
+                predecessor = next(
+                    (
+                        snapshot_id
+                        for snapshot_id in committed_ids
+                        if snapshot_id != active_id
+                    ),
+                    None,
+                )
+                if predecessor is not None:
+                    protected.add(predecessor)
+        keep = set(path.name for path in snapshots[: self.keep_snapshots]) | protected
+        for old in snapshots:
+            if old.name not in keep:
+                self._remove_snapshot(old)
 
-    garbage_collect = collect_garbage
+    @staticmethod
+    def _remove_snapshot(path: Path) -> None:
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            # A dashboard reader may still hold a Windows file handle. The
+            # next successful publication retries this best-effort cleanup.
+            pass
 
     def _write_table(self, staging: Path, filename: str, table: TableInput) -> None:
         if Path(filename).name != filename or not filename.endswith(".parquet"):
             raise ValueError(f"Snapshot table must be a Parquet filename: {filename}")
         destination = staging / filename
         if isinstance(table, pl.DataFrame):
-            if filename == "financial_facts.parquet":
+            if filename in {"financial_facts.parquet", "latest_facts.parquet"}:
                 table = canonicalize_financial_facts(table)
+            elif filename == "issuers.parquet":
+                table = canonicalize_table(table, ISSUERS_SCHEMA)
+            elif filename == "unmapped_metrics.parquet":
+                table = canonicalize_table(table, UNMAPPED_METRICS_SCHEMA)
             table.write_parquet(destination)
         else:
             source = table.resolve()
             if not source.is_file():
                 raise FileNotFoundError(source)
-            shutil.copy2(source, destination)
+            if filename in {
+                "financial_facts.parquet",
+                "latest_facts.parquet",
+                "issuers.parquet",
+                "unmapped_metrics.parquet",
+            }:
+                table_frame = pl.read_parquet(source)
+                if filename in {"financial_facts.parquet", "latest_facts.parquet"}:
+                    table_frame = canonicalize_financial_facts(table_frame)
+                elif filename == "issuers.parquet":
+                    table_frame = canonicalize_table(table_frame, ISSUERS_SCHEMA)
+                elif filename == "unmapped_metrics.parquet":
+                    table_frame = canonicalize_table(
+                        table_frame, UNMAPPED_METRICS_SCHEMA
+                    )
+                table_frame.write_parquet(destination)
+            else:
+                shutil.copy2(source, destination)
 
     def _verify(self, staging: Path, tables: Mapping[str, TableInput]) -> None:
         for filename in tables:
             path = staging / filename
             if not path.is_file():
                 raise OSError(f"Snapshot table was not written: {filename}")
-            if pl.scan_parquet(path).select(pl.len()).collect().item() <= 0:
+            table = pl.read_parquet(path)
+            self._validate_table_contract(filename, table)
+            if table.height <= 0:
                 raise ValueError(f"Snapshot table is empty: {filename}")
         if not (staging / "_snapshot_meta.json").is_file():
             raise OSError("Snapshot metadata was not written.")
+
+    @staticmethod
+    def _validate_table_contract(filename: str, table: pl.DataFrame) -> None:
+        if filename in {"financial_facts.parquet", "latest_facts.parquet"}:
+            canonicalize_financial_facts(table)
+        elif filename == "issuers.parquet":
+            canonicalize_table(table, ISSUERS_SCHEMA)
+        elif filename == "unmapped_metrics.parquet":
+            canonicalize_table(table, UNMAPPED_METRICS_SCHEMA)
+
+    garbage_collect = collect_garbage
 
     def _remove_staging_directories(self) -> None:
         if not self.root.exists():

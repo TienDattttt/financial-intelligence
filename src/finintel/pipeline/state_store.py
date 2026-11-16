@@ -151,6 +151,10 @@ class StateStore:
             ).fetchone()
             if row is None:
                 raise ValueError(f"Unknown pipeline run: {run_id}")
+            if row["status"] != "RUNNING":
+                raise ValueError(
+                    f"Pipeline run {run_id} is not publishable from status {row['status']}."
+                )
             conn.execute(
                 """UPDATE pipeline_runs
                    SET status = 'SUCCEEDED', finished_at = ?, published_snapshot_id = ?
@@ -164,6 +168,18 @@ class StateStore:
                    run_id = excluded.run_id, published_at = excluded.published_at""",
                 (snapshot_id, run_id, now),
             )
+
+    def published_snapshot_ids(self) -> list[str]:
+        """Return successfully promoted snapshot IDs, newest first."""
+
+        with self.connection() as conn:
+            rows = conn.execute(
+                """SELECT published_snapshot_id FROM pipeline_runs
+                   WHERE status IN ('SUCCEEDED', 'PARTIAL_SUCCESS')
+                     AND published_snapshot_id IS NOT NULL
+                   ORDER BY finished_at DESC, rowid DESC"""
+            ).fetchall()
+        return [str(row[0]) for row in rows]
 
     def start_step(self, run_id: str, stage: str) -> int:
         with self.connection() as conn:

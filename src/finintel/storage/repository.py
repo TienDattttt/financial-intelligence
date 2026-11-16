@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from datetime import date
 from pathlib import Path
 from typing import cast
@@ -31,22 +33,75 @@ class ParquetRepository:
         if selected is None:
             raise ValueError("Provide a Parquet path or data_root.")
         if selected.is_dir():
-            candidates = [
-                selected / "financial_facts.parquet",
-                selected / "latest_facts.parquet",
-                selected / "curated" / "financial_facts.parquet",
-            ]
-            candidates.extend(
-                sorted(
-                    selected.glob("curated/financial_facts/*/financial_facts.parquet")
-                )
-            )
-            candidates.extend(sorted(selected.glob("*/financial_facts.parquet")))
-            selected = next(
-                (candidate for candidate in candidates if candidate.exists()),
-                candidates[0],
-            )
+            selected = self._discover_facts_file(selected)
         self.path = selected.resolve()
+
+    @classmethod
+    def _discover_facts_file(cls, root: Path) -> Path:
+        direct = [root / "financial_facts.parquet", root / "latest_facts.parquet"]
+        for candidate in direct:
+            if candidate.is_file():
+                return candidate
+
+        snapshot_root = root / "published" / "snapshots"
+        if root.name == "snapshots":
+            snapshot_root = root
+        elif (
+            not snapshot_root.is_dir()
+            and (root / "data" / "published" / "snapshots").is_dir()
+        ):
+            snapshot_root = root / "data" / "published" / "snapshots"
+        if snapshot_root.is_dir():
+            snapshot_dirs = sorted(
+                (
+                    path
+                    for path in snapshot_root.iterdir()
+                    if path.is_dir() and path.name.startswith("snap_")
+                ),
+                key=lambda path: (path.stat().st_mtime_ns, path.name),
+                reverse=True,
+            )
+            active_id = cls._active_snapshot_id(snapshot_root)
+            if active_id is not None:
+                snapshot_dirs.sort(
+                    key=lambda path: (
+                        path.name != active_id,
+                        -path.stat().st_mtime_ns,
+                        path.name,
+                    ),
+                )
+            for snapshot in snapshot_dirs:
+                for filename in ("financial_facts.parquet", "latest_facts.parquet"):
+                    candidate = snapshot / filename
+                    if candidate.is_file():
+                        return candidate
+
+        curated = root / "curated" / "financial_facts.parquet"
+        if curated.is_file():
+            return curated
+        batches = sorted(root.glob("curated/financial_facts/*/financial_facts.parquet"))
+        if len(batches) == 1:
+            return batches[0]
+        if len(batches) > 1:
+            raise ContractViolationError(
+                "Multiple curated batches found; provide the active snapshot or an explicit file."
+            )
+        return root / "financial_facts.parquet"
+
+    @staticmethod
+    def _active_snapshot_id(snapshot_root: Path) -> str | None:
+        data_root = snapshot_root.parent.parent
+        state_path = data_root / "metadata" / "state.sqlite"
+        if not state_path.is_file():
+            return None
+        try:
+            with closing(sqlite3.connect(state_path)) as connection:
+                row = connection.execute(
+                    "SELECT snapshot_id FROM active_snapshot WHERE singleton = 1"
+                ).fetchone()
+        except sqlite3.Error:
+            return None
+        return str(row[0]) if row is not None else None
 
     def get_facts_as_of(
         self, as_of_date: date, require_exact_filing_date: bool = False

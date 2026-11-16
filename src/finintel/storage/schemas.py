@@ -82,6 +82,12 @@ FINANCIAL_FACTS_KEY = (
     "filing_id",
 )
 OPTIONAL_FINANCIAL_FACT_COLUMNS = frozenset({"ttm_value", "computation_note"})
+NON_NULL_FINANCIAL_FACT_COLUMNS = frozenset(
+    name
+    for name in FINANCIAL_FACTS_SCHEMA
+    if name
+    not in {"fiscal_quarter", "published_at", "value", *OPTIONAL_FINANCIAL_FACT_COLUMNS}
+)
 
 
 def validate_required_columns(
@@ -101,6 +107,44 @@ def validate_required_columns(
         raise ContractViolationError(
             f"Storage table is missing required columns: {', '.join(missing)}."
         )
+    if schema is FINANCIAL_FACTS_SCHEMA:
+        if frame["effective_available_at"].is_null().any():
+            raise ContractViolationError(
+                "Financial facts require a non-null effective_available_at."
+            )
+        null_columns = [
+            name
+            for name in NON_NULL_FINANCIAL_FACT_COLUMNS
+            if frame[name].is_null().any()
+        ]
+        if null_columns:
+            raise ContractViolationError(
+                "Financial facts contain nulls in non-nullable columns: "
+                + ", ".join(sorted(null_columns))
+                + "."
+            )
+        if frame.select(list(FINANCIAL_FACTS_KEY)).is_duplicated().any():
+            raise ContractViolationError(
+                "Financial facts contain duplicate composite business keys."
+            )
+    elif schema is ISSUERS_SCHEMA:
+        null_columns = [
+            name
+            for name in (
+                "issuer_id",
+                "ticker",
+                "exchange",
+                "accounting_regime",
+                "industry_snapshot_date",
+            )
+            if frame[name].is_null().any()
+        ]
+        if null_columns:
+            raise ContractViolationError(
+                "Issuers contain nulls in non-nullable columns: "
+                + ", ".join(null_columns)
+                + "."
+            )
 
 
 def canonicalize_financial_facts(frame: pl.DataFrame) -> pl.DataFrame:
@@ -113,11 +157,39 @@ def canonicalize_financial_facts(frame: pl.DataFrame) -> pl.DataFrame:
     validate_required_columns(frame)
     expressions = [
         (
-            pl.col(name).cast(dtype, strict=False)
+            pl.col(name).cast(dtype, strict=True)
             if name in frame.columns
             else pl.lit(None, dtype=dtype)
         ).alias(name)
         for name, dtype in FINANCIAL_FACTS_SCHEMA.items()
     ]
     extras = [name for name in frame.columns if name not in FINANCIAL_FACTS_SCHEMA]
-    return frame.select([*expressions, *[pl.col(name) for name in extras]])
+    try:
+        canonical = frame.select([*expressions, *[pl.col(name) for name in extras]])
+    except pl.exceptions.PolarsError as exc:
+        raise ContractViolationError(
+            "Financial facts contain values that cannot be cast to the storage schema."
+        ) from exc
+    validate_required_columns(canonical)
+    return canonical
+
+
+def canonicalize_table(
+    frame: pl.DataFrame, schema: Mapping[str, pl.DataType]
+) -> pl.DataFrame:
+    """Cast a non-fact storage table strictly while retaining provenance columns."""
+
+    validate_required_columns(frame, schema)
+    expressions = [
+        pl.col(name).cast(dtype, strict=True).alias(name)
+        for name, dtype in schema.items()
+    ]
+    extras = [name for name in frame.columns if name not in schema]
+    try:
+        canonical = frame.select([*expressions, *[pl.col(name) for name in extras]])
+    except pl.exceptions.PolarsError as exc:
+        raise ContractViolationError(
+            "Storage table contains values that cannot be cast to its schema."
+        ) from exc
+    validate_required_columns(canonical, schema)
+    return canonical
