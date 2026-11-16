@@ -338,27 +338,46 @@ def test_runner_preserves_snapshot_after_post_promotion_gc_failure(
     assert repository.get_facts_as_of(as_of)["value"].to_list() == [1.0]
 
 
-def test_gc_protects_legacy_active_snapshot_with_missing_published_id(
+@pytest.mark.parametrize("finish_run", [False, True])
+def test_gc_retains_legacy_snapshot_after_next_promotion(
     tmp_path: Path,
+    finish_run: bool,
 ) -> None:
     store = StateStore(tmp_path / "state.sqlite")
     store.initialize()
     store.start_run("run", "manual", {}, None)
-    publisher = SnapshotPublisher(tmp_path / "snapshots", state_store=store)
-    published = publisher.publish(
-        "snap_committed", {"financial_facts.parquet": _facts().head(1)}, run_id="run"
-    )
+    root = tmp_path / "snapshots"
+    publisher = SnapshotPublisher(root, state_store=store)
+    tables = {"financial_facts.parquet": _facts().head(1)}
+    published = publisher.publish("snap_committed", tables, run_id="run")
     with store.connection() as conn:
         conn.execute(
             "UPDATE pipeline_runs SET status = 'FAILED', published_snapshot_id = NULL WHERE run_id = 'run'"
         )
 
     publisher.collect_garbage()
-
     assert (published / "financial_facts.parquet").is_file()
 
+    store.start_run("next", "manual", {}, None)
+    if finish_run:
+        SnapshotPublisher(root).publish("snap_next", tables)
+        store.finish_run("next", "SUCCEEDED", "snap_next")
+        publisher.collect_garbage()
+    else:
+        publisher.publish("snap_next", tables, run_id="next")
 
-def test_repository_discovery_ignores_staging_and_uses_active_snapshot(
+    assert (published / "financial_facts.parquet").is_file()
+    assert store.published_snapshot_ids() == ["snap_next", "snap_committed"]
+    legacy_run = store.get_run("run")
+    assert legacy_run is not None and legacy_run["status"] == "FAILED"
+    assert legacy_run["published_snapshot_id"] == "snap_committed"
+
+    store.start_run("latest", "manual", {}, None)
+    publisher.publish("snap_latest", tables, run_id="latest")
+    assert not published.exists()
+
+
+def test_repository_discovery_ignores_staging_without_state(
     tmp_path: Path,
 ) -> None:
     data_root = tmp_path / "data"
@@ -374,3 +393,48 @@ def test_repository_discovery_ignores_staging_and_uses_active_snapshot(
         repository.path
         == (snapshot_root / "snap_1" / "financial_facts.parquet").resolve()
     )
+
+
+@pytest.mark.parametrize("invalid_state", ["corrupt", "empty", "directory"])
+def test_repository_surfaces_sqlite_lookup_errors(
+    tmp_path: Path, invalid_state: str
+) -> None:
+    root = tmp_path / "published" / "snapshots"
+    SnapshotPublisher(root).publish("snap_1", {"financial_facts.parquet": _facts()})
+    state_path = tmp_path / "metadata" / "state.sqlite"
+    state_path.parent.mkdir()
+    if invalid_state == "directory":
+        state_path.mkdir()
+    else:
+        state_path.write_bytes(b"invalid SQLite" if invalid_state == "corrupt" else b"")
+
+    with pytest.raises(ContractViolationError, match="Unable to read active snapshot"):
+        ParquetRepository(tmp_path).get_facts_as_of(date(2026, 2, 15))
+
+
+@pytest.mark.parametrize("has_active_snapshot", [False, True])
+def test_repository_uses_curated_facts_when_state_has_no_active_facts(
+    tmp_path: Path,
+    has_active_snapshot: bool,
+) -> None:
+    root = tmp_path / "published" / "snapshots"
+    store = StateStore(tmp_path / "metadata" / "state.sqlite")
+    store.initialize()
+    facts = _facts().head(1)
+    if has_active_snapshot:
+        store.start_run("active", "manual", {}, None)
+        SnapshotPublisher(root, state_store=store).publish(
+            "snap_active", {"latest_facts.parquet": facts}, run_id="active"
+        )
+    SnapshotPublisher(root).publish(
+        "snap_uncommitted", {"financial_facts.parquet": facts}
+    )
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    facts.with_columns(pl.lit(1.0).alias("value")).write_parquet(
+        curated / "financial_facts.parquet"
+    )
+
+    result = ParquetRepository(tmp_path).get_facts_as_of(date(2026, 2, 15))
+
+    assert result["value"].to_list() == [1.0]

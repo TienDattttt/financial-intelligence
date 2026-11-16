@@ -87,25 +87,7 @@ class ParquetRepository:
                 return candidate
 
         if snapshots is not None:
-            snapshot_dirs = sorted(
-                (
-                    path
-                    for path in snapshots.iterdir()
-                    if path.is_dir() and path.name.startswith("snap_")
-                ),
-                key=lambda path: (path.stat().st_mtime_ns, path.name),
-                reverse=True,
-            )
-            active_id = cls._active_snapshot_id(snapshots)
-            if active_id is not None:
-                snapshot_dirs.sort(
-                    key=lambda path: (
-                        path.name != active_id,
-                        -path.stat().st_mtime_ns,
-                        path.name,
-                    ),
-                )
-            for snapshot in snapshot_dirs:
+            for snapshot in cls._snapshot_candidates(snapshots):
                 candidate = snapshot / "financial_facts.parquet"
                 if candidate.is_file():
                     return candidate
@@ -123,19 +105,39 @@ class ParquetRepository:
         return root / "financial_facts.parquet"
 
     @staticmethod
-    def _active_snapshot_id(snapshot_root: Path) -> str | None:
+    def _snapshot_candidates(snapshot_root: Path) -> list[Path]:
         data_root = snapshot_root.parent.parent
         state_path = data_root / "metadata" / "state.sqlite"
-        if not state_path.is_file():
-            return None
         try:
-            with closing(sqlite3.connect(state_path)) as connection:
+            state_path.stat()
+        except FileNotFoundError:
+            return sorted(
+                (
+                    path
+                    for path in snapshot_root.iterdir()
+                    if path.is_dir() and path.name.startswith("snap_")
+                ),
+                key=lambda path: (path.stat().st_mtime_ns, path.name),
+                reverse=True,
+            )
+
+        try:
+            with closing(
+                sqlite3.connect(f"{state_path.as_uri()}?mode=ro", uri=True)
+            ) as connection:
                 row = connection.execute(
                     "SELECT snapshot_id FROM active_snapshot WHERE singleton = 1"
                 ).fetchone()
-        except sqlite3.Error:
-            return None
-        return str(row[0]) if row is not None else None
+        except sqlite3.Error as exc:
+            raise ContractViolationError(
+                f"Unable to read active snapshot from {state_path}."
+            ) from exc
+        if row is None:
+            return []
+        snapshot_id = str(row[0])
+        if not snapshot_id.startswith("snap_") or Path(snapshot_id).name != snapshot_id:
+            raise ContractViolationError(f"Invalid active snapshot ID in {state_path}.")
+        return [snapshot_root / snapshot_id]
 
     def get_facts_as_of(
         self, as_of_date: date, require_exact_filing_date: bool = False

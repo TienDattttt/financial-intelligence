@@ -135,13 +135,7 @@ class StateStore:
                 (status, now, snapshot_id, run_id),
             )
             if snapshot_id is not None:
-                conn.execute(
-                    """INSERT INTO active_snapshot (singleton, snapshot_id, run_id, published_at)
-                       VALUES (1, ?, ?, ?)
-                       ON CONFLICT(singleton) DO UPDATE SET snapshot_id = excluded.snapshot_id,
-                       run_id = excluded.run_id, published_at = excluded.published_at""",
-                    (snapshot_id, run_id, now),
-                )
+                self._set_active_snapshot(conn, snapshot_id, run_id, now)
 
     def publish_snapshot(self, run_id: str, snapshot_id: str) -> None:
         """Atomically mark a completed run and its snapshot as active."""
@@ -164,13 +158,28 @@ class StateStore:
                    WHERE run_id = ?""",
                 (now, snapshot_id, run_id),
             )
-            conn.execute(
-                """INSERT INTO active_snapshot (singleton, snapshot_id, run_id, published_at)
-                   VALUES (1, ?, ?, ?)
-                   ON CONFLICT(singleton) DO UPDATE SET snapshot_id = excluded.snapshot_id,
-                   run_id = excluded.run_id, published_at = excluded.published_at""",
-                (snapshot_id, run_id, now),
-            )
+            self._set_active_snapshot(conn, snapshot_id, run_id, now)
+
+    @staticmethod
+    def _set_active_snapshot(
+        conn: sqlite3.Connection, snapshot_id: str, run_id: str, published_at: str
+    ) -> None:
+        # Preserve a legacy promotion while its active pointer still exists.
+        conn.execute(
+            """UPDATE pipeline_runs
+               SET published_snapshot_id = (
+                   SELECT snapshot_id FROM active_snapshot WHERE singleton = 1
+               )
+               WHERE run_id = (SELECT run_id FROM active_snapshot WHERE singleton = 1)
+                 AND published_snapshot_id IS NULL"""
+        )
+        conn.execute(
+            """INSERT INTO active_snapshot (singleton, snapshot_id, run_id, published_at)
+               VALUES (1, ?, ?, ?)
+               ON CONFLICT(singleton) DO UPDATE SET snapshot_id = excluded.snapshot_id,
+               run_id = excluded.run_id, published_at = excluded.published_at""",
+            (snapshot_id, run_id, published_at),
+        )
 
     def published_snapshot_ids(self) -> list[str]:
         """Return promoted snapshot IDs, newest first."""
