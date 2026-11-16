@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Literal
@@ -66,7 +66,8 @@ ON filings_manifest (
 
 LATEST = """
 SELECT filing_id, revision_no, canonical_content_sha256,
-       fiscal_quarter, audit_status, audit_opinion, published_at, provider_attrs_json
+       fiscal_quarter, audit_status, audit_opinion, published_at, fetched_at,
+       provider_attrs_json
 FROM filings_manifest
 WHERE source_provider = :source_provider
   AND issuer_id = :issuer_id
@@ -152,12 +153,28 @@ def _refresh_metadata(
     previous: sqlite3.Row,
     filing: RawFiling,
     receipt_sha256: str,
+    fetched_at: str,
 ) -> None:
-    changes = {
-        name: value
-        for name, value in _provided_evidence(filing.metadata).items()
-        if value != previous[name]
-    }
+    # Evidence is field-scoped: each value points to the receipt that supplied it.
+    # Replaying an older capture must not roll a newer value back.
+    attrs = json.loads(previous["provider_attrs_json"] or "{}")
+    evidence = attrs.get("metadata_evidence", {})
+    if not isinstance(evidence, dict):
+        evidence = {}
+    changes: dict[str, str] = {}
+    incoming = datetime.fromisoformat(fetched_at)
+    for name, value in _provided_evidence(filing.metadata).items():
+        if value == previous[name]:
+            continue
+        reference = evidence.get(name)
+        prior = reference.get("fetched_at") if isinstance(reference, dict) else None
+        if not isinstance(prior, str):
+            # Values captured before field-level evidence existed got their
+            # timestamp from the revision itself.
+            prior = previous["fetched_at"]
+        if incoming < datetime.fromisoformat(prior):
+            continue
+        changes[name] = value
     if not changes:
         return
 
@@ -175,12 +192,12 @@ def _refresh_metadata(
     )
     # Keep the original raw payload and retrieval time for this revision.
     # Each changed field points to the receipt that supplied its current value.
-    attrs = json.loads(previous["provider_attrs_json"] or "{}")
-    evidence = attrs.setdefault("metadata_evidence", {})
+    attrs["metadata_evidence"] = evidence
     for name in changes:
         evidence[name] = {
             "receipt_sha256": receipt_sha256,
             "raw_record_locator": filing.locator,
+            "fetched_at": fetched_at,
         }
     conn.execute(
         METADATA_UPDATE,
@@ -272,7 +289,9 @@ class RawArchive:
                     previous is not None
                     and previous["canonical_content_sha256"] == canonical
                 ):
-                    _refresh_metadata(conn, previous, filing, receipt_sha256)
+                    _refresh_metadata(
+                        conn, previous, filing, receipt_sha256, fetched_at
+                    )
                     outcomes.append(
                         ArchiveOutcome(
                             str(previous["filing_id"]),

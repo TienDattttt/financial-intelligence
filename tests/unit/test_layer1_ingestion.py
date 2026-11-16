@@ -4,7 +4,7 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime
 from importlib import import_module
 from pathlib import Path
 
@@ -22,6 +22,7 @@ from finintel.ingestion.base import (
     AuditStatus,
     FilingMetadata,
     PeriodType,
+    RawFilingBundle,
     StatementScope,
     StatementType,
 )
@@ -643,6 +644,37 @@ def test_unchanged_hash_updates_audit_metadata(archive: RawArchive) -> None:
     assert len(rows) == 1
     assert rows[0]["audit_status"] == "AUDITED"
     assert rows[0]["filing_id"] == initial.filing_id
+
+
+def test_older_receipt_does_not_roll_back_metadata(archive: RawArchive) -> None:
+    """A replayed older capture cannot overwrite newer filing evidence."""
+    original = FIXTURES / "fpt_2025_balance_sheet_extract.json"
+    newer = datetime(2026, 2, 1, tzinfo=UTC)
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    latest = datetime(2026, 3, 1, tzinfo=UTC)
+
+    def captured(
+        filing_metadata: FilingMetadata, fetched_at: datetime
+    ) -> RawFilingBundle:
+        (bundle,) = FileAdapter(
+            original, filing_metadata, source_provider="manual_audit"
+        ).fetch()
+        return replace(bundle, payload=replace(bundle.payload, fetched_at=fetched_at))
+
+    (initial,) = archive.store(captured(metadata(audit_status="AUDITED"), newer))
+    assert initial.status == "ARCHIVED"
+
+    (stale,) = archive.store(captured(metadata(audit_status="UNAUDITED"), older))
+    assert stale.status == "SKIPPED_UNCHANGED"
+    (row,) = read_manifest(archive.state)
+    assert row["audit_status"] == "AUDITED"
+
+    (fresh,) = archive.store(captured(metadata(audit_status="UNAUDITED"), latest))
+    assert fresh.status == "SKIPPED_UNCHANGED"
+    (row,) = read_manifest(archive.state)
+    assert row["audit_status"] == "UNAUDITED"
+    evidence = json.loads(row["provider_attrs_json"])["metadata_evidence"]
+    assert evidence["audit_status"]["fetched_at"] == latest.isoformat()
 
 
 def test_unchanged_hash_merges_and_links_evidence_by_field(
