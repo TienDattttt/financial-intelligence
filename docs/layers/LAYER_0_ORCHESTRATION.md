@@ -74,11 +74,18 @@ CREATE TABLE IF NOT EXISTS pipeline_steps (
 );
 
 CREATE TABLE IF NOT EXISTS api_key_registry (
-    provider_name TEXT PRIMARY KEY,        -- Ví dụ: 'vnstock_fhsc'
+    provider_name TEXT PRIMARY KEY,        -- Ví dụ 'fhsc'
     key_fingerprint TEXT NOT NULL,         -- 8 ký tự băm SHA-256 cuối của key (CẤM lưu plaintext API key vào DB!)
     provisioned_at TEXT NOT NULL,          -- Ngày cấp khóa (ISO-8601)
     expires_at TEXT NOT NULL,              -- Ngày hết hạn (provisioned_at + 30 ngày với fhsc)
-    package_version TEXT NOT NULL          -- Ví dụ: 'vnstock==6.0.1'
+    package_version TEXT NOT NULL          -- Ví dụ 'vnstock-oapi==0.1.2'
+);
+
+CREATE TABLE IF NOT EXISTS active_snapshot (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    snapshot_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES pipeline_runs(run_id),
+    published_at TEXT NOT NULL
 );
 ```
 
@@ -107,3 +114,18 @@ Agent phải viết và chạy xanh toàn bộ file `tests/unit/test_layer0_orch
    * Hàm ném `TransientSourceError` 2 lần rồi thành công ở lần thứ 3 $\rightarrow$ `attempt_count == 3`, `status == 'SUCCEEDED'`.
    * Hàm ném `SourceEntitlementError` hoặc `RateLimitOrCircuitOpenError` $\rightarrow$ dừng ngay ở `attempt_count == 1`, không retry.
 3. **Test Key Expiration Check:** Khi `expires_at` nhỏ hơn thời điểm hiện tại, `health_check()` phải chặn luồng gọi API trực tuyến và báo rõ thông điệp yêu cầu xoay vòng khóa (rotate key).
+
+## 6. CHẠY TẦNG 0
+
+Từ thư mục gốc trên Windows PowerShell, kiểm tra trạng thái cục bộ bằng CLI.
+
+```powershell
+$env:PYTHONPATH = 'src'
+uv run --locked python -m finintel.pipeline.cli health --source file
+```
+
+`health --source fhsc` kiểm tra phiên bản connector đã duyệt, tuổi khóa và kết nối FHSC. Cấu hình mặc định dùng `data/metadata/state.sqlite` và yêu cầu 100 MiB đĩa trống. CLI ghi log JSONL ra stderr.
+
+`run` nhận các bộ lọc `--ticker`, `--period` và `--stage`. Cấu hình mặc định dành các bước nghiệp vụ cho handler được nối vào `Runner`. CLI báo lỗi khi một bước được yêu cầu thiếu handler. Handler ingest phải lưu raw trước khi trả kết quả thành công. Handler publish nhận ID snapshot hiện tại để giữ dữ liệu ngoài phạm vi chạy lại và trả ID snapshot sau khi xuất bản thành công.
+
+Khi handler ingest tự lấy danh sách mã trong một lần chạy toàn lô, gọi `context.record_archived(ticker)` sau khi lưu xong raw của từng mã. Nếu nguồn phát rate limit, `--continue-on-partial-ingest` chỉ chuyển các mã đã xác nhận lưu sang các bước tiếp theo.
