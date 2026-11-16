@@ -1,0 +1,3 @@
+state_path: ../data/metadata/state.sqlite
+min_free_bytes: 104857600
+tickers: []
