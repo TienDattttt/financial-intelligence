@@ -607,9 +607,12 @@ def prepare_periods(
     )
     return (
         result.with_columns(
-            pl.max_horizontal(
-                "_period_available_at", "_period_available_at_prior"
-            ).alias("_period_available_at"),
+            pl.when(pl.col("_period_available_at").is_not_null())
+            .then(
+                pl.max_horizontal("_period_available_at", "_period_available_at_prior")
+            )
+            .otherwise(None)
+            .alias("_period_available_at"),
             combine_filing_ids(
                 pl.col("_period_filing_ids"), pl.col("_period_filing_ids_prior")
             ).alias("source_filing_ids"),

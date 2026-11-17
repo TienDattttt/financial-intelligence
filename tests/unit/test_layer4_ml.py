@@ -89,7 +89,7 @@ def test_classical_scores_exactness_and_missing_note_evidence() -> None:
             "IS_CONTINUING_OPERATIONS_NET_INCOME": None,
         }
     )
-    assert fallback["beneish_m8_score"] is not None
+    assert fallback["beneish_m8_score"] == pytest.approx(-2.32795)
 
 
 def test_classical_scores_exclude_noncorporate_regimes() -> None:

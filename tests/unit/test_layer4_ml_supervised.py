@@ -153,10 +153,7 @@ def test_monotone_constraints_cover_exact_model_feature_sets() -> None:
 
 
 def test_fitted_model_respects_interest_and_roa_monotonicity() -> None:
-    try:
-        import xgboost  # noqa: F401
-    except Exception as exc:
-        pytest.skip(f"native XGBoost unavailable: {exc}")
+    pytest.importorskip("xgboost")
     from finintel.ml.supervised.train import BASE_FEATURES, train_distress_model
 
     def fold(offset: int) -> pl.DataFrame:

@@ -236,14 +236,22 @@ def _beneish(frame: pl.DataFrame) -> pl.DataFrame:
         SELLING_EXPENSES,
         ADMIN_EXPENSES,
         LIABILITIES,
-        EARNINGS,
     )
-    mixed = cross_taxonomy(*inputs_used) | input_has(
-        "mixed",
-        *(f"{name}{suffix}" for name in inputs_used for suffix in ("", "_prior")),
-        CONTINUING_EARNINGS,
-        EARNINGS,
-        CFO,
+    fallback_mixed = (
+        c(CONTINUING_EARNINGS).is_null() & input_has("mixed", EARNINGS)
+    ) | (
+        c(f"{CONTINUING_EARNINGS}_prior").is_null()
+        & input_has("mixed", f"{EARNINGS}_prior")
+    )
+    mixed = (
+        cross_taxonomy(*inputs_used)
+        | input_has(
+            "mixed",
+            *(f"{name}{suffix}" for name in inputs_used for suffix in ("", "_prior")),
+            CONTINUING_EARNINGS,
+            CFO,
+        )
+        | fallback_mixed
     )
     return frame.with_columns(
         pl.when(~mixed & m.is_finite()).then(m).alias("beneish_m8_score"),

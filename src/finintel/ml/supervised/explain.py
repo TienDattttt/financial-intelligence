@@ -85,11 +85,11 @@ def explain_distress(
                     float(frame[feature][row_index])
                     if feature in frame.columns
                     and frame[feature][row_index] is not None
-                    else (
-                        float(transformed[feature][row_index])
-                        if feature in transformed.columns
-                        else None
-                    )
+                    else None
+                    if feature in frame.columns
+                    else _json_number(float(transformed[feature][row_index]))
+                    if feature in transformed.columns
+                    else None
                 ),
                 "peer_median": _json_number(medians.get(feature)),
                 "shap_delta": float(delta),
