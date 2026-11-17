@@ -141,6 +141,7 @@ def _alias_rows(config_dir: Path) -> list[dict[str, object]]:
             metric_id
             for metric_id, definition in metrics.items()
             if _mapping(definition).get(code_key) is not None
+            or _mapping(definition).get("filing_note") is True
         }
         if mappings.keys() != expected:
             raise ContractViolationError(
@@ -150,6 +151,7 @@ def _alias_rows(config_dir: Path) -> list[dict[str, object]]:
             definition, mapping = _mapping(metrics[metric_id]), _mapping(entry)
             statement = definition.get("statement_type")
             code = mapping.get("code")
+            filing_note = definition.get("filing_note") is True
             method = mapping.get("cash_flow_method")
             sign = definition.get("sign_convention")
             unit = definition.get("unit")
@@ -170,9 +172,17 @@ def _alias_rows(config_dir: Path) -> list[dict[str, object]]:
                 or not isinstance(sign, str)
                 or sign not in SIGN_CONVENTIONS
                 or type(definition.get("comparable_across_taxonomy")) is not bool
-                or not isinstance(code, str)
-                or not code
-                or code != definition.get(code_key)
+                or (
+                    (
+                        code is not None
+                        or definition.get(code_key) is not None
+                        or bool(mapping)
+                    )
+                    if filing_note
+                    else not isinstance(code, str)
+                    or not code
+                    or code != definition.get(code_key)
+                )
                 or (
                     method is not None
                     and (
@@ -191,7 +201,7 @@ def _alias_rows(config_dir: Path) -> list[dict[str, object]]:
             alias_groups = (
                 (
                     False,
-                    [code],
+                    [code] if isinstance(code, str) else [],
                     [method] if method else ["", *sorted(CASH_FLOW_METHODS)],
                     False,
                 ),

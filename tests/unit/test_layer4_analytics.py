@@ -478,6 +478,8 @@ def test_forensic_flags_use_consecutive_periods_and_emit_evidence() -> None:
         "BS_SHORT_TERM_RECEIVABLES": 40,
         "BS_LT_RECEIVABLES": 0,
         "BS_TRADE_RECEIVABLES_LT": 0,
+        "BS_BAD_DEBT_PROVISION_ST": 0,
+        "BS_BAD_DEBT_PROVISION_LT": 0,
         "BS_TRADE_RECEIVABLES_ST": 10,
     }
     history = facts({(year, q): accounts for year in (2024, 2025) for q in range(1, 5)})
@@ -1130,6 +1132,8 @@ def test_rf03_requires_reported_long_term_receivables() -> None:
         "BS_TOTAL_ASSETS": 100,
         "BS_SHORT_TERM_RECEIVABLES": 40,
         "BS_TRADE_RECEIVABLES_ST": 10,
+        "BS_BAD_DEBT_PROVISION_ST": 0,
+        "BS_BAD_DEBT_PROVISION_LT": 0,
     }
     source = facts(
         {
@@ -1157,6 +1161,8 @@ def test_rf03_excludes_long_term_customer_receivables() -> None:
         "BS_SHORT_TERM_RECEIVABLES": 10,
         "BS_TRADE_RECEIVABLES_ST": 10,
         "BS_LT_RECEIVABLES": 40,
+        "BS_BAD_DEBT_PROVISION_ST": 0,
+        "BS_BAD_DEBT_PROVISION_LT": 0,
     }
     source = facts(
         {
@@ -1172,6 +1178,83 @@ def test_rf03_excludes_long_term_customer_receivables() -> None:
     evidence = json.loads(alert["evidence_json"])
     assert evidence["BS_TRADE_RECEIVABLES_LT"] == 10
     assert evidence["other_receivables_to_assets"] == 0.30
+
+
+@pytest.mark.parametrize("maturity", ["ST", "LT"])
+@pytest.mark.parametrize(
+    ("allocation", "expected"), [(20, 0.35), (0, None), (None, None), (21, None)]
+)
+def test_rf03_uses_only_verified_customer_allowance(
+    maturity: str,
+    allocation: int | None,
+    expected: float | None,
+) -> None:
+    from finintel.analytics.tables import RED_FLAGS_TABLE, build_analytics_tables
+
+    raw: dict[str, float | None] = {
+        "BS_TOTAL_ASSETS": 100,
+        "BS_SHORT_TERM_RECEIVABLES": 0,
+        "BS_TRADE_RECEIVABLES_ST": 0,
+        "BS_LT_RECEIVABLES": 0,
+        "BS_TRADE_RECEIVABLES_LT": 0,
+        "BS_BAD_DEBT_PROVISION_ST": 0,
+        "BS_BAD_DEBT_PROVISION_LT": 0,
+    }
+    total = "BS_SHORT_TERM_RECEIVABLES" if maturity == "ST" else "BS_LT_RECEIVABLES"
+    raw.update(
+        {
+            total: 80 if allocation is None else 65,
+            f"BS_TRADE_RECEIVABLES_{maturity}": 50,
+            f"BS_BAD_DEBT_PROVISION_{maturity}": -20,
+            f"BS_TRADE_RECEIVABLES_ALLOWANCE_{maturity}": allocation,
+        }
+    )
+    alerts = build_analytics_tables(
+        facts({(2025, None): raw}), issuer(), as_of=date(2026, 6, 1)
+    )[RED_FLAGS_TABLE]
+    if expected is None:
+        assert alerts.is_empty()
+    else:
+        evidence = json.loads(alerts["evidence_json"].item())
+        assert evidence[f"BS_TRADE_RECEIVABLES_ALLOWANCE_{maturity}"] == allocation
+        assert evidence["other_receivables_to_assets"] == expected
+
+
+def test_rf03_does_not_reuse_an_allowance_from_an_older_filing_revision() -> None:
+    from finintel.analytics.tables import RED_FLAGS_TABLE, build_analytics_tables
+
+    original = facts(
+        {
+            (2025, None): {
+                "BS_TOTAL_ASSETS": 100,
+                "BS_SHORT_TERM_RECEIVABLES": 65,
+                "BS_TRADE_RECEIVABLES_ST": 50,
+                "BS_BAD_DEBT_PROVISION_ST": -20,
+                "BS_TRADE_RECEIVABLES_ALLOWANCE_ST": 20,
+                "BS_LT_RECEIVABLES": 0,
+                "BS_TRADE_RECEIVABLES_LT": 0,
+                "BS_BAD_DEBT_PROVISION_LT": 0,
+            }
+        }
+    )
+    revised = original.filter(
+        pl.col("metric_id") != "BS_TRADE_RECEIVABLES_ALLOWANCE_ST"
+    ).with_columns(
+        pl.lit(2, dtype=pl.Int64).alias("revision_no"),
+        pl.lit("revised-filing").alias("filing_id"),
+        pl.lit(["revised-filing"]).alias("source_filing_ids"),
+        pl.lit(date(2026, 4, 15)).alias("effective_available_at"),
+    )
+    history = pl.concat([original, revised])
+    assert (
+        build_analytics_tables(history, issuer(), as_of=date(2026, 4, 14))[
+            RED_FLAGS_TABLE
+        ].height
+        == 1
+    )
+    assert build_analytics_tables(history, issuer(), as_of=date(2026, 4, 15))[
+        RED_FLAGS_TABLE
+    ].is_empty()
 
 
 def test_overflow_flags_match_null_publication_and_dependent_ratios() -> None:

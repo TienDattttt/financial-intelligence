@@ -103,13 +103,15 @@ Dựa trên kết quả thực nghiệm đã xác minh trong `data/metadata/spik
 | `BS_ST_FINANCIAL_INVESTMENTS` | `cackhoandaututaichinhnganhan` | 120 | Dương ($\ge 0$) |
 | `BS_ST_RECEIVABLES_TOTAL` | `cackhoanphaithunganhan` | 130 | Dương |
 | `BS_TRADE_RECEIVABLES_ST` | `phaithukhachhang` | 131 | Dương ($\ge 0$) |
-| `BS_BAD_DEBT_PROVISION_ST` | `duphongphaithunganhankhodoi` | 137 | Âm trên BCTC (Dùng `abs()` khi tính tỷ lệ dự phòng) |
+| `BS_BAD_DEBT_PROVISION_ST` | `duphongphaithunganhankhodoi` | 137 | TT99 mã 136. Giữ dấu âm trên BCTC |
 | `BS_INVENTORIES_NET` | `hangtonkho_tong` | 140 | Dương ($\ge 0$) |
 | `BS_INVENTORIES_GROSS` | `hangtonkho` | 141 | Dương ($\ge 0$) |
 | `BS_INVENTORY_PROVISION` | `duphonggiamgiahangtonkho` | 149 | Âm trên BCTC |
 | `BS_NON_CURRENT_ASSETS` | `taisandaihan` | 200 | Dương |
 | `BS_LT_RECEIVABLES` | `cackhoanphaithudaihan` | 210 | Tổng phải thu dài hạn theo B01-DN (TT200 và TT99) |
 | `BS_TRADE_RECEIVABLES_LT` | `phaithudaihancuakhachhang` | 211 | Phải thu khách hàng dài hạn theo B01-DN (TT200 và TT99) |
+| `BS_BAD_DEBT_PROVISION_LT` | `duphongphaithukhodoi` | 219 | TT99 mã 216. Giữ dấu âm trên BCTC |
+| `BS_TRADE_RECEIVABLES_ALLOWANCE_ST`, `BS_TRADE_RECEIVABLES_ALLOWANCE_LT` | — | — | Độ lớn dự phòng phân bổ riêng cho phải thu khách hàng từng kỳ hạn theo thuyết minh cùng hồ sơ. Nạp qua FileAdapter bằng đúng mã chỉ tiêu chuẩn |
 | `BS_FIXED_ASSETS_NET` | `taisancodinh` | 220 | Dương ($\ge 0$) |
 | `BS_TANGIBLE_FIXED_ASSETS_NET` | `taisancodinhhuuhinh` | 221 | Dương ($\ge 0$) |
 | `BS_TANGIBLE_FIXED_ASSETS_COST` | `nguyengia_tscdhh` | 222 | Dương ($\ge 0$) |
@@ -334,13 +336,15 @@ Trên BCTC Hợp nhất (`CONSOLIDATED`), để đẳng thức đại số của
 
 ### 4.5. Bước 4.5 — Hệ Thống Cảnh Báo Kế Toán & Thanh Khoản Sớm (`src/finintel/analytics/red_flags.py`)
 
-Module `red_flags.py` quét toàn bộ lịch sử chuẩn hóa và xuất bảng `accounting_red_flags.parquet`. Mỗi cảnh báo lưu số liệu kích hoạt trong `evidence_json`. RF_03 cần tổng phải thu và phải thu khách hàng đã công bố ở cả ngắn hạn và dài hạn, kể cả khi bằng 0.
+Module `red_flags.py` quét toàn bộ lịch sử chuẩn hóa và xuất bảng `accounting_red_flags.parquet`. Mỗi cảnh báo lưu số liệu kích hoạt trong `evidence_json`.
+
+RF_03 tính phần phải thu thuần ngoài khách hàng riêng cho kỳ hạn $m$ (ngắn hạn hoặc dài hạn) theo $N_m = T_m - (C_m - A_m)$. $T_m$ là tổng thuần đã trừ dự phòng (130 hoặc 210), $C_m$ là phải thu khách hàng gộp (131 hoặc 211), và $A_m$ là độ lớn dự phòng dành riêng cho khách hàng theo thuyết minh. Dùng các mục cùng một phiên bản BCTC, kể cả tổng tài sản. Dự phòng tổng phải được công bố và có dấu không dương; kiểm tra $0 \le A_m \le \min(C_m, |\text{dự phòng tổng}_m|)$ và $N_m \ge 0$. Có thể xác định $A_m = 0$ khi dự phòng tổng hoặc phải thu khách hàng được công bố bằng 0. Nếu không xác định được một trong hai $N_m$, kết quả RF_03 là chưa xác định và không xuất cảnh báo cho kỳ đó. FHSC Gate 0 cung cấp dự phòng tổng, còn phần phân bổ cần bằng chứng từ thuyết minh. [TT200, Phụ lục 2](https://congbao.chinhphu.vn/tai-ve-van-ban-so-200-2014-tt-btc-6697-3551?format=pdf) · [TT99, Phụ lục IV](https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59655?format=pdf)
 
 | Mã Cảnh Báo (`flag_code`) | Mức độ | Điều kiện Toán học Kích hoạt Chính xác | Ý nghĩa Kinh tế / Kiểm toán |
 |---|---|---|---|
 | `RF_01_ACCRUAL_DIVERGENCE` | `HIGH` | $\text{IS\_NET\_INCOME\_TOTAL}_{TTM, t} > 0$ **VÀ** $\text{CF\_OPERATING\_CASH\_FLOW}_{TTM, t} < 0$ trong $\ge 2$ kỳ liên tiếp ($t$ và $t-1$), đồng thời $\text{accruals\_to\_assets}_t > 0.10$. | Lợi nhuận trên giấy nhưng không thu được tiền mặt thực tế. |
 | `RF_02_RECEIVABLES_SURGE` | `MEDIUM` | $\text{revenue\_growth\_yoy}_t > 0$ **VÀ** $\text{GrowthYoY}(\text{BS\_TRADE\_RECEIVABLES\_ST}_t) > \max(1.5 \times \text{revenue\_growth\_yoy}_t,\; 0.25)$ **VÀ** $\text{DSO}_t - \text{DSO}_{t-4} > 15\text{ ngày}$. | Nghi vấn nới lỏng tín dụng thương mại hoặc ghi nhận doanh thu đẩy kênh (channel stuffing). |
-| `RF_03_OTHER_RECEIVABLES_ANOMALY` | `HIGH` | $\frac{(\text{BS\_ST\_RECEIVABLES\_TOTAL}_t - \text{BS\_TRADE\_RECEIVABLES\_ST}_t) + (\text{BS\_LT\_RECEIVABLES}_t - \text{BS\_TRADE\_RECEIVABLES\_LT}_t)}{\text{BS\_TOTAL\_ASSETS}_t} > 0.25$. | Phần phải thu ngoài khách hàng vượt 25% tổng tài sản. |
+| `RF_03_OTHER_RECEIVABLES_ANOMALY` | `HIGH` | $(N_{\mathrm{ngắn\ hạn}} + N_{\mathrm{dài\ hạn}}) / \text{BS\_TOTAL\_ASSETS}_t > 0.25$ với tổng tài sản dương. | Phải thu thuần ngoài khách hàng vượt 25% tổng tài sản. |
 | `RF_04_INVENTORY_BLOAT` | `MEDIUM` | $\frac{\text{BS\_INVENTORIES\_NET}_t}{\text{BS\_TOTAL\_ASSETS}_t} > 0.15$ **VÀ** $\text{DIO}_t - \text{DIO}_{t-4} > 30\text{ ngày}$ **VÀ** $\text{gross\_margin}_t < \text{gross\_margin}_{t-4}$. | Hàng tồn kho ứ đọng chậm luân chuyển kèm suy giảm biên lợi nhuận gộp. |
 | `RF_05_DEBT_SERVICE_DISTRESS` | `CRITICAL` | $\left(\text{interest\_coverage}_t < 1.0 \text{ VÀ } \text{TotalDebt}_t > 0\right)$ **HOẶC** $\left(\text{current\_ratio}_t < 1.0 \text{ VÀ } \text{CF\_OPERATING\_CASH\_FLOW}_{TTM, t} < 0 \text{ VÀ } \text{debt\_to\_equity}_t > 2.0\right)$. | Lợi nhuận hoạt động không đủ trả lãi vay hoặc căng thẳng thanh khoản nợ ngắn hạn nghiêm trọng. |
 | `RF_06_NEGATIVE_EQUITY` | `CRITICAL` | $\text{BS\_TOTAL\_EQUITY}_t \le 0$ **HOẶC** $\text{ParentEquity}_t \le 0$. | Cảnh báo tài chính nội bộ về vốn chủ sở hữu không dương. |

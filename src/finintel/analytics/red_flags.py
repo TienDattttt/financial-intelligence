@@ -7,6 +7,10 @@ Verified Sources:
     https://www.mheducation.com/highered/mhp/product/financial-shenanigans-fourth-edition.html
     The publisher describes earnings, cash flow and balance-sheet signals.
     The numeric cutoffs and the VAS receivables screen come from Layer 4.
+    https://congbao.chinhphu.vn/tai-ve-van-ban-so-200-2014-tt-btc-6697-3551?format=pdf
+    https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59655?format=pdf
+    Lines 130/210 are net of doubtful-debt provisions. Lines 131/211
+    show gross customer receivables before those provisions.
     https://vanban.chinhphu.vn/default.aspx?docid=201902&pageid=27160
     https://cms.hnx.vn/vi-vn/huong-dan/chi-tiet-thu-tuc-21-30.html
     https://staticfile.hsx.vn/Uploads/LocalFiles/c79e12a5dbf749b6983b63e3242326a3/20210101_Thong%20tu%2096.2020%20TT-BTC.pdf
@@ -25,11 +29,11 @@ from finintel.analytics.intermediates import (
     EQUITY,
     GROSS_PROFIT,
     INVENTORY,
-    LT_RECEIVABLES,
-    LT_TRADE_RECEIVABLES,
-    RECEIVABLES,
+    LT_RECEIVABLE_INPUTS,
     REVENUE,
+    RF03_INPUTS,
     SERIES,
+    ST_RECEIVABLE_INPUTS,
     TRADE_RECEIVABLES,
     combine_filing_ids,
     cross_taxonomy,
@@ -39,13 +43,41 @@ from finintel.analytics.intermediates import (
 from finintel.storage.schemas import FLAG_KEY
 
 
+def _balance_sheet_amount(metric: str) -> pl.Expr:
+    """Read an RF_03 input only from the selected total-assets filing."""
+    return pl.when(pl.col(f"_filing_{metric}") == pl.col(f"_filing_{ASSETS}")).then(
+        pl.col(metric)
+    )
+
+
+def _net_non_customer_receivables(inputs: tuple[str, str, str, str]) -> pl.Expr:
+    """Subtract net customer receivables from the net total for one maturity.
+
+    The balance-sheet provision is negative. The customer allowance from
+    the same filing's notes is a nonnegative part of the total provision.
+    Only an explicit zero provision or zero gross customer receivable
+    establishes a zero customer allowance without a note.
+    """
+    total, trade, provision, reported = map(_balance_sheet_amount, inputs)
+    allowance = pl.coalesce(
+        reported, pl.when((provision == 0) | (trade == 0)).then(0.0)
+    )
+    net = total - (trade - allowance)
+    valid = (
+        (provision <= 0)
+        & (allowance >= 0)
+        & (allowance <= -provision)
+        & (allowance <= trade)
+        & (net >= 0)
+    )
+    return pl.when(valid).then(net)
+
+
 def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
     """Emit the seven screening rules, with no trigger on missing evidence.
 
-    Compute receivable growth (current/prior − 1), other receivables
-    ((BS_SHORT_TERM_RECEIVABLES − BS_TRADE_RECEIVABLES_ST)
-     + (BS_LT_RECEIVABLES − BS_TRADE_RECEIVABLES_LT))
-    / BS_TOTAL_ASSETS, and inventory / BS_TOTAL_ASSETS. Require positive
+    Compute receivable growth (current/prior − 1), adjusted net non-customer
+    receivables / BS_TOTAL_ASSETS, and inventory / BS_TOTAL_ASSETS. Require positive
     denominators and valid matched periods. The remaining rules use financial
     ratios, verified audit/disclosure evidence and equity already computed.
     """
@@ -74,9 +106,9 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
     )
     assets = c(ASSETS)
     trade = c(TRADE_RECEIVABLES)
-    other_receivables = (
-        (c(RECEIVABLES) - trade) + (c(LT_RECEIVABLES) - c(LT_TRADE_RECEIVABLES))
-    ) / assets
+    short_other = _net_non_customer_receivables(ST_RECEIVABLE_INPUTS)
+    long_other = _net_non_customer_receivables(LT_RECEIVABLE_INPUTS)
+    other_receivables = (short_other + long_other) / assets
     prior_trade = c(f"{TRADE_RECEIVABLES}_prior")
     frame = with_prior_year(
         ratios.drop("_prior_end"), "dio", "dso", "gross_margin", "source_filing_ids"
@@ -97,14 +129,7 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
         pl.when(
             (assets > 0)
             & other_receivables.is_finite()
-            & ~input_has(
-                "mixed",
-                ASSETS,
-                RECEIVABLES,
-                TRADE_RECEIVABLES,
-                LT_RECEIVABLES,
-                LT_TRADE_RECEIVABLES,
-            )
+            & ~input_has("mixed", *RF03_INPUTS)
         )
         .then(other_receivables)
         .alias("other_receivables_to_assets"),
@@ -154,14 +179,16 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
             "RF_03_OTHER_RECEIVABLES_ANOMALY",
             "HIGH",
             "Phải thu ngoài khách hàng ở mức cao",
-            "Phải thu ngoài khách hàng ở cả ngắn hạn và dài hạn vượt 25% tổng tài sản.",
+            "Phải thu thuần ngoài khách hàng ở cả ngắn hạn và dài hạn vượt 25% tổng tài sản.",
             CORPORATE & (c("other_receivables_to_assets") > 0.25),
             [
-                c(RECEIVABLES),
-                trade,
-                c(LT_RECEIVABLES),
-                c(LT_TRADE_RECEIVABLES),
                 assets,
+                *(
+                    _balance_sheet_amount(metric).alias(metric)
+                    for metric in RF03_INPUTS[1:]
+                ),
+                short_other.alias("net_non_customer_receivables_st"),
+                long_other.alias("net_non_customer_receivables_lt"),
                 c("other_receivables_to_assets"),
             ],
         ),
@@ -227,12 +254,16 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
         "RF_02_RECEIVABLES_SURGE": combine_filing_ids(
             filings, c("source_filing_ids_prior")
         ),
-        "RF_03_OTHER_RECEIVABLES_ANOMALY": c("_period_filing_ids"),
+        "RF_03_OTHER_RECEIVABLES_ANOMALY": pl.concat_list(f"_filing_{ASSETS}"),
         "RF_04_INVENTORY_BLOAT": combine_filing_ids(
             filings, c("source_filing_ids_prior")
         ),
         "RF_06_NEGATIVE_EQUITY": c("_period_filing_ids"),
         "RF_07_AUDIT_OR_FILING_WARNING": pl.concat_list("audit_filing_id"),
+    }
+    evidence_filing = {
+        "RF_03_OTHER_RECEIVABLES_ANOMALY": c(f"_filing_{ASSETS}"),
+        "RF_07_AUDIT_OR_FILING_WARNING": c("audit_filing_id"),
     }
     return pl.concat(
         [
@@ -248,9 +279,7 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
                 )
                 .struct.json_encode()
                 .alias("evidence_json"),
-                (
-                    c("audit_filing_id") if code.startswith("RF_07") else c("filing_id")
-                ).alias("filing_id"),
+                evidence_filing.get(code, c("filing_id")).alias("filing_id"),
             )
             for code, severity, title, explanation, condition, evidence in rules
         ]

@@ -196,6 +196,16 @@ metrics:
     code: "211"
     labels: ["Phải thu dài hạn của khách hàng"]
     fhsc: ["phaithudaihancuakhachhang"]
+  BS_BAD_DEBT_PROVISION_ST:
+    code: "137"
+    labels: ["Dự phòng phải thu ngắn hạn khó đòi"]
+    fhsc: ["duphongphaithunganhankhodoi"]
+  BS_BAD_DEBT_PROVISION_LT:
+    code: "219"
+    labels: ["Dự phòng phải thu dài hạn khó đòi"]
+    fhsc: ["duphongphaithukhodoi"]
+  BS_TRADE_RECEIVABLES_ALLOWANCE_ST: {}
+  BS_TRADE_RECEIVABLES_ALLOWANCE_LT: {}
   BS_TRADE_PAYABLES_ST:
     code: "311"
     labels: ["Phải trả người bán ngắn hạn"]

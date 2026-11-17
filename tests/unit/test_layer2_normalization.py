@@ -77,6 +77,8 @@ def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) 
         "BS_TRADE_RECEIVABLES_ST",
         "BS_LT_RECEIVABLES",
         "BS_TRADE_RECEIVABLES_LT",
+        "BS_BAD_DEBT_PROVISION_ST",
+        "BS_BAD_DEBT_PROVISION_LT",
         "BS_TRADE_PAYABLES_ST",
         "BS_CONVERTIBLE_BONDS",
         "BS_TOTAL_EQUITY",
@@ -142,6 +144,14 @@ def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) 
                 == entry["raw_metrics"]["phaithudaihancuakhachhang"]
             )
             assert (
+                values["BS_BAD_DEBT_PROVISION_ST"]
+                == entry["raw_metrics"]["duphongphaithunganhankhodoi"]
+            )
+            assert (
+                values["BS_BAD_DEBT_PROVISION_LT"]
+                == entry["raw_metrics"]["duphongphaithukhodoi"]
+            )
+            assert (
                 values["BS_TRADE_PAYABLES_ST"]
                 == entry["raw_metrics"]["phaitranguoibannganhan"]
             )
@@ -157,6 +167,34 @@ def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) 
                 ].item()
                 == "vonchusohuu_tong"
             )
+
+
+@pytest.mark.parametrize(
+    ("year", "short_code", "long_code"), [(2025, "137", "219"), (2026, "136", "216")]
+)
+def test_receivable_allowances_map_statutory_codes_and_exact_note_keys(
+    mapper: TaxonomyMapper,
+    year: int,
+    short_code: str,
+    long_code: str,
+) -> None:
+    metadata = filing(year, statement=StatementType.BALANCE_SHEET)
+    keyed = {
+        short_code: "(20)",
+        long_code: "(30)",
+        "BS_TRADE_RECEIVABLES_ALLOWANCE_ST": 10,
+        "BS_TRADE_RECEIVABLES_ALLOWANCE_LT": 15,
+    }
+    mapped, unmapped = mapper.map_metrics(
+        keyed, metadata, filing_id="filing-notes", source_provider="issuer"
+    )
+    assert unmapped.is_empty()
+    assert dict(mapped.select("metric_id", "value").rows()) == {
+        "BS_BAD_DEBT_PROVISION_ST": -20.0,
+        "BS_BAD_DEBT_PROVISION_LT": -30.0,
+        "BS_TRADE_RECEIVABLES_ALLOWANCE_ST": 10.0,
+        "BS_TRADE_RECEIVABLES_ALLOWANCE_LT": 15.0,
+    }
 
 
 def test_ttm_q4_lineage_and_nonadditive_eps(mapper: TaxonomyMapper) -> None:
