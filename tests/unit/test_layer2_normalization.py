@@ -23,7 +23,7 @@ from finintel.ingestion.base import (
 )
 from finintel.ingestion.file_adapter import FileAdapter
 from finintel.normalization.archive import normalize_archive
-from finintel.normalization.mapper import TaxonomyMapper
+from finintel.normalization.mapper import TAXONOMIES, TaxonomyMapper, _alias_rows
 from finintel.normalization.periods import compute_ttm, derive_quarters
 from finintel.normalization.regime_resolver import resolve_regime
 from finintel.normalization.restatement import map_restatement
@@ -195,6 +195,57 @@ def test_receivable_allowances_map_statutory_codes_and_exact_note_keys(
         "BS_TRADE_RECEIVABLES_ALLOWANCE_ST": 10.0,
         "BS_TRADE_RECEIVABLES_ALLOWANCE_LT": 15.0,
     }
+
+
+@pytest.mark.parametrize(("filename", "code_key"), tuple(TAXONOMIES.values()))
+@pytest.mark.parametrize(
+    "invalid_configuration",
+    ["statutory_code", "taxonomy_code", "taxonomy_alias", "missing_entry"],
+)
+def test_alias_rows_rejects_invalid_filing_note_configurations(
+    tmp_path: Path, filename: str, code_key: str, invalid_configuration: str
+) -> None:
+    metric_id = "BS_TRADE_RECEIVABLES_ALLOWANCE_ST"
+    definition: dict[str, object] = {
+        "canonical_id": metric_id,
+        "statement_type": "BALANCE_SHEET",
+        "value_type": "STOCK",
+        "unit": "VND",
+        "sign_convention": "POSITIVE_NORMAL",
+        "filing_note": True,
+        "comparable_across_taxonomy": True,
+    }
+    entry: dict[str, object] = {}
+    if invalid_configuration == "statutory_code":
+        definition[code_key] = "999"
+    elif invalid_configuration == "taxonomy_code":
+        entry["code"] = "999"
+    elif invalid_configuration == "taxonomy_alias":
+        entry["fhsc"] = ["unverified_note_field"]
+
+    (tmp_path / "metric_definitions.yaml").write_text(
+        json.dumps({"metrics": {metric_id: definition}}), encoding="utf-8"
+    )
+    taxonomy_dir = tmp_path / "taxonomy"
+    taxonomy_dir.mkdir()
+    for taxonomy_version, (taxonomy_name, _) in TAXONOMIES.items():
+        metrics: dict[str, dict[str, object]] = {metric_id: {}}
+        if taxonomy_name == filename:
+            metrics = (
+                {} if invalid_configuration == "missing_entry" else {metric_id: entry}
+            )
+        (taxonomy_dir / taxonomy_name).write_text(
+            json.dumps({"taxonomy_version": taxonomy_version, "metrics": metrics}),
+            encoding="utf-8",
+        )
+
+    message = (
+        "Taxonomy does not match the canonical definitions"
+        if invalid_configuration == "missing_entry"
+        else f"Invalid definition for canonical metric {metric_id}"
+    )
+    with pytest.raises(ContractViolationError, match=message):
+        _alias_rows(tmp_path)
 
 
 def test_ttm_q4_lineage_and_nonadditive_eps(mapper: TaxonomyMapper) -> None:

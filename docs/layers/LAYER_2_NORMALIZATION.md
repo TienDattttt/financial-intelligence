@@ -86,6 +86,14 @@ metrics:
     comparable_across_taxonomy: true
 ```
 
+#### Chỉ tiêu lấy từ thuyết minh báo cáo tài chính
+
+Đặt `filing_note: true` cho chỉ tiêu lấy từ thuyết minh. Chỉ tiêu này không có mã số trên biểu mẫu BCTC, vì vậy bỏ cả `tt200_code` và `tt99_code` khỏi định nghĩa.
+
+Cả `config/taxonomy/corporate_tt200_2014.yaml` và `config/taxonomy/corporate_tt99_2025.yaml` phải khai báo mục rỗng `{}` dưới `metrics` cho chỉ tiêu đó. Ví dụ, mỗi tệp đều có `BS_TRADE_RECEIVABLES_ALLOWANCE_ST: {}`. Thiếu mục này hoặc khai báo mapping có nội dung đều khiến cấu hình bị từ chối.
+
+`FileAdapter` tiếp nhận số liệu trích từ thuyết minh theo khóa khớp chính xác với `canonical_id`, ví dụ `BS_TRADE_RECEIVABLES_ALLOWANCE_ST`. Mapper chỉ ánh xạ khóa chuẩn này cho chỉ tiêu thuyết minh.
+
 ---
 
 ## 4. QUY TẮC NGHIỆP VỤ CHUẨN HÓA KẾ TOÁN (BẮT BUỘC TUÂN THỦ)
