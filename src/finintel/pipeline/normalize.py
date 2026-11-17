@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -18,6 +19,7 @@ from finintel.pipeline.state_store import StateStore
 
 logger = logging.getLogger("finintel.pipeline.normalize")
 DEFAULT_TAXONOMY_DIR = Path(__file__).resolve().parents[3] / "config"
+NORMALIZATION_METADATA = "_normalize_meta.json"
 
 
 def _period_filter(period: str) -> pl.Expr:
@@ -66,19 +68,24 @@ class NormalizeHandler:
         mapper = TaxonomyMapper(
             self.config_dir / taxonomy_dir if taxonomy_dir else DEFAULT_TAXONOMY_DIR
         )
+        # Standalone normalization keeps its replay filters. A pipeline run
+        # hands analytics the whole history for opening balances, TTM and peers.
+        standalone = context.request.stage is not None
+        tickers = context.tickers if standalone else ()
+        period = context.request.period if standalone else None
         facts, unmapped = normalize_archive(
             self.state,
             self.config_dir / raw_root if raw_root else data_root / "raw",
             mapper,
             source=context.request.source,
-            tickers=context.tickers,
+            tickers=tickers,
             filing_settings=filing_settings,
         )
         derived = derive_quarters(facts).filter(
             pl.col("derivation_method") != "REPORTED_DIRECTLY"
         )
-        if context.request.period is not None:
-            selected = _period_filter(context.request.period)
+        if period is not None:
+            selected = _period_filter(period)
             restated = pl.col("revision_reason") == "RESTATED_REGIME_CHANGE"
             reported_ids = pl.concat(
                 [
@@ -112,6 +119,15 @@ class NormalizeHandler:
             staging = Path(temporary)
             normalized.write_parquet(staging / "financial_facts.parquet")
             unmapped.write_parquet(staging / "unmapped_metrics.parquet")
+            (staging / NORMALIZATION_METADATA).write_text(
+                json.dumps(
+                    {
+                        "source": context.request.source,
+                        "full_history": not tickers and period is None,
+                    }
+                ),
+                encoding="utf-8",
+            )
             staging.rename(destination)
         logger.info(
             "Normalization batch stored",

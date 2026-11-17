@@ -31,6 +31,15 @@ def _days(start: pl.Expr, end: pl.Expr) -> pl.Expr:
     return ((end - start).dt.total_days() + 1).cast(pl.Int32)
 
 
+def _fact_columns(facts: pl.DataFrame) -> pl.DataFrame:
+    """Project the normalization schema, including legacy late-filing evidence."""
+    if "is_filed_late" not in facts.columns:
+        facts = facts.with_columns(
+            pl.lit(None, dtype=pl.Boolean).alias("is_filed_late")
+        )
+    return facts.select(FACT_SCHEMA.names())
+
+
 def _disclosure(available: pl.Expr, exact: pl.Expr) -> list[pl.Expr]:
     return [
         available.alias("effective_available_at"),
@@ -58,6 +67,7 @@ def _derived(
         pl.lit("QUARTER").alias("period_type"),
         pl.lit(method).alias("derivation_method"),
         pl.lit(priority).alias("_priority"),
+        pl.lit(None, dtype=pl.Boolean).alias("is_filed_late"),
         filings.list.unique(maintain_order=True).alias("source_filing_ids"),
         *_disclosure(available, exact),
     ]
@@ -165,6 +175,7 @@ def derive_quarters(facts: pl.DataFrame, *, as_of: date | None = None) -> pl.Dat
     Preserve null reported amounts. Missing or incompatible operands yield
     no derived observation. No denominator is used.
     """
+    facts = _fact_columns(facts)
     visible = facts.filter(AVAILABLE <= as_of) if as_of is not None else facts
     flow = (
         visible.filter(pl.col("value_type") == "FLOW")
@@ -240,7 +251,10 @@ def compute_ttm(facts_df: pl.DataFrame, *, as_of: date | None = None) -> pl.Data
     350–380 days of coverage. Use a visible TT99 comparative only for
     the quarter it covers. Missing, noncontiguous or incompatible quarters
     yield null. No denominator is used. Availability is the latest input date.
+    `ttm_contains_derived_q4` is true only for a valid window containing a
+    quarter derived from audited annual figures and nine-month inputs.
     """
+    facts_df = _fact_columns(facts_df)
     quarters = derive_quarters(facts_df, as_of=as_of)
     visible = facts_df.filter(AVAILABLE <= as_of) if as_of is not None else facts_df
     unresolved = (
@@ -331,6 +345,16 @@ def _ttm_windows(quarters: pl.DataFrame) -> pl.DataFrame:
         )
         .otherwise(None)
         .alias("ttm_source_filing_ids"),
+        (
+            allowed
+            & pl.any_horizontal(
+                *last_four(
+                    pl.col("derivation_method") == "DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX"
+                )
+            )
+        )
+        .fill_null(False)
+        .alias("ttm_contains_derived_q4"),
     ).drop("_contiguous")
     if result.select((pl.col("ttm_value").is_infinite()).any()).item():
         raise ContractViolationError("TTM computation exceeded the numeric range.")

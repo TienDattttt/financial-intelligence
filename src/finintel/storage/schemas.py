@@ -8,6 +8,190 @@ import polars as pl
 
 from finintel.exceptions import ContractViolationError
 
+RATIOS_TABLE = "financial_ratios.parquet"
+BENCHMARKS_TABLE = "industry_benchmarks.parquet"
+RED_FLAGS_TABLE = "accounting_red_flags.parquet"
+
+RATIO_KEY = (
+    "issuer_id",
+    "ticker",
+    "accounting_regime",
+    "statement_scope",
+    "period_type",
+    "fiscal_year",
+    "fiscal_quarter",
+    "period_end_date",
+    "filing_id",
+)
+CORE_RATIOS = (
+    "gross_margin",
+    "ebit_margin",
+    "ebitda_margin",
+    "operating_margin",
+    "net_profit_margin",
+    "roa",
+    "roe_total",
+    "roe_parent",
+    "roic",
+    "current_ratio",
+    "quick_ratio",
+    "cash_ratio",
+    "ocf_to_current_liabilities",
+    "liabilities_to_assets",
+    "financial_debt_to_assets",
+    "debt_to_equity",
+    "net_debt_to_equity",
+    "net_debt_to_ebitda",
+    "interest_coverage",
+    "asset_turnover",
+    "inventory_turnover",
+    "receivables_turnover",
+    "payables_turnover",
+    "cash_conversion_cycle",
+    "ocf_to_net_income",
+    "fcf_to_revenue",
+    "accruals_to_assets",
+    "eps_ttm_estimated",
+)
+EXTRA_RATIOS = (
+    "equity_to_assets",
+    "dio",
+    "dso",
+    "dpo",
+    "revenue_growth_yoy",
+    "ebit_growth_yoy",
+    "net_income_parent_growth_yoy",
+)
+RATIO_INTERMEDIATES = (
+    "total_debt",
+    "total_cash_and_st_investments",
+    "net_debt",
+    "parent_equity",
+    "working_capital",
+    "invested_capital",
+    "ebit_ttm",
+    "ebitda_ttm",
+    "effective_tax_rate",
+    "nopat_ttm",
+    "fcf_ttm",
+    "estimated_shares_outstanding",
+    "implied_weighted_shares",
+    "eps_basic_reported",
+)
+RATIO_INTERMEDIATE_FLAGS = (
+    "ebitda_flag",
+    "ebit_flag",
+    "effective_tax_rate_flag",
+    "nopat_flag",
+    "fcf_flag",
+)
+RATIO_DUPONT_FACTORS = (
+    "tax_burden",
+    "interest_burden",
+    "equity_multiplier_total",
+    "parent_profit_share",
+    "equity_multiplier_parent",
+)
+FINANCIAL_RATIOS_SCHEMA = pl.Schema(
+    {
+        **{name: pl.String for name in RATIO_KEY},
+        "fiscal_year": pl.Int32,
+        "fiscal_quarter": pl.Int32,
+        "period_end_date": pl.Date,
+        "taxonomy_version": pl.String,
+        "source_filing_ids": pl.List(pl.String),
+        "eps_estimate_basis": pl.String,
+        **{name: pl.Float64 for name in RATIO_INTERMEDIATES},
+        **{name: pl.String for name in RATIO_INTERMEDIATE_FLAGS},
+        **{
+            column: dtype
+            for name in (*CORE_RATIOS, *EXTRA_RATIOS)
+            for column, dtype in ((name, pl.Float64), (f"{name}_flag", pl.String))
+        },
+        **{name: pl.Float64 for name in RATIO_DUPONT_FACTORS},
+        "dupont_valid_flag": pl.Boolean,
+    }
+)
+
+BENCHMARK_KEY = (
+    "issuer_id",
+    "accounting_regime",
+    "statement_scope",
+    "period_type",
+    "period_end_date",
+    "metric_or_ratio_name",
+)
+FLAG_KEY = (
+    "issuer_id",
+    "statement_scope",
+    "period_type",
+    "period_end_date",
+    "flag_code",
+)
+
+# A snapshot may contain zero peers or zero alerts. The schema still applies.
+OPTIONAL_ANALYTICS_SCHEMAS = {
+    BENCHMARKS_TABLE: pl.Schema(
+        {
+            **{name: pl.String for name in BENCHMARK_KEY},
+            "period_end_date": pl.Date,
+            "icb_code_used": pl.String,
+            "peer_group_level": pl.String,
+            "peer_count": pl.UInt32,
+            **{
+                name: pl.Float64
+                for name in (
+                    "value",
+                    "peer_median",
+                    "peer_p25",
+                    "peer_p75",
+                    "peer_iqr",
+                    "percentile_rank",
+                    "robust_z_score",
+                )
+            },
+        }
+    ),
+    RED_FLAGS_TABLE: pl.Schema(
+        {
+            **{name: pl.String for name in FLAG_KEY},
+            "period_end_date": pl.Date,
+            "severity": pl.String,
+            "flag_title_vn": pl.String,
+            "explanation_text_vn": pl.String,
+            "evidence_json": pl.String,
+            "filing_id": pl.String,
+        }
+    ),
+}
+ANALYTICS_SCHEMAS = {
+    RATIOS_TABLE: FINANCIAL_RATIOS_SCHEMA,
+    **OPTIONAL_ANALYTICS_SCHEMAS,
+}
+ANALYTICS_KEYS = {
+    RATIOS_TABLE: RATIO_KEY,
+    BENCHMARKS_TABLE: BENCHMARK_KEY,
+    RED_FLAGS_TABLE: FLAG_KEY,
+}
+
+
+def validate_analytics_table(filename: str, table: pl.DataFrame) -> None:
+    """Validate a Layer 4 output against its Parquet schema and primary key."""
+    schema = table.schema
+    if any(
+        schema.get(name) != dtype for name, dtype in ANALYTICS_SCHEMAS[filename].items()
+    ):
+        raise ContractViolationError(
+            f"Analytics snapshot table has invalid schema: {filename}."
+        )
+    key = ANALYTICS_KEYS[filename]
+    if table.select(pl.struct(key).is_duplicated().any()).item() or any(
+        table[name].null_count() for name in key if name != "fiscal_quarter"
+    ):
+        raise ContractViolationError(
+            f"Analytics snapshot table has invalid keys: {filename}."
+        )
+
 
 ISSUERS_SCHEMA = pl.Schema(
     {

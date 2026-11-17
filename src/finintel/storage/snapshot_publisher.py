@@ -15,10 +15,13 @@ from filelock import FileLock
 
 from finintel.pipeline.state_store import StateStore
 from finintel.storage.schemas import (
+    ANALYTICS_SCHEMAS,
     ISSUERS_SCHEMA,
+    OPTIONAL_ANALYTICS_SCHEMAS,
     UNMAPPED_METRICS_SCHEMA,
     canonicalize_financial_facts,
     canonicalize_table,
+    validate_analytics_table,
 )
 
 TableInput: TypeAlias = pl.DataFrame | Path
@@ -186,7 +189,7 @@ class SnapshotPublisher:
                 raise OSError(f"Snapshot table was not written: {filename}")
             table = pl.read_parquet(path)
             self._validate_table_contract(filename, table)
-            if table.height <= 0:
+            if table.is_empty() and filename not in OPTIONAL_ANALYTICS_SCHEMAS:
                 raise ValueError(f"Snapshot table is empty: {filename}")
         if not (staging / "_snapshot_meta.json").is_file():
             raise OSError("Snapshot metadata was not written.")
@@ -199,6 +202,8 @@ class SnapshotPublisher:
             canonicalize_table(table, ISSUERS_SCHEMA)
         elif filename == "unmapped_metrics.parquet":
             canonicalize_table(table, UNMAPPED_METRICS_SCHEMA)
+        elif filename in ANALYTICS_SCHEMAS:
+            validate_analytics_table(filename, table)
 
     garbage_collect = collect_garbage
 

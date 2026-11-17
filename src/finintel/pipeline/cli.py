@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from finintel.exceptions import FinIntelError
+from finintel.pipeline.analytics import AnalyticsHandler
 from finintel.pipeline.health import DEFAULT_MIN_FREE_BYTES, health_check
 from finintel.pipeline.ingest import IngestHandler
 from finintel.pipeline.normalize import NormalizeHandler
@@ -44,6 +45,7 @@ class Settings:
     tickers: tuple[str, ...]
     ingestion: Mapping[str, object] = field(default_factory=dict)
     normalization: Mapping[str, object] = field(default_factory=dict)
+    analytics: Mapping[str, object] = field(default_factory=dict)
 
 
 def load_settings(path: Path) -> Settings:
@@ -59,6 +61,7 @@ def load_settings(path: Path) -> Settings:
     tickers = content.get("tickers", [])
     ingestion = content.get("ingestion", {})
     normalization = content.get("normalization", {})
+    analytics = content.get("analytics", {})
     if not isinstance(state_path, str) or not state_path.strip():
         raise ValueError("state_path must be a nonempty path.")
     if type(min_space) is not int or min_space < 0:
@@ -75,12 +78,17 @@ def load_settings(path: Path) -> Settings:
         not isinstance(key, str) for key in normalization
     ):
         raise ValueError("normalization must be a YAML mapping.")
+    if not isinstance(analytics, dict) or any(
+        not isinstance(key, str) for key in analytics
+    ):
+        raise ValueError("analytics must be a YAML mapping.")
     return Settings(
         (path.resolve().parent / state_path).resolve(),
         min_space,
         tuple(tickers),
         ingestion,
         normalization,
+        analytics,
     )
 
 
@@ -199,6 +207,9 @@ def main(
                     args.config.resolve().parent,
                     settings.ingestion,
                     settings.normalization,
+                ),
+                Stage.ANALYTICS: AnalyticsHandler(
+                    store, args.config.resolve().parent, settings.analytics
                 ),
             }
         )

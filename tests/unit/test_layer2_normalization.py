@@ -23,7 +23,7 @@ from finintel.ingestion.base import (
 )
 from finintel.ingestion.file_adapter import FileAdapter
 from finintel.normalization.archive import normalize_archive
-from finintel.normalization.mapper import TaxonomyMapper
+from finintel.normalization.mapper import TAXONOMIES, TaxonomyMapper, _alias_rows
 from finintel.normalization.periods import compute_ttm, derive_quarters
 from finintel.normalization.regime_resolver import resolve_regime
 from finintel.normalization.restatement import map_restatement
@@ -68,6 +68,210 @@ def test_fiscal_regime_boundary() -> None:
     assert resolve_regime(date(2026, 1, 1)) == "VAS_TT99_2025"
     assert resolve_regime(date(2025, 7, 1)) == "VAS_TT200_2014"
     assert resolve_regime(date(2026, 7, 1)) == "VAS_TT99_2025"
+
+
+def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) -> None:
+    fixture = ROOT / "tests/fixtures/raw_samples/fhsc_fpt_layer4_taxonomy_extract.json"
+    raw = json.loads(fixture.read_text(encoding="utf-8"))["rows"]
+    bs_ids = {
+        "BS_TRADE_RECEIVABLES_ST",
+        "BS_LT_RECEIVABLES",
+        "BS_TRADE_RECEIVABLES_LT",
+        "BS_BAD_DEBT_PROVISION_ST",
+        "BS_BAD_DEBT_PROVISION_LT",
+        "BS_TRADE_PAYABLES_ST",
+        "BS_CONVERTIBLE_BONDS",
+        "BS_TOTAL_EQUITY",
+        "BS_TREASURY_SHARES",
+    }
+    for i, entry in enumerate(raw):
+        income = entry["page"].startswith("income")
+        meta = filing(
+            entry["year"],
+            entry["quarter"],
+            statement=StatementType.INCOME_STATEMENT
+            if income
+            else StatementType.BALANCE_SHEET,
+        )
+        mapped, unmapped = mapper.map_metrics(
+            entry["raw_metrics"],
+            meta,
+            filing_id=f"gate0-{i}",
+            source_provider="fhsc",
+        )
+        assert unmapped.is_empty()
+        values = dict(mapped.select("metric_id", "value").rows())
+        if income:
+            borrowing = (
+                "IS_INTEREST_EXPENSE" if entry["year"] == 2025 else "IS_BORROWING_COSTS"
+            )
+            assert values[borrowing] == entry["raw_metrics"]["trongdochiphilaivay"]
+            assert (
+                values["IS_PROFIT_BEFORE_TAX"]
+                == entry["raw_metrics"]["tongloinhuanketoantruocthue"]
+            )
+            assert (
+                values["IS_CURRENT_INCOME_TAX"]
+                == entry["raw_metrics"]["chiphithuetndnhienhanh"]
+            )
+            assert (
+                values["IS_DEFERRED_INCOME_TAX"]
+                == entry["raw_metrics"]["chiphithuetndnhoanlai"]
+            )
+            assert (
+                values["IS_NET_INCOME"]
+                == entry["raw_metrics"]["loinhuansauthuethunhapdoanhnghiep"]
+            )
+            assert values["IS_DEFERRED_INCOME_TAX"] < 0
+            assert (
+                values["IS_PROFIT_BEFORE_TAX"]
+                - values["IS_CURRENT_INCOME_TAX"]
+                - values["IS_DEFERRED_INCOME_TAX"]
+                == values["IS_NET_INCOME"]
+            )
+        else:
+            assert values.keys() == bs_ids
+            assert (
+                values["BS_TRADE_RECEIVABLES_ST"]
+                == entry["raw_metrics"]["phaithukhachhang"]
+            )
+            assert (
+                values["BS_LT_RECEIVABLES"]
+                == entry["raw_metrics"]["cackhoanphaithudaihan"]
+            )
+            assert (
+                values["BS_TRADE_RECEIVABLES_LT"]
+                == entry["raw_metrics"]["phaithudaihancuakhachhang"]
+            )
+            assert (
+                values["BS_BAD_DEBT_PROVISION_ST"]
+                == entry["raw_metrics"]["duphongphaithunganhankhodoi"]
+            )
+            assert (
+                values["BS_BAD_DEBT_PROVISION_LT"]
+                == entry["raw_metrics"]["duphongphaithukhodoi"]
+            )
+            assert (
+                values["BS_TRADE_PAYABLES_ST"]
+                == entry["raw_metrics"]["phaitranguoibannganhan"]
+            )
+            assert (
+                values["BS_CONVERTIBLE_BONDS"]
+                == entry["raw_metrics"]["traiphieuchuyendoi"]
+            )
+            assert values["BS_TOTAL_EQUITY"] == entry["raw_metrics"]["vonchusohuu"]
+            assert values["BS_TREASURY_SHARES"] == entry["raw_metrics"]["cophieuquy"]
+            assert (
+                mapped.filter(pl.col("metric_id") == "BS_TOTAL_EQUITY")[
+                    "raw_metric_key"
+                ].item()
+                == "vonchusohuu_tong"
+            )
+
+
+@pytest.mark.parametrize(
+    ("year", "short_code", "long_code"), [(2025, "137", "219"), (2026, "136", "216")]
+)
+def test_receivable_allowances_map_statutory_codes_and_exact_note_keys(
+    mapper: TaxonomyMapper,
+    year: int,
+    short_code: str,
+    long_code: str,
+) -> None:
+    metadata = filing(year, statement=StatementType.BALANCE_SHEET)
+    keyed = {
+        short_code: "(20)",
+        long_code: "(30)",
+        "BS_TRADE_RECEIVABLES_ALLOWANCE_ST": 10,
+        "BS_TRADE_RECEIVABLES_ALLOWANCE_LT": 15,
+    }
+    mapped, unmapped = mapper.map_metrics(
+        keyed, metadata, filing_id="filing-notes", source_provider="issuer"
+    )
+    assert unmapped.is_empty()
+    assert dict(mapped.select("metric_id", "value").rows()) == {
+        "BS_BAD_DEBT_PROVISION_ST": -20.0,
+        "BS_BAD_DEBT_PROVISION_LT": -30.0,
+        "BS_TRADE_RECEIVABLES_ALLOWANCE_ST": 10.0,
+        "BS_TRADE_RECEIVABLES_ALLOWANCE_LT": 15.0,
+    }
+
+
+@pytest.mark.parametrize(("filename", "code_key"), tuple(TAXONOMIES.values()))
+@pytest.mark.parametrize(
+    "invalid_configuration",
+    ["statutory_code", "taxonomy_code", "taxonomy_alias", "missing_entry"],
+)
+def test_alias_rows_rejects_invalid_filing_note_configurations(
+    tmp_path: Path, filename: str, code_key: str, invalid_configuration: str
+) -> None:
+    metric_id = "BS_TRADE_RECEIVABLES_ALLOWANCE_ST"
+    definition: dict[str, object] = {
+        "canonical_id": metric_id,
+        "statement_type": "BALANCE_SHEET",
+        "value_type": "STOCK",
+        "unit": "VND",
+        "sign_convention": "POSITIVE_NORMAL",
+        "filing_note": True,
+        "comparable_across_taxonomy": True,
+    }
+    entry: dict[str, object] = {}
+    if invalid_configuration == "statutory_code":
+        definition[code_key] = "999"
+    elif invalid_configuration == "taxonomy_code":
+        entry["code"] = "999"
+    elif invalid_configuration == "taxonomy_alias":
+        entry["fhsc"] = ["unverified_note_field"]
+
+    (tmp_path / "metric_definitions.yaml").write_text(
+        json.dumps({"metrics": {metric_id: definition}}), encoding="utf-8"
+    )
+    taxonomy_dir = tmp_path / "taxonomy"
+    taxonomy_dir.mkdir()
+    for taxonomy_version, (taxonomy_name, _) in TAXONOMIES.items():
+        metrics: dict[str, dict[str, object]] = {metric_id: {}}
+        if taxonomy_name == filename:
+            metrics = (
+                {} if invalid_configuration == "missing_entry" else {metric_id: entry}
+            )
+        (taxonomy_dir / taxonomy_name).write_text(
+            json.dumps({"taxonomy_version": taxonomy_version, "metrics": metrics}),
+            encoding="utf-8",
+        )
+
+    message = (
+        "Taxonomy does not match the canonical definitions"
+        if invalid_configuration == "missing_entry"
+        else f"Invalid definition for canonical metric {metric_id}"
+    )
+    with pytest.raises(ContractViolationError, match=message):
+        _alias_rows(tmp_path)
+
+
+def test_ttm_q4_lineage_and_nonadditive_eps(mapper: TaxonomyMapper) -> None:
+    quarters = [(filing(2025, q), 10) for q in range(1, 5)]
+    explicit = compute_ttm(facts(mapper, quarters))
+    assert explicit["ttm_value"][-1] == 40
+    assert explicit["ttm_contains_derived_q4"].to_list() == [False] * 4
+    derived = compute_ttm(
+        facts(mapper, [*quarters[:3], (filing(2025, audit=AuditStatus.AUDITED), 48)])
+    )
+    assert derived["ttm_value"][-1] == 48
+    assert derived["ttm_contains_derived_q4"].to_list() == [False, False, False, True]
+
+    unresolved = facts(mapper, quarters).with_columns(
+        pl.when(pl.col("fiscal_quarter") == 4)
+        .then(None)
+        .otherwise(pl.col("derivation_method"))
+        .alias("derivation_method")
+    )
+    result = compute_ttm(unresolved).sort("fiscal_quarter")
+    assert result["ttm_value"][-1] is None
+    assert result["ttm_contains_derived_q4"][-1] is False
+    eps = facts(mapper, quarters, code="70")
+    assert eps["value_type"].unique().to_list() == ["NON_ADDITIVE"]
+    assert derive_quarters(eps).is_empty()
+    assert compute_ttm(eps).is_empty()
 
 
 def test_exact_codes_units_and_unmapped(mapper: TaxonomyMapper) -> None:

@@ -1,0 +1,207 @@
+{
+  "symbol": "FPT",
+  "unit": "VND",
+  "field_units": {
+    "laicobantrencophieu": "VND_PER_SHARE"
+  },
+  "scope": "CONSOLIDATED",
+  "scope_evidence": "Annual scope checked against consolidated statement totals in the listed reports or their comparative columns.",
+  "source": "Selected numeric fields from the Gate 0 FHSC FPT year pages 001 and 002.",
+  "primary_scope_references": {
+    "2017-2018": "https://fpt.com/-/media/project/fpt-corporation/fpt/ir/report/tabs/annual-report/years/2018/2018/file-1/bctn-2018.pdf",
+    "2019": "https://fpt.com/-/media/project/fpt-corporation/fpt/ir/report/tabs/business-report/business-report/2019/2019/file-1/fpt_audited-consolidated-financial-statements-2019.pdf",
+    "2020-2021": "https://fpt.com/-/media/project/fpt-corporation/fpt/ir/common/file/2022/bao-cao-thuong-nien/ar-fpt-2021_vn.pdf",
+    "2022": "https://fpt.com/-/media/project/fpt-corporation/fpt/ir/information-disclosures/year-report/2023/march/2022-annual-report_20230327.pdf",
+    "2023": "https://fpt.com/-/media/project/fpt-corporation/fpt/ir/general-meetings-of-shareholders/monthly-report/2024/2023_fpt-annual-report.pdf",
+    "2024-2025": "https://fpt.com/-/media/project/fpt-corporation/fpt/ir/information-disclosures/year-report/2026/march/20260319---fpt---audited-consolidated-financial-statements-for-2025.pdf"
+  },
+  "statements": {
+    "balance-sheet": [
+      {
+        "year": 2017,
+        "tongcongtaisan": 24999676895866,
+        "vonchusohuu_tong": 13238376233773,
+        "loiichcodongkhongkiemsoat": 1809385579397,
+        "cophieuphothongcoquyenbieuquyet": 5309611050000
+      },
+      {
+        "year": 2018,
+        "tongcongtaisan": 29757067149568,
+        "vonchusohuu_tong": 14774970765111,
+        "loiichcodongkhongkiemsoat": 2301851329197,
+        "cophieuphothongcoquyenbieuquyet": 6136367720000
+      },
+      {
+        "year": 2019,
+        "tongcongtaisan": 33394164263694,
+        "vonchusohuu_tong": 16799289401006,
+        "loiichcodongkhongkiemsoat": 2835086450361,
+        "cophieuphothongcoquyenbieuquyet": 6783586880000
+      },
+      {
+        "year": 2020,
+        "tongcongtaisan": 41734323235194,
+        "vonchusohuu_tong": 18605667400728,
+        "loiichcodongkhongkiemsoat": 2860094124424,
+        "cophieuphothongcoquyenbieuquyet": 7839874860000
+      },
+      {
+        "year": 2021,
+        "tongcongtaisan": 53697940895875,
+        "vonchusohuu_tong": 21417985230037,
+        "loiichcodongkhongkiemsoat": 3477041138837,
+        "cophieuphothongcoquyenbieuquyet": 9075516490000
+      },
+      {
+        "year": 2022,
+        "tongcongtaisan": 51650403735130,
+        "vonchusohuu_tong": 25356124687812,
+        "loiichcodongkhongkiemsoat": 4309656273198,
+        "cophieuphothongcoquyenbieuquyet": 10970265720000
+      },
+      {
+        "year": 2023,
+        "tongcongtaisan": 60282827532899,
+        "vonchusohuu_tong": 29933011216233,
+        "loiichcodongkhongkiemsoat": 4958854855687,
+        "cophieuphothongcoquyenbieuquyet": 12699688750000
+      },
+      {
+        "year": 2024,
+        "tongcongtaisan": 71999995678620,
+        "vonchusohuu_tong": 35727540104800,
+        "loiichcodongkhongkiemsoat": 5933309621004,
+        "cophieuphothongcoquyenbieuquyet": 14710691830000
+      },
+      {
+        "year": 2025,
+        "tongcongtaisan": 88141991634625,
+        "vonchusohuu_tong": 43748040747539,
+        "loiichcodongkhongkiemsoat": 7265096802767,
+        "cophieuphothongcoquyenbieuquyet": 17035071210000
+      }
+    ],
+    "income-statement": [
+      {
+        "year": 2017,
+        "doanhthuthuanvebanhangvacungcapdichvu": 42658610841354,
+        "tongloinhuanketoantruocthue": 4255117777507,
+        "trongdochiphilaivay": 368545678548,
+        "loinhuansauthuethunhapdoanhnghiep": 3528113914381,
+        "loinhuansauthuecuacongtyme": 2931530862562
+      },
+      {
+        "year": 2018,
+        "doanhthuthuanvebanhangvacungcapdichvu": 23213536857725,
+        "tongloinhuanketoantruocthue": 3857602555206,
+        "trongdochiphilaivay": 238344431747,
+        "loinhuansauthuethunhapdoanhnghiep": 3233997141045,
+        "loinhuansauthuecuacongtyme": 2620178631986
+      },
+      {
+        "year": 2019,
+        "doanhthuthuanvebanhangvacungcapdichvu": 27716960152275,
+        "tongloinhuanketoantruocthue": 4664530511706,
+        "trongdochiphilaivay": 358987537452,
+        "loinhuansauthuethunhapdoanhnghiep": 3911712166873,
+        "loinhuansauthuecuacongtyme": 3135350376654
+      },
+      {
+        "year": 2020,
+        "doanhthuthuanvebanhangvacungcapdichvu": 29830400526824,
+        "tongloinhuanketoantruocthue": 5263456629967,
+        "trongdochiphilaivay": 385337754896,
+        "loinhuansauthuethunhapdoanhnghiep": 4423745217598,
+        "loinhuansauthuecuacongtyme": 3538007738822
+      },
+      {
+        "year": 2021,
+        "doanhthuthuanvebanhangvacungcapdichvu": 35657262545027,
+        "tongloinhuanketoantruocthue": 6337206440958,
+        "trongdochiphilaivay": 483995846804,
+        "loinhuansauthuethunhapdoanhnghiep": 5349301099496,
+        "loinhuansauthuecuacongtyme": 4337411879802
+      },
+      {
+        "year": 2022,
+        "doanhthuthuanvebanhangvacungcapdichvu": 44009527680911,
+        "tongloinhuanketoantruocthue": 7662282959880,
+        "trongdochiphilaivay": 645725556308,
+        "loinhuansauthuethunhapdoanhnghiep": 6491343454469,
+        "loinhuansauthuecuacongtyme": 5310108591408
+      },
+      {
+        "year": 2023,
+        "doanhthuthuanvebanhangvacungcapdichvu": 52617900827385,
+        "tongloinhuanketoantruocthue": 9203006098570,
+        "trongdochiphilaivay": 832648611261,
+        "loinhuansauthuethunhapdoanhnghiep": 7788049739616,
+        "loinhuansauthuecuacongtyme": 6465190432622
+      },
+      {
+        "year": 2024,
+        "doanhthuthuanvebanhangvacungcapdichvu": 62848794351367,
+        "tongloinhuanketoantruocthue": 11069666417819,
+        "trongdochiphilaivay": 551639361786,
+        "loinhuansauthuethunhapdoanhnghiep": 9427422530444,
+        "loinhuansauthuecuacongtyme": 7856767812178
+      },
+      {
+        "year": 2025,
+        "doanhthuthuanvebanhangvacungcapdichvu": 70112825100710,
+        "tongloinhuanketoantruocthue": 13043632833797,
+        "trongdochiphilaivay": 809759601156,
+        "loinhuansauthuethunhapdoanhnghiep": 11232339450734,
+        "loinhuansauthuecuacongtyme": 9376127629501,
+        "laicobantrencophieu": 5216
+      }
+    ],
+    "cash-flow": [
+      {
+        "year": 2017,
+        "luuchuyentienthuantuhoatdongkinhdoanh": 1988183664915,
+        "tienchidemuasamxaydungtaisancodinh": -1104370928512
+      },
+      {
+        "year": 2018,
+        "luuchuyentienthuantuhoatdongkinhdoanh": 3588320092336,
+        "tienchidemuasamxaydungtaisancodinh": -2453675554507
+      },
+      {
+        "year": 2019,
+        "luuchuyentienthuantuhoatdongkinhdoanh": 3898749985785,
+        "tienchidemuasamxaydungtaisancodinh": -3233069745365
+      },
+      {
+        "year": 2020,
+        "luuchuyentienthuantuhoatdongkinhdoanh": 6339679033336,
+        "tienchidemuasamxaydungtaisancodinh": -3017645357713
+      },
+      {
+        "year": 2021,
+        "luuchuyentienthuantuhoatdongkinhdoanh": 5839693554727,
+        "tienchidemuasamxaydungtaisancodinh": -2911001172725
+      },
+      {
+        "year": 2022,
+        "luuchuyentienthuantuhoatdongkinhdoanh": 5053831756700,
+        "tienchidemuasamxaydungtaisancodinh": -3215243200871
+      },
+      {
+        "year": 2023,
+        "luuchuyentienthuantuhoatdongkinhdoanh": 9517095698405,
+        "tienchidemuasamxaydungtaisancodinh": -3978252082224
+      },
+      {
+        "year": 2024,
+        "luuchuyentienthuantuhoatdongkinhdoanh": 11703777188868,
+        "tienchidemuasamxaydungtaisancodinh": -3275312325702
+      },
+      {
+        "year": 2025,
+        "luuchuyentienthuantuhoatdongkinhdoanh": 10136043915911,
+        "tienchidemuasamxaydungtaisancodinh": -5097919349856
+      }
+    ]
+  }
+}

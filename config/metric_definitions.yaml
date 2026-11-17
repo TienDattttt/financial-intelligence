@@ -423,3 +423,127 @@ metrics:
     tt200_code: "50"
     tt99_code: "50"
     comparable_across_taxonomy: false
+  BS_TRADE_RECEIVABLES_ST:
+    canonical_id: BS_TRADE_RECEIVABLES_ST
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "131"
+    tt99_code: "131"
+    comparable_across_taxonomy: true
+  BS_LT_RECEIVABLES:
+    canonical_id: BS_LT_RECEIVABLES
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "210"
+    tt99_code: "210"
+    comparable_across_taxonomy: true
+  BS_TRADE_RECEIVABLES_LT:
+    canonical_id: BS_TRADE_RECEIVABLES_LT
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "211"
+    tt99_code: "211"
+    comparable_across_taxonomy: true
+  BS_BAD_DEBT_PROVISION_ST:
+    canonical_id: BS_BAD_DEBT_PROVISION_ST
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "137"
+    tt99_code: "136"
+    comparable_across_taxonomy: true
+  BS_BAD_DEBT_PROVISION_LT:
+    canonical_id: BS_BAD_DEBT_PROVISION_LT
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "219"
+    tt99_code: "216"
+    comparable_across_taxonomy: true
+  BS_TRADE_RECEIVABLES_ALLOWANCE_ST:
+    canonical_id: BS_TRADE_RECEIVABLES_ALLOWANCE_ST
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    filing_note: true
+    comparable_across_taxonomy: true
+  BS_TRADE_RECEIVABLES_ALLOWANCE_LT:
+    canonical_id: BS_TRADE_RECEIVABLES_ALLOWANCE_LT
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    filing_note: true
+    comparable_across_taxonomy: true
+  BS_TRADE_PAYABLES_ST:
+    canonical_id: BS_TRADE_PAYABLES_ST
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "311"
+    tt99_code: "311"
+    comparable_across_taxonomy: true
+  BS_CONVERTIBLE_BONDS:
+    canonical_id: BS_CONVERTIBLE_BONDS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "339"
+    tt99_code: "340"
+    comparable_across_taxonomy: true
+  BS_ORDINARY_SHARES_CAPITAL:
+    canonical_id: BS_ORDINARY_SHARES_CAPITAL
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "411a"
+    tt99_code: "411a"
+    comparable_across_taxonomy: true
+  BS_MINORITY_INTEREST:
+    canonical_id: BS_MINORITY_INTEREST
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "429"
+    tt99_code: "429"
+    comparable_across_taxonomy: true
+  IS_NET_INCOME_PARENT:
+    canonical_id: IS_NET_INCOME_PARENT
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "61"
+    tt99_code: "61"
+    comparable_across_taxonomy: true
+  IS_EPS_BASIC_REPORTED:
+    canonical_id: IS_EPS_BASIC_REPORTED
+    statement_type: INCOME_STATEMENT
+    value_type: NON_ADDITIVE
+    unit: VND_PER_SHARE
+    sign_convention: SIGNED
+    tt200_code: "70"
+    tt99_code: "70"
+    comparable_across_taxonomy: false
+  BS_TREASURY_SHARES:
+    canonical_id: BS_TREASURY_SHARES
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "415"
+    tt99_code: "415"
+    comparable_across_taxonomy: false

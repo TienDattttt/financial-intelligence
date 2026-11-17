@@ -1,0 +1,65 @@
+{
+  "source": "FHSC FPT Gate 0 archive, retained raw keys and values",
+  "symbol": "FPT",
+  "unit": "VND",
+  "rows": [
+    {
+      "page": "balance-sheet-year-001.json",
+      "year": 2025,
+      "quarter": null,
+      "raw_metrics": {
+        "phaithukhachhang": 12734600596550,
+        "cackhoanphaithudaihan": 564342065270,
+        "duphongphaithunganhankhodoi": -586166744274,
+        "duphongphaithukhodoi": -52372482637,
+        "phaithudaihancuakhachhang": 0,
+        "phaitranguoibannganhan": 3837081314767,
+        "traiphieuchuyendoi": 0,
+        "vonchusohuu_tong": 43748040747539,
+        "vonchusohuu": 43748040747539,
+        "cophieuquy": 0
+      }
+    },
+    {
+      "page": "balance-sheet-quarter-001.json",
+      "year": 2026,
+      "quarter": 3,
+      "raw_metrics": {
+        "phaithukhachhang": 10847235916673,
+        "cackhoanphaithudaihan": 566684790000,
+        "duphongphaithunganhankhodoi": -346643599150,
+        "duphongphaithukhodoi": -52372482637,
+        "phaithudaihancuakhachhang": 0,
+        "phaitranguoibannganhan": 1907083050630,
+        "traiphieuchuyendoi": 0,
+        "vonchusohuu_tong": 44039381339841,
+        "vonchusohuu": 44039381339841,
+        "cophieuquy": 0
+      }
+    },
+    {
+      "page": "income-statement-year-001.json",
+      "year": 2025,
+      "quarter": null,
+      "raw_metrics": {
+        "trongdochiphilaivay": 809759601156,
+        "chiphithuetndnhienhanh": 1916998192442,
+        "chiphithuetndnhoanlai": -105704809379,
+        "tongloinhuanketoantruocthue": 13043632833797,
+        "loinhuansauthuethunhapdoanhnghiep": 11232339450734
+      }
+    },
+    {
+      "page": "income-statement-quarter-001.json",
+      "year": 2026,
+      "quarter": 3,
+      "raw_metrics": {
+        "trongdochiphilaivay": 220351898740,
+        "chiphithuetndnhienhanh": 360533794568,
+        "chiphithuetndnhoanlai": -33922908544,
+        "tongloinhuanketoantruocthue": 3055924423273,
+        "loinhuansauthuethunhapdoanhnghiep": 2729313537249
+      }
+    }
+  ]
+}
