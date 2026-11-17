@@ -47,6 +47,10 @@ from finintel.analytics.intermediates import (
     cross_taxonomy,
     input_has,
 )
+from finintel.storage.schemas import (
+    CORE_RATIOS as CORE_RATIOS,
+    EXTRA_RATIOS as EXTRA_RATIOS,
+)
 
 
 class RatioStatusFlag(StrEnum):
@@ -67,45 +71,6 @@ class RatioStatusFlag(StrEnum):
 
 
 Flag = RatioStatusFlag
-CORE_RATIOS = (
-    "gross_margin",
-    "ebit_margin",
-    "ebitda_margin",
-    "operating_margin",
-    "net_profit_margin",
-    "roa",
-    "roe_total",
-    "roe_parent",
-    "roic",
-    "current_ratio",
-    "quick_ratio",
-    "cash_ratio",
-    "ocf_to_current_liabilities",
-    "liabilities_to_assets",
-    "financial_debt_to_assets",
-    "debt_to_equity",
-    "net_debt_to_equity",
-    "net_debt_to_ebitda",
-    "interest_coverage",
-    "asset_turnover",
-    "inventory_turnover",
-    "receivables_turnover",
-    "payables_turnover",
-    "cash_conversion_cycle",
-    "ocf_to_net_income",
-    "fcf_to_revenue",
-    "accruals_to_assets",
-    "eps_ttm_estimated",
-)
-EXTRA_RATIOS = (
-    "equity_to_assets",
-    "dio",
-    "dso",
-    "dpo",
-    "revenue_growth_yoy",
-    "ebit_growth_yoy",
-    "net_income_parent_growth_yoy",
-)
 USABLE_FLAGS = [Flag.VALID.value, Flag.DERIVED_Q4_INPUT.value]
 
 
@@ -163,6 +128,8 @@ def _ratio(
         .then(pl.lit(Flag.MISSING_PRIOR_YEAR_BASE.value))
         .when(numerator.is_null() | denominator.is_null())
         .then(pl.lit(Flag.MISSING_INPUT.value))
+        .when(~numerator.is_finite() | ~denominator.is_finite())
+        .then(pl.lit(Flag.NUMERIC_OVERFLOW.value))
         .when(special)
         .then(pl.lit(special_flag.value))
         .when(denominator <= 0)

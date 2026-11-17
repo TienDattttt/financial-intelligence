@@ -443,6 +443,7 @@ def test_forensic_flags_use_consecutive_periods_and_emit_evidence() -> None:
         "IS_NET_INCOME": 3,
         "CF_OPERATING_CASH_FLOW": -1,
         "BS_SHORT_TERM_RECEIVABLES": 40,
+        "BS_LT_RECEIVABLES": 0,
         "BS_TRADE_RECEIVABLES_ST": 10,
     }
     history = facts({(year, q): accounts for year in (2024, 2025) for q in range(1, 5)})
@@ -589,6 +590,10 @@ def test_normalize_to_analytics_carries_late_filing_and_ignores_newer_scoped_bat
     (batch,) = (curated / "analytics").iterdir()
     metadata = json.loads((batch / "_analytics_meta.json").read_text(encoding="utf-8"))
     assert Path(metadata["facts_path"]) in full_batches
+    assert (
+        Path(metadata["issuers_path"]).resolve()
+        == (curated / "issuers.parquet").resolve()
+    )
     alert = pl.read_parquet(batch / "accounting_red_flags.parquet").row(0, named=True)
     assert alert["filing_id"] == stored.filing_id
     assert json.loads(alert["evidence_json"])["is_filed_late"] is True
@@ -605,6 +610,32 @@ def test_snapshot_rejects_malformed_empty_analytics_table(tmp_path: Path) -> Non
             "snap_invalid", {RED_FLAGS_TABLE: pl.DataFrame(schema={"wrong": pl.String})}
         )
     assert not (tmp_path / "snapshots/snap_invalid").exists()
+
+
+def test_snapshot_requires_nonempty_ratios_with_valid_schema_and_unique_keys(
+    tmp_path: Path,
+) -> None:
+    from finintel.analytics.tables import build_analytics_tables
+    from finintel.exceptions import ContractViolationError
+    from finintel.storage import SnapshotPublisher
+    from finintel.storage.schemas import RATIOS_TABLE
+
+    ratios = build_analytics_tables(
+        facts({(2025, None): {"BS_TOTAL_ASSETS": 100}}),
+        issuer(),
+        as_of=date(2026, 6, 1),
+    )[RATIOS_TABLE]
+    publisher = SnapshotPublisher(tmp_path / "snapshots")
+    for invalid in (
+        ratios.drop("roa_flag"),
+        ratios.with_columns(pl.col("fiscal_year").cast(pl.String)),
+        pl.concat([ratios, ratios]),
+    ):
+        with pytest.raises(ContractViolationError):
+            publisher.publish("snap_bad_ratios", {RATIOS_TABLE: invalid})
+        assert not (publisher.root / "snap_bad_ratios").exists()
+    with pytest.raises(ValueError, match="empty"):
+        publisher.publish("snap_empty_ratios", {RATIOS_TABLE: ratios.clear()})
 
 
 def test_pipeline_analytics_uses_current_full_history_over_curated_fallback(
@@ -1054,3 +1085,75 @@ def test_growth_with_missing_prior_period_reports_specific_status() -> None:
     ]
     for name in ("revenue", "ebit", "net_income_parent"):
         assert result[f"{name}_growth_yoy_flag"].item() == "MISSING_PRIOR_YEAR_BASE"
+
+
+def test_rf03_requires_reported_long_term_receivables() -> None:
+    from finintel.analytics.tables import RED_FLAGS_TABLE, build_analytics_tables
+
+    base: dict[str, float | None] = {
+        "BS_TOTAL_ASSETS": 100,
+        "BS_SHORT_TERM_RECEIVABLES": 40,
+        "BS_TRADE_RECEIVABLES_ST": 10,
+    }
+    source = facts(
+        {
+            (2024, None): base,
+            (2025, None): {**base, "BS_LT_RECEIVABLES": 0},
+        }
+    )
+    flags = build_analytics_tables(source, issuer(), as_of=date(2026, 6, 1))[
+        RED_FLAGS_TABLE
+    ]
+    assert flags.select("period_end_date", "flag_code").rows() == [
+        (date(2025, 12, 31), "RF_03_OTHER_RECEIVABLES_ANOMALY"),
+    ]
+
+
+def test_overflow_flags_match_null_publication_and_dependent_ratios() -> None:
+    from finintel.analytics.tables import RATIOS_TABLE, build_analytics_tables
+
+    source = facts(
+        {
+            (2025, None): {
+                "IS_PROFIT_BEFORE_TAX": 1e308,
+                "IS_INTEREST_EXPENSE": 0,
+                "CF_DEPRECIATION_AMORTIZATION": 1e308,
+                "IS_NET_REVENUE": 1e308,
+                "BS_SHORT_TERM_BORROWINGS": 10,
+                "BS_CASH_AND_EQUIVALENTS": 4,
+            }
+        }
+    )
+    row = build_analytics_tables(source, issuer(), as_of=date(2026, 6, 1))[
+        RATIOS_TABLE
+    ].row(0, named=True)
+    assert row["ebitda_ttm"] is None
+    assert row["ebitda_flag"] == "NUMERIC_OVERFLOW"
+    assert row["ebitda_margin"] is None
+    assert row["ebitda_margin_flag"] == "NUMERIC_OVERFLOW"
+    assert row["net_debt_to_ebitda"] is None
+    assert row["net_debt_to_ebitda_flag"] == "NUMERIC_OVERFLOW"
+
+
+@pytest.mark.parametrize(("earnings", "eps"), [(-100, -20), (100, 20)])
+def test_annual_eps_implies_positive_weighted_shares_with_either_sign(
+    earnings: int, eps: int
+) -> None:
+    from finintel.analytics.tables import RATIOS_TABLE, build_analytics_tables
+
+    source = facts(
+        {
+            (2025, None): {
+                "IS_NET_INCOME_PARENT": earnings,
+                "IS_EPS_BASIC_REPORTED": eps,
+                "BS_ORDINARY_SHARES_CAPITAL": 100_000,
+                "BS_TREASURY_SHARES": 0,
+            }
+        }
+    )
+    row = build_analytics_tables(source, issuer(), as_of=date(2026, 6, 1))[
+        RATIOS_TABLE
+    ].row(0, named=True)
+    assert row["implied_weighted_shares"] == 5
+    assert row["eps_ttm_estimated"] == eps
+    assert row["eps_estimate_basis"] == "IMPLIED_ANNUAL_WEIGHTED"

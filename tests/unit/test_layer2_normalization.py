@@ -103,6 +103,22 @@ def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) 
                 "IS_INTEREST_EXPENSE" if entry["year"] == 2025 else "IS_BORROWING_COSTS"
             )
             assert values[borrowing] == entry["raw_metrics"]["trongdochiphilaivay"]
+            assert (
+                values["IS_PROFIT_BEFORE_TAX"]
+                == entry["raw_metrics"]["tongloinhuanketoantruocthue"]
+            )
+            assert (
+                values["IS_CURRENT_INCOME_TAX"]
+                == entry["raw_metrics"]["chiphithuetndnhienhanh"]
+            )
+            assert (
+                values["IS_DEFERRED_INCOME_TAX"]
+                == entry["raw_metrics"]["chiphithuetndnhoanlai"]
+            )
+            assert (
+                values["IS_NET_INCOME"]
+                == entry["raw_metrics"]["loinhuansauthuethunhapdoanhnghiep"]
+            )
             assert values["IS_DEFERRED_INCOME_TAX"] < 0
             assert (
                 values["IS_PROFIT_BEFORE_TAX"]
@@ -129,6 +145,7 @@ def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) 
                 == entry["raw_metrics"]["traiphieuchuyendoi"]
             )
             assert values["BS_TOTAL_EQUITY"] == entry["raw_metrics"]["vonchusohuu"]
+            assert values["BS_TREASURY_SHARES"] == entry["raw_metrics"]["cophieuquy"]
             assert (
                 mapped.filter(pl.col("metric_id") == "BS_TOTAL_EQUITY")[
                     "raw_metric_key"

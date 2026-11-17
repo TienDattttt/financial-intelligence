@@ -13,14 +13,15 @@ from typing import TypeAlias
 import polars as pl
 from filelock import FileLock
 
-from finintel.exceptions import ContractViolationError
 from finintel.pipeline.state_store import StateStore
 from finintel.storage.schemas import (
+    ANALYTICS_SCHEMAS,
     ISSUERS_SCHEMA,
     OPTIONAL_ANALYTICS_SCHEMAS,
     UNMAPPED_METRICS_SCHEMA,
     canonicalize_financial_facts,
     canonicalize_table,
+    validate_analytics_table,
 )
 
 TableInput: TypeAlias = pl.DataFrame | Path
@@ -201,12 +202,8 @@ class SnapshotPublisher:
             canonicalize_table(table, ISSUERS_SCHEMA)
         elif filename == "unmapped_metrics.parquet":
             canonicalize_table(table, UNMAPPED_METRICS_SCHEMA)
-        elif filename in OPTIONAL_ANALYTICS_SCHEMAS:
-            required = OPTIONAL_ANALYTICS_SCHEMAS[filename]
-            if any(table.schema.get(name) != dtype for name, dtype in required.items()):
-                raise ContractViolationError(
-                    f"Analytics snapshot table has invalid schema: {filename}."
-                )
+        elif filename in ANALYTICS_SCHEMAS:
+            validate_analytics_table(filename, table)
 
     garbage_collect = collect_garbage
 

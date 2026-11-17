@@ -120,17 +120,6 @@ PERIOD = [
     "period_end_date",
 ]
 SERIES = ["issuer_id", "statement_scope", "period_type"]
-RATIO_KEY = [
-    "issuer_id",
-    "ticker",
-    "accounting_regime",
-    "statement_scope",
-    "period_type",
-    "fiscal_year",
-    "fiscal_quarter",
-    "period_end_date",
-    "filing_id",
-]
 MIXED = "MIXED_TAXONOMY"
 REVISION_ORDER = ["effective_available_at", "revision_no", "filing_id"]
 METRIC = pl.col("metric_id")
@@ -368,6 +357,7 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         .abs()
     )
     tax_inputs = (EBT, CURRENT_TAX, DEFERRED_TAX)
+    implied_shares = c(PARENT_EARNINGS) / c(EPS)
     result = frame.with_columns(
         pl.when(CORPORATE & ~input_has("mixed", *DEBT_INPUTS))
         .then(debt)
@@ -394,8 +384,8 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         pl.when((c(SHARES) > 0) & (c(TREASURY_SHARES) == 0))
         .then(c(SHARES) / 10000.0)
         .alias("estimated_shares_outstanding"),
-        pl.when(annual & (c(EPS) > 0) & (c(PARENT_EARNINGS) > 0))
-        .then(c(PARENT_EARNINGS) / c(EPS))
+        pl.when(annual & (implied_shares > 0) & implied_shares.is_finite())
+        .then(implied_shares)
         .alias("implied_weighted_shares"),
         pl.when(annual).then(c(EPS)).alias("eps_basic_reported"),
     )
@@ -411,30 +401,26 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         (c("total_debt") - c("total_cash_and_st_investments")).alias("net_debt"),
         (c("total_debt") + c(EQUITY) - c(CASH)).alias("invested_capital"),
         (c("ebit_ttm") + c(DEPRECIATION).abs()).alias("ebitda_ttm"),
+        (c("ebit_ttm") * (1 - c("effective_tax_rate"))).alias("nopat_ttm"),
+        _intermediate_flag("ebit_ttm", *EBIT_INPUTS).alias("ebit_flag"),
+        _intermediate_flag("effective_tax_rate", *tax_inputs).alias(
+            "effective_tax_rate_flag"
+        ),
+        _intermediate_flag("fcf_ttm", *FCF_INPUTS).alias("fcf_flag"),
+    ).with_columns(
         pl.when(~CORPORATE)
         .then(pl.lit("NOT_APPLICABLE_FOR_REGIME"))
         .when(input_has("mixed", *EBITDA_INPUTS))
         .then(pl.lit(MIXED))
         .when(c(DEPRECIATION).is_null())
         .then(pl.lit("MISSING_DEPRECIATION_DIRECT_CF"))
-        .when(c("ebit_ttm").is_null())
-        .then(pl.lit("MISSING_INPUT"))
-        .when(input_has("derived", *EBITDA_INPUTS))
-        .then(pl.lit("DERIVED_Q4_INPUT"))
-        .otherwise(pl.lit("VALID"))
+        .otherwise(_intermediate_flag("ebitda_ttm", *EBITDA_INPUTS))
         .alias("ebitda_flag"),
-        (c("ebit_ttm") * (1 - c("effective_tax_rate"))).alias("nopat_ttm"),
-        _intermediate_flag("ebit_ttm", "ebit_flag", *EBIT_INPUTS),
-        _intermediate_flag(
-            "effective_tax_rate", "effective_tax_rate_flag", *tax_inputs
-        ),
-        _intermediate_flag("fcf_ttm", "fcf_flag", *FCF_INPUTS),
-    ).with_columns(
-        _intermediate_flag("nopat_ttm", "nopat_flag", *NOPAT_INPUTS),
+        _intermediate_flag("nopat_ttm", *NOPAT_INPUTS).alias("nopat_flag"),
     )
 
 
-def _intermediate_flag(value: str, status: str, *inputs: str) -> pl.Expr:
+def _intermediate_flag(value: str, *inputs: str) -> pl.Expr:
     amount = pl.col(value)
     return (
         pl.when(~CORPORATE)
@@ -448,7 +434,6 @@ def _intermediate_flag(value: str, status: str, *inputs: str) -> pl.Expr:
         .when(input_has("derived", *inputs))
         .then(pl.lit("DERIVED_Q4_INPUT"))
         .otherwise(pl.lit("VALID"))
-        .alias(status)
     )
 
 

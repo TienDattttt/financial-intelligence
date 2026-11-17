@@ -10,9 +10,8 @@ Verified Sources:
 
 import polars as pl
 
-from finintel.analytics.ratios import CORE_RATIOS, EXTRA_RATIOS
 from finintel.exceptions import ContractViolationError
-from finintel.storage.schemas import BENCHMARK_KEY
+from finintel.storage.schemas import BENCHMARK_KEY, CORE_RATIOS, EXTRA_RATIOS
 
 
 def benchmark_ratios(

@@ -95,7 +95,7 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
                 "mixed", ASSETS, RECEIVABLES, TRADE_RECEIVABLES, LT_RECEIVABLES
             )
         )
-        .then((c(RECEIVABLES) - trade + c(LT_RECEIVABLES).fill_null(0)) / assets)
+        .then((c(RECEIVABLES) - trade + c(LT_RECEIVABLES)) / assets)
         .alias("other_receivables_to_assets"),
         pl.when((assets > 0) & ~input_has("mixed", ASSETS, INVENTORY))
         .then(c(INVENTORY) / assets)

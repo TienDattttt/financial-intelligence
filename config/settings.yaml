@@ -10,4 +10,4 @@ tickers: []
 # analytics:
 #   facts_path: ../data/curated/financial_facts.parquet
 #   issuers_path: ../data/curated/issuers.parquet
-#   as_of: "2026-06-01"
+#   as_of: "YYYY-MM-DD"  # Replay cutoff. Omit to use the run date.
