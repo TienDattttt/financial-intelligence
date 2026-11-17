@@ -76,6 +76,7 @@ def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) 
     bs_ids = {
         "BS_TRADE_RECEIVABLES_ST",
         "BS_LT_RECEIVABLES",
+        "BS_TRADE_RECEIVABLES_LT",
         "BS_TRADE_PAYABLES_ST",
         "BS_CONVERTIBLE_BONDS",
         "BS_TOTAL_EQUITY",
@@ -135,6 +136,10 @@ def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) 
             assert (
                 values["BS_LT_RECEIVABLES"]
                 == entry["raw_metrics"]["cackhoanphaithudaihan"]
+            )
+            assert (
+                values["BS_TRADE_RECEIVABLES_LT"]
+                == entry["raw_metrics"]["phaithudaihancuakhachhang"]
             )
             assert (
                 values["BS_TRADE_PAYABLES_ST"]

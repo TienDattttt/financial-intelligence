@@ -43,6 +43,7 @@ TREASURY_SHARES = "BS_TREASURY_SHARES"
 TRADE_RECEIVABLES = "BS_TRADE_RECEIVABLES_ST"
 RECEIVABLES = "BS_SHORT_TERM_RECEIVABLES"
 LT_RECEIVABLES = "BS_LT_RECEIVABLES"
+LT_TRADE_RECEIVABLES = "BS_TRADE_RECEIVABLES_LT"
 INVENTORY = "BS_INVENTORIES"
 PAYABLES = "BS_TRADE_PAYABLES_ST"
 REVENUE = "IS_NET_REVENUE"
@@ -78,6 +79,7 @@ STOCKS = (
     TRADE_RECEIVABLES,
     RECEIVABLES,
     LT_RECEIVABLES,
+    LT_TRADE_RECEIVABLES,
     INVENTORY,
     PAYABLES,
 )
@@ -342,6 +344,8 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
     For positive EBT, sum both signed tax lines before dividing and clipping.
     For nonpositive EBT, ETR is 20%. Subtract the reported CAPEX magnitude
     from CFO. Require explicit zero treasury stock to estimate shares from par.
+    Parent equity is consolidated BS_TOTAL_EQUITY less BS_MINORITY_INTEREST,
+    or BS_TOTAL_EQUITY directly when the statement is separate.
     """
     c = pl.col
     debt = pl.when(
@@ -362,7 +366,10 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         pl.when(CORPORATE & ~input_has("mixed", *DEBT_INPUTS))
         .then(debt)
         .alias("total_debt"),
-        (c(EQUITY) - c(NCI).fill_null(0)).alias("parent_equity"),
+        pl.when(c("statement_scope") == "CONSOLIDATED")
+        .then(c(EQUITY) - c(NCI))
+        .otherwise(c(EQUITY))
+        .alias("parent_equity"),
         pl.when(CORPORATE)
         .then(c(CASH) + c(INVESTMENTS).fill_null(0))
         .alias("total_cash_and_st_investments"),

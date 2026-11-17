@@ -205,9 +205,14 @@ def test_regime_routing_and_ratio_boundary_flags() -> None:
     from finintel.analytics.ratios import CORE_RATIOS, calculate_ratios
 
     history: dict[tuple[int, int | None], dict[str, float | None]] = {
-        (2024, None): {"BS_TOTAL_EQUITY": -10, "BS_TOTAL_ASSETS": 200},
+        (2024, None): {
+            "BS_TOTAL_EQUITY": -10,
+            "BS_TOTAL_ASSETS": 200,
+            "BS_MINORITY_INTEREST": 0,
+        },
         (2025, None): {
             "BS_TOTAL_EQUITY": 100,
+            "BS_MINORITY_INTEREST": 0,
             "BS_TOTAL_ASSETS": 300,
             "BS_TOTAL_LIABILITIES": 200,
             "BS_SHORT_TERM_BORROWINGS": 40,
@@ -255,6 +260,34 @@ def test_regime_routing_and_ratio_boundary_flags() -> None:
     assert row["roe_total"] is None
     assert row["roe_total_flag"] == "NEGATIVE_OR_ZERO_EQUITY"
     assert row["roe_parent"] is None
+    assert row["roe_parent_flag"] == "NEGATIVE_OR_ZERO_EQUITY"
+
+
+def test_parent_equity_requires_nci_for_consolidated_statements_at_both_endpoints() -> (
+    None
+):
+    from finintel.analytics.tables import RATIOS_TABLE, build_analytics_tables
+
+    history: dict[tuple[int, int | None], dict[str, float | None]] = {
+        (2023, None): {"BS_TOTAL_EQUITY": 100, "BS_MINORITY_INTEREST": 0},
+        (2024, None): {"BS_TOTAL_EQUITY": 100, "IS_NET_INCOME_PARENT": 10},
+        (2025, None): {
+            "BS_TOTAL_EQUITY": 100,
+            "BS_MINORITY_INTEREST": 0,
+            "IS_NET_INCOME_PARENT": 10,
+        },
+    }
+    consolidated = build_analytics_tables(
+        facts(history), issuer(), as_of=date(2026, 6, 1)
+    )[RATIOS_TABLE]
+    assert consolidated["parent_equity"].to_list() == [100, None, 100]
+    assert consolidated["roe_parent"].to_list() == [None, None, None]
+    assert consolidated["roe_parent_flag"].to_list() == ["MISSING_INPUT"] * 3
+    separate = build_analytics_tables(
+        facts(history, scope="SEPARATE"), issuer(), as_of=date(2026, 6, 1)
+    )[RATIOS_TABLE]
+    assert separate["parent_equity"].to_list() == [100, 100, 100]
+    assert separate["roe_parent"].to_list() == [None, 0.1, 0.1]
 
 
 def test_q4_provenance_survives_in_subsequent_ttm_and_missing_prior_is_flagged() -> (
@@ -444,6 +477,7 @@ def test_forensic_flags_use_consecutive_periods_and_emit_evidence() -> None:
         "CF_OPERATING_CASH_FLOW": -1,
         "BS_SHORT_TERM_RECEIVABLES": 40,
         "BS_LT_RECEIVABLES": 0,
+        "BS_TRADE_RECEIVABLES_LT": 0,
         "BS_TRADE_RECEIVABLES_ST": 10,
     }
     history = facts({(year, q): accounts for year in (2024, 2025) for q in range(1, 5)})
@@ -1024,20 +1058,22 @@ def test_quarterly_cutoff_and_ttm_filing_lineage_in_published_ratios() -> None:
     from finintel.analytics.tables import RATIOS_TABLE, build_analytics_tables
 
     source = facts(
-        {(2025, q): {"IS_NET_REVENUE": 10, "IS_GROSS_PROFIT": 2} for q in range(1, 5)}
-    ).with_columns(
-        (pl.col("period_end_date") + timedelta(days=45)).alias(
-            "effective_available_at"
-        ),
+        {
+            (2025, 1): {"IS_NET_REVENUE": 10, "IS_GROSS_PROFIT": 2},
+            (2025, 2): {"IS_NET_REVENUE": 20, "IS_GROSS_PROFIT": 6},
+            (2025, 3): {"IS_NET_REVENUE": 30, "IS_GROSS_PROFIT": 12},
+            (2025, 4): {"IS_NET_REVENUE": 40, "IS_GROSS_PROFIT": 25},
+        }
     )
     before = build_analytics_tables(source, issuer(), as_of=date(2026, 2, 13))[
         RATIOS_TABLE
     ]
     assert before["fiscal_quarter"].max() == 3
+    assert before["gross_margin"].null_count() == before.height
     after = build_analytics_tables(source, issuer(), as_of=date(2026, 2, 14))[
         RATIOS_TABLE
     ]
-    assert after["gross_margin"][-1] == 0.2
+    assert after["gross_margin"][-1] == (2 + 6 + 12 + 25) / (10 + 20 + 30 + 40)
     assert set(after["source_filing_ids"][-1]) == {f"FPT-2025-{q}" for q in range(1, 5)}
 
 
@@ -1098,7 +1134,11 @@ def test_rf03_requires_reported_long_term_receivables() -> None:
     source = facts(
         {
             (2024, None): base,
-            (2025, None): {**base, "BS_LT_RECEIVABLES": 0},
+            (2025, None): {
+                **base,
+                "BS_LT_RECEIVABLES": 0,
+                "BS_TRADE_RECEIVABLES_LT": 0,
+            },
         }
     )
     flags = build_analytics_tables(source, issuer(), as_of=date(2026, 6, 1))[
@@ -1107,6 +1147,31 @@ def test_rf03_requires_reported_long_term_receivables() -> None:
     assert flags.select("period_end_date", "flag_code").rows() == [
         (date(2025, 12, 31), "RF_03_OTHER_RECEIVABLES_ANOMALY"),
     ]
+
+
+def test_rf03_excludes_long_term_customer_receivables() -> None:
+    from finintel.analytics.tables import RED_FLAGS_TABLE, build_analytics_tables
+
+    base: dict[str, float | None] = {
+        "BS_TOTAL_ASSETS": 100,
+        "BS_SHORT_TERM_RECEIVABLES": 10,
+        "BS_TRADE_RECEIVABLES_ST": 10,
+        "BS_LT_RECEIVABLES": 40,
+    }
+    source = facts(
+        {
+            (2023, None): base,
+            (2024, None): {**base, "BS_TRADE_RECEIVABLES_LT": 40},
+            (2025, None): {**base, "BS_TRADE_RECEIVABLES_LT": 10},
+        }
+    )
+    alert = build_analytics_tables(source, issuer(), as_of=date(2026, 6, 1))[
+        RED_FLAGS_TABLE
+    ].row(0, named=True)
+    assert alert["period_end_date"] == date(2025, 12, 31)
+    evidence = json.loads(alert["evidence_json"])
+    assert evidence["BS_TRADE_RECEIVABLES_LT"] == 10
+    assert evidence["other_receivables_to_assets"] == 0.30
 
 
 def test_overflow_flags_match_null_publication_and_dependent_ratios() -> None:

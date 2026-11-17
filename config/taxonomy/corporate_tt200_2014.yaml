@@ -192,6 +192,10 @@ metrics:
     code: "210"
     labels: ["Các khoản phải thu dài hạn"]
     fhsc: ["cackhoanphaithudaihan"]
+  BS_TRADE_RECEIVABLES_LT:
+    code: "211"
+    labels: ["Phải thu dài hạn của khách hàng"]
+    fhsc: ["phaithudaihancuakhachhang"]
   BS_TRADE_PAYABLES_ST:
     code: "311"
     labels: ["Phải trả người bán ngắn hạn"]

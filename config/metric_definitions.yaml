@@ -441,6 +441,15 @@ metrics:
     tt200_code: "210"
     tt99_code: "210"
     comparable_across_taxonomy: true
+  BS_TRADE_RECEIVABLES_LT:
+    canonical_id: BS_TRADE_RECEIVABLES_LT
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "211"
+    tt99_code: "211"
+    comparable_across_taxonomy: true
   BS_TRADE_PAYABLES_ST:
     canonical_id: BS_TRADE_PAYABLES_ST
     statement_type: BALANCE_SHEET

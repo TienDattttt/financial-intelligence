@@ -26,6 +26,7 @@ from finintel.analytics.intermediates import (
     GROSS_PROFIT,
     INVENTORY,
     LT_RECEIVABLES,
+    LT_TRADE_RECEIVABLES,
     RECEIVABLES,
     REVENUE,
     SERIES,
@@ -42,7 +43,8 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
     """Emit the seven screening rules, with no trigger on missing evidence.
 
     Compute receivable growth (current/prior − 1), other receivables
-    (BS_SHORT_TERM_RECEIVABLES − BS_TRADE_RECEIVABLES_ST + BS_LT_RECEIVABLES)
+    ((BS_SHORT_TERM_RECEIVABLES − BS_TRADE_RECEIVABLES_ST)
+     + (BS_LT_RECEIVABLES − BS_TRADE_RECEIVABLES_LT))
     / BS_TOTAL_ASSETS, and inventory / BS_TOTAL_ASSETS. Require positive
     denominators and valid matched periods. The remaining rules use financial
     ratios, verified audit/disclosure evidence and equity already computed.
@@ -72,6 +74,9 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
     )
     assets = c(ASSETS)
     trade = c(TRADE_RECEIVABLES)
+    other_receivables = (
+        (c(RECEIVABLES) - trade) + (c(LT_RECEIVABLES) - c(LT_TRADE_RECEIVABLES))
+    ) / assets
     prior_trade = c(f"{TRADE_RECEIVABLES}_prior")
     frame = with_prior_year(
         ratios.drop("_prior_end"), "dio", "dso", "gross_margin", "source_filing_ids"
@@ -91,11 +96,17 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
         .alias("trade_receivables_growth_yoy"),
         pl.when(
             (assets > 0)
+            & other_receivables.is_finite()
             & ~input_has(
-                "mixed", ASSETS, RECEIVABLES, TRADE_RECEIVABLES, LT_RECEIVABLES
+                "mixed",
+                ASSETS,
+                RECEIVABLES,
+                TRADE_RECEIVABLES,
+                LT_RECEIVABLES,
+                LT_TRADE_RECEIVABLES,
             )
         )
-        .then((c(RECEIVABLES) - trade + c(LT_RECEIVABLES)) / assets)
+        .then(other_receivables)
         .alias("other_receivables_to_assets"),
         pl.when((assets > 0) & ~input_has("mixed", ASSETS, INVENTORY))
         .then(c(INVENTORY) / assets)
@@ -143,12 +154,13 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
             "RF_03_OTHER_RECEIVABLES_ANOMALY",
             "HIGH",
             "Phải thu ngoài khách hàng ở mức cao",
-            "Phải thu ngắn hạn ngoài khách hàng cộng phải thu dài hạn vượt 25% tổng tài sản.",
+            "Phải thu ngoài khách hàng ở cả ngắn hạn và dài hạn vượt 25% tổng tài sản.",
             CORPORATE & (c("other_receivables_to_assets") > 0.25),
             [
                 c(RECEIVABLES),
                 trade,
                 c(LT_RECEIVABLES),
+                c(LT_TRADE_RECEIVABLES),
                 assets,
                 c("other_receivables_to_assets"),
             ],
