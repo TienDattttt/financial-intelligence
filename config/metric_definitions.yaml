@@ -1,5 +1,48 @@
 # Corporate MVP metrics verified against the circulars and FHSC Spike fixtures.
 metrics:
+  BS_RETAINED_EARNINGS:
+    canonical_id: BS_RETAINED_EARNINGS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: SIGNED
+    tt200_code: "421"
+    tt99_code: "420"
+    comparable_across_taxonomy: true
+  BS_LT_FINANCIAL_INVESTMENTS:
+    canonical_id: BS_LT_FINANCIAL_INVESTMENTS
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "250"
+    tt99_code: "260"
+    comparable_across_taxonomy: true
+  CF_EQUITY_ISSUANCE_PROCEEDS:
+    canonical_id: CF_EQUITY_ISSUANCE_PROCEEDS
+    statement_type: CASH_FLOW
+    value_type: FLOW
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "31"
+    tt99_code: "31"
+    comparable_across_taxonomy: true
+  IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE:
+    canonical_id: IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    filing_note: true
+    comparable_across_taxonomy: true
+  IS_CONTINUING_OPERATIONS_NET_INCOME:
+    canonical_id: IS_CONTINUING_OPERATIONS_NET_INCOME
+    statement_type: INCOME_STATEMENT
+    value_type: FLOW
+    unit: VND
+    sign_convention: SIGNED
+    filing_note: true
+    comparable_across_taxonomy: true
   BS_CURRENT_ASSETS:
     canonical_id: BS_CURRENT_ASSETS
     statement_type: BALANCE_SHEET
