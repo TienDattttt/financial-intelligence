@@ -331,6 +331,16 @@ def _ttm_windows(quarters: pl.DataFrame) -> pl.DataFrame:
         )
         .otherwise(None)
         .alias("ttm_source_filing_ids"),
+        (
+            allowed
+            & pl.any_horizontal(
+                *last_four(
+                    pl.col("derivation_method") == "DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX"
+                )
+            )
+        )
+        .fill_null(False)
+        .alias("ttm_contains_derived_q4"),
     ).drop("_contiguous")
     if result.select((pl.col("ttm_value").is_infinite()).any()).item():
         raise ContractViolationError("TTM computation exceeded the numeric range.")

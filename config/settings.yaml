@@ -1,3 +1,9 @@
 state_path: ../data/metadata/state.sqlite
 min_free_bytes: 104857600
 tickers: []
+# Analytics uses curated/financial_facts.parquet and curated/issuers.parquet
+# by default. Set paths here to replay a particular normalized batch.
+# analytics:
+#   facts_path: ../data/curated/financial_facts.parquet
+#   issuers_path: ../data/curated/issuers.parquet
+#   as_of: "2026-06-01"

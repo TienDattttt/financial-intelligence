@@ -88,6 +88,7 @@ ALIAS_SCHEMA = pl.Schema(
         "fhsc": pl.Boolean(),
         "cash_flow_method": pl.String(),
         "raw_metric_key": pl.String(),
+        "_fallback": pl.Boolean(),
         **METRIC_SCHEMA,
     }
 )
@@ -154,7 +155,7 @@ def _alias_rows(config_dir: Path) -> list[dict[str, object]]:
                 definition.get("canonical_id") != metric_id
                 or not isinstance(statement, str)
                 or statement not in tuple(StatementType)
-                or definition.get("unit") != "VND"
+                or definition.get("unit") not in ("VND", "VND_PER_SHARE")
                 or definition.get("value_type")
                 != ("STOCK" if statement == "BALANCE_SHEET" else "FLOW")
                 or not isinstance(sign, str)
@@ -177,21 +178,31 @@ def _alias_rows(config_dir: Path) -> list[dict[str, object]]:
                 )
             labels = _aliases(mapping.get("labels", []))
             provider_keys = _aliases(mapping.get("fhsc", []))
+            fallback = _aliases(mapping.get("fhsc_fallback", []))
             alias_groups = (
                 (
                     False,
                     [code],
                     [method] if method else ["", *sorted(CASH_FLOW_METHODS)],
+                    False,
                 ),
                 (
                     False,
                     [metric_id, *labels],
                     ["", method] if method else ["", *sorted(CASH_FLOW_METHODS)],
+                    False,
                 ),
                 (
                     True,
                     provider_keys,
                     ["", method] if method else ["", *sorted(CASH_FLOW_METHODS)],
+                    False,
+                ),
+                (
+                    True,
+                    fallback,
+                    ["", method] if method else ["", *sorted(CASH_FLOW_METHODS)],
+                    True,
                 ),
             )
             rows.extend(
@@ -201,6 +212,7 @@ def _alias_rows(config_dir: Path) -> list[dict[str, object]]:
                     "fhsc": fhsc,
                     "cash_flow_method": cash_method,
                     "raw_metric_key": alias,
+                    "_fallback": is_fallback,
                     "metric_id": metric_id,
                     **{
                         name: definition[name]
@@ -208,7 +220,7 @@ def _alias_rows(config_dir: Path) -> list[dict[str, object]]:
                         if name != "metric_id"
                     },
                 }
-                for fhsc, aliases, methods in alias_groups
+                for fhsc, aliases, methods, is_fallback in alias_groups
                 for alias in aliases
                 for cash_method in methods
             )
@@ -322,7 +334,11 @@ class TaxonomyMapper:
         )
         if aliases is None:
             aliases = pl.DataFrame(
-                schema={"raw_metric_key": pl.String, **METRIC_SCHEMA}
+                schema={
+                    "raw_metric_key": pl.String,
+                    "_fallback": pl.Boolean,
+                    **METRIC_SCHEMA,
+                }
             )
         joined = data.join(
             aliases, on="raw_metric_key", how="left", maintain_order="left"
@@ -343,8 +359,15 @@ class TaxonomyMapper:
         unmapped = enriched.filter(pl.col("metric_id").is_null()).select(
             UNMAPPED_SCHEMA.names()
         )
-        amounts = enriched.filter(pl.col("metric_id").is_not_null()).with_columns(
-            (_numeric_value() * pl.col("unit_multiplier")).alias("value")
+        amounts = (
+            enriched.filter(pl.col("metric_id").is_not_null())
+            .with_columns(
+                pl.when(pl.col("unit") == "VND_PER_SHARE")
+                .then(1)
+                .otherwise(pl.col("unit_multiplier"))
+                .alias("unit_multiplier")
+            )
+            .with_columns((_numeric_value() * pl.col("unit_multiplier")).alias("value"))
         )
         invalid = (
             pl.col("raw_value").is_not_null()
@@ -355,6 +378,14 @@ class TaxonomyMapper:
             raise ContractViolationError(
                 "A mapped metric has an invalid or nonfinite amount."
             )
+        fallback = pl.col("_fallback")
+        priority = pl.when(pl.col("value").is_not_null()).then(2).otherwise(
+            0
+        ) - fallback.cast(pl.Int8)
+        amounts = amounts.filter(
+            ~fallback.any().over("metric_id")
+            | (priority == priority.max().over("metric_id"))
+        )
         if amounts["metric_id"].is_duplicated().any():
             raise ContractViolationError(
                 "Multiple source keys supplied the same canonical metric."

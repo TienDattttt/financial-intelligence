@@ -70,6 +70,7 @@ metrics:
     code: "400"
     labels: ["Vốn chủ sở hữu"]
     fhsc: ["vonchusohuu_tong"]
+    fhsc_fallback: ["vonchusohuu"]
   BS_TOTAL_LIABILITIES_AND_EQUITY:
     code: "440"
     labels: ["Tổng cộng nguồn vốn"]
@@ -183,3 +184,35 @@ metrics:
     code: "50"
     labels: ["Lưu chuyển tiền thuần trong kỳ"]
     fhsc: ["luuchuyentienthuantrongnam"]
+  BS_TRADE_RECEIVABLES_ST:
+    code: "131"
+    labels: ["Phải thu ngắn hạn của khách hàng"]
+    fhsc: ["phaithukhachhang"]
+  BS_LT_RECEIVABLES:
+    code: "210"
+    labels: ["Các khoản phải thu dài hạn"]
+    fhsc: ["cackhoanphaithudaihan"]
+  BS_TRADE_PAYABLES_ST:
+    code: "311"
+    labels: ["Phải trả người bán ngắn hạn"]
+    fhsc: ["phaitranguoibannganhan"]
+  BS_CONVERTIBLE_BONDS:
+    code: "339"
+    labels: ["Trái phiếu chuyển đổi"]
+    fhsc: ["traiphieuchuyendoi"]
+  BS_ORDINARY_SHARES_CAPITAL:
+    code: "411a"
+    labels: ["Cổ phiếu phổ thông có quyền biểu quyết"]
+    fhsc: ["cophieuphothongcoquyenbieuquyet"]
+  BS_MINORITY_INTEREST:
+    code: "429"
+    labels: ["Lợi ích cổ đông không kiểm soát"]
+    fhsc: ["loiichcodongkhongkiemsoat"]
+  IS_NET_INCOME_PARENT:
+    code: "61"
+    labels: ["Lợi nhuận sau thuế của công ty mẹ"]
+    fhsc: ["loinhuansauthuecuacongtyme"]
+  IS_EPS_BASIC_REPORTED:
+    code: "70"
+    labels: ["Lãi cơ bản trên cổ phiếu"]
+    fhsc: ["laicobantrencophieu"]

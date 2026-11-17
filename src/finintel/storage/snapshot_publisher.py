@@ -22,6 +22,7 @@ from finintel.storage.schemas import (
 )
 
 TableInput: TypeAlias = pl.DataFrame | Path
+EMPTY_ANALYTICS_TABLES = {"industry_benchmarks.parquet", "accounting_red_flags.parquet"}
 
 
 def snapshot_lock(root: Path) -> FileLock:
@@ -186,7 +187,7 @@ class SnapshotPublisher:
                 raise OSError(f"Snapshot table was not written: {filename}")
             table = pl.read_parquet(path)
             self._validate_table_contract(filename, table)
-            if table.height <= 0:
+            if table.is_empty() and filename not in EMPTY_ANALYTICS_TABLES:
                 raise ValueError(f"Snapshot table is empty: {filename}")
         if not (staging / "_snapshot_meta.json").is_file():
             raise OSError("Snapshot metadata was not written.")
