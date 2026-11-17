@@ -78,6 +78,22 @@ EPS = "IS_EPS_BASIC_REPORTED"
 CFO = "CF_OPERATING_CASH_FLOW"
 CAPEX = "CF_CAPITAL_EXPENDITURE"
 DEPRECIATION = "CF_DEPRECIATION_AMORTIZATION"
+RETAINED_EARNINGS = "BS_RETAINED_EARNINGS"
+TANGIBLE_ASSETS = "BS_TANGIBLE_FIXED_ASSETS"
+LT_INVESTMENTS = "BS_LT_FINANCIAL_INVESTMENTS"
+SELLING_EXPENSES = "IS_SELLING_EXPENSES"
+ADMIN_EXPENSES = "IS_ADMINISTRATIVE_EXPENSES"
+EQUITY_PROCEEDS = "CF_EQUITY_ISSUANCE_PROCEEDS"
+NONCASH_ISSUANCE = "IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE"
+CONTINUING_EARNINGS = "IS_CONTINUING_OPERATIONS_NET_INCOME"
+ML_STOCKS = (RETAINED_EARNINGS, TANGIBLE_ASSETS, LT_INVESTMENTS)
+ML_FLOWS = (
+    SELLING_EXPENSES,
+    ADMIN_EXPENSES,
+    EQUITY_PROCEEDS,
+    NONCASH_ISSUANCE,
+    CONTINUING_EARNINGS,
+)
 
 STOCKS = (
     ASSETS,
@@ -120,7 +136,6 @@ FLOWS = (
     CAPEX,
     DEPRECIATION,
 )
-ANNUAL_AMOUNTS = (*FLOWS, EPS)
 ALIASES = {
     "BS_ST_FINANCIAL_INVESTMENTS": INVESTMENTS,
     "BS_ST_BORROWINGS": ST_DEBT,
@@ -132,6 +147,9 @@ ALIASES = {
     "IS_DEFERRED_TAX_EXPENSE": DEFERRED_TAX,
     "IS_COGS": COGS,
     "CF_CAPEX_PURCHASE_FIXED_ASSETS": CAPEX,
+    "BS_TANGIBLE_FIXED_ASSETS_NET": TANGIBLE_ASSETS,
+    "IS_SELLING_EXPENSE": SELLING_EXPENSES,
+    "IS_G_AND_A_EXPENSE": ADMIN_EXPENSES,
 }
 PERIOD = [
     "issuer_id",
@@ -184,7 +202,9 @@ def cross_taxonomy(*names: str) -> pl.Expr:
     ).fill_null(False)
 
 
-def _visible_facts(facts: pl.DataFrame, as_of: date) -> pl.DataFrame:
+def _visible_facts(
+    facts: pl.DataFrame, as_of: date, stocks: tuple[str, ...]
+) -> pl.DataFrame:
     frame = canonicalize_financial_facts(facts)
     optional = {
         "source_provider": pl.lit("normalized"),
@@ -226,7 +246,7 @@ def _visible_facts(facts: pl.DataFrame, as_of: date) -> pl.DataFrame:
             .then(None)
             .otherwise(pl.col("fiscal_quarter"))
             .alias("fiscal_quarter"),
-            pl.when(METRIC.is_in(STOCKS))
+            pl.when(METRIC.is_in(stocks))
             .then(pl.lit("STOCK"))
             .when(METRIC == EPS)
             .then(pl.lit("NON_ADDITIVE"))
@@ -240,14 +260,16 @@ def _visible_facts(facts: pl.DataFrame, as_of: date) -> pl.DataFrame:
     )
 
 
-def _period_amounts(facts: pl.DataFrame) -> pl.DataFrame:
+def _period_amounts(
+    facts: pl.DataFrame, stocks: tuple[str, ...], flows: tuple[str, ...]
+) -> pl.DataFrame:
     reports = facts.filter(
         (pl.col("revision_reason") != "RESTATED_REGIME_CHANGE")
         & pl.col("period_type").is_in(["QUARTER", "ANNUAL"])
     )
     reported = pl.col("derivation_method") == "REPORTED_DIRECTLY"
     # Older Layer 3 files can omit Layer 2's ancillary lineage columns.
-    flow = facts.filter(METRIC.is_in(FLOWS)).select(
+    flow = facts.filter(METRIC.is_in(flows)).select(
         pl.col(name) if name in facts.columns else pl.lit(None, dtype=dtype).alias(name)
         for name, dtype in FACT_SCHEMA.items()
     )
@@ -285,15 +307,15 @@ def _period_amounts(facts: pl.DataFrame) -> pl.DataFrame:
     )
     data_columns = ["metric_id", "computation_note", "comparable_across_taxonomy"]
     raw = reports.filter(
-        METRIC.is_in(STOCKS)
-        | ((pl.col("period_type") == "ANNUAL") & METRIC.is_in(ANNUAL_AMOUNTS))
+        METRIC.is_in(stocks)
+        | ((pl.col("period_type") == "ANNUAL") & METRIC.is_in((*flows, EPS)))
     )
     # Fiscal-year closing stocks may be published only with the annual
     # report. Use them for matching Q4 rows lacking a quarterly stock fact.
     quarter = (pl.col("period_type") == "QUARTER") & (pl.col("fiscal_quarter") == 4)
     closing_keys = [*PERIOD, "taxonomy_version"]
     closing_stocks = (
-        raw.filter((pl.col("period_type") == "ANNUAL") & METRIC.is_in(STOCKS))
+        raw.filter((pl.col("period_type") == "ANNUAL") & METRIC.is_in(stocks))
         .with_columns(
             pl.lit("QUARTER").alias("period_type"),
             pl.lit(4, dtype=pl.Int32).alias("fiscal_quarter"),
@@ -338,7 +360,7 @@ def _period_amounts(facts: pl.DataFrame) -> pl.DataFrame:
     wide = amounts.group_by(PERIOD).agg(
         *(
             expression.filter(METRIC == name).last().alias(f"{prefix}{name}")
-            for name in (*STOCKS, *ANNUAL_AMOUNTS)
+            for name in (*stocks, *flows, EPS)
             for prefix, expression in (
                 ("", pl.col("value")),
                 ("_mixed_", pl.col("computation_note") == MIXED),
@@ -346,6 +368,7 @@ def _period_amounts(facts: pl.DataFrame) -> pl.DataFrame:
                 ("_comparable_", pl.col("comparable_across_taxonomy").fill_null(False)),
             )
         ),
+        pl.col("effective_available_at").max().alias("_amounts_available_at"),
         *(
             pl.col("filing_id").filter(METRIC == name).last().alias(f"_filing_{name}")
             for name in RF03_INPUTS
@@ -500,7 +523,11 @@ def with_prior_year(frame: pl.DataFrame, *columns: str) -> pl.DataFrame:
 
 
 def prepare_periods(
-    facts: pl.DataFrame, issuers: pl.DataFrame, *, as_of: date
+    facts: pl.DataFrame,
+    issuers: pl.DataFrame,
+    *,
+    as_of: date,
+    include_ml_inputs: bool = False,
 ) -> pl.DataFrame:
     """Build annual and TTM inputs from reports available by the PIT cut-off.
 
@@ -546,8 +573,13 @@ def prepare_periods(
         raise ContractViolationError(
             "Analytics requires unique issuer IDs and valid issuer metadata."
         )
-    periods = _period_amounts(_visible_facts(facts, as_of)).join(
-        identity, on="issuer_id", how="left"
+    stocks = (*STOCKS, *ML_STOCKS) if include_ml_inputs else STOCKS
+    flows = (*FLOWS, *ML_FLOWS) if include_ml_inputs else FLOWS
+    amounts = (*stocks, *flows, EPS)
+    periods = (
+        _period_amounts(_visible_facts(facts, as_of, stocks), stocks, flows)
+        .join(identity, on="issuer_id", how="left")
+        .with_columns(pl.col("_amounts_available_at").alias("_period_available_at"))
     )
     if periods["accounting_regime"].null_count():
         raise ContractViolationError(
@@ -561,23 +593,29 @@ def prepare_periods(
     result = with_prior_year(
         _aggregates(periods),
         "taxonomy_version",
-        *STOCKS,
-        *ANNUAL_AMOUNTS,
+        *amounts,
         "_period_filing_ids",
+        "_period_available_at",
         "parent_equity",
         "invested_capital",
         "ebit_ttm",
         *(
             f"_{prefix}_{name}"
             for prefix in ("comparable", "mixed", "derived")
-            for name in (*STOCKS, *ANNUAL_AMOUNTS)
+            for name in amounts
         ),
     )
     return (
         result.with_columns(
+            pl.when(pl.col("_period_available_at").is_not_null())
+            .then(
+                pl.max_horizontal("_period_available_at", "_period_available_at_prior")
+            )
+            .otherwise(None)
+            .alias("_period_available_at"),
             combine_filing_ids(
                 pl.col("_period_filing_ids"), pl.col("_period_filing_ids_prior")
-            ).alias("source_filing_ids")
+            ).alias("source_filing_ids"),
         )
         .rename({"taxonomy_version_prior": "_prior_taxonomy"})
         .sort(PERIOD)

@@ -2,6 +2,20 @@
 # https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59652?format=pdf
 taxonomy_version: VAS_TT99_2025
 metrics:
+  BS_RETAINED_EARNINGS:
+    code: "420"
+    labels: ["Lợi nhuận sau thuế chưa phân phối"]
+    fhsc: ["loinhuansauthuechuaphanphoi"]
+  BS_LT_FINANCIAL_INVESTMENTS:
+    code: "260"
+    labels: ["Đầu tư tài chính dài hạn"]
+    fhsc: ["daututaichinhdaihan"]
+  CF_EQUITY_ISSUANCE_PROCEEDS:
+    code: "31"
+    labels: ["Tiền thu từ phát hành cổ phiếu, nhận vốn góp của chủ sở hữu"]
+    fhsc: ["tienthutuphathanhcophieunhangopvoncuachusohuu"]
+  IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE: {}
+  IS_CONTINUING_OPERATIONS_NET_INCOME: {}
   BS_CURRENT_ASSETS:
     code: "100"
     labels: ["Tài sản ngắn hạn"]

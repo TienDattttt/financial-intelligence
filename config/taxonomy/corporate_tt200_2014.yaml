@@ -2,6 +2,20 @@
 # https://congbao.chinhphu.vn/van-ban/thong-tu-so-200-2014-tt-btc-6697/3529.htm
 taxonomy_version: VAS_TT200_2014
 metrics:
+  BS_RETAINED_EARNINGS:
+    code: "421"
+    labels: ["Lợi nhuận sau thuế chưa phân phối"]
+    fhsc: ["loinhuansauthuechuaphanphoi"]
+  BS_LT_FINANCIAL_INVESTMENTS:
+    code: "250"
+    labels: ["Đầu tư tài chính dài hạn"]
+    fhsc: ["daututaichinhdaihan"]
+  CF_EQUITY_ISSUANCE_PROCEEDS:
+    code: "31"
+    labels: ["Tiền thu từ phát hành cổ phiếu, nhận vốn góp của chủ sở hữu"]
+    fhsc: ["tienthutuphathanhcophieunhangopvoncuachusohuu"]
+  IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE: {}
+  IS_CONTINUING_OPERATIONS_NET_INCOME: {}
   BS_CURRENT_ASSETS:
     code: "100"
     labels: ["Tài sản ngắn hạn"]
