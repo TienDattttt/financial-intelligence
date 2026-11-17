@@ -62,6 +62,15 @@ def test_target_uses_latest_delayed_filing_as_label_availability() -> None:
     assert base_2020_q4["label_available_at"] == date(2022, 6, 1)
 
 
+def test_target_emits_zero_for_a_complete_healthy_horizon() -> None:
+    targets = build_distress_targets(_periods())
+    healthy = targets.filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 1)
+    ).row(0, named=True)
+    assert healthy["distress_target"] == 0
+    assert healthy["already_distressed_at_t"] is False
+
+
 def test_target_invalidates_missing_quarter_and_honors_corporate_only() -> None:
     source = _periods(gap=True).with_columns(
         pl.when(pl.col("fiscal_year") == 2022)
@@ -86,6 +95,12 @@ def test_purged_walk_forward_drops_late_labels_at_each_boundary() -> None:
                 date(2022, 9, 30),
                 date(2022, 10, 31),
             ],
+            "_period_available_at": [
+                date(2020, 12, 31),
+                date(2022, 3, 31),
+                date(2022, 9, 30),
+                date(2022, 10, 31),
+            ],
             "label_available_at": [
                 date(2021, 12, 31),
                 date(2022, 6, 1),
@@ -101,8 +116,12 @@ def test_purged_walk_forward_drops_late_labels_at_each_boundary() -> None:
     assert split["train"].height == 1
     assert split["validation"].height == 1
     assert split["test"].height == 1
-    assert split["train"]["label_available_at"].max() <= date(2022, 1, 1)
-    assert split["validation"]["label_available_at"].max() <= date(2022, 10, 1)
+    train_label_max = split["train"]["label_available_at"].max()
+    validation_label_max = split["validation"]["label_available_at"].max()
+    assert isinstance(train_label_max, date)
+    assert isinstance(validation_label_max, date)
+    assert train_label_max <= date(2022, 1, 1)
+    assert validation_label_max <= date(2022, 10, 1)
 
 
 def test_split_rejects_overlapping_boundaries() -> None:
@@ -111,6 +130,7 @@ def test_split_rejects_overlapping_boundaries() -> None:
             pl.DataFrame(
                 {
                     "period_end_date": [date(2020, 1, 1)],
+                    "_period_available_at": [date(2020, 1, 1)],
                     "label_available_at": [date(2021, 1, 1)],
                     "distress_target": [1],
                 }
@@ -130,3 +150,46 @@ def test_monotone_constraints_cover_exact_model_feature_sets() -> None:
     assert constraints["revenue_growth_yoy"] == 0
     with pytest.raises(ContractViolationError):
         _constraints(("unmapped_feature",))
+
+
+def test_fitted_model_respects_interest_and_roa_monotonicity() -> None:
+    try:
+        import xgboost  # noqa: F401
+    except Exception as exc:
+        pytest.skip(f"native XGBoost unavailable: {exc}")
+    from finintel.ml.supervised.train import BASE_FEATURES, train_distress_model
+
+    def fold(offset: int) -> pl.DataFrame:
+        rows: list[dict[str, object]] = []
+        for index in range(24):
+            row: dict[str, object] = {
+                name: 0.1 + 0.01 * index for name in BASE_FEATURES
+            }
+            row.update(
+                {
+                    "accounting_regime": "CORPORATE",
+                    "statement_scope": "CONSOLIDATED",
+                    "taxonomy_version": "VAS_TT200_2014",
+                    "altman_z_double_prime": 2.0,
+                    "_period_available_at": date(2020 + offset, 1, 1),
+                    "distress_target": index % 2,
+                }
+            )
+            rows.append(row)
+        return pl.DataFrame(rows)
+
+    from finintel.ml.supervised.train import score_distress_model
+
+    result = train_distress_model(fold(0), fold(1))
+    base = fold(2).head(1)
+    higher_interest = base.with_columns(
+        (pl.col("interest_coverage") + 1.0).alias("interest_coverage")
+    )
+    higher_roa = base.with_columns((pl.col("roa") + 1.0).alias("roa"))
+    base_score = score_distress_model(result, base)["distress_risk_score"][0]
+    interest_score = score_distress_model(result, higher_interest)[
+        "distress_risk_score"
+    ][0]
+    roa_score = score_distress_model(result, higher_roa)["distress_risk_score"][0]
+    assert interest_score <= base_score
+    assert roa_score <= base_score

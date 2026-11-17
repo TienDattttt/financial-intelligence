@@ -287,7 +287,6 @@ def _period_amounts(
         .agg(
             pl.col("filing_id").last(),
             pl.col("taxonomy_version").last(),
-            pl.col("effective_available_at").last().alias("_anchor_available_at"),
         )
     )
     warnings = (
@@ -580,11 +579,7 @@ def prepare_periods(
     periods = (
         _period_amounts(_visible_facts(facts, as_of, stocks), stocks, flows)
         .join(identity, on="issuer_id", how="left")
-        .with_columns(
-            pl.max_horizontal("_anchor_available_at", "_amounts_available_at").alias(
-                "_period_available_at"
-            )
-        )
+        .with_columns(pl.col("_amounts_available_at").alias("_period_available_at"))
     )
     if periods["accounting_regime"].null_count():
         raise ContractViolationError(
@@ -612,9 +607,12 @@ def prepare_periods(
     )
     return (
         result.with_columns(
+            pl.max_horizontal(
+                "_period_available_at", "_period_available_at_prior"
+            ).alias("_period_available_at"),
             combine_filing_ids(
                 pl.col("_period_filing_ids"), pl.col("_period_filing_ids_prior")
-            ).alias("source_filing_ids")
+            ).alias("source_filing_ids"),
         )
         .rename({"taxonomy_version_prior": "_prior_taxonomy"})
         .sort(PERIOD)

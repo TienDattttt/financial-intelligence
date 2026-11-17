@@ -28,6 +28,7 @@ from finintel.analytics.intermediates import (
     LIABILITIES,
     LT_DEBT,
     LT_INVESTMENTS,
+    MIXED,
     NONCASH_ISSUANCE,
     RETAINED_EARNINGS,
     REVENUE,
@@ -59,7 +60,18 @@ def _altman(frame: pl.DataFrame) -> pl.DataFrame:
         .then(10.0)
         .otherwise(_divide(equity, liabilities))
     )
-    z = 6.56 * valid_x1 + 3.26 * valid_x2 + 6.72 * valid_x3 + 1.05 * valid_x4
+    mixed = input_has(
+        "mixed",
+        ASSETS,
+        CURRENT_ASSETS,
+        CURRENT_LIABILITIES,
+        RETAINED_EARNINGS,
+        EQUITY,
+        LIABILITIES,
+    ) | (c("ebit_flag") == MIXED)
+    z = pl.when(~mixed).then(
+        6.56 * valid_x1 + 3.26 * valid_x2 + 6.72 * valid_x3 + 1.05 * valid_x4
+    )
     score_valid = pl.all_horizontal(
         valid_x1.is_not_null(),
         valid_x2.is_not_null(),
@@ -87,7 +99,10 @@ def _piotroski(frame: pl.DataFrame) -> pl.DataFrame:
     if "_prior_end" in frame.columns:
         frame = frame.drop("_prior_end")
     leverage = pl.when(
-        (c(ASSETS) > 0) & (c(f"{ASSETS}_prior") > 0) & ~cross_taxonomy(ASSETS)
+        (c(ASSETS) > 0)
+        & (c(f"{ASSETS}_prior") > 0)
+        & ~cross_taxonomy(ASSETS)
+        & ~input_has("mixed", ASSETS, LT_DEBT, f"{ASSETS}_prior", f"{LT_DEBT}_prior")
     ).then(_divide(c(LT_DEBT), average(ASSETS)))
     frame = with_prior_year(
         frame.with_columns(leverage.alias("_lt_leverage")),
@@ -109,7 +124,9 @@ def _piotroski(frame: pl.DataFrame) -> pl.DataFrame:
         pl.when(~cross_taxonomy(CURRENT_ASSETS, CURRENT_LIABILITIES)).then(
             c("current_ratio") > c("current_ratio_prior")
         ),
-        pl.when((proceeds > 0) | (noncash > 0))
+        pl.when(input_has("mixed", EQUITY_PROCEEDS, NONCASH_ISSUANCE))
+        .then(None)
+        .when((proceeds > 0) | (noncash > 0))
         .then(False)
         .when((proceeds == 0) & (noncash == 0))
         .then(True),
@@ -191,7 +208,11 @@ def _beneish(frame: pl.DataFrame) -> pl.DataFrame:
             (leverage, leverage_prior),
         )
     )
-    tata = _divide(c(CONTINUING_EARNINGS) - c(CFO), c(ASSETS)).clip(-1, 1)
+    # The normalized contract has no discontinued-operations metric. A missing
+    # continuing-operations filing note therefore falls back to total net income,
+    # which is the VAS presentation when all earnings are continuing.
+    tata_earnings = pl.coalesce(c(CONTINUING_EARNINGS), c(EARNINGS))
+    tata = _divide(tata_earnings - c(CFO), c(ASSETS)).clip(-1, 1)
     m = (
         -4.84
         + 0.920 * dsri
@@ -215,11 +236,13 @@ def _beneish(frame: pl.DataFrame) -> pl.DataFrame:
         SELLING_EXPENSES,
         ADMIN_EXPENSES,
         LIABILITIES,
+        EARNINGS,
     )
     mixed = cross_taxonomy(*inputs_used) | input_has(
         "mixed",
         *(f"{name}{suffix}" for name in inputs_used for suffix in ("", "_prior")),
         CONTINUING_EARNINGS,
+        EARNINGS,
         CFO,
     )
     return frame.with_columns(

@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import polars as pl
+from numpy.typing import NDArray
 from sklearn.calibration import CalibratedClassifierCV  # type: ignore[import-untyped]
 from sklearn.frozen import FrozenEstimator  # type: ignore[import-untyped]
 from sklearn.linear_model import LogisticRegression  # type: ignore[import-untyped]
@@ -54,8 +55,15 @@ class TrainingResult:
     validation_metrics: dict[str, dict[str, float | None]]
 
 
+def _model_features(
+    features: tuple[str, ...], prep: CrossSectionalPreprocessor
+) -> tuple[str, ...]:
+    return (*features, *prep.indicators)
+
+
 def _constraints(features: tuple[str, ...]) -> tuple[int, ...]:
-    unknown = set(features) - NEGATIVE - POSITIVE - UNCONSTRAINED
+    indicators = {name for name in features if name.endswith("_missing")}
+    unknown = set(features) - NEGATIVE - POSITIVE - UNCONSTRAINED - indicators
     if unknown:
         raise ContractViolationError(
             f"No monotonicity rule defined for features: {sorted(unknown)}"
@@ -65,7 +73,12 @@ def _constraints(features: tuple[str, ...]) -> tuple[int, ...]:
     )
 
 
-def _metrics(y: np.ndarray, score: np.ndarray) -> dict[str, float | None]:
+def _metrics(
+    y: NDArray[np.int8], score: NDArray[np.float64]
+) -> dict[str, float | None]:
+    finite = np.isfinite(score)
+    y = y[finite]
+    score = score[finite]
     if np.unique(y).size < 2:
         return {
             "pr_auc": None,
@@ -83,6 +96,11 @@ def _metrics(y: np.ndarray, score: np.ndarray) -> dict[str, float | None]:
         "f2_score": float(fbeta_score(y, score >= 0.5, beta=2, zero_division=0)),
         "recall_at_top_10_percent": float(y[selected].sum() / max(1, y.sum())),
     }
+
+
+def _altman_probability(score: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+    values = np.asarray(score, dtype=np.float64)
+    return 1.0 / (1.0 + np.exp(np.clip(values, -60.0, 60.0)))
 
 
 def train_distress_model(
@@ -112,26 +130,71 @@ def train_distress_model(
         raise ContractViolationError(
             f"Supervised input is missing target column {target!r}."
         )
-    required = {"accounting_regime", "altman_z_double_prime", target}
+    required = {
+        "accounting_regime",
+        "altman_z_double_prime",
+        "_period_available_at",
+        "statement_scope",
+        "taxonomy_version",
+        target,
+    }
     if required - set(train.columns) or required - set(validation.columns):
         raise ContractViolationError(
             "Supervised inputs require corporate regime and the Altman baseline feature."
         )
     if (
-        train.filter(pl.col("accounting_regime") != "CORPORATE").height
-        or validation.filter(pl.col("accounting_regime") != "CORPORATE").height
+        train.filter(pl.col("accounting_regime").ne("CORPORATE").fill_null(True)).height
+        or validation.filter(
+            pl.col("accounting_regime").ne("CORPORATE").fill_null(True)
+        ).height
     ):
         raise ContractViolationError("Supervised models accept corporate records only.")
+    if "already_distressed_at_t" in train.columns:
+        train = train.filter(~pl.col("already_distressed_at_t").fill_null(True))
+    if "already_distressed_at_t" in validation.columns:
+        validation = validation.filter(
+            ~pl.col("already_distressed_at_t").fill_null(True)
+        )
+    if train.is_empty() or validation.is_empty():
+        raise ContractViolationError(
+            "Onset filtering left an empty train or validation fold."
+        )
     y_train = train[target].to_numpy().astype(np.int8)
     y_valid = validation[target].to_numpy().astype(np.int8)
     if np.unique(y_train).size != 2 or np.unique(y_valid).size != 2:
         raise ContractViolationError(
             "Train and validation require both distress target classes."
         )
+    scopes = set(train.get_column("statement_scope").drop_nulls().to_list())
+    valid_scopes = set(validation.get_column("statement_scope").drop_nulls().to_list())
+    if (
+        len(scopes) != 1
+        or scopes != valid_scopes
+        or train.get_column("statement_scope").null_count()
+        or validation.get_column("statement_scope").null_count()
+    ):
+        raise ContractViolationError(
+            "Train and validation require one identical statement_scope."
+        )
+    taxonomies = set(train.get_column("taxonomy_version").drop_nulls().to_list())
+    valid_taxonomies = set(
+        validation.get_column("taxonomy_version").drop_nulls().to_list()
+    )
+    if (
+        len(taxonomies) != 1
+        or len(valid_taxonomies) != 1
+        or taxonomies != valid_taxonomies
+        or train.get_column("taxonomy_version").null_count()
+        or validation.get_column("taxonomy_version").null_count()
+    ):
+        raise ContractViolationError(
+            "Train and validation require compatible taxonomy versions."
+        )
     prep = CrossSectionalPreprocessor(features).fit(train)
-    x_train = prep.transform(train).select(features).to_numpy()
-    x_valid = prep.transform(validation).select(features).to_numpy()
-    from xgboost import XGBClassifier  # type: ignore[import-untyped]
+    model_features = _model_features(features, prep)
+    x_train = prep.transform(train).select(model_features).to_numpy()
+    x_valid = prep.transform(validation).select(model_features).to_numpy()
+    from xgboost import XGBClassifier
 
     classifier = XGBClassifier(
         objective="binary:logistic",
@@ -143,7 +206,7 @@ def train_distress_model(
         reg_lambda=5.0,
         reg_alpha=1.0,
         eval_metric="aucpr",
-        monotone_constraints=_constraints(features),
+        monotone_constraints=_constraints(model_features),
         random_state=42,
         n_jobs=1,
     )
@@ -154,14 +217,20 @@ def train_distress_model(
         penalty="l2", C=0.1, class_weight="balanced", max_iter=1000, random_state=42
     )
     baseline.fit(x_train, y_train)
+    altman_values = validation.get_column("altman_z_double_prime").to_numpy()
+    altman_values = np.asarray(altman_values, dtype=np.float64)
+    altman_values = np.where(np.isfinite(altman_values), altman_values, np.nan)
+    altman_valid = np.isfinite(altman_values)
     scores = {
         "Baseline_1_AltmanZ": _metrics(
-            y_valid, -validation["altman_z_double_prime"].to_numpy().astype(float)
+            y_valid[altman_valid], _altman_probability(altman_values[altman_valid])
         ),
         "Baseline_2_Logit": _metrics(y_valid, baseline.predict_proba(x_valid)[:, 1]),
         "XGBoost": _metrics(y_valid, calibrated.predict_proba(x_valid)[:, 1]),
     }
-    return TrainingResult(features, prep, classifier, calibrated, baseline, scores)
+    return TrainingResult(
+        model_features, prep, classifier, calibrated, baseline, scores
+    )
 
 
 def score_distress_model(result: TrainingResult, frame: pl.DataFrame) -> pl.DataFrame:

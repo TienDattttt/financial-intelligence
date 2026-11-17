@@ -10,7 +10,7 @@ Verified Sources:
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 import polars as pl
@@ -18,6 +18,17 @@ import shap  # type: ignore[import-untyped]
 
 from finintel.exceptions import ContractViolationError
 from finintel.ml.supervised.train import TrainingResult
+
+
+class DriverRecord(TypedDict):
+    feature: str
+    value: float | None
+    peer_median: float | None
+    shap_delta: float
+
+
+def _json_number(value: float | None) -> float | None:
+    return float(value) if value is not None and np.isfinite(value) else None
 
 
 def explain_distress(
@@ -29,7 +40,8 @@ def explain_distress(
     """Return JSON contributions whose base plus SHAP sum reproduces raw margin."""
     if frame.is_empty():
         return pl.DataFrame(schema={"shap_top_drivers_json": pl.String})
-    matrix = result.preprocessor.transform(frame).select(result.features).to_numpy()
+    transformed = result.preprocessor.transform(frame)
+    matrix = transformed.select(result.features).to_numpy()
     explainer = shap.TreeExplainer(result.classifier, model_output="raw")
     values = np.asarray(explainer.shap_values(matrix), dtype=float)
     if values.ndim == 3:
@@ -47,21 +59,39 @@ def explain_distress(
         raise ContractViolationError(
             "TreeSHAP additivity check failed against XGBoost raw margins."
         )
-    medians: dict[str, float | None] = {name: None for name in result.features}
+    original_features = tuple(
+        name for name in result.features if not name.endswith("_missing")
+    )
+    medians: dict[str, float | None] = {name: None for name in original_features}
     if peer_medians is not None:
-        for row in peer_medians.iter_rows(named=True):
-            name, value = row.get("metric_or_ratio_name"), row.get("peer_median")
-            if name in medians:
-                medians[name] = float(value) if value is not None else None
+        required = peer_medians.filter(
+            pl.col("metric_or_ratio_name").is_in(original_features)
+        ).select("metric_or_ratio_name", "peer_median")
+        medians.update(
+            dict(
+                zip(
+                    required["metric_or_ratio_name"].to_list(),
+                    required["peer_median"].to_list(),
+                    strict=True,
+                )
+            )
+        )
     records: list[str] = []
     for row_index, contributions in enumerate(values):
-        named = [
+        named: list[DriverRecord] = [
             {
                 "feature": feature,
-                "value": float(frame[feature][row_index])
-                if frame[feature][row_index] is not None
-                else None,
-                "peer_median": medians[feature],
+                "value": _json_number(
+                    float(frame[feature][row_index])
+                    if feature in frame.columns
+                    and frame[feature][row_index] is not None
+                    else (
+                        float(transformed[feature][row_index])
+                        if feature in transformed.columns
+                        else None
+                    )
+                ),
+                "peer_median": _json_number(medians.get(feature)),
                 "shap_delta": float(delta),
             }
             for feature, delta in zip(result.features, contributions, strict=True)

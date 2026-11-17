@@ -72,7 +72,9 @@ class CrossSectionalPreprocessor:
             raise ContractViolationError(
                 "ML features require accounting_regime for corporate-only routing."
             )
-        if frame.filter(pl.col("accounting_regime") != "CORPORATE").height:
+        if frame.filter(
+            pl.col("accounting_regime").ne("CORPORATE").fill_null(True)
+        ).height:
             raise ContractViolationError(
                 "Non-corporate rows must be excluded before ML preprocessing."
             )
@@ -104,6 +106,10 @@ class CrossSectionalPreprocessor:
         self._medians = adjusted.select(pl.col(self.features).median()).row(
             0, named=True
         )
+        if any(self._medians[name] is None for name in self.features):
+            raise InsufficientModelData(
+                "Every ML feature needs observed training data."
+            )
         self._industry = (
             adjusted.filter(pl.col(INDUSTRY).is_not_null())
             .group_by(INDUSTRY)
@@ -176,7 +182,6 @@ class CrossSectionalPreprocessor:
                         name,
                         f"{name}_industry_median",
                         pl.lit(self._medians[name]),
-                        pl.lit(0.0),
                     ).alias(name)
                     for name in self.features
                 ),
@@ -222,8 +227,9 @@ class FinancialArchetypes:
             raise ContractViolationError(
                 "Financial archetype feature names must be unique."
             )
+        preprocessor = CrossSectionalPreprocessor(UNSUPERVISED_FEATURE_SET)
         matrix = (
-            self.preprocessor.fit(train)
+            preprocessor.fit(train)
             .transform(train)
             .select(UNSUPERVISED_FEATURE_SET)
             .to_numpy()
@@ -236,10 +242,11 @@ class FinancialArchetypes:
             raise InsufficientModelData(
                 "Financial archetypes require three distinct training rows."
             )
-        self._pca.fit(matrix)
-        axes = min(5, train.height, max(3, self._pca.n_components_))
-        self._pca = PCA(n_components=axes, svd_solver="full", random_state=42)
-        embedding = self._pca.fit_transform(matrix)
+        selector = PCA(n_components=0.80, svd_solver="full", random_state=42)
+        selector.fit(matrix)
+        axes = min(5, train.height, max(3, selector.n_components_))
+        pca = PCA(n_components=axes, svd_solver="full", random_state=42)
+        embedding = pca.fit_transform(matrix)
         candidates = []
         distinct = np.unique(embedding, axis=0).shape[0]
         for k in range(3, min(6, train.height - 1, distinct) + 1):
@@ -252,38 +259,57 @@ class FinancialArchetypes:
             raise InsufficientModelData(
                 "Financial archetypes require distinguishable clusters."
             )
-        _, self._clusters = max(candidates, key=lambda candidate: candidate[0])
+        _, clusters = max(candidates, key=lambda candidate: candidate[0])
         width = len(UNSUPERVISED_FEATURE_SET)
-        top = np.argsort(-np.abs(self._pca.components_[:, :width]), axis=1)[:, :2]
-        self.component_names = tuple(
+        top = np.argsort(-np.abs(pca.components_[:, :width]), axis=1)[:, :2]
+        component_names = tuple(
             " / ".join(
                 _FINANCIAL_SIGNAL[UNSUPERVISED_FEATURE_SET[index]] for index in pair
             )
             for pair in top
         )
-        centers = self._pca.inverse_transform(self._clusters.cluster_centers_)[
-            :, :width
-        ]
-        self._archetypes = tuple(
+        centers = pca.inverse_transform(clusters.cluster_centers_)[:, :width]
+        archetypes = tuple(
             " · ".join(
                 f"{_FINANCIAL_SIGNAL[UNSUPERVISED_FEATURE_SET[i]]} {'cao' if center[i] >= 0 else 'thấp'}"
                 for i in np.argsort(-np.abs(center))[:2]
             )
             for center in centers
         )
-        self._forest.fit(matrix)
-        self._training_scores = np.sort(-self._forest.score_samples(matrix))
+        forest = IsolationForest(
+            n_estimators=200, max_samples="auto", contamination="auto", random_state=42
+        )
+        forest.fit(matrix)
+        training_scores = np.sort(-forest.score_samples(matrix))
+        self.preprocessor = preprocessor
+        self._pca = pca
+        self._clusters = clusters
+        self._forest = forest
+        self._training_scores = training_scores
+        self.component_names = component_names
+        self._archetypes = archetypes
         return self
 
     def transform(self, frame: pl.DataFrame) -> pl.DataFrame:
         """Score fitted axes, archetypes and empirical training percentiles."""
         if self._clusters is None:
             raise ContractViolationError("Fit financial archetypes before scoring.")
-        matrix = (
-            self.preprocessor.transform(frame)
-            .select(UNSUPERVISED_FEATURE_SET)
-            .to_numpy()
-        )
+        transformed = self.preprocessor.transform(frame)
+        if transformed.is_empty():
+            return pl.DataFrame(
+                schema={
+                    "pca_pc1": pl.Float64,
+                    "pca_pc2": pl.Float64,
+                    "pca_pc3": pl.Float64,
+                    "cluster_id": pl.Int32,
+                    "cluster_archetype_name": pl.String,
+                    "anomaly_score_raw": pl.Float64,
+                    "anomaly_percentile_rank": pl.Float64,
+                    "statistical_outlier_flag": pl.Boolean,
+                    "anomaly_flag": pl.String,
+                }
+            )
+        matrix = transformed.select(UNSUPERVISED_FEATURE_SET).to_numpy()
         pca = self._pca.transform(matrix)
         clusters = self._clusters.predict(pca)
         anomaly = -self._forest.score_samples(matrix)

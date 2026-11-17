@@ -101,7 +101,21 @@ def build_distress_targets(
         (pl.col("roa") < -0.10) & (pl.col("CF_OPERATING_CASH_FLOW") < 0)
     ).fill_null(False)
     base = base.with_columns(
-        (equity_bad | liquidity_bad | severe_loss).alias("already_distressed_at_t")
+        equity_bad.alias("_equity_bad"),
+        liquidity_bad.alias("_liquidity_bad"),
+        severe_loss.alias("_severe_loss"),
+    ).with_columns(
+        (
+            pl.col("_equity_bad")
+            | pl.col("_severe_loss")
+            | (
+                pl.col("_liquidity_bad")
+                .cast(pl.Int8)
+                .rolling_sum(window_size=4, min_samples=1)
+                .over(["issuer_id", "statement_scope"])
+                >= 2
+            )
+        ).alias("already_distressed_at_t")
     )
     result = base
     future_dates: list[str] = []
@@ -116,6 +130,19 @@ def build_distress_targets(
             equity_bad.alias(f"_equity_{offset}"),
             liquidity_bad.alias(f"_liquidity_{offset}"),
             severe_loss.alias(f"_loss_{offset}"),
+            pl.all_horizontal(
+                *(
+                    pl.col(name).is_not_null()
+                    for name in (
+                        "BS_TOTAL_EQUITY",
+                        "parent_equity",
+                        "interest_coverage",
+                        "CF_OPERATING_CASH_FLOW",
+                        "current_ratio",
+                        "roa",
+                    )
+                )
+            ).alias(f"_complete_{offset}"),
             pl.col("period_end_date").alias(date_name),
             pl.col("_period_available_at").alias(available_name),
         )
@@ -127,7 +154,9 @@ def build_distress_targets(
         )
         future_dates.append(date_name)
         future_available.append(available_name)
-    present = pl.all_horizontal(*(pl.col(name).is_not_null() for name in future_dates))
+    present = pl.all_horizontal(
+        *(pl.col(f"_complete_{offset}") for offset in range(1, 5))
+    )
     count_liquidity = pl.sum_horizontal(
         *(
             pl.col(f"_liquidity_{offset}").fill_null(False).cast(pl.Int8)
@@ -155,10 +184,13 @@ def build_distress_targets(
         )
         .drop(
             "_quarter_index",
+            "_equity_bad",
+            "_liquidity_bad",
+            "_severe_loss",
             *(
                 f"_{part}_{offset}"
                 for offset in range(1, 5)
-                for part in ("equity", "liquidity", "loss")
+                for part in ("equity", "liquidity", "loss", "complete")
             ),
             *future_dates,
             *future_available,

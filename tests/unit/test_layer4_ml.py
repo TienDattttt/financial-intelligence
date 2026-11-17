@@ -8,11 +8,11 @@ import pytest
 from finintel.analytics.intermediates import prepare_periods
 from finintel.analytics.ratios import calculate_ratios
 from finintel.ml.classical_scores import add_classical_scores
-from test_layer4_analytics import facts, issuer
+from tests.unit.test_layer4_analytics import facts, issuer
 
 
 def test_classical_scores_exactness_and_missing_note_evidence() -> None:
-    baseline = {
+    baseline: dict[str, float | None] = {
         "BS_TOTAL_ASSETS": 100,
         "BS_TOTAL_EQUITY": 60,
         "BS_TOTAL_LIABILITIES": 40,
@@ -33,7 +33,7 @@ def test_classical_scores_exactness_and_missing_note_evidence() -> None:
         "CF_OPERATING_CASH_FLOW": 8,
         "CF_DEPRECIATION_AMORTIZATION": 3,
     }
-    current = {
+    current: dict[str, float | None] = {
         **baseline,
         "BS_CURRENT_LIABILITIES": 10,
         "IS_NET_REVENUE": 100,
@@ -82,6 +82,14 @@ def test_classical_scores_exactness_and_missing_note_evidence() -> None:
     assert score({**current, "BS_TOTAL_LIABILITIES": 0})[
         "altman_z_double_prime"
     ] == pytest.approx(13.792)
+
+    fallback = score(
+        {
+            **current,
+            "IS_CONTINUING_OPERATIONS_NET_INCOME": None,
+        }
+    )
+    assert fallback["beneish_m8_score"] is not None
 
 
 def test_classical_scores_exclude_noncorporate_regimes() -> None:

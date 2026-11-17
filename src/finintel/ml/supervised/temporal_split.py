@@ -30,7 +30,12 @@ def purged_walk_forward_split(
     not let delayed reports leak across a boundary: label availability is tested
     independently for each row, which may purge more than four calendar quarters.
     """
-    required = {"period_end_date", "label_available_at", "distress_target"}
+    required = {
+        "period_end_date",
+        "label_available_at",
+        "distress_target",
+        "_period_available_at",
+    }
     missing = required - set(samples.columns)
     if missing:
         raise ContractViolationError(
@@ -46,12 +51,15 @@ def purged_walk_forward_split(
         )
     observation = pl.col("period_end_date").cast(pl.Date)
     label_time = pl.col("label_available_at").cast(pl.Date)
+    feature_time = pl.col("_period_available_at").cast(pl.Date)
     labeled = pl.col("distress_target").is_not_null()
     train = samples.filter(
         labeled
         & (observation < validation_start)
         & label_time.is_not_null()
         & (label_time <= validation_start)
+        & feature_time.is_not_null()
+        & (feature_time <= validation_start)
     )
     validation = samples.filter(
         labeled
@@ -59,6 +67,8 @@ def purged_walk_forward_split(
         & (observation < test_start)
         & label_time.is_not_null()
         & (label_time <= test_start)
+        & feature_time.is_not_null()
+        & (feature_time <= test_start)
     )
     test = samples.filter(labeled & (observation >= test_start))
     return {"train": train, "validation": validation, "test": test}
