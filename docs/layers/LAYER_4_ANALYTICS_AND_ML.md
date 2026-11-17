@@ -55,7 +55,7 @@ Trên thị trường chứng khoán Việt Nam, doanh nghiệp niêm yết đư
 1. **`CORPORATE` (Doanh nghiệp phi tài chính — Thông tư 200/2014 & Thông tư 99/2025, chiếm $\sim 88\%$ số mã trên sàn):** Có đầy đủ Tài sản ngắn hạn/dài hạn, Doanh thu thuần, Giá vốn hàng bán, Hàng tồn kho, Khoản phải thu và Nợ vay. **Chạy trọn vẹn 100% các bước từ Bước 4.1 đến Bước 4.8.**
 2. **`BANK` (Ngân hàng — TT 49/2014 & TT 27/2021), `SECURITIES` (Chứng khoán — TT 210/2014), `INSURANCE` (Bảo hiểm — TT 232/2012):** Không có phân chia Tài sản ngắn hạn/dài hạn, không có Giá vốn hàng bán hay `EBITDA`, và "Nợ phải trả" của Ngân hàng là tiền gửi huy động từ khách hàng.
    * **Quy tắc xử lý trong Tầng 4:**
-     * Chỉ tính **Nhóm Chỉ số Chung Toàn Sàn (`Universal Ratios`)**: `roa`, `roe_total`, `roe_parent`, `equity_to_assets`, `eps_ttm_estimated`, `net_income_parent_growth_yoy` và so sánh phân vị trong nội bộ ngành Ngân hàng / Chứng khoán / Bảo hiểm.
+     * Chỉ tính **Nhóm Chỉ số Chung Toàn Sàn (`Universal Ratios`)**: `roa`, `roe_total`, `roe_parent`, `equity_to_assets`, `liabilities_to_assets`, `eps_ttm_estimated`, `net_income_parent_growth_yoy` và so sánh phân vị trong nội bộ ngành Ngân hàng / Chứng khoán / Bảo hiểm.
      * **Tuyệt đối lọc bỏ** các bản ghi có `accounting_regime != 'CORPORATE'` trước khi đưa vào tính toán các tỷ số thanh khoản ngắn hạn (`current_ratio`, `quick_ratio`, `inventory_turnover`), các điểm số `Altman Z''`, `Piotroski F`, `Beneish M` và các mô hình `PCA`, `K-Means`, `IsolationForest`, `XGBoost` để không làm nhiễm bẩn phân phối thống kê của mô hình.
 
 ---
@@ -108,6 +108,7 @@ Dựa trên kết quả thực nghiệm đã xác minh trong `data/metadata/spik
 | `BS_INVENTORIES_GROSS` | `hangtonkho` | 141 | Dương ($\ge 0$) |
 | `BS_INVENTORY_PROVISION` | `duphonggiamgiahangtonkho` | 149 | Âm trên BCTC |
 | `BS_NON_CURRENT_ASSETS` | `taisandaihan` | 200 | Dương |
+| `BS_LT_RECEIVABLES` | `cackhoanphaithudaihan` | 210 | Tổng phải thu dài hạn theo B01-DN (TT200 và TT99) |
 | `BS_FIXED_ASSETS_NET` | `taisancodinh` | 220 | Dương ($\ge 0$) |
 | `BS_TANGIBLE_FIXED_ASSETS_NET` | `taisancodinhhuuhinh` | 221 | Dương ($\ge 0$) |
 | `BS_TANGIBLE_FIXED_ASSETS_COST` | `nguyengia_tscdhh` | 222 | Dương ($\ge 0$) |
@@ -141,18 +142,19 @@ Dựa trên kết quả thực nghiệm đã xác minh trong `data/metadata/spik
 | `IS_GROSS_PROFIT` | `loinhuangopvebanhangvacungcapdichvu` | 20 | Có thể Dương hoặc Âm |
 | `IS_FINANCIAL_INCOME` | `doanhthuhoatdongtaichinh` | 21 | Dương |
 | `IS_FINANCIAL_EXPENSE` | `chiphitaichinh` | 22 | Lấy $\left|\text{IS\_FINANCIAL\_EXPENSE}\right|$ |
-| `IS_INTEREST_EXPENSE` | `trongdochiphilaivay` | 23 | Luôn lấy $\left|\text{IS\_INTEREST\_EXPENSE}\right| \ge 0$ |
+| `IS_INTEREST_EXPENSE` | `trongdochiphilaivay` | 23 | TT200. Lấy độ lớn khi tính EBIT và coverage |
+| `IS_BORROWING_COSTS` | `trongdochiphilaivay` | — | TT99 mã 24. FHSC giữ khóa tên cũ. Hai chế độ giữ mã chuẩn riêng |
 | `IS_ASSOCIATE_PROFIT_LOSS` | `phanlailohoaclotrongcongtyliendoanhlienket` | 24 | Có thể Dương hoặc Âm |
 | `IS_SELLING_EXPENSE` | `chiphibanhang` | 25 | Luôn lấy $\left|\text{IS\_SELLING\_EXPENSE}\right| \ge 0$ |
 | `IS_G_AND_A_EXPENSE` | `chiphiquanlydoanhnghiep` | 26 | Luôn lấy $\left|\text{IS\_G\_AND\_A\_EXPENSE}\right| \ge 0$ |
 | `IS_OPERATING_PROFIT` | `loinhuanthuantuhoatdongkinhdoanh` | 30 | Có thể Dương hoặc Âm |
 | `IS_PROFIT_BEFORE_TAX` | `tongloinhuanketoantruocthue` | 50 | Có thể Dương hoặc Âm (`EBT`) |
-| `IS_CURRENT_TAX_EXPENSE` | `chiphithuetndnhienhanh` | 51 | Có thể Dương hoặc Âm |
-| `IS_DEFERRED_TAX_EXPENSE` | `chiphithuetndnhoanlai` | 52 | Có thể Dương hoặc Âm |
+| `IS_CURRENT_TAX_EXPENSE` | `chiphithuetndnhienhanh` | 51 | Dương là chi phí. Âm là khoản lợi ích thuế |
+| `IS_DEFERRED_TAX_EXPENSE` | `chiphithuetndnhoanlai` | 52 | Giữ dấu B02-DN. Khoản âm làm giảm chi phí thuế |
 | `IS_NET_INCOME_TOTAL` | `loinhuansauthuethunhapdoanhnghiep` | 60 | Lợi nhuận sau thuế toàn công ty (Gồm cả CĐTS) |
 | `IS_NET_INCOME_PARENT` | `loinhuansauthuecuacongtyme` | 61 | Lợi nhuận sau thuế của cổ đông công ty mẹ |
 | `IS_MINORITY_NET_INCOME` | `loiichcuacodongthieuso_bctn` | 62 | Lợi ích của cổ đông thiểu số trên KQKD |
-| `IS_EPS_BASIC_REPORTED` | `laicobantrencophieu` | 70 | Có ở báo cáo `year`, `NULL` ở báo cáo `quarter` của FHSC |
+| `IS_EPS_BASIC_REPORTED` | `laicobantrencophieu` | 70 | `VND_PER_SHARE`, `NON_ADDITIVE`. Chỉ dùng EPS công bố của báo cáo năm, không cộng theo quý hoặc trượt TTM |
 
 ### 3.3. Bảng Lưu Chuyển Tiền Tệ (`CASH_FLOW` — Loại giá trị: `FLOW`)
 
@@ -182,7 +184,7 @@ Trước khi tính tỷ số, hệ thống phải tính toán các đại lượ
 
 1. **Tổng Nợ Vay Chịu Lãi (`total_debt`):**
    $$\text{TotalDebt}_t = \text{coalesce}(\text{BS\_ST\_BORROWINGS}_t, 0) + \text{coalesce}(\text{BS\_LT\_BORROWINGS}_t, 0) + \text{coalesce}(\text{BS\_CONVERTIBLE\_BONDS}_t, 0)$$
-   *(Chỉ tính khi ít nhất một trong hai khoản vay ngắn hạn hoặc dài hạn khác `NULL`; nếu cả hai đều `NULL` thì `TotalDebt = NULL`).*
+   Chỉ tính khi có ít nhất một khoản đã công bố trong ba khoản vay ngắn hạn, vay dài hạn và trái phiếu chuyển đổi. Nếu cả ba khoản đều thiếu, kết quả là `NULL`.
 
 2. **Tiền và Đầu Tư Tài Chính Ngắn Hạn Thanh Khoản Cao (`total_cash_and_st_investments`):**
    $$\text{CashAndSTInv}_t = \text{BS\_CASH\_AND\_EQUIVALENTS}_t + \text{coalesce}(\text{BS\_ST\_FINANCIAL\_INVESTMENTS}_t, 0)$$
@@ -198,7 +200,8 @@ Trước khi tính tỷ số, hệ thống phải tính toán các đại lượ
    $$\text{InvestedCapital}_t = \text{TotalDebt}_t + \text{BS\_TOTAL\_EQUITY}_t - \text{BS\_CASH\_AND\_EQUIVALENTS}_t$$
 
 6. **Lợi Nhuận Trước Thuế và Lãi Vay (`ebit_ttm`) & `ebitda_ttm`:**
-   $$\text{EBIT}_{TTM, t} = \text{IS\_PROFIT\_BEFORE\_TAX}_{TTM, t} + \left|\text{coalesce}(\text{IS\_INTEREST\_EXPENSE}_{TTM, t}, 0)\right|$$
+   $$\text{EBIT}_{TTM, t} = \text{IS\_PROFIT\_BEFORE\_TAX}_{TTM, t} + |B_{TTM,t}|$$
+   Dùng `IS_INTEREST_EXPENSE` (mã 23) cho TT200 và `IS_BORROWING_COSTS` (mã 24) cho TT99. $B$ phải là số đã công bố cho đúng chế độ, kể cả khi bằng 0. Thiếu EBT hoặc $B$ thì EBIT bằng `NULL` kèm cờ. So sánh TTM/YoY qua chuyển đổi chế độ tuân thủ cấu hình tương đương của Layer 2.
    * **Quy tắc tính `EBITDA`:**
      * Nếu $\text{CF\_DEPRECIATION\_AMORTIZATION}_{TTM, t}$ khác `NULL`:
        $$\text{EBITDA}_{TTM, t} = \text{EBIT}_{TTM, t} + \left|\text{CF\_DEPRECIATION\_AMORTIZATION}_{TTM, t}\right|$$
@@ -206,24 +209,27 @@ Trước khi tính tỷ số, hệ thống phải tính toán các đại lượ
        $$\text{EBITDA}_{TTM, t} = \text{NULL}, \quad \text{ebitda\_flag} = \text{'MISSING\_DEPRECIATION\_DIRECT\_CF'}$$
 
 7. **Thuế Suất Hiệu Dụng (`effective_tax_rate`) & Lợi Nhuận Hoạt Động Ròng Sau Thuế (`nopat_ttm`):**
-   $$\text{TotalTax}_{TTM, t} = \text{coalesce}(\text{IS\_CURRENT\_TAX\_EXPENSE}_{TTM, t}, 0) + \text{coalesce}(\text{IS\_DEFERRED\_TAX\_EXPENSE}_{TTM, t}, 0)$$
+   $$\text{TotalTax}_{TTM, t} = \text{IS\_CURRENT\_TAX\_EXPENSE}_{TTM, t} + \text{IS\_DEFERRED\_TAX\_EXPENSE}_{TTM, t}$$
    $$\text{ETR}_t = \begin{cases} \text{clip}\left(\frac{\text{TotalTax}_{TTM, t}}{\text{IS\_PROFIT\_BEFORE\_TAX}_{TTM, t}}, 0.0, 1.0\right) & \text{nếu } \text{IS\_PROFIT\_BEFORE\_TAX}_{TTM, t} > 0 \\ 0.20 & \text{nếu } \text{IS\_PROFIT\_BEFORE\_TAX}_{TTM, t} \le 0 \end{cases}$$
    $$\text{NOPAT}_{TTM, t} = \text{EBIT}_{TTM, t} \times (1 - \text{ETR}_t)$$
+   Khi EBT dương, ETR cần cả hai dòng thuế. Khoản hoãn lại âm giữ nguyên dấu theo đẳng thức B02-DN `LNST = EBT − thuế hiện hành − thuế hoãn lại`. Thiếu EBT hoặc thiếu dòng thuế bắt buộc thì ETR và NOPAT bằng `NULL` kèm cờ.
 
-8. **Dòng Tiền Tự Do (`free_cash_flow_ttm`):**
-   $$\text{FCF}_{TTM, t} = \text{CF\_OPERATING\_CASH\_FLOW}_{TTM, t} - \left|\text{coalesce}(\text{CF\_CAPEX\_PURCHASE\_FIXED\_ASSETS}_{TTM, t}, 0)\right|$$
-   *(Cảnh báo kỹ thuật: Trên BCTC Việt Nam, `tienchidemuasamxaydungtaisancodinh` mang dấu âm. Agent bắt buộc phải lấy giá trị tuyệt đối `abs()` trước khi trừ khỏi `CFO`!).*
+8. **Dòng Tiền Tự Do (`fcf_ttm`):**
+   $$\text{FCF}_{TTM, t} = \text{CF\_OPERATING\_CASH\_FLOW}_{TTM, t} - |\text{CF\_CAPEX\_PURCHASE\_FIXED\_ASSETS}_{TTM, t}|$$
+   Cần cả CFO và CAPEX đã công bố. Thiếu một trong hai thì FCF bằng `NULL` kèm cờ. Trừ độ lớn của CAPEX để xử lý khoản chi âm.
 
 9. **Số Cổ Phiếu Phổ Thông Đang Lưu Hành Ước Tính (`estimated_shares_outstanding`):**
-   * Vì mệnh giá cổ phiếu niêm yết chuẩn tại Việt Nam là $10.000\text{ VNĐ/cổ phiếu}$, còn cổ phiếu quỹ (`BS_TREASURY_SHARES`) được ghi theo giá mua thực tế, số lượng cổ phiếu phổ thông góp vốn chuẩn được xác định bởi:
+   * Khi vốn cổ phần phổ thông dương và `BS_TREASURY_SHARES` công bố bằng 0, có thể ước tính số cổ phiếu lưu hành cuối kỳ từ mệnh giá $10.000\text{ VNĐ/cổ phiếu}$:
      $$\text{CharterShares}_t = \frac{\text{BS\_ORDINARY\_SHARES\_CAPITAL}_t}{10000.0}$$
-   * Nếu báo cáo năm có `IS_EPS_BASIC_REPORTED` $> 0$ và `IS_NET_INCOME_PARENT` $> 0$, số cổ phiếu lưu hành bình quân gia quyền thực tế trong năm là:
+   * Nếu báo cáo năm có `IS_EPS_BASIC_REPORTED` $> 0$ và `IS_NET_INCOME_PARENT` $> 0$, ưu tiên số cổ phiếu lưu hành bình quân gia quyền suy ra từ EPS công bố:
      $$\text{ImpliedWeightedShares}_t = \frac{\text{IS\_NET\_INCOME\_PARENT}_t}{\text{IS\_EPS\_BASIC\_REPORTED}_t}$$
+   * Khi thiếu cả hai căn cứ, EPS ước tính bằng `NULL`. `eps_estimate_basis` ghi `IMPLIED_ANNUAL_WEIGHTED` hoặc `NO_TREASURY_AT_PERIOD_END`. Cách thứ hai dùng số cuối kỳ làm mẫu số xấp xỉ.
 
 10. **Quy tắc Bình Quân CĐKT Đầu Kỳ – Cuối Kỳ (`Average Balance Sheet Stock`):**
     * Với báo cáo quý tại kỳ $t$, kỳ đầu của cửa sổ TTM 12 tháng là quý $t-4$ (cùng quý năm trước, cách đúng $1$ năm tài chính):
       $$\overline{S}_t = \frac{S_t + S_{t-4}}{2}$$
     * Nếu kỳ $t-4$ không tồn tại trong lịch sử (4 quý đầu tiên của chuỗi dữ liệu), $\overline{S}_t$ trả về `NULL` kèm cờ `'MISSING_PRIOR_YEAR_BASE'` (không tự ý lấy số cuối kỳ $S_t$ thay cho số bình quân để tránh làm lệch chuẩn chuỗi thời gian).
+    * Khi kỳ Q4 có dữ liệu dòng tiền hoặc KQKD nhưng thiếu khoản mục bảng cân đối, dùng khoản mục đã công bố của báo cáo năm có cùng doanh nghiệp, phạm vi, năm tài chính, ngày chốt và chế độ kế toán. Chỉ dùng dữ liệu khả dụng tại mốc PIT.
 
 ---
 
@@ -234,19 +240,16 @@ Mỗi tỷ số `<ratio_name>` phải sinh ra **2 cột** trong bảng đầu ra
 #### A. Bảng Quy Tắc Cờ Biên Toán Học (`RatioStatusFlag` Enum)
 Khi tính tỷ số $R = \frac{N}{D}$ (hoặc $R = \frac{N}{\overline{D}}$ với $\overline{D} = \frac{D_t + D_{t-4}}{2}$), hàm tính toán phải kiểm tra theo đúng thứ tự ưu tiên sau:
 
-1. **`'MISSING_INPUT'`:** Tử số $N$ là `NULL` hoặc mẫu số $D_t$ (hoặc $D_{t-4}$ khi cần tính trung bình) là `NULL` $\rightarrow$ $R = \text{NULL}$.
+1. **`'NOT_APPLICABLE_FOR_REGIME'`** khi tỷ số nằm ngoài danh sách áp dụng cho chế độ kế toán của doanh nghiệp.
 2. **`'MIXED_TAXONOMY'`:** Tử số hoặc mẫu số có `computation_note == 'MIXED_TAXONOMY'` khi vắt qua ranh giới TT200 và TT99 $\rightarrow$ $R = \text{NULL}$.
-3. **`'NEGATIVE_OR_ZERO_EQUITY'` (Dành riêng cho các tỷ số có mẫu số là Vốn chủ sở hữu: `roe_total`, `roe_parent`, `debt_to_equity`, `net_debt_to_equity`, `equity_multiplier`, `bvps`):**
-   * Nếu $D_t \le 0$ **HOẶC** $D_{t-4} \le 0$ $\rightarrow$ **Bắt buộc trả về $R = \text{NULL}$** và cờ `'NEGATIVE_OR_ZERO_EQUITY'`.
-4. **`'NON_POSITIVE_INVESTED_CAPITAL'` (Dành cho `roic`):**
-   * Nếu $\text{InvestedCapital}_t \le 0$ **HOẶC** $\text{InvestedCapital}_{t-4} \le 0$ $\rightarrow$ $R = \text{NULL}$.
-5. **`'NON_POSITIVE_EBITDA'` (Dành cho `net_debt_to_ebitda`):**
-   * Nếu $\text{EBITDA}_{TTM, t} \le 0$ $\rightarrow$ $R = \text{NULL}$ kèm cờ `'NON_POSITIVE_EBITDA'`.
-6. **`'NO_INTEREST_EXPENSE'` (Dành riêng cho `interest_coverage`):**
-   * Nếu $\left|\text{IS\_INTEREST\_EXPENSE}_{TTM, t}\right| == 0$ $\rightarrow$ $R = \text{NULL}$ kèm cờ `'NO_INTEREST_EXPENSE'`.
-7. **`'ZERO_OR_NEGATIVE_DENOMINATOR'`:** Các trường hợp mẫu số khác $\le 0$ (ví dụ `IS_NET_REVENUE <= 0` hoặc `IS_COGS == 0`) $\rightarrow$ $R = \text{NULL}$.
-8. **`'DERIVED_Q4_INPUT'`:** Tính toán hợp lệ nhưng một trong các quý cấu thành TTM có `derivation_method == 'DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX'` $\rightarrow$ Giữ nguyên giá trị $R$, gắn cờ `'DERIVED_Q4_INPUT'`.
-9. **`'VALID'`:** Tính toán hoàn toàn hợp lệ $\rightarrow$ Giữ nguyên giá trị $R$, gắn cờ `'VALID'`.
+3. **`'NEGATIVE_OR_ZERO_EQUITY'`** khi tử số đã biết và vốn chủ sở hữu đầu kỳ hoặc cuối kỳ đã công bố bằng 0 hay âm. Áp dụng cho `roe_total`, `roe_parent`, `debt_to_equity` và `net_debt_to_equity`.
+4. **`'MISSING_DEPRECIATION_DIRECT_CF'`** khi tỷ số yêu cầu EBITDA nhưng thiếu khấu hao.
+5. **`'MISSING_PRIOR_YEAR_BASE'`** khi có tử số và phép tính yêu cầu kỳ cơ sở năm trước nhưng kỳ đó chưa có.
+6. **`'MISSING_INPUT'`** khi thiếu tử số hoặc mẫu số bắt buộc.
+7. Cờ biên riêng khi đủ đầu vào. `'NON_POSITIVE_INVESTED_CAPITAL'` khi vốn đầu tư tại một trong hai đầu kỳ $\le 0$, `'NON_POSITIVE_EBITDA'` khi EBITDA $\le 0$, `'NO_INTEREST_EXPENSE'` khi chi phí lãi vay hoặc đi vay đã công bố bằng 0, và `'NON_POSITIVE_BASE_PERIOD'` khi cơ sở tăng trưởng $\le 0$.
+8. **`'ZERO_OR_NEGATIVE_DENOMINATOR'`** cho các mẫu số còn lại $\le 0$. **`'NUMERIC_OVERFLOW'`** khi phép tính vượt miền số hữu hạn.
+9. **`'DERIVED_Q4_INPUT'`** khi kết quả hợp lệ và một đầu vào TTM dùng quý có `derivation_method == 'DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX'`.
+10. **`'VALID'`** cho các kết quả hợp lệ còn lại. Chỉ hai cờ cuối giữ giá trị số.
 
 #### B. Bảng Công Thức Tường Minh Cho 28 Tỷ Số Cốt Lõi
 
@@ -267,10 +270,10 @@ Khi tính tỷ số $R = \frac{N}{D}$ (hoặc $R = \frac{N}{\overline{D}}$ với
 | 13 | `ocf_to_current_liabilities` | Thanh khoản | $\frac{\text{CF\_OPERATING\_CASH\_FLOW}_{TTM, t}}{\overline{\text{BS\_CURRENT\_LIABILITIES}}_t}$ | Đo khả năng trả nợ ngắn hạn từ dòng tiền HĐKD |
 | 14 | `liabilities_to_assets` | Đòn bẩy | $\frac{\text{BS\_TOTAL\_LIABILITIES}_t}{\text{BS\_TOTAL\_ASSETS}_t}$ | Tỷ lệ Nợ phải trả / Tổng tài sản (`Universal`) |
 | 15 | `financial_debt_to_assets` | Đòn bẩy | $\frac{\text{TotalDebt}_t}{\text{BS\_TOTAL\_ASSETS}_t}$ | Tỷ lệ Nợ vay chịu lãi / Tổng tài sản |
-| 16 | `debt_to_equity` | Đòn bẩy | $\frac{\text{TotalDebt}_t}{\text{BS\_TOTAL\_EQUITY}_t}$ | `NEGATIVE_OR_ZERO_EQUITY` nếu $E_t \le 0$ |
-| 17 | `net_debt_to_equity` | Đòn bẩy | $\frac{\text{NetDebt}_t}{\text{BS\_TOTAL\_EQUITY}_t}$ | Có thể âm nếu Tiền mặt $>$ Nợ vay; `NULL` nếu $E_t \le 0$ |
+| 16 | `debt_to_equity` | Đòn bẩy | $\frac{\text{TotalDebt}_t}{\text{BS\_TOTAL\_EQUITY}_t}$ | `NEGATIVE_OR_ZERO_EQUITY` nếu $E_t \le 0$ hoặc đã biết $E_{t-4} \le 0$ |
+| 17 | `net_debt_to_equity` | Đòn bẩy | $\frac{\text{NetDebt}_t}{\text{BS\_TOTAL\_EQUITY}_t}$ | Có thể âm khi tiền mặt vượt nợ vay. Cùng điều kiện vốn chủ với `debt_to_equity` |
 | 18 | `net_debt_to_ebitda` | Đòn bẩy | $\frac{\text{NetDebt}_t}{\text{EBITDA}_{TTM, t}}$ | `NON_POSITIVE_EBITDA` nếu $\text{EBITDA}_{TTM, t} \le 0$ |
-| 19 | `interest_coverage` | Đòn bẩy | $\frac{\text{EBIT}_{TTM, t}}{\left|\text{IS\_INTEREST\_EXPENSE}_{TTM, t}\right|}$ | `NO_INTEREST_EXPENSE` nếu mẫu số $== 0$ |
+| 19 | `interest_coverage` | Đòn bẩy | $\frac{\text{EBIT}_{TTM, t}}{\left|B_{TTM,t}\right|}$ | $B$ theo chế độ tại `4.1. Cờ `NO_INTEREST_EXPENSE` nếu mẫu số đã công bố bằng 0 |
 | 20 | `asset_turnover` | Hiệu quả | $\frac{\text{IS\_NET\_REVENUE}_{TTM, t}}{\overline{\text{BS\_TOTAL\_ASSETS}}_t}$ | Vòng quay tổng tài sản |
 | 21 | `inventory_turnover` | Hiệu quả | $\frac{\left|\text{IS\_COGS}_{TTM, t}\right|}{\overline{\text{BS\_INVENTORIES\_NET}}_t}$ | Kèm `dio` $= \frac{365.0}{\text{inventory\_turnover}}$ |
 | 22 | `receivables_turnover` | Hiệu quả | $\frac{\text{IS\_NET\_REVENUE}_{TTM, t}}{\overline{\text{BS\_TRADE\_RECEIVABLES\_ST}}_t}$ | Kèm `dso` $= \frac{365.0}{\text{receivables\_turnover}}$ |
@@ -279,7 +282,7 @@ Khi tính tỷ số $R = \frac{N}{D}$ (hoặc $R = \frac{N}{\overline{D}}$ với
 | 25 | `ocf_to_net_income` | Dòng tiền | $\frac{\text{CF\_OPERATING\_CASH\_FLOW}_{TTM, t}}{\text{IS\_NET\_INCOME\_TOTAL}_{TTM, t}}$ | Chỉ tính khi $\text{IS\_NET\_INCOME\_TOTAL}_{TTM, t} > 0$ |
 | 26 | `fcf_to_revenue` | Dòng tiền | $\frac{\text{FCF}_{TTM, t}}{\text{IS\_NET\_REVENUE}_{TTM, t}}$ | Biên dòng tiền tự do |
 | 27 | `accruals_to_assets` | Chất lượng LN | $\frac{\text{IS\_NET\_INCOME\_TOTAL}_{TTM, t} - \text{CF\_OPERATING\_CASH\_FLOW}_{TTM, t}}{\overline{\text{BS\_TOTAL\_ASSETS}}_t}$ | Biến Accrual Ratio kinh điển của Sloan (1996) |
-| 28 | `eps_ttm_estimated` | Trên mỗi CP | $\frac{\text{IS\_NET\_INCOME\_PARENT}_{TTM, t}}{\text{CharterShares}_t}$ | Với báo cáo năm, lưu kèm `eps_basic_reported` gốc (`Universal`) |
+| 28 | `eps_ttm_estimated` | Trên mỗi CP | Lợi nhuận công ty mẹ chia số cổ phiếu theo `4.1(9) | Thiếu căn cứ về số cổ phiếu thì trả `NULL`. Lưu `eps_basic_reported` gốc cho năm (`Universal`) |
 
 *(Ngoài ra tính kèm 3 chỉ số tốc độ tăng trưởng so với cùng kỳ năm trước: `revenue_growth_yoy`, `ebit_growth_yoy`, `net_income_parent_growth_yoy` theo công thức $\frac{X_{TTM, t} - X_{TTM, t-4}}{X_{TTM, t-4}}$, chỉ tính khi kỳ cơ sở $X_{TTM, t-4} > 0$; nếu $X_{TTM, t-4} \le 0$ trả về `NULL` kèm cờ `'NON_POSITIVE_BASE_PERIOD'` để tránh tốc độ tăng trưởng bị đảo dấu vô nghĩa).*
 
@@ -304,7 +307,7 @@ Trên BCTC Hợp nhất (`CONSOLIDATED`), để đẳng thức đại số của
    * **Đẳng thức kiểm chứng bắt buộc:**
      $$\text{roe\_parent}_t \equiv \text{parent\_profit\_share}_t \times \text{tax\_burden}_t \times \text{interest\_burden}_t \times \text{ebit\_margin}_t \times \text{asset\_turnover}_t \times \text{equity\_multiplier\_parent}_t$$
 
-*Điều kiện biên của DuPont:* Nếu bất kỳ mẫu số trung gian nào ($\text{EBT}_{TTM, t}$, $\text{EBIT}_{TTM, t}$, $\text{IS\_NET\_REVENUE}_{TTM, t}$) bằng $0$ hoặc vốn chủ đầu kỳ/cuối kỳ $\le 0$, toàn bộ chuỗi phân rã DuPont của kỳ đó được gán `dupont_valid_flag = False` để tránh trường hợp $\text{EBT} < 0$ và $\text{Net Income} < 0$ chia nhau ra `tax_burden > 0` gây hiểu nhầm.
+*Điều kiện biên của DuPont:* Chuỗi 5 bước cần EBT, EBIT, doanh thu thuần, tài sản bình quân và vốn chủ ở hai đầu kỳ đều dương. Chuỗi 6 bước cần thêm vốn của cổ đông công ty mẹ dương ở cả hai đầu kỳ và tổng LNST khác 0. `dupont_valid_flag` chỉ đúng khi cả hai chuỗi hợp lệ.
 
 ---
 
@@ -313,17 +316,17 @@ Trên BCTC Hợp nhất (`CONSOLIDATED`), để đẳng thức đại số của
 Để khử tính chu kỳ vĩ mô và đặc thù cấu trúc vốn giữa các ngành (ví dụ ngành Thép, Bất động sản và Công nghệ có vòng quay tài sản và biên lợi nhuận khác nhau), mỗi tỷ số $X_{i, g, t}$ của doanh nghiệp $i$ thuộc ngành $g$ tại kỳ $t$ phải được đặt trong phân phối mặt cắt ngang (`Cross-Sectional Distribution`) của ngành đó:
 
 1. **Quy tắc Chọn Nhóm Tham Chiếu (`Peer Group Resolution`):**
-   * Chỉ gom nhóm các doanh nghiệp có cùng `accounting_regime` (tuyệt đối không gom chung Ngân hàng/Chứng khoán với Doanh nghiệp phi tài chính).
-   * Nhóm ưu tiên 1: Cùng `(accounting_regime, period_type, fiscal_year, fiscal_quarter, icb_code_level3)` nếu số lượng doanh nghiệp có giá trị hợp lệ $N_{\text{valid}} \ge 8$.
-   * Nhóm ưu tiên 2 (Fallback): Cùng `(accounting_regime, period_type, fiscal_year, fiscal_quarter, icb_code_level2)` nếu $N_{\text{valid}} \ge 5$.
-   * Nhóm ưu tiên 3 (Regime Fallback cho bộ mẫu nhỏ trong giai đoạn test): Toàn bộ doanh nghiệp có cùng `accounting_regime` trong cùng kỳ báo cáo nếu nhóm ngành có $N_{\text{valid}} < 5$ (gắn cờ `peer_group_level = 'REGIME_FALLBACK'`).
+   * Mọi cấp dùng cùng `(accounting_regime, statement_scope, period_type, period_end_date, fiscal_year, fiscal_quarter, metric_or_ratio_name)`.
+   * Nhóm ưu tiên 1 dùng cùng `icb_code_level3` khi có ít nhất 8 doanh nghiệp có giá trị hợp lệ.
+   * Nhóm ưu tiên 2 dùng cùng `icb_code_level2` khi có ít nhất 5 doanh nghiệp có giá trị hợp lệ.
+   * Nhóm ưu tiên 3 dùng toàn bộ doanh nghiệp trong cùng lát cắt cơ sở và gắn `peer_group_level = 'REGIME_FALLBACK'`.
 
 2. **Các Thống Kê Bền Vững Xuất Ra (`industry_benchmarks.parquet`):**
    * `peer_count`: Số lượng doanh nghiệp hợp lệ $N_{\text{valid}}$ trong nhóm.
    * `peer_median`: Trung vị $\text{Median}_g(X_t)$.
    * `peer_p25`, `peer_p75` và khoảng tứ phân vị $\text{IQR}_g(X_t) = P_{75} - P_{25}$.
    * `percentile_rank`: Thứ hạng phần trăm của doanh nghiệp trong nhóm ($0.0 \rightarrow 100.0$).
-   * `robust_z_score`: Điểm chuẩn hóa kháng ngoại lai (dùng hệ số chuẩn hóa phân phối chuẩn $1 / \Phi^{-1}(0.75) \approx 0.7413$, cắt ngưỡng trong khoảng $[-5.0, +5.0]$):
+   * `robust_z_score` dùng hệ số chuẩn hóa IQR $1 / (2\Phi^{-1}(0.75)) \approx 0.7413$ và cắt ngưỡng trong khoảng $[-5.0, +5.0]$.
      $$Z^{\text{robust}}_{i, g, t} = \text{clip}\left(\frac{X_{i, g, t} - \text{Median}_g(X_t)}{\max\left(\text{IQR}_g(X_t) \times 0.7413011,\; 10^{-6}\right)}, -5.0, +5.0\right)$$
 
 ---
@@ -339,8 +342,10 @@ Module `red_flags.py` quét toàn bộ lịch sử chuẩn hóa và xuất ra b�
 | `RF_03_OTHER_RECEIVABLES_ANOMALY` | `HIGH` | $\frac{\text{BS\_ST\_RECEIVABLES\_TOTAL}_t - \text{BS\_TRADE\_RECEIVABLES\_ST}_t + \text{coalesce}(\text{BS\_LT\_RECEIVABLES}, 0)}{\text{BS\_TOTAL\_ASSETS}_t} > 0.25$. | Rủi ro rút ruột vốn qua "Phải thu khác / Hợp tác đầu tư / Tạm ứng" vượt $25\%$ tổng tài sản (đặc thù rủi ro rất phổ biến trên sàn chứng khoán Việt Nam!). |
 | `RF_04_INVENTORY_BLOAT` | `MEDIUM` | $\frac{\text{BS\_INVENTORIES\_NET}_t}{\text{BS\_TOTAL\_ASSETS}_t} > 0.15$ **VÀ** $\text{DIO}_t - \text{DIO}_{t-4} > 30\text{ ngày}$ **VÀ** $\text{gross\_margin}_t < \text{gross\_margin}_{t-4}$. | Hàng tồn kho ứ đọng chậm luân chuyển kèm suy giảm biên lợi nhuận gộp. |
 | `RF_05_DEBT_SERVICE_DISTRESS` | `CRITICAL` | $\left(\text{interest\_coverage}_t < 1.0 \text{ VÀ } \text{TotalDebt}_t > 0\right)$ **HOẶC** $\left(\text{current\_ratio}_t < 1.0 \text{ VÀ } \text{CF\_OPERATING\_CASH\_FLOW}_{TTM, t} < 0 \text{ VÀ } \text{debt\_to\_equity}_t > 2.0\right)$. | Lợi nhuận hoạt động không đủ trả lãi vay hoặc căng thẳng thanh khoản nợ ngắn hạn nghiêm trọng. |
-| `RF_06_NEGATIVE_EQUITY` | `CRITICAL` | $\text{BS\_TOTAL\_EQUITY}_t \le 0$ **HOẶC** $\text{ParentEquity}_t \le 0$. | Âm vốn chủ sở hữu — thuộc diện cảnh báo/hủy niêm yết bắt buộc. |
+| `RF_06_NEGATIVE_EQUITY` | `CRITICAL` | $\text{BS\_TOTAL\_EQUITY}_t \le 0$ **HOẶC** $\text{ParentEquity}_t \le 0$. | Cảnh báo tài chính nội bộ về vốn chủ sở hữu không dương. |
 | `RF_07_AUDIT_OR_FILING_WARNING` | `CRITICAL` | `audit_opinion` $\in \{\text{'EXCEPT\_FOR'}, \text{'ADVERSE'}, \text{'DISCLAIMER'}\}$ **HOẶC** `is_filed_late == 1`. | Kiểm toán ngoại trừ/từ chối/trái ngược hoặc nộp trễ hạn báo cáo. |
+
+Layer 2 chuyển `is_filed_late` từ dữ liệu công bố của hồ sơ gốc. Khi thiếu ngày công bố đã xác minh, trường này là `NULL`. Các kỳ dẫn xuất không tạo sự kiện trễ hạn riêng.
 
 ---
 
@@ -440,10 +445,10 @@ Biến mục tiêu $Y_{i, t \to t+4} \in \{0, 1\}$ hỗ trợ 2 chế độ rõ 
 * **Quy tắc Chống Rò Rỉ Nhãn Hiện Tại (Onset Filtering):** Nếu tại thời điểm dự báo $t$, doanh nghiệp **đã** nằm sẵn trong trạng thái suy thoái ở trên, bản ghi tại kỳ $t$ được gắn cờ `already_distressed_at_t = True` để tách riêng hoặc đưa vào biến trạng thái chuyển tiếp, tránh việc mô hình chỉ học cách nhận diện lại các công ty đã chết lâm sàng.
 
 #### 2. Quy Tắc Chia Tập Dữ Liệu Theo Thời Gian Có Khoảng Đệm (`Purged Walk-Forward Split` trong `temporal_split.py`)
-Vì nhãn $Y_{i, t \to t+4}$ tại kỳ $t$ cần dữ liệu của kỳ $t+4$ (tức khoảng $365\text{ ngày} + 45\text{ ngày độ trễ công bố}$ sau kỳ $t$) mới xác nhận xong kết quả:
-* Khi đánh giá mô hình trên tập `Test` bắt đầu từ mốc thời gian $T_{\text{test\_start}}$, mọi mẫu dữ liệu $(X_{i, t}, Y_{i, t \to t+4})$ trong tập `Train` bắt buộc phải thỏa mãn:
-  $$\text{effective\_available\_at}_{i, t+4} \le T_{\text{test\_start}}$$
-* Điều này tạo ra một **Khoảng Đệm Cách Ly (`Purge Gap` = 4 quý)** tự động giữa kỳ đặc trưng cuối cùng của tập `Train` và kỳ đặc trưng đầu tiên của tập `Test`, đảm bảo **0% rò rỉ thông tin tương lai (Zero Look-Ahead Bias)**.
+Thời điểm xác nhận nhãn $Y_{i, t \to t+4}$ là ngày khả dụng muộn nhất của mọi hồ sơ, phiên bản và sự kiện dùng để xác định nhãn trong cửa sổ bốn quý, kể cả hồ sơ của các quý đầu công bố muộn.
+* Khi bắt đầu tập `Validation` hoặc `Test` tại mốc $T_{\text{start}}$, mỗi mẫu dùng để huấn luyện hoặc hiệu chuẩn trước mốc đó phải thỏa mãn:
+  $$\text{label\_available\_at}_{i,t} = \max_{f \in F_{i,t}} \operatorname{available\_at}(f) \le T_{\text{start}}$$
+  Trong đó $F_{i,t}$ là toàn bộ đầu vào của nhãn. Áp dụng quy tắc ngày công bố chính xác hoặc ngày khả dụng hiệu dụng cho từng hồ sơ. Cửa sổ nhãn dài bốn quý và khoảng đệm có thể dài hơn khi dữ liệu đến muộn.
 
 #### 3. Ràng Buộc Đơn Điệu Nghiệp Vụ (`Monotone Constraints`) & Huấn Luyện `XGBoost` (`train.py`)
 Với dữ liệu bảng tài chính có cỡ mẫu vừa phải, `XGBClassifier` bắt buộc phải được cấu hình **Ràng buộc Đơn điệu (`monotone_constraints`)** theo lý thuyết tài chính để ngăn chặn tuyệt đối hiện tượng overfitting ngược chiều kinh tế:
@@ -485,8 +490,11 @@ Toàn bộ kết quả của Tầng 4 được xuất ra các bảng Parquet chu
 
 1. **`financial_ratios.parquet` (Từ Bước 4.1, 4.2, 4.3):**
    * Khóa chính: `(issuer_id, ticker, accounting_regime, statement_scope, period_type, fiscal_year, fiscal_quarter, period_end_date, filing_id)`.
-   * Các cột đại lượng trung gian: `total_debt`, `net_debt`, `working_capital`, `invested_capital`, `ebit_ttm`, `ebitda_ttm`, `nopat_ttm`, `fcf_ttm`.
+   * Cột nguồn gồm `taxonomy_version` và `source_filing_ids` (`List(String)`). `filing_id` là hồ sơ đại diện kỳ; danh sách nguồn gồm các hồ sơ đầu vào đã chọn cho kỳ hiện tại và kỳ so sánh cùng kỳ.
+   * Đại lượng trung gian (`Float64`) gồm `total_debt`, `total_cash_and_st_investments`, `net_debt`, `parent_equity`, `working_capital`, `invested_capital`, `ebit_ttm`, `ebitda_ttm`, `effective_tax_rate`, `nopat_ttm`, `fcf_ttm`, `estimated_shares_outstanding`, `implied_weighted_shares` và `eps_basic_reported`.
+   * Các cột trạng thái (`String`) gồm `ebit_flag`, `ebitda_flag`, `effective_tax_rate_flag`, `nopat_flag`, `fcf_flag` và `eps_estimate_basis`.
    * 28 cặp cột tỷ số `<ratio_name>` (`pl.Float64`) + `<ratio_name>_flag` (`pl.Utf8`).
+   * Bảy cặp bổ sung theo cùng kiểu gồm `equity_to_assets`, `dio`, `dso`, `dpo`, `revenue_growth_yoy`, `ebit_growth_yoy` và `net_income_parent_growth_yoy`.
    * Các cột DuPont: `tax_burden`, `interest_burden`, `ebit_margin`, `asset_turnover`, `equity_multiplier_total`, `parent_profit_share`, `equity_multiplier_parent`, `dupont_valid_flag`.
 2. **`industry_benchmarks.parquet` (Từ Bước 4.4):**
    * Khóa chính: `(issuer_id, accounting_regime, statement_scope, period_type, period_end_date, metric_or_ratio_name)`.
@@ -494,6 +502,7 @@ Toàn bộ kết quả của Tầng 4 được xuất ra các bảng Parquet chu
 3. **`accounting_red_flags.parquet` (Từ Bước 4.5):**
    * Khóa chính: `(issuer_id, statement_scope, period_type, period_end_date, flag_code)`.
    * Các cột: `severity` (`'CRITICAL' | 'HIGH' | 'MEDIUM'`), `flag_title_vn`, `explanation_text_vn`, `evidence_json`, `filing_id`.
+   * `evidence_json` gồm số liệu kích hoạt và `source_filing_ids`. Với RF_07, `filing_id` và bằng chứng trỏ tới cùng hồ sơ công bố.
 4. **`ml_scores_and_explanations.parquet` (Từ Bước 4.6, 4.7, 4.8 — Phase 2):**
    * Khóa chính: `(issuer_id, statement_scope, period_type, period_end_date, filing_id)`.
    * Điểm số cổ điển: `altman_z_double_prime`, `altman_em_score`, `altman_zone`, `piotroski_f_score`, `beneish_m8_score`, `beneish_flag`.
@@ -520,7 +529,7 @@ Agent phải viết đầy đủ các bài test trong `tests/unit/test_layer4_an
 
 ### 7.2. Kiểm định Giai đoạn 4B (5 Bài Test Bắt Buộc Khi Mở Khóa Phase 2)
 1. **Test Classical Scores Exactness:** Kiểm tra công thức `Altman Z''`, `Piotroski F-Score` (9 tiêu chí) và `Beneish M-Score` (8 biến) trên bộ vector đầu vào mẫu đã tính tay; kiểm tra khi `CF_DEPRECIATION_AMORTIZATION` là `NULL` thì `beneish_m8_score` trả về `NULL` kèm cờ `'MISSING_DEPRECIATION_DIRECT_CF'`.
-2. **Test Zero Look-Ahead Leakage in Purged Walk-Forward Split:** Kiểm tra mọi mẫu trong tập `Train` đều có `effective_available_at` của kỳ nhãn $t+4$ nhỏ hơn hoặc bằng ngày bắt đầu của tập `Validation/Test` ($\text{Purge Gap} \ge 4\text{ quý}$).
+2. **Test Zero Look-Ahead Leakage in Purged Walk-Forward Split:** Kiểm tra `label_available_at` của mọi mẫu dùng trước ngày bắt đầu `Validation` hoặc `Test`. Bao gồm trường hợp hồ sơ ở $t+1$ công bố sau $t+4$ và sau mốc bắt đầu.
 3. **Test Preprocessor Isolation (No Test-Set Leakage):** Thay đổi một giá trị cực đoan trong tập `Test` $\rightarrow$ Ma trận đặc trưng sau khi biến đổi của tập `Train` phải không thay đổi dù chỉ $10^{-12}$, và các doanh nghiệp có cờ `'NO_INTEREST_EXPENSE'` phải được gán phân vị $P_{95}$ của `interest_coverage` tập `Train`.
 4. **Test XGBoost Monotone Constraints:** Giữ nguyên các biến khác của một mẫu bất kỳ, tăng dần `interest_coverage` hoặc `roa` $\rightarrow$ Điểm rủi ro `distress_risk_score` của `XGBoost` bắt buộc phải giảm hoặc giữ nguyên (không bao giờ được tăng!).
 5. **Test TreeSHAP Additivity & JSON Schema:** Kiểm tra tổng giá trị SHAP của tất cả các biến cộng với `base_value` khớp với `raw_margin` dự báo của `XGBoost`, và `shap_top_drivers_json` parse được thành JSON hợp lệ chứa đúng tên đặc trưng gốc.

@@ -14,10 +14,12 @@ from finintel.analytics.dupont import add_dupont
 from finintel.analytics.intermediates import RATIO_KEY, prepare_periods
 from finintel.analytics.ratios import CORE_RATIOS, EXTRA_RATIOS, calculate_ratios
 from finintel.analytics.red_flags import detect_red_flags
+from finintel.storage.schemas import (
+    BENCHMARKS_TABLE as BENCHMARKS_TABLE,
+    RATIOS_TABLE as RATIOS_TABLE,
+    RED_FLAGS_TABLE as RED_FLAGS_TABLE,
+)
 
-RATIOS_TABLE = "financial_ratios.parquet"
-BENCHMARKS_TABLE = "industry_benchmarks.parquet"
-RED_FLAGS_TABLE = "accounting_red_flags.parquet"
 INTERMEDIATES = (
     "total_debt",
     "total_cash_and_st_investments",
@@ -56,11 +58,17 @@ def build_analytics_tables(
     financial_ratios = ratios.select(
         *RATIO_KEY,
         "taxonomy_version",
+        "source_filing_ids",
+        "eps_estimate_basis",
         *(
             pl.when(pl.col(name).is_finite()).then(pl.col(name)).alias(name)
             for name in INTERMEDIATES
         ),
         "ebitda_flag",
+        "ebit_flag",
+        "effective_tax_rate_flag",
+        "nopat_flag",
+        "fcf_flag",
         *(
             column
             for name in (*CORE_RATIOS, *EXTRA_RATIOS)

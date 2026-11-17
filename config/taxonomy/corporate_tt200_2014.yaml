@@ -216,3 +216,7 @@ metrics:
     code: "70"
     labels: ["Lãi cơ bản trên cổ phiếu"]
     fhsc: ["laicobantrencophieu"]
+  BS_TREASURY_SHARES:
+    code: "415"
+    labels: ["Cổ phiếu quỹ"]
+    fhsc: ["cophieuquy"]

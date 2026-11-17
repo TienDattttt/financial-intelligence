@@ -1,6 +1,9 @@
 {
   "symbol": "FPT",
   "unit": "VND",
+  "field_units": {
+    "laicobantrencophieu": "VND_PER_SHARE"
+  },
   "scope": "CONSOLIDATED",
   "scope_evidence": "Annual scope checked against consolidated statement totals in the listed reports or their comparative columns.",
   "source": "Selected numeric fields from the Gate 0 FHSC FPT year pages 001 and 002.",

@@ -70,6 +70,99 @@ def test_fiscal_regime_boundary() -> None:
     assert resolve_regime(date(2026, 7, 1)) == "VAS_TT99_2025"
 
 
+def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) -> None:
+    fixture = ROOT / "tests/fixtures/raw_samples/fhsc_fpt_layer4_taxonomy_extract.json"
+    raw = json.loads(fixture.read_text(encoding="utf-8"))["rows"]
+    bs_ids = {
+        "BS_TRADE_RECEIVABLES_ST",
+        "BS_LT_RECEIVABLES",
+        "BS_TRADE_PAYABLES_ST",
+        "BS_CONVERTIBLE_BONDS",
+        "BS_TOTAL_EQUITY",
+        "BS_TREASURY_SHARES",
+    }
+    for i, entry in enumerate(raw):
+        income = entry["page"].startswith("income")
+        meta = filing(
+            entry["year"],
+            entry["quarter"],
+            statement=StatementType.INCOME_STATEMENT
+            if income
+            else StatementType.BALANCE_SHEET,
+        )
+        mapped, unmapped = mapper.map_metrics(
+            entry["raw_metrics"],
+            meta,
+            filing_id=f"gate0-{i}",
+            source_provider="fhsc",
+        )
+        assert unmapped.is_empty()
+        values = dict(mapped.select("metric_id", "value").rows())
+        if income:
+            borrowing = (
+                "IS_INTEREST_EXPENSE" if entry["year"] == 2025 else "IS_BORROWING_COSTS"
+            )
+            assert values[borrowing] == entry["raw_metrics"]["trongdochiphilaivay"]
+            assert values["IS_DEFERRED_INCOME_TAX"] < 0
+            assert (
+                values["IS_PROFIT_BEFORE_TAX"]
+                - values["IS_CURRENT_INCOME_TAX"]
+                - values["IS_DEFERRED_INCOME_TAX"]
+                == values["IS_NET_INCOME"]
+            )
+        else:
+            assert values.keys() == bs_ids
+            assert (
+                values["BS_TRADE_RECEIVABLES_ST"]
+                == entry["raw_metrics"]["phaithukhachhang"]
+            )
+            assert (
+                values["BS_LT_RECEIVABLES"]
+                == entry["raw_metrics"]["cackhoanphaithudaihan"]
+            )
+            assert (
+                values["BS_TRADE_PAYABLES_ST"]
+                == entry["raw_metrics"]["phaitranguoibannganhan"]
+            )
+            assert (
+                values["BS_CONVERTIBLE_BONDS"]
+                == entry["raw_metrics"]["traiphieuchuyendoi"]
+            )
+            assert values["BS_TOTAL_EQUITY"] == entry["raw_metrics"]["vonchusohuu"]
+            assert (
+                mapped.filter(pl.col("metric_id") == "BS_TOTAL_EQUITY")[
+                    "raw_metric_key"
+                ].item()
+                == "vonchusohuu_tong"
+            )
+
+
+def test_ttm_q4_lineage_and_nonadditive_eps(mapper: TaxonomyMapper) -> None:
+    quarters = [(filing(2025, q), 10) for q in range(1, 5)]
+    explicit = compute_ttm(facts(mapper, quarters))
+    assert explicit["ttm_value"][-1] == 40
+    assert explicit["ttm_contains_derived_q4"].to_list() == [False] * 4
+    derived = compute_ttm(
+        facts(mapper, [*quarters[:3], (filing(2025, audit=AuditStatus.AUDITED), 48)])
+    )
+    assert derived["ttm_value"][-1] == 48
+    assert derived["ttm_contains_derived_q4"].to_list() == [False, False, False, True]
+
+    unresolved = facts(mapper, quarters).with_columns(
+        pl.when(pl.col("fiscal_quarter") == 4)
+        .then(None)
+        .otherwise(pl.col("derivation_method"))
+        .alias("derivation_method")
+    )
+    result = compute_ttm(unresolved).sort("fiscal_quarter")
+    assert result["ttm_value"][-1] is None
+    assert result["ttm_contains_derived_q4"][-1] is False
+    eps = facts(mapper, quarters, code="70")
+    assert eps["value_type"].unique().to_list() == ["NON_ADDITIVE"]
+    assert derive_quarters(eps).is_empty()
+    assert compute_ttm(eps).is_empty()
+
+
 def test_exact_codes_units_and_unmapped(mapper: TaxonomyMapper) -> None:
     old = replace(
         filing(2025, 4, statement=StatementType.BALANCE_SHEET),

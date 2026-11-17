@@ -109,6 +109,7 @@ metrics:
   IS_BORROWING_COSTS:
     code: "24"
     labels: ["Chi phí đi vay"]
+    fhsc: ["trongdochiphilaivay"]
   IS_SELLING_EXPENSES:
     code: "25"
     labels: ["Chi phí bán hàng"]
@@ -218,3 +219,7 @@ metrics:
     code: "70"
     labels: ["Lãi cơ bản trên cổ phiếu"]
     fhsc: ["laicobantrencophieu"]
+  BS_TREASURY_SHARES:
+    code: "415"
+    labels: ["Cổ phiếu mua lại của chính mình"]
+    fhsc: ["cophieuquy"]

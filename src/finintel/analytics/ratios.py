@@ -30,10 +30,10 @@ from finintel.analytics.intermediates import (
     EARNINGS,
     EBITDA_INPUTS,
     EBIT_INPUTS,
+    EPS_INPUTS,
     EQUITY,
     FCF_INPUTS,
     GROSS_PROFIT,
-    INTEREST,
     INVENTORY,
     LIABILITIES,
     NOPAT_INPUTS,
@@ -42,7 +42,6 @@ from finintel.analytics.intermediates import (
     PARENT_INPUTS,
     PAYABLES,
     REVENUE,
-    SHARES,
     TRADE_RECEIVABLES,
     average,
     cross_taxonomy,
@@ -120,6 +119,7 @@ def _ratio(
     denominator: pl.Expr,
     *inputs: str,
     prior: tuple[str, ...] = (),
+    current_input: pl.Expr | None = None,
     universal: bool = False,
     boundary: tuple[pl.Expr, Flag] | None = None,
     missing_depreciation: bool = False,
@@ -136,7 +136,8 @@ def _ratio(
     missing_prior = pl.lit(False)
     if prior:
         mixed = mixed | cross_taxonomy(*prior)
-        missing_prior = c("_prior_end").is_null() & numerator.is_not_null()
+        current = numerator if current_input is None else current_input
+        missing_prior = c("_prior_end").is_null() & current.is_not_null()
     special, special_flag = boundary or (
         pl.lit(False),
         Flag.ZERO_OR_NEGATIVE_DENOMINATOR,
@@ -189,6 +190,7 @@ def _growth(
         prior,
         *inputs,
         prior=inputs,
+        current_input=current,
         universal=universal,
         boundary=(prior <= 0, Flag.NON_POSITIVE_BASE_PERIOD),
     )
@@ -252,7 +254,7 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
     revenue, earnings, cfo = c(REVENUE), c(EARNINGS), c(CFO)
     ebit, ebitda = c("ebit_ttm"), c("ebitda_ttm")
     debt, net_debt = c("total_debt"), c("net_debt")
-    interest, cogs = c(INTEREST).abs(), c(COGS).abs()
+    interest, cogs = c("_borrowing_cost_ttm"), c(COGS).abs()
     return _days_and_cycle(
         periods.with_columns(
             *_ratio("gross_margin", c(GROSS_PROFIT), revenue, GROSS_PROFIT, REVENUE),
@@ -434,9 +436,8 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
             *_ratio(
                 "eps_ttm_estimated",
                 c(PARENT_EARNINGS),
-                c("estimated_shares_outstanding"),
-                PARENT_EARNINGS,
-                SHARES,
+                c("_eps_shares"),
+                *EPS_INPUTS,
                 universal=True,
             ),
             *_ratio(

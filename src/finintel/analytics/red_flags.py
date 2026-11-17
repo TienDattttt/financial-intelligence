@@ -30,18 +30,12 @@ from finintel.analytics.intermediates import (
     REVENUE,
     SERIES,
     TRADE_RECEIVABLES,
+    combine_filing_ids,
     cross_taxonomy,
     input_has,
     with_prior_year,
 )
-
-FLAG_KEY = [
-    "issuer_id",
-    "statement_scope",
-    "period_type",
-    "period_end_date",
-    "flag_code",
-]
+from finintel.storage.schemas import FLAG_KEY
 
 
 def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
@@ -80,7 +74,7 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
     trade = c(TRADE_RECEIVABLES)
     prior_trade = c(f"{TRADE_RECEIVABLES}_prior")
     frame = with_prior_year(
-        ratios.drop("_prior_end"), "dio", "dso", "gross_margin"
+        ratios.drop("_prior_end"), "dio", "dso", "gross_margin", "source_filing_ids"
     ).with_columns(
         (
             adjacent
@@ -91,6 +85,7 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
         ).alias("_accrual_divergence"),
         previous(c(EARNINGS)).alias("previous_net_income_ttm"),
         previous(c(CFO)).alias("previous_cfo_ttm"),
+        previous(c("_period_filing_ids")).alias("_previous_filing_ids"),
         pl.when((prior_trade > 0) & ~cross_taxonomy(TRADE_RECEIVABLES, REVENUE))
         .then((trade - prior_trade) / prior_trade)
         .alias("trade_receivables_growth_yoy"),
@@ -212,6 +207,21 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
             [c("audit_opinion"), c("is_filed_late")],
         ),
     ]
+    filings = c("source_filing_ids")
+    evidence_filings = {
+        "RF_01_ACCRUAL_DIVERGENCE": combine_filing_ids(
+            filings, c("_previous_filing_ids")
+        ),
+        "RF_02_RECEIVABLES_SURGE": combine_filing_ids(
+            filings, c("source_filing_ids_prior")
+        ),
+        "RF_03_OTHER_RECEIVABLES_ANOMALY": c("_period_filing_ids"),
+        "RF_04_INVENTORY_BLOAT": combine_filing_ids(
+            filings, c("source_filing_ids_prior")
+        ),
+        "RF_06_NEGATIVE_EQUITY": c("_period_filing_ids"),
+        "RF_07_AUDIT_OR_FILING_WARNING": pl.concat_list("audit_filing_id"),
+    }
     return pl.concat(
         [
             frame.filter(condition).select(
@@ -220,7 +230,12 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
                 pl.lit(severity).alias("severity"),
                 pl.lit(title).alias("flag_title_vn"),
                 pl.lit(explanation).alias("explanation_text_vn"),
-                pl.struct(evidence).struct.json_encode().alias("evidence_json"),
+                pl.struct(
+                    *evidence,
+                    evidence_filings.get(code, filings).alias("source_filing_ids"),
+                )
+                .struct.json_encode()
+                .alias("evidence_json"),
                 (
                     c("audit_filing_id") if code.startswith("RF_07") else c("filing_id")
                 ).alias("filing_id"),

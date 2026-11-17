@@ -1,8 +1,12 @@
 state_path: ../data/metadata/state.sqlite
 min_free_bytes: 104857600
 tickers: []
-# Analytics uses curated/financial_facts.parquet and curated/issuers.parquet
-# by default. Set paths here to replay a particular normalized batch.
+# Supply the reviewed issuer reference table at data/curated/issuers.parquet
+# or configure issuers_path below. The default facts input is the latest
+# successful full-history normalization for the requested source, with
+# data/curated/financial_facts.parquet as a compatibility fallback.
+# An explicit facts_path must point to a complete normalized history.
+# Analytics records the actual as_of in _analytics_meta.json for replay.
 # analytics:
 #   facts_path: ../data/curated/financial_facts.parquet
 #   issuers_path: ../data/curated/issuers.parquet

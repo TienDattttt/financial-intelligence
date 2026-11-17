@@ -62,6 +62,7 @@ CONTEXT_SCHEMA = pl.Schema(
         "published_at": pl.Date(),
         "published_at_basis": pl.String(),
         "effective_available_at": pl.Date(),
+        "is_filed_late": pl.Boolean(),
         "source_filing_ids": pl.List(pl.String),
     }
 )
@@ -151,13 +152,21 @@ def _alias_rows(config_dir: Path) -> list[dict[str, object]]:
             code = mapping.get("code")
             method = mapping.get("cash_flow_method")
             sign = definition.get("sign_convention")
+            unit = definition.get("unit")
+            value_type = (
+                "STOCK"
+                if statement == "BALANCE_SHEET"
+                else "NON_ADDITIVE"
+                if unit == "VND_PER_SHARE"
+                else "FLOW"
+            )
             if (
                 definition.get("canonical_id") != metric_id
                 or not isinstance(statement, str)
                 or statement not in tuple(StatementType)
-                or definition.get("unit") not in ("VND", "VND_PER_SHARE")
-                or definition.get("value_type")
-                != ("STOCK" if statement == "BALANCE_SHEET" else "FLOW")
+                or unit not in ("VND", "VND_PER_SHARE")
+                or (unit == "VND_PER_SHARE" and statement != "INCOME_STATEMENT")
+                or definition.get("value_type") != value_type
                 or not isinstance(sign, str)
                 or sign not in SIGN_CONVENTIONS
                 or type(definition.get("comparable_across_taxonomy")) is not bool
@@ -359,15 +368,13 @@ class TaxonomyMapper:
         unmapped = enriched.filter(pl.col("metric_id").is_null()).select(
             UNMAPPED_SCHEMA.names()
         )
-        amounts = (
-            enriched.filter(pl.col("metric_id").is_not_null())
-            .with_columns(
-                pl.when(pl.col("unit") == "VND_PER_SHARE")
-                .then(1)
-                .otherwise(pl.col("unit_multiplier"))
-                .alias("unit_multiplier")
-            )
-            .with_columns((_numeric_value() * pl.col("unit_multiplier")).alias("value"))
+        scale = (
+            pl.when(pl.col("unit") == "VND_PER_SHARE")
+            .then(1)
+            .otherwise(pl.col("unit_multiplier"))
+        )
+        amounts = enriched.filter(pl.col("metric_id").is_not_null()).with_columns(
+            (_numeric_value() * scale).alias("value")
         )
         invalid = (
             pl.col("raw_value").is_not_null()
@@ -442,5 +449,6 @@ def _context(
         "published_at": filing.published_at,
         "published_at_basis": filing.published_at_basis,
         "effective_available_at": filing.effective_available_at,
+        "is_filed_late": filing.is_filed_late,
         "source_filing_ids": [filing_id],
     }

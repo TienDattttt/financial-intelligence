@@ -13,16 +13,17 @@ from typing import TypeAlias
 import polars as pl
 from filelock import FileLock
 
+from finintel.exceptions import ContractViolationError
 from finintel.pipeline.state_store import StateStore
 from finintel.storage.schemas import (
     ISSUERS_SCHEMA,
+    OPTIONAL_ANALYTICS_SCHEMAS,
     UNMAPPED_METRICS_SCHEMA,
     canonicalize_financial_facts,
     canonicalize_table,
 )
 
 TableInput: TypeAlias = pl.DataFrame | Path
-EMPTY_ANALYTICS_TABLES = {"industry_benchmarks.parquet", "accounting_red_flags.parquet"}
 
 
 def snapshot_lock(root: Path) -> FileLock:
@@ -187,7 +188,7 @@ class SnapshotPublisher:
                 raise OSError(f"Snapshot table was not written: {filename}")
             table = pl.read_parquet(path)
             self._validate_table_contract(filename, table)
-            if table.is_empty() and filename not in EMPTY_ANALYTICS_TABLES:
+            if table.is_empty() and filename not in OPTIONAL_ANALYTICS_SCHEMAS:
                 raise ValueError(f"Snapshot table is empty: {filename}")
         if not (staging / "_snapshot_meta.json").is_file():
             raise OSError("Snapshot metadata was not written.")
@@ -200,6 +201,12 @@ class SnapshotPublisher:
             canonicalize_table(table, ISSUERS_SCHEMA)
         elif filename == "unmapped_metrics.parquet":
             canonicalize_table(table, UNMAPPED_METRICS_SCHEMA)
+        elif filename in OPTIONAL_ANALYTICS_SCHEMAS:
+            required = OPTIONAL_ANALYTICS_SCHEMAS[filename]
+            if any(table.schema.get(name) != dtype for name, dtype in required.items()):
+                raise ContractViolationError(
+                    f"Analytics snapshot table has invalid schema: {filename}."
+                )
 
     garbage_collect = collect_garbage
 

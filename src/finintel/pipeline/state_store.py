@@ -298,6 +298,26 @@ class StateStore:
     def get_run(self, run_id: str) -> dict[str, object] | None:
         return self._one("SELECT * FROM pipeline_runs WHERE run_id = ?", (run_id,))
 
+    def completed_normalizations(self, source: str) -> list[tuple[str, bool]]:
+        """List succeeded normalization steps for a source, newest first.
+
+        The boolean identifies unfiltered legacy batches without metadata.
+        """
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.run_id, json_extract(r.cli_args_json, '$.period') IS NULL
+                       AND COALESCE(json_array_length(r.cli_args_json, '$.tickers'), 0) = 0
+                FROM pipeline_runs AS r
+                JOIN pipeline_steps AS s ON s.run_id = r.run_id
+                WHERE s.stage_name = 'NORMALIZE' AND s.status = 'SUCCEEDED'
+                  AND json_extract(r.cli_args_json, '$.source') = ?
+                ORDER BY s.step_id DESC
+                """,
+                (source,),
+            ).fetchall()
+        return [(str(row[0]), bool(row[1])) for row in rows]
+
     def list_steps(self, run_id: str) -> list[dict[str, object]]:
         with self.connection() as conn:
             return [

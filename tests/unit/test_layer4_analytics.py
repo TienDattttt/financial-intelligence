@@ -1,11 +1,12 @@
 """Layer 4 acceptance and regression tests."""
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from math import prod
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from finintel.ingestion.base import (
     AuditStatus,
@@ -53,7 +54,8 @@ def facts(
                 "period_start_date": start,
                 "period_end_date": end,
                 "period_days": (end - start).days + 1,
-                "effective_available_at": end,
+                "effective_available_at": end
+                + timedelta(days=90 if quarter is None else 45),
                 "published_at_basis": "STATUTORY_LAG",
                 "revision_no": 1,
                 "filing_id": filing,
@@ -92,9 +94,11 @@ def test_intermediates_annual_values_and_missing_optional_inputs() -> None:
                 "BS_CURRENT_ASSETS": 300,
                 "BS_CURRENT_LIABILITIES": 150,
                 "BS_ORDINARY_SHARES_CAPITAL": 50000,
+                "BS_TREASURY_SHARES": 0,
                 "IS_PROFIT_BEFORE_TAX": 100,
                 "IS_INTEREST_EXPENSE": -20,
                 "IS_CURRENT_INCOME_TAX": 25,
+                "IS_DEFERRED_INCOME_TAX": 0,
                 "IS_NET_INCOME_PARENT": 60,
                 "IS_EPS_BASIC_REPORTED": 10,
                 "CF_OPERATING_CASH_FLOW": 80,
@@ -142,7 +146,7 @@ def test_intermediates_quarters_respect_as_of_scope_gaps_and_taxonomy() -> None:
     combined = pl.concat(
         [source, revision, facts({(2026, 2): {cash: 6}}, scope="SEPARATE")]
     )
-    result = prepare_periods(combined, issuer(), as_of=date(2026, 10, 1))
+    result = prepare_periods(combined, issuer(), as_of=date(2026, 11, 15))
     assert (
         result.filter(pl.col("period_end_date") == date(2026, 3, 31))[cash].item() == 41
     )
@@ -214,6 +218,7 @@ def test_regime_routing_and_ratio_boundary_flags() -> None:
             "IS_PROFIT_BEFORE_TAX": 120,
             "IS_INTEREST_EXPENSE": 0,
             "BS_ORDINARY_SHARES_CAPITAL": 100000,
+            "BS_TREASURY_SHARES": 0,
         },
     }
     cut_off = date(2026, 6, 1)
@@ -270,7 +275,7 @@ def test_q4_provenance_survives_in_subsequent_ttm_and_missing_prior_is_flagged()
         }
     )
     result = calculate_ratios(
-        prepare_periods(history, issuer(), as_of=date(2025, 5, 1))
+        prepare_periods(history, issuer(), as_of=date(2025, 5, 20))
     )
     row = result.row(-1, named=True)
     assert row[revenue] == 110
@@ -280,7 +285,7 @@ def test_q4_provenance_survives_in_subsequent_ttm_and_missing_prior_is_flagged()
 
     missing = facts({(2025, None): {revenue: 100, "BS_TOTAL_ASSETS": 500}})
     row = calculate_ratios(
-        prepare_periods(missing, issuer(), as_of=date(2026, 1, 1))
+        prepare_periods(missing, issuer(), as_of=date(2026, 4, 1))
     ).row(0, named=True)
     assert row["asset_turnover_flag"] == "MISSING_PRIOR_YEAR_BASE"
 
@@ -401,6 +406,32 @@ def test_peer_benchmarks_use_valid_counts_fallback_and_clip_outliers() -> None:
     ].unique().to_list() == ["REGIME_FALLBACK"]
 
 
+def test_peer_groups_keep_fiscal_dates_and_statement_scopes_separate() -> None:
+    from finintel.analytics.comparisons import benchmark_ratios
+
+    peers = pl.DataFrame(
+        {
+            "issuer_id": ["A", "B", "A"],
+            "accounting_regime": ["CORPORATE"] * 3,
+            "statement_scope": ["CONSOLIDATED", "CONSOLIDATED", "SEPARATE"],
+            "period_type": ["ANNUAL"] * 3,
+            "period_end_date": [
+                date(2025, 12, 31),
+                date(2025, 9, 30),
+                date(2025, 12, 31),
+            ],
+            "fiscal_year": [2025] * 3,
+            "fiscal_quarter": [None] * 3,
+            "icb_code_level3": ["101010"] * 3,
+            "icb_code_level2": ["1010"] * 3,
+            "roe_total": [0.1, 0.2, 0.3],
+        }
+    )
+    result = benchmark_ratios(peers, ("roe_total",))
+    assert result["peer_count"].to_list() == [1, 1, 1]
+    assert result["peer_median"].to_list() == result["value"].to_list()
+
+
 def test_forensic_flags_use_consecutive_periods_and_emit_evidence() -> None:
     from finintel.analytics.intermediates import prepare_periods
     from finintel.analytics.ratios import calculate_ratios
@@ -493,6 +524,148 @@ def test_analytics_cli_outputs_publishable_parquet_tables(tmp_path: Path) -> Non
         "peer_count"
     ].to_list() == [1, 1, 1]
     assert repository.read_table("accounting_red_flags.parquet").is_empty()
+    assert (
+        json.loads(
+            (run_directory / "_analytics_meta.json").read_text(encoding="utf-8")
+        )["as_of"]
+        == "2026-06-01"
+    )
+
+
+def test_normalize_to_analytics_carries_late_filing_and_ignores_newer_scoped_batch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from finintel.ingestion.archive import RawArchive
+    from finintel.ingestion.file_adapter import FileAdapter
+    from finintel.pipeline.cli import main
+    from finintel.pipeline.state_store import StateStore
+
+    store = StateStore(tmp_path / "metadata/state.sqlite")
+    archive = RawArchive(tmp_path / "raw", store)
+    path = tmp_path / "statement.csv"
+    path.write_text("raw_metric_key,raw_value\n60,10\n", encoding="utf-8")
+    start, end = date(2025, 1, 1), date(2025, 12, 31)
+    (stored,) = archive.store(
+        next(
+            FileAdapter(
+                path,
+                FilingMetadata(
+                    "FPT",
+                    "FPT",
+                    StatementType.INCOME_STATEMENT,
+                    PeriodType.ANNUAL,
+                    2025,
+                    start,
+                    start,
+                    end,
+                    statement_scope=StatementScope.CONSOLIDATED,
+                    audit_status=AuditStatus.AUDITED,
+                    published_at=date(2026, 5, 1),
+                ),
+                source_provider="issuer",
+            ).fetch()
+        )
+    )
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    issuer().write_parquet(curated / "issuers.parquet")
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(
+        f"state_path: metadata/state.sqlite\nmin_free_bytes: 0\n"
+        f"normalization:\n  filings:\n    {stored.filing_id}:\n      unit_multiplier: 1\n"
+        f"analytics:\n  as_of: '2026-06-01'\n",
+        encoding="utf-8",
+    )
+    args = ["--config", str(settings), "run", "--source", "file", "--stage"]
+    assert main([*args, "normalize", "--period", "2025"]) == 0
+    assert main([*args, "analytics"]) == 1
+    assert "complete normalized history" in capsys.readouterr().err
+    assert main([*args, "normalize"]) == 0
+    full_batches = set(curated.glob("financial_facts/*/financial_facts.parquet"))
+    assert main([*args, "normalize", "--period", "2025"]) == 0
+    assert main([*args, "analytics", "--ticker", "FPT", "--period", "2025"]) == 0
+    assert main([*args, "analytics", "--ticker", "MISSING"]) == 1
+    assert "No visible financial periods matched" in capsys.readouterr().err
+    (batch,) = (curated / "analytics").iterdir()
+    metadata = json.loads((batch / "_analytics_meta.json").read_text(encoding="utf-8"))
+    assert Path(metadata["facts_path"]) in full_batches
+    alert = pl.read_parquet(batch / "accounting_red_flags.parquet").row(0, named=True)
+    assert alert["filing_id"] == stored.filing_id
+    assert json.loads(alert["evidence_json"])["is_filed_late"] is True
+
+
+def test_snapshot_rejects_malformed_empty_analytics_table(tmp_path: Path) -> None:
+    from finintel.exceptions import ContractViolationError
+    from finintel.storage import SnapshotPublisher
+    from finintel.storage.schemas import RED_FLAGS_TABLE
+
+    publisher = SnapshotPublisher(tmp_path / "snapshots")
+    with pytest.raises(ContractViolationError, match="invalid schema"):
+        publisher.publish(
+            "snap_invalid", {RED_FLAGS_TABLE: pl.DataFrame(schema={"wrong": pl.String})}
+        )
+    assert not (tmp_path / "snapshots/snap_invalid").exists()
+
+
+def test_pipeline_analytics_uses_current_full_history_over_curated_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finintel.normalization.mapper import UNMAPPED_SCHEMA
+    from finintel.pipeline.analytics import AnalyticsHandler
+    from finintel.pipeline.normalize import NormalizeHandler
+    from finintel.pipeline.runner import RunRequest, Stage, StepContext
+    from finintel.pipeline.state_store import StateStore
+
+    history = pl.concat(
+        [
+            facts(
+                {
+                    (2024, None): {"BS_TOTAL_ASSETS": 100},
+                    (2025, None): {"BS_TOTAL_ASSETS": 100, "IS_NET_INCOME": 20},
+                }
+            ),
+            facts(
+                {
+                    (2024, None): {"BS_TOTAL_ASSETS": 100},
+                    (2025, None): {"BS_TOTAL_ASSETS": 100, "IS_NET_INCOME": 10},
+                },
+                issuer_id="PEER",
+            ),
+        ]
+    )
+
+    def read_archive(
+        *args: object, tickers: tuple[str, ...], **kwargs: object
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
+        assert tickers == ()
+        return history, pl.DataFrame(schema=UNMAPPED_SCHEMA)
+
+    monkeypatch.setattr("finintel.pipeline.normalize.normalize_archive", read_archive)
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    pl.concat([issuer(), issuer("PEER")]).write_parquet(curated / "issuers.parquet")
+    history.filter(pl.col("fiscal_year") == 2024).write_parquet(
+        curated / "financial_facts.parquet"
+    )
+    state = StateStore(tmp_path / "metadata/state.sqlite")
+    state.initialize()
+    run = RunRequest(source="file", tickers=("FPT",), period="2025")
+    state.start_run("current", "CLI_MANUAL", run.log_arguments(), None)
+    step = state.start_step("current", "NORMALIZE")
+    outcome = NormalizeHandler(state, tmp_path, {}, {})(
+        StepContext("current", Stage.NORMALIZE, run, run.tickers, None)
+    )
+    state.finish_step(step, outcome.status)
+    AnalyticsHandler(state, tmp_path, {"as_of": "2026-06-01"})(
+        StepContext("current", Stage.ANALYTICS, run, run.tickers, None)
+    )
+    batch = curated / "analytics/current"
+    ratios = pl.read_parquet(batch / "financial_ratios.parquet")
+    peers = pl.read_parquet(batch / "industry_benchmarks.parquet")
+    assert ratios.select("ticker", "fiscal_year", "roa").rows() == [("FPT", 2025, 0.2)]
+    assert peers.select("issuer_id", "peer_count").rows() == [("FPT", 2)]
+    meta = json.loads((batch / "_analytics_meta.json").read_text(encoding="utf-8"))
+    assert Path(meta["facts_path"]).parent.name == "current"
 
 
 def test_fpt_golden_reconciliation_2022_2025_and_dupont_2018_2025() -> None:
@@ -627,7 +800,7 @@ def test_verified_source_headers_and_eps_scaling() -> None:
     assert mapped.select("metric_id", "value", "unit_multiplier").sort(
         "metric_id"
     ).rows() == [
-        ("IS_EPS_BASIC_REPORTED", 5216.0, 1),
+        ("IS_EPS_BASIC_REPORTED", 5216.0, 1_000_000),
         ("IS_NET_INCOME_PARENT", 9_376_000_000.0, 1_000_000),
     ]
 
@@ -708,3 +881,176 @@ def test_remaining_forensic_rules_and_audit_filing_provenance() -> None:
     audit = alerts.row(-1, named=True)
     assert audit["filing_id"] == "FPT-2025-None"
     assert json.loads(audit["evidence_json"])["is_filed_late"] is True
+
+
+def test_missing_inputs_and_signed_tax_do_not_fabricate_financial_results() -> None:
+    from finintel.analytics.intermediates import prepare_periods
+    from finintel.analytics.ratios import calculate_ratios
+
+    common: dict[str, float | None] = {
+        "IS_PROFIT_BEFORE_TAX": 100,
+        "IS_NET_REVENUE": 150,
+        "CF_OPERATING_CASH_FLOW": 40,
+        "BS_CONVERTIBLE_BONDS": 30,
+    }
+    source = facts(
+        {
+            (2023, None): common,
+            (2024, None): {
+                **common,
+                "IS_INTEREST_EXPENSE": 0,
+                "IS_CURRENT_INCOME_TAX": 25,
+            },
+            (2025, None): {
+                **common,
+                "IS_INTEREST_EXPENSE": 20,
+                "IS_CURRENT_INCOME_TAX": 25,
+                "IS_DEFERRED_INCOME_TAX": -5,
+                "CF_CAPITAL_EXPENDITURE": 8,
+            },
+            (2026, None): {**common, "IS_BORROWING_COSTS": 10},
+        }
+    )
+    source = source.with_columns(
+        (
+            ~pl.col("metric_id").is_in(["IS_INTEREST_EXPENSE", "IS_BORROWING_COSTS"])
+        ).alias("comparable_across_taxonomy")
+    )
+    rows = calculate_ratios(
+        prepare_periods(source, issuer(), as_of=date(2027, 6, 1))
+    ).rows(named=True)
+    assert rows[0]["total_debt"] == 30
+    assert rows[0]["ebit_ttm"] is None
+    assert rows[0]["fcf_to_revenue_flag"] == "MISSING_INPUT"
+    assert rows[1]["ebit_ttm"] == 100
+    assert rows[1]["effective_tax_rate"] is None
+    assert rows[1]["nopat_flag"] == "MISSING_INPUT"
+    assert rows[2]["effective_tax_rate"] == 0.2
+    assert rows[2]["nopat_ttm"] == 96
+    assert rows[2]["fcf_ttm"] == 32
+    assert rows[3]["ebit_ttm"] == 110
+    assert rows[3]["interest_coverage"] == 11
+    assert rows[3]["ebit_growth_yoy_flag"] == "MIXED_TAXONOMY"
+
+
+@pytest.mark.parametrize("opinion", ["EXCEPT_FOR", "ADVERSE", "DISCLAIMER"])
+def test_forensic_audit_opinion_evidence_survives_a_different_period_anchor(
+    opinion: str,
+) -> None:
+    from finintel.analytics.tables import RED_FLAGS_TABLE, build_analytics_tables
+
+    source = facts({(2025, None): {"IS_NET_INCOME": 100, "BS_TOTAL_ASSETS": 200}})
+    income = pl.col("metric_id") == "IS_NET_INCOME"
+    source = source.with_columns(
+        pl.when(income)
+        .then(pl.lit(opinion))
+        .otherwise(pl.col("audit_opinion"))
+        .alias("audit_opinion"),
+        pl.when(income)
+        .then(pl.lit("audit-filing"))
+        .otherwise(pl.lit("z-balance-sheet"))
+        .alias("filing_id"),
+    ).with_columns(pl.concat_list("filing_id").alias("source_filing_ids"))
+    alerts = build_analytics_tables(source, issuer(), as_of=date(2026, 6, 1))[
+        RED_FLAGS_TABLE
+    ]
+    row = alerts.row(0, named=True)
+    assert row["flag_code"] == "RF_07_AUDIT_OR_FILING_WARNING"
+    assert row["filing_id"] == "audit-filing"
+    evidence = json.loads(row["evidence_json"])
+    assert evidence["audit_opinion"] == opinion
+    assert evidence["source_filing_ids"] == ["audit-filing"]
+
+
+def test_eps_uses_weighted_annual_shares_and_rejects_unknown_treasury_balance() -> None:
+    from finintel.analytics.tables import RATIOS_TABLE, build_analytics_tables
+
+    base: dict[str, float | None] = {
+        "IS_NET_INCOME_PARENT": 100,
+        "BS_ORDINARY_SHARES_CAPITAL": 100_000,
+    }
+    source = facts(
+        {
+            (2023, None): base,
+            (2024, None): {**base, "BS_TREASURY_SHARES": 0},
+            (2025, None): {
+                **base,
+                "BS_TREASURY_SHARES": -100,
+                "IS_EPS_BASIC_REPORTED": 20,
+            },
+        }
+    )
+    out = build_analytics_tables(source, issuer(), as_of=date(2026, 6, 1))[RATIOS_TABLE]
+    assert out["eps_ttm_estimated"].to_list() == [None, 10, 20]
+    assert out["eps_estimate_basis"].to_list() == [
+        None,
+        "NO_TREASURY_AT_PERIOD_END",
+        "IMPLIED_ANNUAL_WEIGHTED",
+    ]
+
+
+def test_quarterly_cutoff_and_ttm_filing_lineage_in_published_ratios() -> None:
+    from finintel.analytics.tables import RATIOS_TABLE, build_analytics_tables
+
+    source = facts(
+        {(2025, q): {"IS_NET_REVENUE": 10, "IS_GROSS_PROFIT": 2} for q in range(1, 5)}
+    ).with_columns(
+        (pl.col("period_end_date") + timedelta(days=45)).alias(
+            "effective_available_at"
+        ),
+    )
+    before = build_analytics_tables(source, issuer(), as_of=date(2026, 2, 13))[
+        RATIOS_TABLE
+    ]
+    assert before["fiscal_quarter"].max() == 3
+    after = build_analytics_tables(source, issuer(), as_of=date(2026, 2, 14))[
+        RATIOS_TABLE
+    ]
+    assert after["gross_margin"][-1] == 0.2
+    assert set(after["source_filing_ids"][-1]) == {f"FPT-2025-{q}" for q in range(1, 5)}
+
+
+def test_derived_q4_uses_matching_annual_closing_stocks() -> None:
+    from finintel.analytics.tables import RATIOS_TABLE, build_analytics_tables
+
+    source = facts(
+        {
+            (2025, 1): {"IS_NET_REVENUE": 20},
+            (2025, 2): {"IS_NET_REVENUE": 25},
+            (2025, 3): {"IS_NET_REVENUE": 30},
+            (2025, None): {
+                "IS_NET_REVENUE": 110,
+                "BS_CURRENT_ASSETS": 300,
+                "BS_CURRENT_LIABILITIES": 150,
+            },
+        }
+    )
+    out = build_analytics_tables(source, issuer(), as_of=date(2026, 6, 1))[RATIOS_TABLE]
+    quarter = out.filter(pl.col("fiscal_quarter") == 4).row(0, named=True)
+    assert quarter["current_ratio"] == 2
+    assert quarter["source_filing_ids"] == [
+        "FPT-2025-1",
+        "FPT-2025-2",
+        "FPT-2025-3",
+        "FPT-2025-None",
+    ]
+
+
+def test_growth_with_missing_prior_period_reports_specific_status() -> None:
+    from finintel.analytics.tables import RATIOS_TABLE, build_analytics_tables
+
+    source = facts(
+        {
+            (2025, None): {
+                "IS_NET_REVENUE": 100,
+                "IS_PROFIT_BEFORE_TAX": 25,
+                "IS_INTEREST_EXPENSE": 5,
+                "IS_NET_INCOME_PARENT": 20,
+            }
+        }
+    )
+    result = build_analytics_tables(source, issuer(), as_of=date(2026, 6, 1))[
+        RATIOS_TABLE
+    ]
+    for name in ("revenue", "ebit", "net_income_parent"):
+        assert result[f"{name}_growth_yoy_flag"].item() == "MISSING_PRIOR_YEAR_BASE"

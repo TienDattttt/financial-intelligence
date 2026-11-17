@@ -9,7 +9,10 @@ Verified Sources:
     https://vanban.chinhphu.vn/?docid=178998&lang=vi&pageid=27160
     https://congbao.chinhphu.vn/van-ban/thong-tu-so-99-2025-tt-btc-46529/59658.htm
     Gate 0 FHSC evidence and config/metric_definitions.yaml determine the fields.
-    TT99 borrowing costs retain their separate identifier from TT200 interest.
+    TT99 B02-DN line 24 is borrowing costs. Use it for TT99 and TT200 line
+    23 for TT200 with separate identifiers and cross-taxonomy guards.
+    FPT's audited B02-DN/HN matches the FHSC tax fields: positive current
+    tax is an expense and negative deferred tax is a benefit.
     FHSC's vonchusohuu_tong and vonchusohuu agree in all 77 FPT Gate 0
     balance sheets. Layer 2 applies the explicit provider fallback.
     https://congbao.chinhphu.vn/van-ban/thong-tu-so-202-2014-tt-btc-6558.htm
@@ -36,6 +39,7 @@ LT_DEBT = "BS_LONG_TERM_BORROWINGS"
 BONDS = "BS_CONVERTIBLE_BONDS"
 NCI = "BS_MINORITY_INTEREST"
 SHARES = "BS_ORDINARY_SHARES_CAPITAL"
+TREASURY_SHARES = "BS_TREASURY_SHARES"
 TRADE_RECEIVABLES = "BS_TRADE_RECEIVABLES_ST"
 RECEIVABLES = "BS_SHORT_TERM_RECEIVABLES"
 LT_RECEIVABLES = "BS_LT_RECEIVABLES"
@@ -46,6 +50,7 @@ EARNINGS = "IS_NET_INCOME"
 PARENT_EARNINGS = "IS_NET_INCOME_PARENT"
 EBT = "IS_PROFIT_BEFORE_TAX"
 INTEREST = "IS_INTEREST_EXPENSE"
+BORROWING_COSTS = "IS_BORROWING_COSTS"
 CURRENT_TAX = "IS_CURRENT_INCOME_TAX"
 DEFERRED_TAX = "IS_DEFERRED_INCOME_TAX"
 COGS = "IS_COST_OF_GOODS_SOLD"
@@ -69,6 +74,7 @@ STOCKS = (
     BONDS,
     NCI,
     SHARES,
+    TREASURY_SHARES,
     TRADE_RECEIVABLES,
     RECEIVABLES,
     LT_RECEIVABLES,
@@ -81,16 +87,17 @@ FLOWS = (
     PARENT_EARNINGS,
     EBT,
     INTEREST,
+    BORROWING_COSTS,
     CURRENT_TAX,
     DEFERRED_TAX,
     COGS,
     GROSS_PROFIT,
     OPERATING_PROFIT,
-    EPS,
     CFO,
     CAPEX,
     DEPRECIATION,
 )
+ANNUAL_AMOUNTS = (*FLOWS, EPS)
 ALIASES = {
     "BS_ST_FINANCIAL_INVESTMENTS": INVESTMENTS,
     "BS_ST_BORROWINGS": ST_DEBT,
@@ -133,10 +140,11 @@ DEBT_INPUTS = (ST_DEBT, LT_DEBT, BONDS)
 CASH_INPUTS = (CASH, INVESTMENTS)
 CAPITAL_INPUTS = (*DEBT_INPUTS, EQUITY, CASH)
 PARENT_INPUTS = (EQUITY, NCI)
-EBIT_INPUTS = (EBT, INTEREST)
+EBIT_INPUTS = (EBT, INTEREST, BORROWING_COSTS)
 EBITDA_INPUTS = (*EBIT_INPUTS, DEPRECIATION)
 NOPAT_INPUTS = (*EBIT_INPUTS, CURRENT_TAX, DEFERRED_TAX)
 FCF_INPUTS = (CFO, CAPEX)
+EPS_INPUTS = (PARENT_EARNINGS, EPS, SHARES, TREASURY_SHARES)
 
 
 def input_has(prefix: str, *names: str) -> pl.Expr:
@@ -208,9 +216,14 @@ def _visible_facts(facts: pl.DataFrame, as_of: date) -> pl.DataFrame:
             .alias("fiscal_quarter"),
             pl.when(METRIC.is_in(STOCKS))
             .then(pl.lit("STOCK"))
+            .when(METRIC == EPS)
+            .then(pl.lit("NON_ADDITIVE"))
             .otherwise(pl.lit("FLOW"))
             .alias("value_type"),
             (pl.col("is_filed_late") == 1).alias("is_filed_late"),
+            pl.coalesce("source_filing_ids", pl.concat_list("filing_id")).alias(
+                "source_filing_ids"
+            ),
         )
     )
 
@@ -261,34 +274,72 @@ def _period_amounts(facts: pl.DataFrame) -> pl.DataFrame:
     data_columns = ["metric_id", "computation_note", "comparable_across_taxonomy"]
     raw = reports.filter(
         METRIC.is_in(STOCKS)
-        | ((pl.col("period_type") == "ANNUAL") & METRIC.is_in(FLOWS))
-    ).select(
-        *PERIOD, *REVISION_ORDER, *data_columns, "value", pl.lit(False).alias("_q4")
+        | ((pl.col("period_type") == "ANNUAL") & METRIC.is_in(ANNUAL_AMOUNTS))
     )
-    amounts = pl.concat(
-        [
-            raw,
-            quarterly.select(
-                *PERIOD,
-                *REVISION_ORDER,
-                *data_columns,
-                pl.col("ttm_value").alias("value"),
-                pl.col("ttm_contains_derived_q4").alias("_q4"),
-            ),
-        ],
-        how="vertical_relaxed",
-    ).sort(REVISION_ORDER)
+    # Fiscal-year closing stocks may be published only with the annual
+    # report. Use them for matching Q4 rows lacking a quarterly stock fact.
+    quarter = (pl.col("period_type") == "QUARTER") & (pl.col("fiscal_quarter") == 4)
+    closing_keys = [*PERIOD, "taxonomy_version"]
+    closing_stocks = (
+        raw.filter((pl.col("period_type") == "ANNUAL") & METRIC.is_in(STOCKS))
+        .with_columns(
+            pl.lit("QUARTER").alias("period_type"),
+            pl.lit(4, dtype=pl.Int32).alias("fiscal_quarter"),
+        )
+        .join(anchors.filter(quarter).select(closing_keys), on=closing_keys, how="semi")
+        .join(
+            raw.filter(quarter).select(*PERIOD, "metric_id"),
+            on=[*PERIOD, "metric_id"],
+            how="anti",
+        )
+    )
+    raw = pl.concat([raw, closing_stocks]).select(
+        *PERIOD,
+        *REVISION_ORDER,
+        *data_columns,
+        "value",
+        "source_filing_ids",
+        pl.lit(False).alias("_q4"),
+    )
+    amounts = (
+        pl.concat(
+            [
+                raw,
+                quarterly.select(
+                    *PERIOD,
+                    pl.coalesce("ttm_available_at", "effective_available_at").alias(
+                        "effective_available_at"
+                    ),
+                    "revision_no",
+                    "filing_id",
+                    *data_columns,
+                    pl.col("ttm_value").alias("value"),
+                    pl.col("ttm_source_filing_ids").alias("source_filing_ids"),
+                    pl.col("ttm_contains_derived_q4").alias("_q4"),
+                ),
+            ],
+            how="vertical_relaxed",
+        )
+        .sort(REVISION_ORDER)
+        .unique(subset=[*PERIOD, "metric_id"], keep="last")
+    )
     wide = amounts.group_by(PERIOD).agg(
         *(
             expression.filter(METRIC == name).last().alias(f"{prefix}{name}")
-            for name in (*STOCKS, *FLOWS)
+            for name in (*STOCKS, *ANNUAL_AMOUNTS)
             for prefix, expression in (
                 ("", pl.col("value")),
                 ("_mixed_", pl.col("computation_note") == MIXED),
                 ("_derived_", pl.col("_q4")),
-                ("_comparable_", pl.col("comparable_across_taxonomy")),
+                ("_comparable_", pl.col("comparable_across_taxonomy").fill_null(False)),
             )
-        )
+        ),
+        pl.col("source_filing_ids")
+        .explode()
+        .drop_nulls()
+        .unique()
+        .sort()
+        .alias("_period_filing_ids"),
     )
     return anchors.join(wide, on=PERIOD, how="left", nulls_equal=True).join(
         warnings, on=PERIOD, how="left", nulls_equal=True
@@ -298,17 +349,25 @@ def _period_amounts(facts: pl.DataFrame) -> pl.DataFrame:
 def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
     """Apply the VAS intermediate formulas below to the named metric IDs.
 
-    Required inputs propagate null. Use the explicitly allowed zero defaults
-    for optional inputs. ETR is 20% for nonpositive EBT. Implied weighted
-    shares require positive reported annual EPS and parent income.
+    Add the magnitude of the regime-specific borrowing cost to EBT.
+    For positive EBT, sum both signed tax lines before dividing and clipping.
+    For nonpositive EBT, ETR is 20%. Subtract the reported CAPEX magnitude
+    from CFO. Require explicit zero treasury stock to estimate shares from par.
     """
     c = pl.col
-    debt = pl.when(c(ST_DEBT).is_not_null() | c(LT_DEBT).is_not_null()).then(
-        c(ST_DEBT).fill_null(0) + c(LT_DEBT).fill_null(0) + c(BONDS).fill_null(0)
-    )
+    debt = pl.when(
+        pl.any_horizontal(*(c(name).is_not_null() for name in DEBT_INPUTS))
+    ).then(c(ST_DEBT).fill_null(0) + c(LT_DEBT).fill_null(0) + c(BONDS).fill_null(0))
     ebt = c(EBT)
-    tax = c(CURRENT_TAX).fill_null(0) + c(DEFERRED_TAX).fill_null(0)
+    tax = c(CURRENT_TAX) + c(DEFERRED_TAX)
     annual = c("period_type") == "ANNUAL"
+    debt_cost = (
+        pl.when(c("taxonomy_version") == "VAS_TT99_2025")
+        .then(c(BORROWING_COSTS))
+        .otherwise(c(INTEREST))
+        .abs()
+    )
+    tax_inputs = (EBT, CURRENT_TAX, DEFERRED_TAX)
     result = frame.with_columns(
         pl.when(CORPORATE & ~input_has("mixed", *DEBT_INPUTS))
         .then(debt)
@@ -320,24 +379,35 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         pl.when(CORPORATE)
         .then(c(CURRENT_ASSETS) - c(CURRENT_LIABILITIES))
         .alias("working_capital"),
+        debt_cost.alias("_borrowing_cost_ttm"),
         pl.when(CORPORATE & ~input_has("mixed", *EBIT_INPUTS))
-        .then(ebt + c(INTEREST).fill_null(0).abs())
+        .then(ebt + debt_cost)
         .alias("ebit_ttm"),
-        pl.when(CORPORATE & ~input_has("mixed", *NOPAT_INPUTS) & (ebt > 0))
+        pl.when(CORPORATE & ~input_has("mixed", *tax_inputs) & (ebt > 0))
         .then((tax / ebt).clip(0.0, 1.0))
-        .when(CORPORATE & ~input_has("mixed", *NOPAT_INPUTS) & (ebt <= 0))
+        .when(CORPORATE & ~input_has("mixed", EBT) & (ebt <= 0))
         .then(0.20)
         .alias("effective_tax_rate"),
         pl.when(CORPORATE & ~input_has("mixed", *FCF_INPUTS))
-        .then(c(CFO) - c(CAPEX).fill_null(0).abs())
+        .then(c(CFO) - c(CAPEX).abs())
         .alias("fcf_ttm"),
-        (c(SHARES) / 10000.0).alias("estimated_shares_outstanding"),
+        pl.when((c(SHARES) > 0) & (c(TREASURY_SHARES) == 0))
+        .then(c(SHARES) / 10000.0)
+        .alias("estimated_shares_outstanding"),
         pl.when(annual & (c(EPS) > 0) & (c(PARENT_EARNINGS) > 0))
         .then(c(PARENT_EARNINGS) / c(EPS))
         .alias("implied_weighted_shares"),
         pl.when(annual).then(c(EPS)).alias("eps_basic_reported"),
     )
     return result.with_columns(
+        pl.coalesce("implied_weighted_shares", "estimated_shares_outstanding").alias(
+            "_eps_shares"
+        ),
+        pl.when(c("implied_weighted_shares").is_not_null())
+        .then(pl.lit("IMPLIED_ANNUAL_WEIGHTED"))
+        .when(c("estimated_shares_outstanding").is_not_null())
+        .then(pl.lit("NO_TREASURY_AT_PERIOD_END"))
+        .alias("eps_estimate_basis"),
         (c("total_debt") - c("total_cash_and_st_investments")).alias("net_debt"),
         (c("total_debt") + c(EQUITY) - c(CASH)).alias("invested_capital"),
         (c("ebit_ttm") + c(DEPRECIATION).abs()).alias("ebitda_ttm"),
@@ -354,6 +424,42 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         .otherwise(pl.lit("VALID"))
         .alias("ebitda_flag"),
         (c("ebit_ttm") * (1 - c("effective_tax_rate"))).alias("nopat_ttm"),
+        _intermediate_flag("ebit_ttm", "ebit_flag", *EBIT_INPUTS),
+        _intermediate_flag(
+            "effective_tax_rate", "effective_tax_rate_flag", *tax_inputs
+        ),
+        _intermediate_flag("fcf_ttm", "fcf_flag", *FCF_INPUTS),
+    ).with_columns(
+        _intermediate_flag("nopat_ttm", "nopat_flag", *NOPAT_INPUTS),
+    )
+
+
+def _intermediate_flag(value: str, status: str, *inputs: str) -> pl.Expr:
+    amount = pl.col(value)
+    return (
+        pl.when(~CORPORATE)
+        .then(pl.lit("NOT_APPLICABLE_FOR_REGIME"))
+        .when(amount.is_null() & input_has("mixed", *inputs))
+        .then(pl.lit(MIXED))
+        .when(amount.is_null())
+        .then(pl.lit("MISSING_INPUT"))
+        .when(~amount.is_finite())
+        .then(pl.lit("NUMERIC_OVERFLOW"))
+        .when(input_has("derived", *inputs))
+        .then(pl.lit("DERIVED_Q4_INPUT"))
+        .otherwise(pl.lit("VALID"))
+        .alias(status)
+    )
+
+
+def combine_filing_ids(*columns: pl.Expr) -> pl.Expr:
+    """Combine selected facts' filing lineage and omit missing lists and IDs."""
+    empty = pl.lit([], dtype=pl.List(pl.String))
+    return (
+        pl.concat_list(*(column.fill_null(empty) for column in columns))
+        .list.drop_nulls()
+        .list.unique()
+        .list.sort()
     )
 
 
@@ -439,14 +545,23 @@ def prepare_periods(
         _aggregates(periods),
         "taxonomy_version",
         *STOCKS,
-        *FLOWS,
+        *ANNUAL_AMOUNTS,
+        "_period_filing_ids",
         "parent_equity",
         "invested_capital",
         "ebit_ttm",
         *(
             f"_{prefix}_{name}"
             for prefix in ("comparable", "mixed", "derived")
-            for name in (*STOCKS, *FLOWS)
+            for name in (*STOCKS, *ANNUAL_AMOUNTS)
         ),
     )
-    return result.rename({"taxonomy_version_prior": "_prior_taxonomy"}).sort(PERIOD)
+    return (
+        result.with_columns(
+            combine_filing_ids(
+                pl.col("_period_filing_ids"), pl.col("_period_filing_ids_prior")
+            ).alias("source_filing_ids")
+        )
+        .rename({"taxonomy_version_prior": "_prior_taxonomy"})
+        .sort(PERIOD)
+    )

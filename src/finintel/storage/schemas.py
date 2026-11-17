@@ -8,6 +8,62 @@ import polars as pl
 
 from finintel.exceptions import ContractViolationError
 
+RATIOS_TABLE = "financial_ratios.parquet"
+BENCHMARKS_TABLE = "industry_benchmarks.parquet"
+RED_FLAGS_TABLE = "accounting_red_flags.parquet"
+
+BENCHMARK_KEY = (
+    "issuer_id",
+    "accounting_regime",
+    "statement_scope",
+    "period_type",
+    "period_end_date",
+    "metric_or_ratio_name",
+)
+FLAG_KEY = (
+    "issuer_id",
+    "statement_scope",
+    "period_type",
+    "period_end_date",
+    "flag_code",
+)
+
+# A snapshot may contain zero peers or zero alerts. The schema still applies.
+OPTIONAL_ANALYTICS_SCHEMAS = {
+    BENCHMARKS_TABLE: pl.Schema(
+        {
+            **{name: pl.String for name in BENCHMARK_KEY},
+            "period_end_date": pl.Date,
+            "icb_code_used": pl.String,
+            "peer_group_level": pl.String,
+            "peer_count": pl.UInt32,
+            **{
+                name: pl.Float64
+                for name in (
+                    "value",
+                    "peer_median",
+                    "peer_p25",
+                    "peer_p75",
+                    "peer_iqr",
+                    "percentile_rank",
+                    "robust_z_score",
+                )
+            },
+        }
+    ),
+    RED_FLAGS_TABLE: pl.Schema(
+        {
+            **{name: pl.String for name in FLAG_KEY},
+            "period_end_date": pl.Date,
+            "severity": pl.String,
+            "flag_title_vn": pl.String,
+            "explanation_text_vn": pl.String,
+            "evidence_json": pl.String,
+            "filing_id": pl.String,
+        }
+    ),
+}
+
 
 ISSUERS_SCHEMA = pl.Schema(
     {

@@ -11,15 +11,8 @@ Verified Sources:
 import polars as pl
 
 from finintel.analytics.ratios import CORE_RATIOS, EXTRA_RATIOS
-
-BENCHMARK_KEY = [
-    "issuer_id",
-    "accounting_regime",
-    "statement_scope",
-    "period_type",
-    "period_end_date",
-    "metric_or_ratio_name",
-]
+from finintel.exceptions import ContractViolationError
+from finintel.storage.schemas import BENCHMARK_KEY
 
 
 def benchmark_ratios(
@@ -36,6 +29,7 @@ def benchmark_ratios(
         "accounting_regime",
         "statement_scope",
         "period_type",
+        "period_end_date",
         "fiscal_year",
         "fiscal_quarter",
         "metric_or_ratio_name",
@@ -44,7 +38,6 @@ def benchmark_ratios(
         on=metrics,
         index=[
             "issuer_id",
-            "period_end_date",
             *cohorts[:-1],
             "icb_code_level3",
             "icb_code_level2",
@@ -52,6 +45,10 @@ def benchmark_ratios(
         variable_name="metric_or_ratio_name",
         value_name="value",
     ).filter(c("value").is_finite())
+    if observations.select(pl.struct(BENCHMARK_KEY).is_duplicated().any()).item():
+        raise ContractViolationError(
+            "Peer observations must be unique per issuer, period and metric."
+        )
 
     value = c("value")
     groups: list[pl.Expr] = []
