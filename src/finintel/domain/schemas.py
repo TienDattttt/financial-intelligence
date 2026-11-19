@@ -1,4 +1,24 @@
-"""Cross-layer data contracts for financial statement metadata and raw payloads."""
+"""Cross-layer data contracts for financial statement metadata and raw payloads.
+
+Verified Sources:
+    - Circular 96/2020/TT-BTC (Articles 10 & 14) and Circular 68/2024/TT-BTC:
+      https://staticfile.hsx.vn/Uploads/LocalFiles/c79e12a5dbf749b6983b63e3242326a3/20210101_Thong%20tu%2096.2020%20TT-BTC.pdf
+      Outer parent/consolidated ceilings: unaudited quarter +30d, reviewed quarter +45d,
+      semiannual / Q2 reviewed or unknown +60d, audited annual +90d. Standalone
+      (SEPARATE) reports can carry shorter statutory ceilings (e.g., 20d/45d); Layer 1
+      retains the conservative outer ceiling when ``published_at`` is missing to avoid
+      look-ahead bias.
+    - Vietnam Civil Code 2015 (Articles 147 & 148(5)): when the final day of a
+      statutory deadline falls on a weekend or public holiday, the deadline ends at
+      the close of the next working day.
+    - Vietnam Labor Code 2019 (Article 112 & Article 111(3)) and official MOLISA /
+      Ministry of Home Affairs / Government holiday notices for 2016-2026 (including
+      TB 4875/TB-BLDTBXH, CV 245/VPCP-KGVX, TB 5034/TB-LDTBXH, TB 5015/TB-LDTBXH,
+      TB 6150/TB-BLDTBXH, and the 2026 Tet Binh Ngo / National Day notice).
+      For years outside 2016-2026 (< 2016 or > 2026), ``_roll_to_next_vn_business_day``
+      deterministically rolls weekends (Sat/Sun) and fixed solar holidays
+      (01/01, 30/04, 01/05, 02/09) only.
+"""
 
 from __future__ import annotations
 
@@ -56,9 +76,103 @@ class RevisionReason(StrEnum):
 
 PayloadNature = Literal["TRUE_ORIGINAL_DOCUMENT", "PROVIDER_RAW_JSON"]
 PaginationStatus = Literal[
-    "IN_PROGRESS", "COMPLETE", "PAGE_LIMIT_REACHED", "THROTTLED", "INVALID_RESPONSE"
+    "IN_PROGRESS",
+    "COMPLETE",
+    "EARLY_STOPPED",
+    "PAGE_LIMIT_REACHED",
+    "THROTTLED",
+    "INVALID_RESPONSE",
 ]
 _Enum = TypeVar("_Enum", bound=StrEnum)
+
+# Fixed solar Vietnam public holidays (Labor Code 2019, Art. 112).
+_VN_FIXED_HOLIDAYS: frozenset[tuple[int, int]] = frozenset(
+    {
+        (1, 1),  # New Year's Day (Tet Duong lich)
+        (4, 30),  # Reunification Day (30/04)
+        (5, 1),  # International Workers' Day (01/05)
+        (9, 2),  # National Day (02/09)
+    }
+)
+
+
+def _date_span(start: date, end: date) -> tuple[date, ...]:
+    days = (end - start).days + 1
+    return tuple(start + timedelta(days=offset) for offset in range(days))
+
+
+# Gazetted lunar and National Day adjacent Vietnam public holidays for 2016-2026
+# per official MOLISA / Ministry of Home Affairs / Government notices.
+# Administrative workday swaps (e.g., 2025-05-02 swapped with Sat 2025-04-26) are
+# intentionally excluded because they are not statutory Art. 112 holidays.
+_VN_GAZETTED_HOLIDAYS: frozenset[date] = frozenset(
+    (
+        # 2016 (Binh Than): Tet Mon 08/02..Fri 12/02; Hung Kings 16/04
+        *_date_span(date(2016, 2, 8), date(2016, 2, 12)),
+        date(2016, 4, 16),
+        # 2017 (Dinh Dau): Tet Thu 26/01..Wed 01/02; Hung Kings 06/04
+        *_date_span(date(2017, 1, 26), date(2017, 2, 1)),
+        date(2017, 4, 6),
+        # 2018 (Mau Tuat): Tet Wed 14/02..Tue 20/02; Hung Kings 25/04
+        *_date_span(date(2018, 2, 14), date(2018, 2, 20)),
+        date(2018, 4, 25),
+        # 2019 (Ky Hoi): Tet Mon 04/02..Fri 08/02; Hung Kings 14/04
+        *_date_span(date(2019, 2, 4), date(2019, 2, 8)),
+        date(2019, 4, 14),
+        # 2020 (Canh Ty): Tet Thu 23/01..Wed 29/01; Hung Kings 02/04
+        *_date_span(date(2020, 1, 23), date(2020, 1, 29)),
+        date(2020, 4, 2),
+        # 2021 (Tan Suu, TB 4875/TB-BLDTBXH): Tet 10/02..16/02; Hung Kings 21/04;
+        # National Day adjacent 03/09 (Labor Code 2019 effective 2021-01-01)
+        *_date_span(date(2021, 2, 10), date(2021, 2, 16)),
+        date(2021, 4, 21),
+        date(2021, 9, 3),
+        # 2022 (Nham Dan, CV 245/VPCP-KGVX): Tet 31/01..04/02; Hung Kings 10/04;
+        # National Day adjacent 01/09
+        *_date_span(date(2022, 1, 31), date(2022, 2, 4)),
+        date(2022, 4, 10),
+        date(2022, 9, 1),
+        # 2023 (Quy Mao, TB 5034/TB-LDTBXH): Tet 20/01..26/01; Hung Kings 29/04;
+        # National Day adjacent 01/09 + statutory compensatory Mon 04/09 (02/09 Sat)
+        *_date_span(date(2023, 1, 20), date(2023, 1, 26)),
+        date(2023, 4, 29),
+        date(2023, 9, 1),
+        date(2023, 9, 4),
+        # 2024 (Giap Thin, TB 5015/TB-LDTBXH): Tet 08/02..14/02; Hung Kings 18/04;
+        # National Day adjacent 03/09 (02/09 Mon)
+        *_date_span(date(2024, 2, 8), date(2024, 2, 14)),
+        date(2024, 4, 18),
+        date(2024, 9, 3),
+        # 2025 (At Ty, TB 6150/TB-BLDTBXH): Tet 27/01..31/01 (2024-Q4 2025-01-30 -> 2025-02-03);
+        # Hung Kings 07/04; National Day adjacent 01/09
+        *_date_span(date(2025, 1, 27), date(2025, 1, 31)),
+        date(2025, 4, 7),
+        date(2025, 9, 1),
+        # 2026 (Binh Ngo, Ministry of Home Affairs notice): Tet 16/02..20/02;
+        # Hung Kings 26/04; National Day adjacent 01/09
+        *_date_span(date(2026, 2, 16), date(2026, 2, 20)),
+        date(2026, 4, 26),
+        date(2026, 9, 1),
+    )
+)
+
+
+def _roll_to_next_vn_business_day(target: date) -> date:
+    """Advance weekend or Vietnam statutory public-holiday dates to the next business day.
+
+    Uses ``_VN_GAZETTED_HOLIDAYS`` for 2016-2026 and falls back to weekends plus
+    ``_VN_FIXED_HOLIDAYS`` outside that range. May raise ``OverflowError`` near
+    ``date.max``; callers must catch ``OverflowError``.
+    """
+    current = target
+    while (
+        current.weekday() >= 5
+        or (current.month, current.day) in _VN_FIXED_HOLIDAYS
+        or current in _VN_GAZETTED_HOLIDAYS
+    ):
+        current += timedelta(days=1)
+    return current
+
 
 _METADATA_KEYS = frozenset(
     {
@@ -233,7 +347,8 @@ class FilingMetadata:
         elif self.audit_status == AuditStatus.REVIEWED:
             days = 45
         try:
-            return self.period_end_date + timedelta(days=days)
+            raw_deadline = self.period_end_date + timedelta(days=days)
+            return _roll_to_next_vn_business_day(raw_deadline)
         except OverflowError:
             raise ContractViolationError(
                 "The statutory deadline is outside the date range."

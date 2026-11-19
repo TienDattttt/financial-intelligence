@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import zipfile
 from calendar import monthrange
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -24,6 +24,7 @@ from finintel.exceptions import (
     SourceEntitlementError,
     TransientSourceError,
 )
+from finintel.ingestion import fhsc_oapi_adapter
 from finintel.ingestion.archive import ArchiveOutcome, RawArchive
 from finintel.ingestion.base import (
     AuditStatus,
@@ -35,9 +36,15 @@ from finintel.ingestion.base import (
     StatementScope,
     StatementType,
 )
+from finintel.ingestion.disclosure_enricher import (
+    DisclosureRecord,
+    EnrichmentSummary,
+    enrich_fhsc_manifest_disclosures,
+)
 from finintel.ingestion.fhsc_oapi_adapter import FhscOapiAdapter
 from finintel.ingestion.file_adapter import FileAdapter
 from finintel.ingestion.hasher import canonical_content_sha256
+from finintel.pipeline import ingest as ingest_module
 from finintel.pipeline.cli import load_settings, main
 from finintel.pipeline.ingest import IngestHandler
 from finintel.pipeline.runner import (
@@ -48,6 +55,7 @@ from finintel.pipeline.runner import (
     StepContext,
     StepOutcome,
     StepStatus,
+    TriggerMode,
 )
 from finintel.pipeline.state_store import StateStore
 
@@ -103,6 +111,7 @@ def sdk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[SdkStub]:
     monkeypatch.setenv("FHSC_API_KEY", "test-fhsc-key")
+    monkeypatch.setattr(fhsc_oapi_adapter, "_default_sleep", lambda _: None)
     source = import_module("vnstock_oapi").source("fhsc")
     transport_class = import_module("vnstock_oapi.core.transport").Transport
     clients: list[httpx.Client] = []
@@ -297,10 +306,13 @@ def test_fhsc_only_revises_changed_period_on_a_shared_page(
     [
         (PeriodType.ANNUAL, None, AuditStatus.UNKNOWN, date(2026, 3, 31)),
         (PeriodType.QUARTER, 4, AuditStatus.UNKNOWN, date(2026, 1, 30)),
-        (PeriodType.QUARTER, 4, AuditStatus.REVIEWED, date(2026, 2, 14)),
-        (PeriodType.SEMI_ANNUAL, None, AuditStatus.REVIEWED, date(2026, 3, 1)),
-        (PeriodType.QUARTER, 2, AuditStatus.REVIEWED, date(2026, 3, 1)),
-        (PeriodType.QUARTER, 2, AuditStatus.UNKNOWN, date(2026, 3, 1)),
+        # 2025-12-31 + 45d = 2026-02-14 (Sat), followed by Tet Binh Ngo 2026-02-16..2026-02-20
+        # and weekend 2026-02-21..22 -> next VN business day is Mon 2026-02-23.
+        (PeriodType.QUARTER, 4, AuditStatus.REVIEWED, date(2026, 2, 23)),
+        # 2025-12-31 + 60d = 2026-03-01 (Sun) -> Mon 2026-03-02.
+        (PeriodType.SEMI_ANNUAL, None, AuditStatus.REVIEWED, date(2026, 3, 2)),
+        (PeriodType.QUARTER, 2, AuditStatus.REVIEWED, date(2026, 3, 2)),
+        (PeriodType.QUARTER, 2, AuditStatus.UNKNOWN, date(2026, 3, 2)),
         (PeriodType.QUARTER, 2, AuditStatus.UNAUDITED, date(2026, 1, 30)),
     ],
 )
@@ -1305,3 +1317,749 @@ ingestion:
     store = StateStore(settings.state_path)
     with pytest.raises(ContractViolationError, match="outside the allowed workspace"):
         IngestHandler(store, config.parent, settings.ingestion)
+
+
+@pytest.mark.parametrize(
+    (
+        "fy",
+        "quarter",
+        "period_type",
+        "audit",
+        "fy_start",
+        "period_start",
+        "period_end",
+        "expected",
+    ),
+    [
+        # 2025-Q1: 2025-03-31 + 30d = 2025-04-30 (30/4) -> 2025-05-01 (1/5) -> Fri 2025-05-02
+        (
+            2025,
+            1,
+            PeriodType.QUARTER,
+            AuditStatus.UNAUDITED,
+            date(2025, 1, 1),
+            date(2025, 1, 1),
+            date(2025, 3, 31),
+            date(2025, 5, 2),
+        ),
+        # 2026-Q1: 2026-03-31 + 30d = 2026-04-30 (Thu 30/4), 05-01 (Fri 1/5), 05-02/03 (wknd) -> Mon 2026-05-04
+        (
+            2026,
+            1,
+            PeriodType.QUARTER,
+            AuditStatus.UNAUDITED,
+            date(2026, 1, 1),
+            date(2026, 1, 1),
+            date(2026, 3, 31),
+            date(2026, 5, 4),
+        ),
+        # 2024-Q4 Tet At Ty: 2024-12-31 + 30d = 2025-01-30 (Mung 2 Tet) -> Mon 2025-02-03
+        (
+            2024,
+            4,
+            PeriodType.QUARTER,
+            AuditStatus.UNAUDITED,
+            date(2024, 1, 1),
+            date(2024, 10, 1),
+            date(2024, 12, 31),
+            date(2025, 2, 3),
+        ),
+        # National Day 2-day holiday (2024 TB 5015: Mon 02/09 + Tue 03/09):
+        # 2024-08-02 + 30d = 2024-09-01 (Sun) -> 09-02 (Mon) -> 09-03 (Tue) -> Wed 2024-09-04
+        (
+            2024,
+            3,
+            PeriodType.QUARTER,
+            AuditStatus.UNAUDITED,
+            date(2024, 1, 1),
+            date(2024, 5, 1),
+            date(2024, 8, 2),
+            date(2024, 9, 4),
+        ),
+        # National Day 2-day holiday (2025 TB 6150: Mon 01/09 + Tue 02/09):
+        # 2025-08-02 + 30d = 2025-09-01 (Mon) -> 09-02 (Tue) -> Wed 2025-09-03
+        (
+            2025,
+            3,
+            PeriodType.QUARTER,
+            AuditStatus.UNAUDITED,
+            date(2025, 1, 1),
+            date(2025, 5, 1),
+            date(2025, 8, 2),
+            date(2025, 9, 3),
+        ),
+        # Hung Kings 2025 (Mon 2025-04-07): 2025-03-08 + 30d = 2025-04-07 -> Tue 2025-04-08
+        (
+            2025,
+            1,
+            PeriodType.QUARTER,
+            AuditStatus.UNAUDITED,
+            date(2025, 1, 1),
+            date(2025, 1, 1),
+            date(2025, 3, 8),
+            date(2025, 4, 8),
+        ),
+        # Beyond 2026 fallback: weekends + fixed solar holidays only (2027-04-30 Fri -> Mon 2027-05-03)
+        (
+            2027,
+            1,
+            PeriodType.QUARTER,
+            AuditStatus.UNAUDITED,
+            date(2027, 1, 1),
+            date(2027, 1, 1),
+            date(2027, 3, 31),
+            date(2027, 5, 3),
+        ),
+    ],
+)
+def test_statutory_lag_vietnam_gazetted_holidays(
+    fy: int,
+    quarter: int | None,
+    period_type: PeriodType,
+    audit: AuditStatus,
+    fy_start: date,
+    period_start: date,
+    period_end: date,
+    expected: date,
+) -> None:
+    filing = FilingMetadata(
+        issuer_id="FPT-ISSUER",
+        ticker_at_filing="FPT",
+        statement_type=StatementType.BALANCE_SHEET,
+        statement_scope=StatementScope.CONSOLIDATED,
+        period_type=period_type,
+        fiscal_year=fy,
+        fiscal_quarter=quarter,
+        fiscal_year_start_date=fy_start,
+        period_start_date=period_start,
+        period_end_date=period_end,
+        audit_status=audit,
+    )
+    assert filing.effective_available_at == expected
+    assert replace(filing, published_at=expected).is_filed_late is False
+    assert (
+        replace(
+            filing, published_at=date.fromordinal(expected.toordinal() + 1)
+        ).is_filed_late
+        is True
+    )
+
+
+def test_statutory_deadline_handles_date_max_overflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    near_max = FilingMetadata(
+        issuer_id="FPT-ISSUER",
+        ticker_at_filing="FPT",
+        statement_type=StatementType.BALANCE_SHEET,
+        statement_scope=StatementScope.CONSOLIDATED,
+        period_type=PeriodType.QUARTER,
+        fiscal_year=9999,
+        fiscal_quarter=4,
+        fiscal_year_start_date=date(9999, 1, 1),
+        period_start_date=date(9999, 10, 1),
+        period_end_date=date(9999, 12, 15),
+    )
+    with pytest.raises(ContractViolationError, match="outside the date range"):
+        _ = near_max.effective_available_at
+
+    # Also verify OverflowError raised during business-day roll at date.max is caught.
+    exact_max_deadline = FilingMetadata(
+        issuer_id="FPT-ISSUER",
+        ticker_at_filing="FPT",
+        statement_type=StatementType.BALANCE_SHEET,
+        statement_scope=StatementScope.CONSOLIDATED,
+        period_type=PeriodType.QUARTER,
+        fiscal_year=9999,
+        fiscal_quarter=4,
+        fiscal_year_start_date=date(9999, 1, 1),
+        period_start_date=date(9999, 10, 1),
+        period_end_date=date(9999, 12, 1),
+    )
+    monkeypatch.setattr(
+        domain_schemas,
+        "_VN_FIXED_HOLIDAYS",
+        domain_schemas._VN_FIXED_HOLIDAYS | {(12, 31)},
+    )
+    with pytest.raises(ContractViolationError, match="outside the date range"):
+        _ = exact_max_deadline.effective_available_at
+
+
+def test_state_store_uses_wal_and_synchronous_normal(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "metadata" / "state.sqlite")
+    store.initialize()
+    with store.connection() as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        synchronous = conn.execute("PRAGMA synchronous").fetchone()[0]
+    assert str(journal_mode).lower() == "wal"
+    assert int(synchronous) == 1
+
+
+def test_fhsc_adapter_request_rate_pacing_defaults_to_spec_rate(
+    sdk: SdkStub,
+) -> None:
+    pages = {1: fixture(PAGE_1), 2: fixture(PAGE_2), 3: fixture(EMPTY)}
+    sdk(lambda req: httpx.Response(200, content=pages[int(req.url.params["page"])]))
+
+    now = 100.0
+    sleeps: list[float] = []
+
+    def fake_clock() -> float:
+        return now
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    adapter = FhscOapiAdapter(
+        "FPT",
+        StatementType.BALANCE_SHEET,
+        PeriodType.QUARTER,
+        metadata=(
+            metadata(
+                3,
+                fiscal_year=2026,
+                fiscal_year_start_date=date(2026, 1, 1),
+                period_start_date=date(2026, 7, 1),
+                period_end_date=date(2026, 9, 30),
+            ),
+            metadata(
+                2,
+                fiscal_year=2026,
+                fiscal_year_start_date=date(2026, 1, 1),
+                period_start_date=date(2026, 4, 1),
+                period_end_date=date(2026, 6, 30),
+            ),
+        ),
+        year=2026,
+        limit=1,
+        sleeper=fake_sleep,
+        clock=fake_clock,
+    )
+    bundles = list(adapter.fetch())
+    assert len(bundles) == 3
+    assert len(sleeps) == 2
+    assert sleeps[0] == pytest.approx(1.0 / 0.6)
+    assert sleeps[1] == pytest.approx(1.0 / 0.6)
+
+    with pytest.raises(ContractViolationError, match="min_request_interval_seconds"):
+        FhscOapiAdapter(
+            "FPT",
+            StatementType.BALANCE_SHEET,
+            PeriodType.QUARTER,
+            min_request_interval_seconds=-1.0,
+        )
+
+
+def test_fhsc_adapter_early_stop_guards_throttled_and_deferred(
+    archive: RawArchive,
+    sdk: SdkStub,
+) -> None:
+    # 1. Early-stop halts immediately after page 1 when predicate matches and not deferred
+    pages = {1: fixture(PAGE_1), 2: fixture(PAGE_2), 3: fixture(EMPTY)}
+    requests = sdk(
+        lambda req: httpx.Response(200, content=pages[int(req.url.params["page"])])
+    )
+    adapter = FhscOapiAdapter(
+        "FPT",
+        StatementType.BALANCE_SHEET,
+        PeriodType.QUARTER,
+        metadata=(
+            metadata(
+                3,
+                fiscal_year=2026,
+                fiscal_year_start_date=date(2026, 1, 1),
+                period_start_date=date(2026, 7, 1),
+                period_end_date=date(2026, 9, 30),
+            ),
+        ),
+        year=2026,
+        limit=1,
+        early_stop_predicate=lambda filings: len(filings) == 1,
+    )
+    bundles = list(adapter.fetch())
+    assert len(requests) == 1
+    assert len(bundles) == 1
+    assert bundles[0].pagination_status == "EARLY_STOPPED"
+    archive.store(bundles[0])
+
+    # 2. HTTP 429 recovery (THROTTLED) takes precedence over early_stop_predicate
+    attempts = 0
+    predicate_called = False
+
+    def throttled_respond(req: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return httpx.Response(200, content=fixture(PAGE_1))
+
+    def spy_predicate(_: tuple[RawFiling, ...]) -> bool:
+        nonlocal predicate_called
+        predicate_called = True
+        return True
+
+    sdk(throttled_respond)
+    throttled_adapter = FhscOapiAdapter(
+        "FPT",
+        StatementType.BALANCE_SHEET,
+        PeriodType.QUARTER,
+        metadata=(
+            metadata(
+                3,
+                fiscal_year=2026,
+                fiscal_year_start_date=date(2026, 1, 1),
+                period_start_date=date(2026, 7, 1),
+                period_end_date=date(2026, 9, 30),
+            ),
+        ),
+        year=2026,
+        limit=1,
+        early_stop_predicate=spy_predicate,
+    )
+    yielded_statuses: list[str | None] = []
+    with pytest.raises(RateLimitOrCircuitOpenError):
+        for bundle in throttled_adapter.fetch():
+            yielded_statuses.append(bundle.pagination_status)
+    assert yielded_statuses == ["THROTTLED"]
+    assert predicate_called is False
+
+    # 3. Pages with deferred locators NEVER trigger early-stop
+    mixed_body = json.loads(fixture(PAGE_1))
+    mixed_body["data"].extend(json.loads(fixture(PAGE_2))["data"])
+    deferred_requests = sdk(
+        lambda req: httpx.Response(200, json=mixed_body)
+        if req.url.params["page"] == "1"
+        else httpx.Response(200, content=fixture(EMPTY))
+    )
+    deferred_predicate_called = False
+
+    def deferred_spy(_: tuple[RawFiling, ...]) -> bool:
+        nonlocal deferred_predicate_called
+        deferred_predicate_called = True
+        return True
+
+    deferred_adapter = FhscOapiAdapter(
+        "FPT",
+        StatementType.BALANCE_SHEET,
+        PeriodType.QUARTER,
+        metadata=(
+            metadata(
+                3,
+                fiscal_year=2026,
+                fiscal_year_start_date=date(2026, 1, 1),
+                period_start_date=date(2026, 7, 1),
+                period_end_date=date(2026, 9, 30),
+            ),
+            # Q2 intentionally missing -> deferred locator /data/1
+        ),
+        year=2026,
+        limit=5,
+        early_stop_predicate=deferred_spy,
+    )
+    deferred_bundles = list(deferred_adapter.fetch())
+    assert len(deferred_requests) == 2
+    assert deferred_predicate_called is False
+    assert [b.pagination_status for b in deferred_bundles] == [
+        "IN_PROGRESS",
+        "COMPLETE",
+    ]
+
+
+def test_ingest_handler_early_stop_requires_complete_watermark_and_non_backfill(
+    tmp_path: Path,
+    sdk: SdkStub,
+) -> None:
+    old_page = {
+        "error_code": "0",
+        "data": [{"year": 2023, "quarter": 4, "tongcongtaisan": 50_000.0}],
+    }
+    older_page = {
+        "error_code": "0",
+        "data": [{"year": 2022, "quarter": 4, "tongcongtaisan": 45_000.0}],
+    }
+
+    def respond(req: httpx.Request) -> httpx.Response:
+        if (
+            req.url.params["type"] != "balance-sheet"
+            or req.url.params["period"] != "quarterly"
+        ):
+            return httpx.Response(200, content=fixture(EMPTY))
+        page = req.url.params["page"]
+        if page == "1":
+            return httpx.Response(200, json=old_page)
+        if page == "2":
+            return httpx.Response(200, json=older_page)
+        return httpx.Response(200, content=fixture(EMPTY))
+
+    requests = sdk(respond)
+    settings_dict: dict[str, object] = {
+        "raw_path": "raw",
+        "infer_calendar_schedule": True,
+        "default_statement_scope": "CONSOLIDATED",
+        "issuer_id_map": {"FPT": "VN_FPT"},
+        "incremental_lookback_years": 2,
+    }
+    store = StateStore(tmp_path / "metadata" / "state.sqlite")
+    handler = IngestHandler(store, tmp_path, settings_dict, as_of_year=2026)
+
+    # Run 1 (no COMPLETE watermark yet): must paginate all the way to empty page 3
+    run1 = handler(
+        StepContext(
+            run_id="run_1",
+            stage=Stage.INGEST,
+            request=RunRequest(
+                source="fhsc",
+                tickers=("FPT",),
+                trigger_mode=TriggerMode.SCHEDULED_CRON,
+            ),
+            tickers=("FPT",),
+            active_snapshot_id=None,
+        )
+    )
+    assert run1.status == StepStatus.SUCCEEDED
+    bs_q_pages_1 = [
+        r.url.params["page"]
+        for r in requests
+        if r.url.params["type"] == "balance-sheet"
+        and r.url.params["period"] == "quarterly"
+    ]
+    assert bs_q_pages_1 == ["1", "2", "3"]
+    assert store.has_complete_fhsc_watermark("FPT", "BALANCE_SHEET", "QUARTER") is True
+
+    # Run 2 (BACKFILL mode): early-stop is disabled even with COMPLETE watermark
+    requests.clear()
+    run2 = handler(
+        StepContext(
+            run_id="run_2",
+            stage=Stage.INGEST,
+            request=RunRequest(
+                source="fhsc",
+                tickers=("FPT",),
+                trigger_mode=TriggerMode.BACKFILL,
+            ),
+            tickers=("FPT",),
+            active_snapshot_id=None,
+        )
+    )
+    assert run2.status == StepStatus.SKIPPED_UNCHANGED
+    bs_q_pages_2 = [
+        r.url.params["page"]
+        for r in requests
+        if r.url.params["type"] == "balance-sheet"
+        and r.url.params["period"] == "quarterly"
+    ]
+    assert bs_q_pages_2 == ["1", "2", "3"]
+
+    # Run 3 (SCHEDULED_CRON with COMPLETE watermark & 2023 < 2026 - 2): early-stops on page 1!
+    requests.clear()
+    run3 = handler(
+        StepContext(
+            run_id="run_3",
+            stage=Stage.INGEST,
+            request=RunRequest(
+                source="fhsc",
+                tickers=("FPT",),
+                trigger_mode=TriggerMode.SCHEDULED_CRON,
+            ),
+            tickers=("FPT",),
+            active_snapshot_id=None,
+        )
+    )
+    assert run3.status == StepStatus.SUCCEEDED
+    bs_q_pages_3 = [
+        r.url.params["page"]
+        for r in requests
+        if r.url.params["type"] == "balance-sheet"
+        and r.url.params["period"] == "quarterly"
+    ]
+    assert bs_q_pages_3 == ["1"]
+
+    # Run 4 (interrupted watermark clears COMPLETE): next SCHEDULED_CRON must NOT early-stop
+    store.record_fhsc_watermark("FPT", "BALANCE_SHEET", "QUARTER", "THROTTLED")
+    assert store.has_complete_fhsc_watermark("FPT", "BALANCE_SHEET", "QUARTER") is False
+    requests.clear()
+    run4 = handler(
+        StepContext(
+            run_id="run_4",
+            stage=Stage.INGEST,
+            request=RunRequest(
+                source="fhsc",
+                tickers=("FPT",),
+                trigger_mode=TriggerMode.SCHEDULED_CRON,
+            ),
+            tickers=("FPT",),
+            active_snapshot_id=None,
+        )
+    )
+    assert run4.status == StepStatus.SKIPPED_UNCHANGED
+    bs_q_pages_4 = [
+        r.url.params["page"]
+        for r in requests
+        if r.url.params["type"] == "balance-sheet"
+        and r.url.params["period"] == "quarterly"
+    ]
+    assert bs_q_pages_4 == ["1", "2", "3"]
+
+
+def test_ingest_handler_infer_calendar_schedule_overrides_and_disclosure_enrichment(
+    tmp_path: Path,
+    sdk: SdkStub,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = StateStore(tmp_path / "metadata" / "state.sqlite")
+
+    # UNKNOWN scope must be rejected when infer_calendar_schedule=True
+    with pytest.raises(ContractViolationError, match="UNKNOWN is forbidden"):
+        IngestHandler(
+            store,
+            tmp_path,
+            {
+                "raw_path": "raw",
+                "infer_calendar_schedule": True,
+                "default_statement_scope": "UNKNOWN",
+                "issuer_id_map": {"HSG": "VN_HSG"},
+            },
+        )
+
+    # Seed issuers.parquet to verify issuers_path loading alongside fiscal_year_overrides
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    pl.DataFrame({"issuer_id": ["VN_HSG"], "ticker": ["HSG"]}).write_parquet(
+        curated_dir / "issuers.parquet"
+    )
+
+    hsg_q1_2025 = {
+        "error_code": "0",
+        "data": [{"year": 2025, "quarter": 1, "tongcongtaisan": 19_000.0}],
+    }
+    sdk(
+        lambda req: httpx.Response(200, json=hsg_q1_2025)
+        if req.url.params["type"] == "balance-sheet"
+        and req.url.params["period"] == "quarterly"
+        and req.url.params["page"] == "1"
+        else httpx.Response(200, content=fixture(EMPTY))
+    )
+
+    disclosures_dir = tmp_path / "disclosures"
+    disclosures_dir.mkdir()
+    (disclosures_dir / "HSG.json").write_text(
+        json.dumps(
+            {
+                "data": {
+                    "years": [],
+                    "quarters": [
+                        {
+                            "ticker": "HSG",
+                            "yearReport": 2025,
+                            "lengthReport": 1,
+                            "publicDate": "2025-01-22T00:00:00",
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    enrich_calls: list[tuple[str, ...]] = []
+    real_enrich = enrich_fhsc_manifest_disclosures
+
+    def spy_enrich(
+        archive_arg: RawArchive,
+        records_arg: Sequence[DisclosureRecord],
+        *,
+        evidence_payloads: Mapping[str, bytes],
+        fetched_at: datetime,
+        run_id: str | None = None,
+        tickers: Sequence[str] | None = None,
+    ) -> EnrichmentSummary:
+        assert tickers is not None
+        enrich_calls.append(tuple(tickers))
+        return real_enrich(
+            archive_arg,
+            records_arg,
+            evidence_payloads=evidence_payloads,
+            fetched_at=fetched_at,
+            run_id=run_id,
+            tickers=tickers,
+        )
+
+    monkeypatch.setattr(ingest_module, "enrich_fhsc_manifest_disclosures", spy_enrich)
+
+    handler = IngestHandler(
+        store,
+        tmp_path,
+        {
+            "raw_path": "raw",
+            "infer_calendar_schedule": True,
+            "default_statement_scope": "CONSOLIDATED",
+            "issuers_path": "curated/issuers.parquet",
+            "fiscal_year_overrides": {"HSG": "10-01"},
+            "disclosure_enrichment": {
+                "enabled": True,
+                "raw_disclosures_dir": "disclosures",
+                "on_error": "fail",
+            },
+        },
+        enrichment_fetched_at=datetime(2026, 11, 20, 8, 0, 0, tzinfo=UTC),
+    )
+
+    with caplog.at_level("INFO", logger="finintel.pipeline.ingest"):
+        outcome = handler(
+            StepContext(
+                run_id="run_hsg",
+                stage=Stage.INGEST,
+                request=RunRequest(source="fhsc", tickers=("HSG",), period="2025-Q1"),
+                tickers=("HSG",),
+                active_snapshot_id=None,
+            )
+        )
+
+    assert outcome.status == StepStatus.SUCCEEDED
+    assert not hasattr(outcome, "details")
+    assert enrich_calls == [("HSG",)]
+
+    (row,) = read_manifest(store)
+    assert row["issuer_id"] == "VN_HSG"
+    assert row["statement_scope"] == "CONSOLIDATED"
+    assert row["fiscal_year_start_date"] == "2024-10-01"
+    assert row["period_start_date"] == "2024-10-01"
+    assert row["period_end_date"] == "2024-12-31"
+    assert row["published_at"] == "2025-01-22"
+    assert row["published_at_basis"] == "EXACT_FILING"
+    assert row["audit_status"] == "UNAUDITED"
+
+    enrichment_logs = [
+        rec
+        for rec in caplog.records
+        if getattr(rec, "event", None) == "disclosure_enrichment_completed"
+    ]
+    assert len(enrichment_logs) == 1
+    details = getattr(enrichment_logs[0], "details", None)
+    assert isinstance(details, dict)
+    assert details["matched_filings"] == 1
+    assert details["upgraded_filings"] == 1
+    assert details["skipped_pre_period_end"] == 0
+
+
+def test_ingest_handler_disclosure_security_confinement_ssrf_symlink_size_and_error_policy(
+    tmp_path: Path,
+    sdk: SdkStub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = StateStore(workspace / "metadata" / "state.sqlite")
+
+    # 1. Path confinement rejects traversal in raw_disclosures_dir
+    with pytest.raises(ContractViolationError, match="outside the allowed workspace"):
+        IngestHandler(
+            store,
+            workspace,
+            {
+                "disclosure_enrichment": {
+                    "enabled": True,
+                    "raw_disclosures_dir": "../escaped_disclosures",
+                }
+            },
+        )
+
+    # 2. SSRF allowlist rejects non-allowlisted host, HTTP scheme, and credentials
+    for bad_url in (
+        "https://evil.example.com/company/{ticker}",
+        "http://iq.vietcap.com.vn/company/{ticker}",
+        "https://user:pass@cafef.vn/Ajax?sym={ticker}",
+        "https://cafef.vn:8443/Ajax?sym={ticker}",
+    ):
+        with pytest.raises(ContractViolationError):
+            IngestHandler(
+                store,
+                workspace,
+                {
+                    "disclosure_enrichment": {
+                        "enabled": True,
+                        "vietcap_url_template": bad_url,
+                    }
+                },
+            )
+
+    # 3. Symlink and >20 MiB disclosure files are rejected fail-closed even under on_error="warn"
+    disclosures = workspace / "disclosures"
+    disclosures.mkdir()
+    fpt_json = disclosures / "FPT.json"
+    fpt_json.write_text('{"data":{"years":[],"quarters":[]}}', encoding="utf-8")
+
+    sdk(
+        lambda req: httpx.Response(200, content=fixture(PAGE_1))
+        if req.url.params["type"] == "balance-sheet" and req.url.params["page"] == "1"
+        else httpx.Response(200, content=fixture(EMPTY))
+    )
+    base_settings: dict[str, object] = {
+        "raw_path": "raw",
+        "infer_calendar_schedule": True,
+        "default_statement_scope": "CONSOLIDATED",
+        "issuer_id_map": {"FPT": "VN_FPT"},
+        "disclosure_enrichment": {
+            "enabled": True,
+            "raw_disclosures_dir": "disclosures",
+            "on_error": "warn",
+        },
+    }
+    ctx = StepContext(
+        run_id="run_sec",
+        stage=Stage.INGEST,
+        request=RunRequest(source="fhsc", tickers=("FPT",), period="2026-Q3"),
+        tickers=("FPT",),
+        active_snapshot_id=None,
+    )
+
+    # Oversize rejection
+    with monkeypatch.context() as mp:
+        mp.setattr(ingest_module, "MAX_DISCLOSURE_FILE_BYTES", 8)
+        with pytest.raises(ContractViolationError, match="size limit"):
+            IngestHandler(store, workspace, base_settings)(ctx)
+
+    # Symlink rejection on disclosure file
+    real_is_symlink = Path.is_symlink
+
+    def fake_is_symlink(path_obj: Path) -> bool:
+        if path_obj.name == "FPT.json":
+            return True
+        return real_is_symlink(path_obj)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "is_symlink", fake_is_symlink)
+        with pytest.raises(ContractViolationError, match="symbolic link"):
+            IngestHandler(store, workspace, base_settings)(ctx)
+
+    # 4. Runtime fetcher error respects on_error="warn" (preserves FHSC archive) vs "fail"
+    def broken_fetcher(_: str) -> bytes:
+        raise RuntimeError("simulated remote timeout")
+
+    warn_settings: dict[str, object] = {
+        "raw_path": "raw",
+        "infer_calendar_schedule": True,
+        "default_statement_scope": "CONSOLIDATED",
+        "issuer_id_map": {"FPT": "VN_FPT"},
+        "disclosure_enrichment": {
+            "enabled": True,
+            "on_error": "warn",
+        },
+    }
+    warn_outcome = IngestHandler(
+        store, workspace, warn_settings, disclosure_fetcher=broken_fetcher
+    )(ctx)
+    assert warn_outcome.status in {StepStatus.SUCCEEDED, StepStatus.SKIPPED_UNCHANGED}
+    assert len(read_manifest(store)) == 1
+
+    fail_settings = {
+        **warn_settings,
+        "disclosure_enrichment": {"enabled": True, "on_error": "fail"},
+    }
+    with pytest.raises(RuntimeError, match="simulated remote timeout"):
+        IngestHandler(
+            store, workspace, fail_settings, disclosure_fetcher=broken_fetcher
+        )(ctx)
