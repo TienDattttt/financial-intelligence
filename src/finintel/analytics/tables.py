@@ -3,6 +3,14 @@
 Verified Sources:
     The FinanceToolkit, Qlib and financial-disclosure sources in the
     companion modules govern calculation. Layer 4 section 6 governs output.
+    Rouen, E., So, E. C., & Wang, C. C. Y. (2021). "Core Earnings: New Data and Evidence."
+    Journal of Financial Economics, Vol. 142, Issue 3, pp. 1068-1091.
+    Schilit, H. M., Perler, J., & Engelhart, Y. (2018). Financial Shenanigans (4th Ed., McGraw-Hill).
+    Dechow, P. M., Ge, W., Larson, C. R., & Sloan, R. G. (2011). "Predicting Material Accounting
+    Misstatements." Contemporary Accounting Research, Vol. 28, Issue 1, pp. 17-82.
+    Chow, J. T. S. (2015). "Stress Testing Corporate Balance Sheets in Emerging Markets."
+    IMF Working Paper WP/15/216 (https://www.elibrary.imf.org).
+    Circular 200/2014/TT-BTC & Circular 99/2025/TT-BTC (docs/layers/LAYER_2_NORMALIZATION.md:138).
 """
 
 from datetime import date

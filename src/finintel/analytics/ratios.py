@@ -5,12 +5,20 @@ Verified Sources:
     https://github.com/JerBouma/FinanceToolkit/blob/main/financetoolkit/ratios/liquidity_model.py
     https://github.com/JerBouma/FinanceToolkit/blob/main/financetoolkit/ratios/solvency_model.py
     https://github.com/JerBouma/FinanceToolkit/blob/main/financetoolkit/ratios/efficiency_model.py
+    Rouen, E., So, E. C., & Wang, C. C. Y. (2021). "Core Earnings: New Data and Evidence."
+    Journal of Financial Economics, Vol. 142, Issue 3, pp. 1068-1091.
+    Schilit, H. M., Perler, J., & Engelhart, Y. (2018). Financial Shenanigans (4th Ed., McGraw-Hill).
+    Dechow, P. M., Ge, W., Larson, C. R., & Sloan, R. G. (2011). "Predicting Material Accounting
+    Misstatements." Contemporary Accounting Research, Vol. 28, Issue 1, pp. 17-82.
+    Chow, J. T. S. (2015). "Stress Testing Corporate Balance Sheets in Emerging Markets."
+    IMF Working Paper WP/15/216 (https://www.elibrary.imf.org).
     Reuse independent formula expressions. VAS rules require both equity
     endpoints to be positive for ROE and disallow a nonpositive opening
     equity when computing point-in-time leverage. Zero interest produces
     a dedicated flag. TT200/TT99 comparability comes from normalized facts.
     https://vanban.chinhphu.vn/?docid=178998&lang=vi&pageid=27160
     https://congbao.chinhphu.vn/van-ban/thong-tu-so-99-2025-tt-btc-46529/59658.htm
+    docs/layers/LAYER_2_NORMALIZATION.md (L138 SIGNED_EXPENSE convention).
 """
 
 from enum import StrEnum
@@ -23,6 +31,7 @@ from finintel.analytics.intermediates import (
     CASH_INPUTS,
     CFO,
     COGS,
+    CORE_PROFIT_INPUTS,
     CORPORATE,
     CURRENT_ASSETS,
     CURRENT_LIABILITIES,
@@ -30,6 +39,7 @@ from finintel.analytics.intermediates import (
     EARNINGS,
     EBITDA_INPUTS,
     EBIT_INPUTS,
+    EBT,
     EPS_INPUTS,
     EQUITY,
     FCF_INPUTS,
@@ -50,6 +60,7 @@ from finintel.analytics.intermediates import (
 from finintel.storage.schemas import (
     CORE_RATIOS as CORE_RATIOS,
     EXTRA_RATIOS as EXTRA_RATIOS,
+    FORENSIC_RATIOS as FORENSIC_RATIOS,
 )
 
 
@@ -90,6 +101,7 @@ def _ratio(
     universal: bool = False,
     boundary: tuple[pl.Expr, Flag] | None = None,
     depreciation_guard: pl.Expr | None = None,
+    cross_guard: pl.Expr | None = None,
 ) -> list[pl.Expr]:
     """Return N/D and its status. Never divide by a nonpositive denominator.
 
@@ -102,7 +114,9 @@ def _ratio(
     mixed = input_has("mixed", *operands)
     missing_prior = pl.lit(False)
     if prior:
-        mixed = mixed | cross_taxonomy(*prior)
+        mixed = mixed | (
+            cross_guard if cross_guard is not None else cross_taxonomy(*prior)
+        )
         current = numerator if current_input is None else current_input
         missing_prior = c("_prior_end").is_null() & current.is_not_null()
     special, special_flag = boundary or (
@@ -149,7 +163,11 @@ def _ratio(
 
 
 def _growth(
-    name: str, amount: str, *inputs: str, universal: bool = False
+    name: str,
+    amount: str,
+    *inputs: str,
+    universal: bool = False,
+    cross_guard: pl.Expr | None = None,
 ) -> list[pl.Expr]:
     """Compute (current − prior)/prior from a known positive same-slot base."""
     current, prior = pl.col(amount), pl.col(f"{amount}_prior")
@@ -162,6 +180,7 @@ def _growth(
         current_input=current,
         universal=universal,
         boundary=(prior <= 0, Flag.NON_POSITIVE_BASE_PERIOD),
+        cross_guard=cross_guard,
     )
 
 
@@ -425,12 +444,42 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
                 "equity_to_assets", c(EQUITY), c(ASSETS), EQUITY, ASSETS, universal=True
             ),
             *_growth("revenue_growth_yoy", REVENUE, REVENUE),
-            *_growth("ebit_growth_yoy", "ebit_ttm", *EBIT_INPUTS),
+            *_growth(
+                "ebit_growth_yoy",
+                "ebit_ttm",
+                *EBIT_INPUTS,
+                cross_guard=pl.when(c("_bridged_debt_cost").fill_null(False))
+                .then(cross_taxonomy(EBT))
+                .otherwise(cross_taxonomy(*EBIT_INPUTS)),
+            ),
             *_growth(
                 "net_income_parent_growth_yoy",
                 PARENT_EARNINGS,
                 PARENT_EARNINGS,
                 universal=True,
+            ),
+            *_ratio(
+                "core_operating_margin",
+                c("core_operating_profit_ttm"),
+                revenue,
+                *CORE_PROFIT_INPUTS,
+                REVENUE,
+            ),
+            *_ratio(
+                "non_core_distortion_to_assets",
+                c(EBT) - (c("core_operating_profit_ttm") - interest),
+                average(ASSETS),
+                *CORE_PROFIT_INPUTS,
+                *EBIT_INPUTS,
+                ASSETS,
+                prior=(ASSETS,),
+            ),
+            *_ratio(
+                "core_to_ebt_ratio",
+                c("core_operating_profit_ttm") - interest,
+                c(EBT),
+                *CORE_PROFIT_INPUTS,
+                *EBIT_INPUTS,
             ),
         )
     )

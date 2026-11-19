@@ -4,6 +4,13 @@ Verified Sources:
     https://www.cuhk.edu.hk/acy2/workshop/June2009Wasley/1996TAR%29.pdf
     Sloan scales balance-sheet-derived accruals by average assets. Layer 4
     uses the direct (net income minus operating cash flows) proxy instead.
+    Rouen, E., So, E. C., & Wang, C. C. Y. (2021). "Core Earnings: New Data and Evidence."
+    Journal of Financial Economics, Vol. 142, Issue 3, pp. 1068-1091.
+    Schilit, H. M., Perler, J., & Engelhart, Y. (2018). Financial Shenanigans: How to Detect
+    Accounting Gimmicks and Fraud in Financial Reports (4th Ed., McGraw-Hill) —
+    Shenanigan #3 (RF_08) & Shenanigan #4 (RF_09).
+    Dechow, P. M., Ge, W., Larson, C. R., & Sloan, R. G. (2011). "Predicting Material Accounting
+    Misstatements." Contemporary Accounting Research, Vol. 28, Issue 1, pp. 17-82.
     https://www.mheducation.com/highered/mhp/product/financial-shenanigans-fourth-edition.html
     The publisher describes earnings, cash flow and balance-sheet signals.
     The numeric cutoffs and the VAS receivables screen come from Layer 4.
@@ -11,6 +18,11 @@ Verified Sources:
     https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59655?format=pdf
     Lines 130/210 are net of doubtful-debt provisions. Lines 131/211
     show gross customer receivables before those provisions.
+    BS_CIP_LONG_TERM maps TT200 code 242 to TT99 code 252; TT99 B02-DN code 21
+    tracks IS_INVESTMENT_PROPERTY_DISPOSAL_GAIN_LOSS.
+    RF_08 is a preliminary forensic screen: for holding companies with joint-venture/associate
+    profits (B02-DN/HN code 24 when not reported separately) or cash-rich issuers earning stable
+    bank deposit interest (IS_FINANCIAL_REVENUE), analysts must inspect financial statement notes.
     https://vanban.chinhphu.vn/default.aspx?docid=201902&pageid=27160
     https://cms.hnx.vn/vi-vn/huong-dan/chi-tiet-thu-tuc-21-30.html
     https://staticfile.hsx.vn/Uploads/LocalFiles/c79e12a5dbf749b6983b63e3242326a3/20210101_Thong%20tu%2096.2020%20TT-BTC.pdf
@@ -21,19 +33,31 @@ Verified Sources:
 import polars as pl
 
 from finintel.analytics.intermediates import (
+    ADMIN_EXPENSES,
     ASSETS,
+    BORROWING_COSTS,
     CFO,
+    CIP_LONG_TERM,
     COGS,
     CORPORATE,
     EARNINGS,
+    EBT,
     EQUITY,
+    FINANCIAL_REVENUE,
     GROSS_PROFIT,
+    INTEREST,
     INVENTORY,
+    IP_DISPOSAL,
     LT_RECEIVABLE_INPUTS,
+    OTHER_EXPENSES,
+    OTHER_INCOME,
+    OTHER_PROFIT,
     REVENUE,
     RF03_INPUTS,
+    SELLING_EXPENSES,
     SERIES,
     ST_RECEIVABLE_INPUTS,
+    TANGIBLE_ASSETS,
     TRADE_RECEIVABLES,
     combine_filing_ids,
     cross_taxonomy,
@@ -44,10 +68,17 @@ from finintel.storage.schemas import FLAG_KEY
 
 
 def _balance_sheet_amount(metric: str) -> pl.Expr:
-    """Read an RF_03 input only from the selected total-assets filing."""
+    """Read a balance-sheet input only from the selected total-assets filing."""
     return pl.when(pl.col(f"_filing_{metric}") == pl.col(f"_filing_{ASSETS}")).then(
         pl.col(metric)
     )
+
+
+def _prior_balance_sheet_amount(metric: str) -> pl.Expr:
+    """Read a prior-period balance-sheet input only from the prior total-assets filing."""
+    return pl.when(
+        pl.col(f"_filing_{metric}_prior") == pl.col(f"_filing_{ASSETS}_prior")
+    ).then(pl.col(f"{metric}_prior"))
 
 
 def _net_non_customer_receivables(inputs: tuple[str, str, str, str]) -> pl.Expr:
@@ -153,6 +184,60 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
         (c("dio") - c("dio_prior")).alias("dio_change_days"),
     )
     revenue_growth = c("revenue_growth_yoy")
+    assets_prior = c(f"{ASSETS}_prior")
+    cip_t = _balance_sheet_amount(CIP_LONG_TERM)
+    cip_prior = _prior_balance_sheet_amount(CIP_LONG_TERM)
+    tfa_t = _balance_sheet_amount(TANGIBLE_ASSETS)
+    tfa_prior = _prior_balance_sheet_amount(TANGIBLE_ASSETS)
+    rf08_precondition = (
+        CORPORATE
+        & (c(EBT) > 0)
+        & c("core_operating_profit_ttm").is_not_null()
+        & c("borrowing_cost_ttm").is_not_null()
+        & ~input_has(
+            "mixed",
+            EBT,
+            GROSS_PROFIT,
+            SELLING_EXPENSES,
+            ADMIN_EXPENSES,
+            INTEREST,
+            BORROWING_COSTS,
+        )
+    )
+    rf08_branch1 = (c("core_operating_profit_ttm") - c("borrowing_cost_ttm")) <= 0
+    rf08_branch2 = (
+        c("core_to_ebt_ratio").is_not_null()
+        & c("non_core_distortion_to_assets").is_not_null()
+        & (c("core_to_ebt_ratio") < 0.50)
+        & (c("non_core_distortion_to_assets") > 0.03)
+    )
+    rf09_condition = (
+        CORPORATE
+        & (assets > 0)
+        & (assets_prior > 0)
+        & (cip_t > 0)
+        & (cip_prior > 0)
+        & ~cross_taxonomy(ASSETS, CIP_LONG_TERM, TANGIBLE_ASSETS, REVENUE)
+        & ~input_has(
+            "mixed",
+            ASSETS,
+            CIP_LONG_TERM,
+            TANGIBLE_ASSETS,
+            REVENUE,
+            f"{ASSETS}_prior",
+            f"{CIP_LONG_TERM}_prior",
+            f"{TANGIBLE_ASSETS}_prior",
+            f"{REVENUE}_prior",
+        )
+        & ((cip_t / assets) > 0.20)
+        & ((cip_prior / assets_prior) > 0.20)
+        & (cip_t >= 0.95 * cip_prior)
+        & revenue_growth.is_not_null()
+        & (revenue_growth <= 0.05)
+        & tfa_t.is_not_null()
+        & tfa_prior.is_not_null()
+        & (tfa_t <= 1.05 * tfa_prior)
+    )
     rules = [
         (
             "RF_01_ACCRUAL_DIVERGENCE",
@@ -258,6 +343,52 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
             c("audit_filing_id").is_not_null(),
             [c("audit_opinion"), c("is_filed_late")],
         ),
+        (
+            "RF_08_NON_CORE_EARNINGS_DEPENDENCE",
+            "HIGH",
+            "Phụ thuộc lợi nhuận phi cốt lõi",
+            "Lợi nhuận trước thuế dương nhưng lợi nhuận kinh doanh lõi sau lãi vay âm hoặc đóng góp dưới 50% EBT với độ lệch phi lõi vượt 3% tài sản bình quân. Lưu ý giới hạn tầm soát sơ bộ: với các tập đoàn holding có lãi công ty liên doanh liên kết (Mã 24 B02-DN/HN chưa tách riêng) hoặc doanh nghiệp thừa tiền mặt hưởng lãi tiền gửi ngân hàng ổn định (IS_FINANCIAL_REVENUE), nhà phân tích cần đọc thuyết minh kiểm chứng nguồn thu tài chính.",
+            rf08_precondition & (rf08_branch1 | rf08_branch2),
+            [
+                c(EBT).alias("ebt_ttm"),
+                c("core_operating_profit_ttm"),
+                c("borrowing_cost_ttm").alias("debt_cost_ttm"),
+                c("core_to_ebt_ratio"),
+                c("non_core_distortion_to_assets"),
+                pl.when(~input_has("mixed", FINANCIAL_REVENUE))
+                .then(c(FINANCIAL_REVENUE))
+                .alias("financial_revenue_ttm"),
+                pl.when(~input_has("mixed", OTHER_PROFIT, OTHER_INCOME, OTHER_EXPENSES))
+                .then(
+                    pl.coalesce(c(OTHER_PROFIT), c(OTHER_INCOME) - c(OTHER_EXPENSES))
+                )
+                .alias("other_profit_ttm"),
+                pl.when(
+                    (c("taxonomy_version") == "VAS_TT99_2025")
+                    & ~input_has("mixed", IP_DISPOSAL)
+                )
+                .then(c(IP_DISPOSAL))
+                .alias("ip_disposal_gain_loss_ttm"),
+            ],
+        ),
+        (
+            "RF_09_FROZEN_CIP_CAPITALIZATION",
+            "MEDIUM",
+            "Xây dựng cơ bản dở dang treo kéo dài",
+            "Chi phí xây dựng cơ bản dở dang dài hạn vượt 20% tổng tài sản hai năm liên tiếp và không giảm quá 5%, trong khi tài sản cố định hữu hình và doanh thu tăng trưởng không quá 5%.",
+            rf09_condition,
+            [
+                (cip_t / assets).alias("cip_to_assets_t"),
+                (cip_prior / assets_prior).alias("cip_to_assets_prior"),
+                ((cip_t - cip_prior) / cip_prior).alias("cip_growth_yoy"),
+                pl.when(tfa_prior > 0)
+                .then((tfa_t - tfa_prior) / tfa_prior)
+                .otherwise(None)
+                .cast(pl.Float64)
+                .alias("tangible_fixed_assets_growth_yoy"),
+                revenue_growth.alias("revenue_growth_yoy"),
+            ],
+        ),
     ]
     filings = c("source_filing_ids")
     evidence_filings = {
@@ -273,6 +404,9 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
         ),
         "RF_06_NEGATIVE_EQUITY": c("_period_filing_ids"),
         "RF_07_AUDIT_OR_FILING_WARNING": pl.concat_list("audit_filing_id"),
+        "RF_09_FROZEN_CIP_CAPITALIZATION": combine_filing_ids(
+            filings, c("source_filing_ids_prior")
+        ),
     }
     evidence_filing = {
         "RF_03_OTHER_RECEIVABLES_ANOMALY": c(f"_filing_{ASSETS}"),
