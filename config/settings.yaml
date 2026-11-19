@@ -1,7 +1,19 @@
 state_path: ../data/metadata/state.sqlite
 min_free_bytes: 104857600
 tickers: []
-storage: {}
+storage:
+  backend: ducklake
+  catalog:
+    driver: sqlite
+    sqlite_path: ../data/metadata/ducklake_catalog.sqlite
+    postgres_dsn_env: FININTEL_DUCKLAKE_PG_DSN
+  data_path: ../data/lakehouse/data
+  catalog_alias: finintel_lake
+  retention:
+    keep_snapshots: 2
+    min_snapshot_age_seconds: 3600
+    curated_keep_runs: 2
+  publish_unmapped: false
 ingestion: {}
 serving: {}
 # Supply the reviewed issuer reference table at data/curated/issuers.parquet
