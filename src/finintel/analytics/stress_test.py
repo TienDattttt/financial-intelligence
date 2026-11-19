@@ -89,13 +89,13 @@ def simulate_financial_stress(
         )
 
     c = pl.col
-    corporate = c("accounting_regime") == "CORPORATE"
+    corporate = (c("accounting_regime") == "CORPORATE").fill_null(False)
     eligible = (
         corporate
         & c("net_revenue_ttm").is_not_null()
         & c("net_revenue_ttm").is_finite()
         & (c("net_revenue_ttm") > 0.0)
-    )
+    ).fill_null(False)
 
     rev_prime = pl.when(eligible).then(
         c("net_revenue_ttm") * (1.0 + float(scenario.revenue_shock_pct))
@@ -143,16 +143,28 @@ def simulate_financial_stress(
 
     ebt_0 = c("ebit_ttm") - c("borrowing_cost_ttm")
     ebt_prime = ebit_prime - int_prime
-    delta_tax = (
-        pl.max_horizontal(pl.lit(0.0), ebt_prime)
-        - pl.max_horizontal(pl.lit(0.0), ebt_0)
-    ) * c("effective_tax_rate")
+    delta_tax = pl.when(
+        ebt_prime.is_not_null()
+        & ebt_0.is_not_null()
+        & c("effective_tax_rate").is_not_null()
+    ).then(
+        (
+            pl.max_horizontal(pl.lit(0.0), ebt_prime)
+            - pl.max_horizontal(pl.lit(0.0), ebt_0)
+        )
+        * c("effective_tax_rate")
+    )
     delta_wc_cash = -(rev_prime / 365.0) * float(scenario.dso_shock_days) - (
         cogs_prime / 365.0
     ) * float(scenario.dio_shock_days)
-    cfo_prime = pl.when(eligible).then(
-        c("cfo_ttm") + (delta_gp - delta_int) - delta_tax + delta_wc_cash
-    )
+    cfo_prime = pl.when(
+        eligible
+        & c("cfo_ttm").is_not_null()
+        & delta_gp.is_not_null()
+        & delta_int.is_not_null()
+        & delta_tax.is_not_null()
+        & delta_wc_cash.is_not_null()
+    ).then(c("cfo_ttm") + (delta_gp - delta_int) - delta_tax + delta_wc_cash)
 
     baseline_dar = (
         pl.when(~eligible | c("total_debt").is_null() | c("ebit_ttm").is_null())
@@ -260,24 +272,29 @@ def summarize_stress_by_sector(stressed_df: pl.DataFrame) -> pl.DataFrame:
         ).alias("icb_name_level2"),
     )
 
-    debt = c("total_debt").fill_null(0.0)
+    evaluable = (
+        c("baseline_debt_at_risk").is_not_null()
+        & c("stressed_debt_at_risk").is_not_null()
+        & c("total_debt").is_not_null()
+    )
+    evaluable_debt = pl.when(evaluable).then(c("total_debt")).otherwise(0.0)
     return (
         staged.group_by(["icb_code_level2", "icb_name_level2"])
         .agg(
             c("issuer_id").n_unique().cast(pl.UInt32).alias("issuer_count"),
-            debt.sum().cast(pl.Float64).alias("total_debt_sum"),
-            pl.when(c("baseline_debt_at_risk").fill_null(False))
-            .then(debt)
+            evaluable_debt.sum().cast(pl.Float64).alias("total_debt_sum"),
+            pl.when(evaluable & c("baseline_debt_at_risk"))
+            .then(c("total_debt"))
             .otherwise(0.0)
             .sum()
             .alias("_baseline_dar_debt"),
-            pl.when(c("stressed_debt_at_risk").fill_null(False))
-            .then(debt)
+            pl.when(evaluable & c("stressed_debt_at_risk"))
+            .then(c("total_debt"))
             .otherwise(0.0)
             .sum()
             .alias("_stressed_dar_debt"),
             c("newly_distressed_under_shock")
-            .fill_null(False)
+            .drop_nulls()
             .sum()
             .cast(pl.UInt32)
             .alias("newly_distressed_count"),

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from datetime import date, timedelta
 
 import polars as pl
@@ -40,9 +41,7 @@ from finintel.analytics.stress_test import (
     summarize_stress_by_sector,
 )
 from finintel.analytics.tables import (
-    BENCHMARKS_TABLE,
     RATIOS_TABLE,
-    RED_FLAGS_TABLE,
     build_analytics_tables,
 )
 from finintel.exceptions import ContractViolationError
@@ -50,7 +49,6 @@ from finintel.normalization.mapper import FACT_SCHEMA
 from finintel.storage.schemas import (
     CORE_RATIOS,
     EXTRA_RATIOS,
-    FINANCIAL_RATIOS_SCHEMA,
 )
 
 
@@ -79,7 +77,7 @@ def _issuer(
 
 
 def _build_facts(
-    periods: dict[tuple[int, int | None], dict[str, float | None]],
+    periods: Mapping[tuple[int, int | None], Mapping[str, float | None]],
     *,
     issuer_id: str = "FPT",
     scope: str = "CONSOLIDATED",
@@ -464,6 +462,54 @@ def test_core_earnings_signed_expense_reversal_and_pre_ttm_missing_selling_rule(
     assert inc_row["core_operating_profit_ttm"] is None
     assert inc_row["core_operating_profit_flag"] == "MISSING_INPUT"
 
+    # 3. Explicit IS_SELLING_EXPENSES = None (NULL row present on the filing) must NOT be synthesized to 0.0.
+    q4_explicit_null_selling: dict[str, float | None] = {
+        "IS_NET_REVENUE": 200.0,
+        "IS_GROSS_PROFIT": 100.0,
+        "IS_SELLING_EXPENSES": None,
+        "IS_ADMINISTRATIVE_EXPENSES": 20.0,
+        "IS_OPERATING_PROFIT": 80.0,
+    }
+    explicit_null_facts = _build_facts(
+        {
+            (2025, 1): q_with_selling,
+            (2025, 2): q_with_selling,
+            (2025, 3): q_with_selling,
+            (2025, 4): q4_explicit_null_selling,
+        }
+    )
+    exp_null_row = (
+        calculate_ratios(
+            prepare_periods(explicit_null_facts, _issuer(), as_of=date(2026, 6, 1))
+        )
+        .filter(pl.col("fiscal_quarter") == 4)
+        .row(0, named=True)
+    )
+    assert exp_null_row["core_operating_profit_ttm"] is None
+    assert exp_null_row["core_operating_profit_flag"] == "MISSING_INPUT"
+
+    # 4. Reversal of administrative expenses (IS_ADMINISTRATIVE_EXPENSES = -10.0) also preserves SIGNED_EXPENSE.
+    admin_rev_facts = _build_facts(
+        {
+            (2025, None): {
+                "BS_TOTAL_ASSETS": 1000.0,
+                "IS_NET_REVENUE": 200.0,
+                "IS_GROSS_PROFIT": 100.0,
+                "IS_SELLING_EXPENSES": 15.0,
+                "IS_ADMINISTRATIVE_EXPENSES": -10.0,
+                "IS_OPERATING_PROFIT": 95.0,
+                "IS_PROFIT_BEFORE_TAX": -20.0,
+                "IS_INTEREST_EXPENSE": 5.0,
+            }
+        }
+    )
+    admin_rev_row = calculate_ratios(
+        prepare_periods(admin_rev_facts, _issuer(), as_of=date(2026, 6, 1))
+    ).row(0, named=True)
+    assert admin_rev_row["core_operating_profit_ttm"] == pytest.approx(95.0)
+    assert admin_rev_row["core_to_ebt_ratio"] is None
+    assert admin_rev_row["core_to_ebt_ratio_flag"] == "ZERO_OR_NEGATIVE_DENOMINATOR"
+
 
 def test_rf08_branch_separation_tt99_code21_and_other_profit_fallback() -> None:
     """RF_08 Branch 1 fires without opening assets; evidence includes ip_disposal_gain_loss_ttm & fallback other_profit."""
@@ -612,6 +658,23 @@ def test_rf09_frozen_cip_uses_bs_cip_long_term_and_handles_zero_opening_tfa() ->
         calculate_ratios(prepare_periods(no_cip, _issuer(), as_of=date(2027, 6, 1)))
     ).filter(pl.col("flag_code") == "RF_09_FROZEN_CIP_CAPITALIZATION")
     assert flags_no_cip.is_empty()
+
+    # Case 4: Mismatched filing_id between BS_CIP_LONG_TERM and BS_TOTAL_ASSETS -> RF_09 must NOT fire.
+    mismatched_cip_filing = frozen_zero_tfa.with_columns(
+        pl.when(
+            (pl.col("fiscal_year") == 2026)
+            & (pl.col("metric_id") == "BS_CIP_LONG_TERM")
+        )
+        .then(pl.lit("stale-cip-filing"))
+        .otherwise(pl.col("filing_id"))
+        .alias("filing_id")
+    )
+    flags_mismatch = detect_red_flags(
+        calculate_ratios(
+            prepare_periods(mismatched_cip_filing, _issuer(), as_of=date(2027, 6, 1))
+        )
+    ).filter(pl.col("flag_code") == "RF_09_FROZEN_CIP_CAPITALIZATION")
+    assert flags_mismatch.is_empty()
 
 
 def test_stress_test_zero_shock_identity_monotonicity_and_edge_cases() -> None:
@@ -799,6 +862,121 @@ def test_stress_test_zero_shock_identity_monotonicity_and_edge_cases() -> None:
     )
     with pytest.raises(ContractViolationError, match="single period"):
         summarize_stress_by_sector(multi_period)
+
+    multi_scope = pl.concat(
+        [
+            severe,
+            severe.with_columns(pl.lit("SEPARATE").alias("statement_scope")),
+        ]
+    )
+    with pytest.raises(ContractViolationError, match="single period"):
+        summarize_stress_by_sector(multi_scope)
+
+    multi_ptype = pl.concat(
+        [
+            severe,
+            severe.with_columns(pl.lit("QUARTER").alias("period_type")),
+        ]
+    )
+    with pytest.raises(ContractViolationError, match="single period"):
+        summarize_stress_by_sector(multi_ptype)
+
+
+def test_stress_test_def01_def05_risk01_dso_dio_cogs_clamp_and_regime_guards() -> None:
+    """Verify DEF-01 (ebit_ttm=None), DEF-05 (accounting_regime=None), RISK-01, DSO/DIO shocks, and COGS'>=0."""
+    df = pl.DataFrame(
+        {
+            "issuer_id": [
+                "WC_FIRM",
+                "NULL_EBIT",
+                "ZERO_REV",
+                "BANK_FIRM",
+                "NULL_REGIME",
+            ],
+            "accounting_regime": ["CORPORATE", "CORPORATE", "CORPORATE", "BANK", None],
+            "statement_scope": ["CONSOLIDATED"] * 5,
+            "period_type": ["ANNUAL"] * 5,
+            "period_end_date": [date(2025, 12, 31)] * 5,
+            "net_revenue_ttm": [365.0, 1000.0, 0.0, 500.0, 1000.0],
+            "gross_profit_ttm": [328.5, 300.0, 0.0, 200.0, 300.0],
+            "cogs_ttm": [36.5, 700.0, 0.0, 300.0, 700.0],
+            "cfo_ttm": [100.0, 120.0, 10.0, 50.0, 120.0],
+            "borrowing_cost_ttm": [10.0, 10.0, 5.0, 10.0, 10.0],
+            "total_debt": [100.0, 300.0, 50.0, 200.0, 100.0],
+            "ebit_ttm": [110.0, None, -5.0, 80.0, 5.0],
+            "gross_margin": [0.90, 0.30, None, 0.40, 0.30],
+            "effective_tax_rate": [0.20, 0.20, 0.20, 0.20, 0.20],
+            "interest_coverage": [11.0, None, -1.0, None, 0.5],
+            "interest_coverage_flag": [
+                "VALID",
+                "MISSING_INPUT",
+                "VALID",
+                "NOT_APPLICABLE_FOR_REGIME",
+                "VALID",
+            ],
+        }
+    )
+
+    # 1. GM' = 0.90 + 0.20 = 1.10 > 1.0 -> Rev' - GP' < 0 -> clamped to COGS' = 0.0; DSO=+10d, DIO=+20d.
+    shock = StressScenario(
+        name="wc_and_cogs_clamp",
+        interest_rate_shock_bps=300.0,
+        revenue_shock_pct=0.0,
+        gross_margin_shock_pp=0.20,
+        dso_shock_days=10.0,
+        dio_shock_days=20.0,
+    )
+    stressed = simulate_financial_stress(df, shock)
+    rows = {r["issuer_id"]: r for r in stressed.to_dicts()}
+
+    # WC_FIRM: Rev'=365, GM'=1.10, GP'=401.5, COGS'=max(0, 365-401.5)=0.0.
+    # delta_GP = +73.0, Int' = 10 + 100*0.03 = 13.0 (delta_Int = +3.0).
+    # EBT_0 = 100.0, EBT' = (110+73) - 13 = 170.0 -> delta_tax = (170 - 100)*0.20 = 14.0.
+    # delta_wc_cash = -(365/365)*10 - (0/365)*20 = -10.0.
+    # CFO' = 100 + (73 - 3) - 14 - 10 = 146.0.
+    wc = rows["WC_FIRM"]
+    assert wc["stressed_cogs_ttm"] == 0.0
+    assert wc["stressed_cfo_ttm"] == pytest.approx(146.0, abs=1e-12)
+
+    # 2. [DEF-01] NULL_EBIT: when ebit_ttm is None, stressed_ebit_ttm AND stressed_cfo_ttm MUST be None.
+    null_ebit = rows["NULL_EBIT"]
+    assert null_ebit["stressed_ebit_ttm"] is None
+    assert null_ebit["stressed_interest_coverage"] is None
+    assert null_ebit["stressed_interest_coverage_flag"] == "MISSING_INPUT"
+    assert null_ebit["stressed_cfo_ttm"] is None
+    assert null_ebit["baseline_debt_at_risk"] is None
+    assert null_ebit["stressed_debt_at_risk"] is None
+    assert null_ebit["newly_distressed_under_shock"] is None
+
+    # 3. ZERO_REV (net_revenue_ttm <= 0): all stressed_* are None.
+    zero_rev = rows["ZERO_REV"]
+    assert zero_rev["stressed_net_revenue_ttm"] is None
+    assert zero_rev["stressed_ebit_ttm"] is None
+    assert zero_rev["stressed_cfo_ttm"] is None
+    assert zero_rev["stressed_interest_coverage_flag"] == "MISSING_INPUT"
+
+    # 4. BANK_FIRM: NOT_APPLICABLE_FOR_REGIME and all stressed_* are None.
+    bank = rows["BANK_FIRM"]
+    assert bank["stressed_interest_coverage_flag"] == "NOT_APPLICABLE_FOR_REGIME"
+    assert bank["stressed_net_revenue_ttm"] is None
+    assert bank["stressed_cfo_ttm"] is None
+    assert bank["baseline_debt_at_risk"] is None
+    assert bank["stressed_debt_at_risk"] is None
+
+    # 5. [DEF-05] NULL_REGIME (accounting_regime=None): baseline_debt_at_risk must NOT leak True.
+    null_regime = rows["NULL_REGIME"]
+    assert null_regime["baseline_debt_at_risk"] is None
+    assert null_regime["stressed_debt_at_risk"] is None
+    assert null_regime["newly_distressed_under_shock"] is None
+
+    # 6. [RISK-01] & UNCLASSIFIED fallback in summarize_stress_by_sector (no icb_code_level2 columns).
+    # Only WC_FIRM (total_debt=100.0) has evaluable debt-at-risk; un-evaluatable rows must not dilute denominator.
+    summary = summarize_stress_by_sector(stressed)
+    assert summary.height == 1
+    s_row = summary.row(0, named=True)
+    assert s_row["icb_code_level2"] == "UNCLASSIFIED"
+    assert s_row["icb_name_level2"] == "UNCLASSIFIED"
+    assert s_row["total_debt_sum"] == pytest.approx(100.0)
 
 
 @pytest.mark.parametrize(
