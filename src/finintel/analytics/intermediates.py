@@ -545,9 +545,7 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         pl.when(CORPORATE & ~input_has("mixed", COGS))
         .then(c(COGS).abs())
         .alias("cogs_ttm"),
-        pl.when(CORPORATE & ~input_has("mixed", CFO))
-        .then(c(CFO))
-        .alias("cfo_ttm"),
+        pl.when(CORPORATE & ~input_has("mixed", CFO)).then(c(CFO)).alias("cfo_ttm"),
         pl.when(CORPORATE & ~input_has("mixed", *CORE_PROFIT_INPUTS))
         .then(c(GROSS_PROFIT) - c(SELLING_EXPENSES) - c(ADMIN_EXPENSES))
         .alias("core_operating_profit_ttm"),

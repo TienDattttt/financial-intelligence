@@ -118,7 +118,7 @@ def _net_non_customer_receivables(inputs: tuple[str, str, str, str]) -> pl.Expr:
 
 
 def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
-    """Emit the seven screening rules, with no trigger on missing evidence.
+    """Emit the nine screening rules (RF_01..RF_09), with no trigger on missing evidence.
 
     Compute receivable growth (current/prior − 1), adjusted net non-customer
     receivables / BS_TOTAL_ASSETS, and inventory / BS_TOTAL_ASSETS. Require positive
@@ -359,9 +359,7 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
                 .then(c(FINANCIAL_REVENUE))
                 .alias("financial_revenue_ttm"),
                 pl.when(~input_has("mixed", OTHER_PROFIT, OTHER_INCOME, OTHER_EXPENSES))
-                .then(
-                    pl.coalesce(c(OTHER_PROFIT), c(OTHER_INCOME) - c(OTHER_EXPENSES))
-                )
+                .then(pl.coalesce(c(OTHER_PROFIT), c(OTHER_INCOME) - c(OTHER_EXPENSES)))
                 .alias("other_profit_ttm"),
                 pl.when(
                     (c("taxonomy_version") == "VAS_TT99_2025")
