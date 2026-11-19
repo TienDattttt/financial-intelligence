@@ -1,35 +1,54 @@
 import hashlib
 import json
 import sqlite3
+import threading
+import zipfile
 from calendar import monthrange
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from importlib import import_module
+from io import BytesIO
 from pathlib import Path
 
 import httpx
 import polars as pl
 import pytest
 
+from finintel.domain import schemas as domain_schemas
 from finintel.exceptions import (
     ContractViolationError,
     RateLimitOrCircuitOpenError,
     SourceEntitlementError,
+    TransientSourceError,
 )
-from finintel.ingestion.archive import RawArchive
+from finintel.ingestion.archive import ArchiveOutcome, RawArchive
 from finintel.ingestion.base import (
     AuditStatus,
     FilingMetadata,
     PeriodType,
+    RawFiling,
     RawFilingBundle,
+    RawPayload,
     StatementScope,
     StatementType,
 )
 from finintel.ingestion.fhsc_oapi_adapter import FhscOapiAdapter
 from finintel.ingestion.file_adapter import FileAdapter
-from finintel.pipeline.cli import main
+from finintel.ingestion.hasher import canonical_content_sha256
+from finintel.pipeline.cli import load_settings, main
+from finintel.pipeline.ingest import IngestHandler
+from finintel.pipeline.runner import (
+    Runner,
+    RunRequest,
+    RunStatus,
+    Stage,
+    StepContext,
+    StepOutcome,
+    StepStatus,
+)
 from finintel.pipeline.state_store import StateStore
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "raw_samples"
@@ -281,6 +300,8 @@ def test_fhsc_only_revises_changed_period_on_a_shared_page(
         (PeriodType.QUARTER, 4, AuditStatus.REVIEWED, date(2026, 2, 14)),
         (PeriodType.SEMI_ANNUAL, None, AuditStatus.REVIEWED, date(2026, 3, 1)),
         (PeriodType.QUARTER, 2, AuditStatus.REVIEWED, date(2026, 3, 1)),
+        (PeriodType.QUARTER, 2, AuditStatus.UNKNOWN, date(2026, 3, 1)),
+        (PeriodType.QUARTER, 2, AuditStatus.UNAUDITED, date(2026, 1, 30)),
     ],
 )
 def test_statutory_lag(
@@ -305,6 +326,10 @@ def test_statutory_lag(
     assert filing.effective_available_at == available
     assert filing.published_at_basis == "STATUTORY_LAG"
     assert filing.is_filed_late is None
+    on_time = replace(filing, published_at=available)
+    assert on_time.is_filed_late is False
+    late = replace(filing, published_at=date.fromordinal(available.toordinal() + 1))
+    assert late.is_filed_late is True
 
 
 def test_file_cli_archives_original_bytes_and_exact_publication(tmp_path: Path) -> None:
@@ -495,8 +520,14 @@ def test_concurrent_reingestion_allocates_only_one_revision(
         source_provider="manual_audit",
     )
     batch = [next(adapter.fetch()), next(adapter.fetch())]
+    barrier = threading.Barrier(2)
+
+    def store_synced(bundle: RawFilingBundle) -> ArchiveOutcome:
+        barrier.wait(timeout=5)
+        return archive.store(bundle)[0]
+
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first, second = [results[0] for results in pool.map(archive.store, batch)]
+        first, second = list(pool.map(store_synced, batch))
     assert first.filing_id == second.filing_id
     assert {first.status, second.status} == {"ARCHIVED", "SKIPPED_UNCHANGED"}
     assert len(read_manifest(archive.state)) == 1
@@ -789,3 +820,488 @@ def test_unchanged_hash_recomputes_lateness_from_merged_metadata(
     )
     assert row["published_at_basis"] == "EXACT_FILING"
     assert row["is_filed_late"] == 0
+
+
+def test_domain_schemas_contract_reexported_and_unknown_metadata_keys_rejected() -> (
+    None
+):
+    assert domain_schemas.FilingMetadata is FilingMetadata
+    assert domain_schemas.StatementType is StatementType
+    assert domain_schemas.StatementScope is StatementScope
+    assert domain_schemas.PeriodType is PeriodType
+    assert domain_schemas.AuditStatus is AuditStatus
+    assert domain_schemas.RawFilingBundle is RawFilingBundle
+    assert domain_schemas.RawFiling is RawFiling
+    assert domain_schemas.RawPayload is RawPayload
+
+    with pytest.raises(
+        ContractViolationError, match="Unsupported filing metadata fields"
+    ):
+        metadata(unknown_typo_field="bad")
+
+    with pytest.raises(
+        ContractViolationError, match="A stable issuer ID and ticker are required"
+    ):
+        metadata(issuer_id="../traversal")
+
+    with pytest.raises(ContractViolationError, match="exceeds one fiscal year"):
+        metadata(
+            fiscal_year_start_date=date(2024, 1, 1),
+            period_start_date=date(2024, 1, 1),
+            period_end_date=date(2025, 12, 31),
+        )
+
+
+def test_revision_without_published_at_floors_effective_available_at_by_fetched_at(
+    archive: RawArchive,
+) -> None:
+    payload_v1 = RawPayload(
+        source_provider="fhsc",
+        connector_name="fhsc_oapi_adapter",
+        content=b'{"v": 1}',
+        extension="json",
+        fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        nature="PROVIDER_RAW_JSON",
+    )
+    payload_v2 = RawPayload(
+        source_provider="fhsc",
+        connector_name="fhsc_oapi_adapter",
+        content=b'{"v": 2}',
+        extension="json",
+        fetched_at=datetime(2026, 11, 15, tzinfo=UTC),
+        nature="PROVIDER_RAW_JSON",
+    )
+    filing_meta = metadata(statement_scope=StatementScope.CONSOLIDATED)
+    archive.store(
+        RawFilingBundle(
+            payload=payload_v1,
+            filings=(RawFiling(metadata=filing_meta, metrics={"10": 100}),),
+        )
+    )
+    archive.store(
+        RawFilingBundle(
+            payload=payload_v2,
+            filings=(RawFiling(metadata=filing_meta, metrics={"10": 250}),),
+        )
+    )
+    rev1, rev2 = read_manifest(archive.state)
+    assert rev1["revision_no"] == 1
+    assert rev1["effective_available_at"] == "2026-03-31"
+    assert rev2["revision_no"] == 2
+    assert rev2["effective_available_at"] == "2026-11-15"
+
+
+def test_replaying_older_revision_payload_does_not_create_false_new_revision(
+    archive: RawArchive,
+) -> None:
+    filing_meta = metadata(statement_scope=StatementScope.CONSOLIDATED)
+    jan = RawPayload(
+        source_provider="fhsc",
+        connector_name="fhsc_oapi_adapter",
+        content=b'{"v": 1}',
+        extension="json",
+        fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        nature="PROVIDER_RAW_JSON",
+    )
+    jun = RawPayload(
+        source_provider="fhsc",
+        connector_name="fhsc_oapi_adapter",
+        content=b'{"v": 2}',
+        extension="json",
+        fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
+        nature="PROVIDER_RAW_JSON",
+    )
+    stale_may_with_v1 = RawPayload(
+        source_provider="fhsc",
+        connector_name="fhsc_oapi_adapter",
+        content=b'{"v": 1, "replayed": true}',
+        extension="json",
+        fetched_at=datetime(2026, 5, 1, tzinfo=UTC),
+        nature="PROVIDER_RAW_JSON",
+    )
+    stale_may_with_unknown_v3 = RawPayload(
+        source_provider="fhsc",
+        connector_name="fhsc_oapi_adapter",
+        content=b'{"v": 3}',
+        extension="json",
+        fetched_at=datetime(2026, 5, 15, tzinfo=UTC),
+        nature="PROVIDER_RAW_JSON",
+    )
+    (r1,) = archive.store(
+        RawFilingBundle(
+            payload=jan,
+            filings=(RawFiling(metadata=filing_meta, metrics={"10": 100}),),
+        )
+    )
+    (r2,) = archive.store(
+        RawFilingBundle(
+            payload=jun,
+            filings=(RawFiling(metadata=filing_meta, metrics={"10": 200}),),
+        )
+    )
+    (replay_v1,) = archive.store(
+        RawFilingBundle(
+            payload=stale_may_with_v1,
+            filings=(RawFiling(metadata=filing_meta, metrics={"10": 100}),),
+        )
+    )
+    (replay_v3,) = archive.store(
+        RawFilingBundle(
+            payload=stale_may_with_unknown_v3,
+            filings=(RawFiling(metadata=filing_meta, metrics={"10": 300}),),
+        )
+    )
+    assert r1.status == "ARCHIVED"
+    assert r2.status == "ARCHIVED"
+    assert replay_v1.status == "SKIPPED_UNCHANGED"
+    assert replay_v1.filing_id == r1.filing_id
+    assert replay_v3.status == "SKIPPED_UNCHANGED"
+    assert replay_v3.filing_id == r2.filing_id
+    assert len(read_manifest(archive.state)) == 2
+
+
+def test_scope_verification_upgrades_unknown_row_without_duplicate(
+    archive: RawArchive,
+) -> None:
+    unknown_meta = metadata(statement_scope=StatementScope.UNKNOWN)
+    verified_meta = metadata(
+        statement_scope=StatementScope.CONSOLIDATED,
+        audit_status=AuditStatus.AUDITED,
+    )
+    p1 = RawPayload(
+        source_provider="fhsc",
+        connector_name="fhsc_oapi_adapter",
+        content=b'{"page": 1}',
+        extension="json",
+        fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        nature="PROVIDER_RAW_JSON",
+    )
+    p2 = RawPayload(
+        source_provider="fhsc",
+        connector_name="fhsc_oapi_adapter",
+        content=b'{"page": 1, "verified": true}',
+        extension="json",
+        fetched_at=datetime(2026, 4, 2, tzinfo=UTC),
+        nature="PROVIDER_RAW_JSON",
+    )
+    (first,) = archive.store(
+        RawFilingBundle(
+            payload=p1,
+            filings=(RawFiling(metadata=unknown_meta, metrics={"10": 500}),),
+        )
+    )
+    (second,) = archive.store(
+        RawFilingBundle(
+            payload=p2,
+            filings=(RawFiling(metadata=verified_meta, metrics={"10": 500}),),
+        )
+    )
+    assert first.status == "ARCHIVED"
+    assert second.status == "SKIPPED_UNCHANGED"
+    assert second.filing_id == first.filing_id
+    rows = read_manifest(archive.state)
+    assert len(rows) == 1
+    assert rows[0]["statement_scope"] == "CONSOLIDATED"
+    assert rows[0]["audit_status"] == "AUDITED"
+
+
+def test_ingest_handler_resumes_from_failed_page_on_transient_retry(
+    tmp_path: Path,
+    sdk: SdkStub,
+) -> None:
+    fail_page2 = True
+
+    def respond(req: httpx.Request) -> httpx.Response:
+        if req.url.params["type"] != "balance-sheet":
+            return httpx.Response(200, content=fixture(EMPTY))
+        page = req.url.params["page"]
+        if page == "1":
+            return httpx.Response(200, content=fixture(PAGE_1))
+        if page == "2":
+            if fail_page2:
+                return httpx.Response(
+                    503, json={"message": "temporary upstream outage"}
+                )
+            return httpx.Response(200, content=fixture(PAGE_2))
+        return httpx.Response(200, content=fixture(EMPTY))
+
+    requests = sdk(respond)
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        """
+state_path: metadata/state.sqlite
+min_free_bytes: 0
+ingestion:
+  raw_path: raw
+  fhsc_filings:
+    - issuer_id: FPT-ISSUER
+      ticker_at_filing: FPT
+      statement_type: BALANCE_SHEET
+      statement_scope: CONSOLIDATED
+      period_type: QUARTER
+      fiscal_year: 2026
+      fiscal_quarter: 3
+      fiscal_year_start_date: 2026-01-01
+      period_start_date: 2026-07-01
+      period_end_date: 2026-09-30
+    - issuer_id: FPT-ISSUER
+      ticker_at_filing: FPT
+      statement_type: BALANCE_SHEET
+      statement_scope: CONSOLIDATED
+      period_type: SEMI_ANNUAL
+      fiscal_year: 2026
+      fiscal_quarter: 2
+      fiscal_year_start_date: 2026-01-01
+      period_start_date: 2026-01-01
+      period_end_date: 2026-06-30
+""",
+        encoding="utf-8",
+    )
+    settings = load_settings(config)
+    store = StateStore(settings.state_path)
+    handler = IngestHandler(store, config.parent, settings.ingestion)
+    context = StepContext(
+        run_id="run_resume",
+        stage=Stage.INGEST,
+        request=RunRequest(source="fhsc", tickers=("FPT",), period="2026-Q3"),
+        tickers=("FPT",),
+        active_snapshot_id=None,
+    )
+    with pytest.raises(TransientSourceError):
+        handler(context)
+    # Page 1 of balance-sheet was already fetched and archived; retry must resume at page 2 without re-requesting page 1
+    requests.clear()
+    fail_page2 = False
+    outcome = handler(context)
+    assert outcome.status == StepStatus.SUCCEEDED
+    bs_pages = [
+        req.url.params["page"]
+        for req in requests
+        if req.url.params["type"] == "balance-sheet"
+    ]
+    assert bs_pages == ["2", "3"]
+    assert len(read_manifest(store)) == 1
+
+
+def test_ingest_handler_reports_incomplete_when_periods_are_deferred_or_empty(
+    tmp_path: Path,
+    sdk: SdkStub,
+) -> None:
+    sdk(
+        lambda req: httpx.Response(200, content=fixture(PAGE_1))
+        if req.url.params["page"] == "1" and req.url.params["type"] == "balance-sheet"
+        else httpx.Response(200, content=fixture(EMPTY))
+    )
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        """
+state_path: metadata/state.sqlite
+min_free_bytes: 0
+ingestion:
+  raw_path: raw
+  fhsc_filings: []
+""",
+        encoding="utf-8",
+    )
+    settings = load_settings(config)
+    store = StateStore(settings.state_path)
+    handler = IngestHandler(store, config.parent, settings.ingestion)
+    outcome = handler(
+        StepContext(
+            run_id="run_deferred",
+            stage=Stage.INGEST,
+            request=RunRequest(source="fhsc", tickers=("FPT",), period="2026-Q3"),
+            tickers=("FPT",),
+            active_snapshot_id=None,
+        )
+    )
+    assert outcome.status == StepStatus.INCOMPLETE
+
+
+def test_ingest_handler_records_archived_tickers_and_runner_gates_incomplete_scope(
+    tmp_path: Path,
+    sdk: SdkStub,
+) -> None:
+    sdk(
+        lambda req: httpx.Response(200, content=fixture(PAGE_1))
+        if req.url.params["page"] == "1" and req.url.params["type"] == "balance-sheet"
+        else httpx.Response(200, content=fixture(EMPTY))
+    )
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        """
+state_path: metadata/state.sqlite
+min_free_bytes: 0
+ingestion:
+  raw_path: raw
+  fhsc_filings: []
+""",
+        encoding="utf-8",
+    )
+    settings = load_settings(config)
+    store = StateStore(settings.state_path)
+    handler = IngestHandler(store, config.parent, settings.ingestion)
+    downstream_called = False
+
+    def downstream(_: StepContext) -> StepOutcome:
+        nonlocal downstream_called
+        downstream_called = True
+        return StepOutcome(status=StepStatus.SUCCEEDED)
+
+    # FHSC with deferred periods yields StepStatus.INCOMPLETE, which gates downstream stages in Runner
+    handlers: dict[Stage, Callable[[StepContext], StepOutcome]] = dict.fromkeys(
+        Stage, downstream
+    )
+    handlers[Stage.INGEST] = handler
+    runner = Runner(store, handlers, min_free_bytes=0)
+    res = runner.run(RunRequest(source="fhsc", tickers=("FPT",), period="2026-Q3"))
+    assert res.status == RunStatus.FAILED
+    assert downstream_called is False
+
+
+def test_invalid_metric_or_revision_reason_does_not_leave_orphan_files(
+    archive: RawArchive,
+) -> None:
+    bad_metric_bundle = RawFilingBundle(
+        payload=RawPayload(
+            source_provider="manual_audit",
+            connector_name="file_adapter",
+            content=b'{"001": "bad"}',
+            extension="json",
+            fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+            nature="TRUE_ORIGINAL_DOCUMENT",
+        ),
+        filings=(
+            RawFiling(
+                metadata=metadata(),
+                metrics={"001": "not-a-number"},
+            ),
+        ),
+    )
+    with pytest.raises(ContractViolationError):
+        archive.store(bad_metric_bundle)
+    assert list((archive.root / "manual_audit").rglob("*")) == []
+    assert list((archive.root / "provenance").glob("*.json")) == []
+    assert read_manifest(archive.state) == []
+
+
+def test_canonical_hash_rounding_negative_zero_null_and_bounds() -> None:
+    meta = metadata(statement_scope=StatementScope.CONSOLIDATED)
+    # 1.00005 rounds HALF_EVEN at 4 decimal places to 1.0000, while 1.00015 rounds to 1.0002
+    h_even_down = canonical_content_sha256(
+        {"k": Decimal("1.00005")},
+        meta.statement_scope,
+        meta.period_end_date,
+    )
+    h_exact_one = canonical_content_sha256(
+        {"k": Decimal("1")},
+        meta.statement_scope,
+        meta.period_end_date,
+    )
+    assert h_even_down == h_exact_one
+
+    # Tiny negative value rounding to zero must normalize to "0.0000", never "-0.0000"
+    h_tiny_neg = canonical_content_sha256(
+        {"k": Decimal("-1e-15")},
+        meta.statement_scope,
+        meta.period_end_date,
+    )
+    h_zero = canonical_content_sha256(
+        {"k": 0},
+        meta.statement_scope,
+        meta.period_end_date,
+    )
+    assert h_tiny_neg == h_zero
+
+    # None is excluded from canonical entries, so None vs 0 must produce distinct hashes
+    h_null = canonical_content_sha256(
+        {"k": None},
+        meta.statement_scope,
+        meta.period_end_date,
+    )
+    assert h_null != h_zero
+
+    # Huge numeric text rejected
+    with pytest.raises(
+        ContractViolationError, match="Invalid numeric raw metric value"
+    ):
+        canonical_content_sha256(
+            {"k": "9" * 200},
+            meta.statement_scope,
+            meta.period_end_date,
+        )
+
+    # Control characters in metric key rejected
+    with pytest.raises(ContractViolationError, match="Invalid raw metric code"):
+        canonical_content_sha256(
+            {"bad\x00key": 1},
+            meta.statement_scope,
+            meta.period_end_date,
+        )
+
+
+def test_file_adapter_csv_blank_row_with_notes_and_xlsx_sparse_row_guard(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "with_notes.csv"
+    csv_path.write_text(
+        "raw_metric_key,raw_value,notes\n001,10,ok\n,,trailing comment\n",
+        encoding="utf-8",
+    )
+    bundle = next(
+        FileAdapter(csv_path, metadata(), source_provider="manual_audit").fetch()
+    )
+    assert bundle.filings[0].metrics == {"001": "10"}
+
+    openpyxl = import_module("openpyxl")
+    staging = tmp_path / "staging_sparse.xlsx"
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.append(["raw_metric_key", "raw_value"])
+    sheet.append(["001", 10])
+    sheet.append(["002", 20])
+    book.save(staging)
+    book.close()
+
+    # Rewrite row 3 to row 20000 in sheet1.xml to simulate a sparse row bomb
+    modified = BytesIO()
+    with zipfile.ZipFile(BytesIO(staging.read_bytes()), "r") as zin:
+        with zipfile.ZipFile(modified, "w") as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename == "xl/worksheets/sheet1.xml":
+                    text = data.decode("utf-8")
+                    text = (
+                        text.replace('r="3"', 'r="20000"')
+                        .replace('r="A3"', 'r="A20000"')
+                        .replace('r="B3"', 'r="B20000"')
+                    )
+                    data = text.encode("utf-8")
+                zout.writestr(item, data)
+    sparse_xlsx = tmp_path / "sparse.xlsx"
+    sparse_xlsx.write_bytes(modified.getvalue())
+    with pytest.raises(ContractViolationError, match="maximum row limit"):
+        next(
+            FileAdapter(sparse_xlsx, metadata(), source_provider="manual_audit").fetch()
+        )
+
+
+def test_path_confinement_rejects_traversal_and_symlinks(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"001": 1}', encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = workspace / "settings.yaml"
+    config.write_text(
+        """
+state_path: metadata/state.sqlite
+min_free_bytes: 0
+ingestion:
+  raw_path: ../escaped_raw
+""",
+        encoding="utf-8",
+    )
+    settings = load_settings(config)
+    store = StateStore(settings.state_path)
+    with pytest.raises(ContractViolationError, match="outside the allowed workspace"):
+        IngestHandler(store, config.parent, settings.ingestion)

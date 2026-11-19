@@ -19,6 +19,7 @@ from sklearn.metrics import silhouette_score  # type: ignore[import-untyped]
 from sklearn.preprocessing import RobustScaler  # type: ignore[import-untyped]
 
 from finintel.exceptions import ContractViolationError
+from finintel.storage.schemas import ML_SCORES_KEY
 
 UNSUPERVISED_FEATURE_SET = (
     "roa",
@@ -164,17 +165,16 @@ class CrossSectionalPreprocessor:
             raise ContractViolationError(
                 "Fit the ML preprocessor before transforming data."
             )
-        clean = self._clean(frame)
-        # Preserve the missingness signal before contextual replacement.
-        missing = clean.select(
+        adjusted = self._adjust(self._clean(frame))
+        # Record missingness only for values still null after contextual NO_INTEREST_EXPENSE replacement.
+        missing = adjusted.select(
             *(
                 pl.col(name).is_null().cast(pl.Float64).alias(indicator)
                 for name, indicator in zip(self.features, self.indicators, strict=True)
             )
         )
         return (
-            self._adjust(clean)
-            .select(INDUSTRY, *self.features)
+            adjusted.select(INDUSTRY, *self.features)
             .join(self._industry, on=INDUSTRY, how="left", maintain_order="left")
             .select(
                 *(
@@ -249,11 +249,23 @@ class FinancialArchetypes:
         embedding = pca.fit_transform(matrix)
         candidates = []
         distinct = np.unique(embedding, axis=0).shape[0]
+        sample_size = min(len(embedding), 5000) if len(embedding) > 5000 else None
+        rng_seed = 42 if sample_size is not None else None
         for k in range(3, min(6, train.height - 1, distinct) + 1):
             model = KMeans(n_clusters=k, n_init=20, random_state=42).fit(embedding)
             if 2 <= np.unique(model.labels_).size < train.height:
                 candidates.append(
-                    (float(silhouette_score(embedding, model.labels_)), model)
+                    (
+                        float(
+                            silhouette_score(
+                                embedding,
+                                model.labels_,
+                                sample_size=sample_size,
+                                random_state=rng_seed,
+                            )
+                        ),
+                        model,
+                    )
                 )
         if not candidates:
             raise InsufficientModelData(
@@ -294,9 +306,10 @@ class FinancialArchetypes:
         """Score fitted axes, archetypes and empirical training percentiles."""
         if self._clusters is None:
             raise ContractViolationError("Fit financial archetypes before scoring.")
+        present_keys = [name for name in ML_SCORES_KEY if name in frame.columns]
         transformed = self.preprocessor.transform(frame)
         if transformed.is_empty():
-            return pl.DataFrame(
+            empty_scores = pl.DataFrame(
                 schema={
                     "pca_pc1": pl.Float64,
                     "pca_pc2": pl.Float64,
@@ -308,6 +321,11 @@ class FinancialArchetypes:
                     "statistical_outlier_flag": pl.Boolean,
                     "anomaly_flag": pl.String,
                 }
+            )
+            return (
+                frame.select(present_keys).hstack(empty_scores)
+                if present_keys
+                else empty_scores
             )
         matrix = transformed.select(UNSUPERVISED_FEATURE_SET).to_numpy()
         pca = self._pca.transform(matrix)
@@ -331,9 +349,9 @@ class FinancialArchetypes:
                 "anomaly_percentile_rank": ranks,
                 "statistical_outlier_flag": ranks >= 95,
             }
-        )
-        return output.with_columns(
+        ).with_columns(
             pl.when(pl.col("statistical_outlier_flag"))
             .then(pl.lit("STATISTICAL_MULTIVARIATE_OUTLIER"))
             .alias("anomaly_flag")
         )
+        return frame.select(present_keys).hstack(output) if present_keys else output

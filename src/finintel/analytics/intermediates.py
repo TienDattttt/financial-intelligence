@@ -273,7 +273,22 @@ def _period_amounts(
         pl.col(name) if name in facts.columns else pl.lit(None, dtype=dtype).alias(name)
         for name, dtype in FACT_SCHEMA.items()
     )
-    quarterly = compute_ttm(flow)
+    quarterly_series = ["issuer_id", "statement_scope", "source_provider", "metric_id"]
+    quarterly = (
+        compute_ttm(flow)
+        .sort([*quarterly_series, "period_end_date"])
+        .with_columns(
+            pl.all_horizontal(
+                *(
+                    (pl.col("published_at_basis") == "EXACT_FILING")
+                    .shift(lag)
+                    .over(quarterly_series)
+                    .fill_null(False)
+                    for lag in range(4)
+                )
+            ).alias("_ttm_exact")
+        )
+    )
     anchor_columns = [*PERIOD, *REVISION_ORDER, "taxonomy_version", "derivation_method"]
     derived_q4 = quarterly.filter(
         pl.col("derivation_method") == "DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX"
@@ -334,6 +349,7 @@ def _period_amounts(
         "value",
         "source_filing_ids",
         pl.lit(False).alias("_q4"),
+        (pl.col("published_at_basis") == "EXACT_FILING").alias("_exact"),
     )
     amounts = (
         pl.concat(
@@ -350,6 +366,7 @@ def _period_amounts(
                     pl.col("ttm_value").alias("value"),
                     pl.col("ttm_source_filing_ids").alias("source_filing_ids"),
                     pl.col("ttm_contains_derived_q4").alias("_q4"),
+                    pl.col("_ttm_exact").alias("_exact"),
                 ),
             ],
             how="vertical_relaxed",
@@ -369,6 +386,12 @@ def _period_amounts(
             )
         ),
         pl.col("effective_available_at").max().alias("_amounts_available_at"),
+        (
+            pl.col("value").is_not_null().any()
+            & pl.col("_exact").filter(pl.col("value").is_not_null()).all()
+        )
+        .fill_null(False)
+        .alias("_period_exact_filing"),
         *(
             pl.col("filing_id").filter(METRIC == name).last().alias(f"_filing_{name}")
             for name in RF03_INPUTS
@@ -467,6 +490,8 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         .then(pl.lit("NOT_APPLICABLE_FOR_REGIME"))
         .when(input_has("mixed", *EBITDA_INPUTS))
         .then(pl.lit(MIXED))
+        .when(c("ebit_ttm").is_null())
+        .then(pl.lit("MISSING_INPUT"))
         .when(c(DEPRECIATION).is_null())
         .then(pl.lit("MISSING_DEPRECIATION_DIRECT_CF"))
         .otherwise(_intermediate_flag("ebitda_ttm", *EBITDA_INPUTS))
@@ -596,6 +621,7 @@ def prepare_periods(
         *amounts,
         "_period_filing_ids",
         "_period_available_at",
+        "_period_exact_filing",
         "parent_equity",
         "invested_capital",
         "ebit_ttm",
@@ -613,6 +639,12 @@ def prepare_periods(
             )
             .otherwise(None)
             .alias("_period_available_at"),
+            (
+                pl.col("_period_exact_filing").fill_null(False)
+                & pl.when(pl.col("_prior_end").is_not_null())
+                .then(pl.col("_period_exact_filing_prior").fill_null(False))
+                .otherwise(pl.lit(True))
+            ).alias("_exact_filing_basis"),
             combine_filing_ids(
                 pl.col("_period_filing_ids"), pl.col("_period_filing_ids_prior")
             ).alias("source_filing_ids"),

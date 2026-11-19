@@ -601,3 +601,335 @@ def test_health_cli_logs_failures_as_json_without_provider_text(
     assert record["details"]["error_type"] == error_type
     assert message in record["details"]["message"]
     assert "private connector detail" not in stderr
+
+
+def test_lock_timeout_default_and_cli_exit_code_on_lock_contention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert runner.LOCK_TIMEOUT == 5
+    database = tmp_path / "state.sqlite"
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        f'state_path: "{database.as_posix()}"\nmin_free_bytes: 0\n',
+        encoding="utf-8",
+    )
+    spawn = multiprocessing.get_context("spawn")
+    acquired, release = spawn.Event(), spawn.Event()
+    proc = spawn.Process(target=hold_run, args=(database, acquired, release))
+    proc.start()
+    try:
+        assert acquired.wait(12)
+        monkeypatch.setattr(runner, "LOCK_TIMEOUT", 0.1)
+        exit_code = main(
+            ["--config", str(config), "run", "--source", "file", "--stage", "ingest"],
+            handlers={
+                Stage.INGEST: lambda _: pytest.fail("Second CLI run obtained lock")
+            },
+        )
+        assert exit_code == 0
+        stderr = capsys.readouterr().err
+        records = [json.loads(line) for line in stderr.splitlines()]
+        assert any(r["event"] == "run_lock_busy" for r in records)
+    finally:
+        release.set()
+        proc.join(15)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(5)
+    assert proc.exitcode == 0
+
+
+def test_fhsc_health_translates_status_probe_oapi_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FHSC_API_KEY", "test-fhsc-key")
+    monkeypatch.delenv("VNSTOCK_FHSC_KEY_CREATED_AT", raising=False)
+    store = StateStore(tmp_path / "state.sqlite")
+    store.initialize()
+    errors = import_module("vnstock_oapi.errors")
+    source_class = type(import_module("vnstock_oapi").source("fhsc"))
+
+    def fail_status(_: object) -> dict[str, object]:
+        raise errors.AuthError(
+            "untrusted remote auth message", source="fhsc", http_status=401
+        )
+
+    monkeypatch.setattr(source_class, "status", fail_status)
+    with pytest.raises(SourceEntitlementError) as caught:
+        health_check(store, online=True, now=datetime(2026, 11, 16, tzinfo=UTC))
+    assert "untrusted remote auth message" not in str(caught.value)
+
+
+def test_key_expiring_in_less_than_24_hours_warns_at_least_one_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("FHSC_API_KEY", "test-fhsc-key")
+    monkeypatch.setenv("VNSTOCK_FHSC_KEY_CREATED_AT", "2026-10-17T12:00:00+00:00")
+    store = StateStore(tmp_path / "state.sqlite")
+    store.initialize()
+    health_check(
+        store,
+        online=True,
+        now=datetime(2026, 11, 16, 6, 0, tzinfo=UTC),
+        connectivity_check=lambda: None,
+    )
+    assert "API Key will expire in 1 days" in caplog.text
+    registered = store.get_key("fhsc")
+    assert registered is not None
+    assert registered["package_version"] == "vnstock-oapi==0.1.2"
+
+
+def test_state_store_publish_snapshot_syncs_with_runner_finalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite")
+    timestamps = iter(
+        (
+            "2026-11-16T00:00:00+00:00",
+            "2026-11-16T00:00:01+00:00",
+            "2026-11-16T00:00:02+00:00",
+            "2026-11-16T00:00:03+00:00",
+            "2026-11-16T00:00:04+00:00",
+            "2026-11-16T00:00:05+00:00",
+        )
+    )
+    monkeypatch.setattr("finintel.pipeline.state_store._now", lambda: next(timestamps))
+
+    def publish(context: StepContext) -> StepOutcome:
+        store.publish_snapshot(context.run_id, "snap_001")
+        return StepOutcome(snapshot_id="snap_001")
+
+    result = Runner(store, {Stage.PUBLISH: publish}, min_free_bytes=0).run(
+        RunRequest(source="file", stage=Stage.PUBLISH)
+    )
+    assert result.run_id is not None
+    assert result.status == RunStatus.SUCCEEDED
+    run_row = store.get_run(result.run_id)
+    active = store.active_snapshot()
+    assert run_row is not None and active is not None
+    assert run_row["published_snapshot_id"] == "snap_001"
+    assert active["snapshot_id"] == "snap_001"
+    assert active["published_at"] == run_row["finished_at"]
+    assert store.published_snapshot_ids() == ["snap_001"]
+
+
+def test_ingest_handler_records_archived_tickers_for_partial_batch_continuation(
+    tmp_path: Path,
+) -> None:
+    fpt_file = tmp_path / "fpt.csv"
+    fpt_file.write_text("raw_metric_key,raw_value\n10,100\n", encoding="utf-8")
+    vnm_file = tmp_path / "vnm.csv"
+    vnm_file.write_text("raw_metric_key,raw_value\n10,200\n", encoding="utf-8")
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        f"""
+state_path: metadata/state.sqlite
+min_free_bytes: 0
+ingestion:
+  raw_path: raw
+  files:
+    - path: {json.dumps(fpt_file.name)}
+      source_provider: manual_audit
+      metadata:
+        issuer_id: FPT-ISSUER
+        ticker_at_filing: FPT
+        statement_type: INCOME_STATEMENT
+        statement_scope: CONSOLIDATED
+        period_type: ANNUAL
+        fiscal_year: 2025
+        fiscal_year_start_date: 2025-01-01
+        period_start_date: 2025-01-01
+        period_end_date: 2025-12-31
+    - path: {json.dumps(vnm_file.name)}
+      source_provider: manual_audit
+      metadata:
+        issuer_id: VNM-ISSUER
+        ticker_at_filing: VNM
+        statement_type: INCOME_STATEMENT
+        statement_scope: CONSOLIDATED
+        period_type: ANNUAL
+        fiscal_year: 2025
+        fiscal_year_start_date: 2025-01-01
+        period_start_date: 2025-01-01
+        period_end_date: 2025-12-31
+""",
+        encoding="utf-8",
+    )
+    settings = load_settings(config)
+    store = StateStore(settings.state_path)
+    from finintel.pipeline.ingest import IngestHandler
+
+    ingest_handler = IngestHandler(store, config.parent, settings.ingestion)
+    observed_downstream: list[tuple[str, ...]] = []
+
+    def downstream(context: StepContext) -> StepOutcome:
+        observed_downstream.append(context.tickers)
+        return StepOutcome(
+            snapshot_id="snap_done" if context.stage == Stage.PUBLISH else None
+        )
+
+    handlers: dict[Stage, Callable[[StepContext], StepOutcome]] = dict.fromkeys(
+        Stage, downstream
+    )
+    handlers[Stage.INGEST] = ingest_handler
+    result = Runner(store, handlers, min_free_bytes=0).run(RunRequest(source="file"))
+    assert result.status == RunStatus.SUCCEEDED
+    assert observed_downstream == [("FPT", "VNM")] * (len(Stage) - 1)
+
+
+def test_keyboard_interrupt_marks_step_and_run_failed_and_returns_130(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "settings.yaml"
+    database = tmp_path / "state.sqlite"
+    config.write_text(
+        f'state_path: "{database.as_posix()}"\nmin_free_bytes: 0\n',
+        encoding="utf-8",
+    )
+
+    def interrupt(context: StepContext) -> StepOutcome:
+        raise KeyboardInterrupt()
+
+    code = main(
+        ["--config", str(config), "run", "--source", "file", "--stage", "ingest"],
+        handlers={Stage.INGEST: interrupt},
+    )
+    assert code == 130
+    store = StateStore(database)
+    with store.connection() as conn:
+        run_row = conn.execute("SELECT run_id, status FROM pipeline_runs").fetchone()
+        assert run_row is not None
+        assert run_row["status"] == RunStatus.FAILED
+        steps = store.list_steps(str(run_row["run_id"]))
+        assert len(steps) == 1
+        assert steps[0]["status"] == "FAILED"
+        assert steps[0]["error_type"] == "KeyboardInterrupt"
+
+
+def test_cli_formats_sibling_layer_logs_and_non_mapping_details_as_jsonl(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import logging
+
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        f'state_path: "{(tmp_path / "state.sqlite").as_posix()}"\nmin_free_bytes: 0\n',
+        encoding="utf-8",
+    )
+    sibling_logger = logging.getLogger("finintel.storage")
+
+    def step(context: StepContext) -> StepOutcome:
+        sibling_logger.info(
+            "Sibling layer event",
+            extra={
+                "run_id": context.run_id,
+                "stage": context.stage,
+                "event": "storage_event",
+                "details": {"path": tmp_path / "snap_1"},
+            },
+        )
+        sibling_logger.warning(
+            "Non-mapping details",
+            extra={"event": "non_mapping", "details": ["raw-item"]},
+        )
+        return StepOutcome()
+
+    assert (
+        main(
+            ["--config", str(config), "run", "--source", "file", "--stage", "ingest"],
+            handlers={Stage.INGEST: step},
+        )
+        == 0
+    )
+    lines = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    events = {item["event"]: item for item in lines}
+    assert "storage_event" in events
+    assert events["storage_event"]["details"]["path"] == str(tmp_path / "snap_1")
+    assert events["non_mapping"]["details"]["value"] == ["raw-item"]
+
+
+def test_layer0_pipeline_modules_do_not_import_polars_or_pandas() -> None:
+    import ast
+
+    pipeline_dir = Path(__file__).resolve().parents[2] / "src" / "finintel" / "pipeline"
+    layer0_files = (
+        "__init__.py",
+        "cli.py",
+        "runner.py",
+        "retry_policy.py",
+        "health.py",
+        "state_store.py",
+    )
+    forbidden = {"polars", "pandas"}
+    violations: list[str] = []
+    for name in layer0_files:
+        path = pipeline_dir / name
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in forbidden:
+                        violations.append(f"{path.name}:{node.lineno}:{alias.name}")
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                if node.module.split(".")[0] in forbidden:
+                    violations.append(f"{path.name}:{node.lineno}:{node.module}")
+    assert violations == []
+
+
+def test_sqlite_check_constraints_reject_invalid_run_and_step_statuses(
+    tmp_path: Path,
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite")
+    store.initialize()
+    with pytest.raises(sqlite3.IntegrityError):
+        store.start_run("valid", "CLI_MANUAL", {}, None)
+        with store.connection() as conn:
+            conn.execute(
+                "UPDATE pipeline_runs SET status = 'INVALID_STATUS' WHERE run_id = 'valid'"
+            )
+    step_id = store.start_step("valid", Stage.INGEST)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.finish_step(step_id, "INVALID_STEP_STATUS")
+
+
+def test_health_cli_skips_ddl_when_database_exists_and_get_key_handles_uninitialized_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = StateStore(tmp_path / "uninitialized.sqlite")
+    assert store.get_key("fhsc") is None
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("CREATE TABLE dummy (id INTEGER PRIMARY KEY)")
+    assert store.get_key("fhsc") is None
+
+    existing = StateStore(tmp_path / "existing.sqlite")
+    existing.initialize()
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        f'state_path: "{existing.path.as_posix()}"\nmin_free_bytes: 0\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        StateStore,
+        "initialize",
+        lambda _: pytest.fail("health must not re-run DDL on an existing database"),
+    )
+    assert main(["--config", str(config), "health", "--source", "file"]) == 0
+
+
+def test_unconfigured_stage_logs_error_and_returns_failed_exit_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        f'state_path: "{(tmp_path / "state.sqlite").as_posix()}"\nmin_free_bytes: 0\n',
+        encoding="utf-8",
+    )
+    assert (
+        main(
+            ["--config", str(config), "run", "--source", "file", "--stage", "publish"],
+            handlers={},
+        )
+        == 1
+    )
+    records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert any(r["event"] == "stages_unconfigured" for r in records)

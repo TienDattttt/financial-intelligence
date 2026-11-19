@@ -37,7 +37,9 @@ def _fact_columns(facts: pl.DataFrame) -> pl.DataFrame:
         facts = facts.with_columns(
             pl.lit(None, dtype=pl.Boolean).alias("is_filed_late")
         )
-    return facts.select(FACT_SCHEMA.names())
+    return facts.select(
+        *(pl.col(name).cast(dtype) for name, dtype in FACT_SCHEMA.items())
+    )
 
 
 def _disclosure(available: pl.Expr, exact: pl.Expr) -> list[pl.Expr]:
@@ -139,6 +141,7 @@ def _audited_q4(annual: pl.DataFrame, quarters: pl.DataFrame) -> pl.DataFrame:
             VALUE.sum().alias("_9m_value"),
             AVAILABLE.max().alias("_9m_available"),
             EXACT.all().alias("_9m_exact"),
+            (AUDIT == "UNAUDITED").any().alias("_9m_unaudited"),
             pl.col("source_filing_ids")
             .explode()
             .unique(maintain_order=True)
@@ -162,6 +165,11 @@ def _audited_q4(annual: pl.DataFrame, quarters: pl.DataFrame) -> pl.DataFrame:
                 pl.col("_9m_filings").list.concat("source_filing_ids"),
             ),
             pl.lit(4, dtype=pl.Int32).alias("fiscal_quarter"),
+            pl.when(pl.col("_9m_unaudited"))
+            .then(pl.lit("UNAUDITED"))
+            .otherwise(pl.lit("REVIEWED"))
+            .alias("audit_status"),
+            pl.lit("NOT_APPLICABLE").alias("audit_opinion"),
         )
         .select(*FACT_SCHEMA.names(), "_priority")
     )
@@ -198,14 +206,23 @@ def derive_quarters(facts: pl.DataFrame, *, as_of: date | None = None) -> pl.Dat
         & DAYS.is_between(350, 380)
         & pl.col("statement_scope").is_in(KNOWN_SCOPES)
     )
-    direct = flow.filter(
+    discrete_quarter = (
         (pl.col("period_type") == "QUARTER")
-        & (pl.col("derivation_method") == "REPORTED_DIRECTLY")
         & Q.is_between(1, 4)
         & DAYS.is_between(80, 100)
         & (DAYS == _days(START, END))
         & (START - FISCAL_START).dt.total_days().is_between((Q - 1) * 80, (Q - 1) * 100)
+        & pl.col("statement_scope").is_in(KNOWN_SCOPES)
+    )
+    direct = flow.filter(
+        discrete_quarter & (pl.col("derivation_method") == "REPORTED_DIRECTLY")
     ).with_columns(pl.lit(0).alias("_priority"))
+    stored_derived = flow.filter(
+        discrete_quarter
+        & pl.col("derivation_method").is_in(
+            ["DERIVED_YTD_DIFF", "DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX"]
+        )
+    ).with_columns(pl.lit(3).alias("_priority"))
     cumulative = (
         pl.concat(
             [
@@ -234,7 +251,13 @@ def derive_quarters(facts: pl.DataFrame, *, as_of: date | None = None) -> pl.Dat
     reported_or_ytd = _prefer_quarters(pl.concat([direct, _ytd_diff(cumulative)]))
     quarters = (
         _prefer_quarters(
-            pl.concat([reported_or_ytd, _audited_q4(annual, reported_or_ytd)])
+            pl.concat(
+                [
+                    reported_or_ytd,
+                    _audited_q4(annual, reported_or_ytd),
+                    stored_derived,
+                ]
+            )
         )
         .select(FACT_SCHEMA.names())
         .sort([*PERIOD_ORDER, "taxonomy_version"])
@@ -262,13 +285,16 @@ def compute_ttm(facts_df: pl.DataFrame, *, as_of: date | None = None) -> pl.Data
             (pl.col("value_type") == "FLOW")
             & (pl.col("period_type") == "QUARTER")
             & Q.is_between(1, 4)
+            & pl.col("statement_scope").is_in(KNOWN_SCOPES)
         )
-        .join(quarters.select(FISCAL_QUARTER), on=FISCAL_QUARTER, how="anti")
+        .join(quarters.select(QUARTER_KEY), on=QUARTER_KEY, how="anti")
         .sort(REVISION_ORDER)
         .unique(subset=FISCAL_QUARTER, keep="last")
         .with_columns(
             pl.lit(None, dtype=pl.Float64).alias("value"),
-            pl.lit(None, dtype=pl.String).alias("derivation_method"),
+            pl.col("derivation_method")
+            .fill_null("REPORTED_DIRECTLY")
+            .alias("derivation_method"),
         )
     )
     quarters = pl.concat([quarters, unresolved])
@@ -288,8 +314,14 @@ def compute_ttm(facts_df: pl.DataFrame, *, as_of: date | None = None) -> pl.Data
             comparative,
         ]
     )
-    revised = _ttm_windows(adjusted).filter(
-        (FISCAL_START >= TT99_EFFECTIVE_DATE) & pl.col("ttm_value").is_not_null()
+    revised = (
+        _ttm_windows(
+            adjusted.with_columns(pl.lit(False).alias("comparable_across_taxonomy"))
+        )
+        .with_columns(adjusted.sort(PERIOD_ORDER)["comparable_across_taxonomy"])
+        .filter(
+            (FISCAL_START >= TT99_EFFECTIVE_DATE) & pl.col("ttm_value").is_not_null()
+        )
     )
     return pl.concat(
         [

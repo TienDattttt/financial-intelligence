@@ -104,10 +104,12 @@ Mẫu FHSC chỉ cung cấp nhãn kỳ kế toán cho mỗi dòng. Khởi tạo 
 * **Trường hợp 2 (`published_at IS NULL` khi lấy từ API chỉ có kỳ kế toán):**
   * `published_at_basis = 'STATUTORY_LAG'`
   * `is_filed_late = NULL`
-  * Cộng độ trễ trần bảo thủ của **BCTC Hợp nhất / Công ty mẹ** vào `period_end_date`:
-    * Nếu `period_type == 'QUARTER'` (Q1, Q3, hoặc Q4 chưa kiểm toán): $\text{effective\_available\_at} = \text{period\_end\_date} + 30\text{ ngày}$.
-    * Nếu `period_type == 'SEMI_ANNUAL'` (hoặc Q2 có soát xét bán niên): $\text{effective\_available\_at} = \text{period\_end\_date} + 60\text{ ngày}$.
+  * Cộng độ trễ trần bảo thủ của **BCTC Hợp nhất / Công ty mẹ** vào `period_end_date` theo Điều 10 và Điều 14 Thông tư 96/2020/TT-BTC:
+    * Nếu `period_type == 'QUARTER'` (Q1, Q3, hoặc Q4 chưa kiểm toán/chưa soát xét): $\text{effective\_available\_at} = \text{period\_end\_date} + 30\text{ ngày}$.
+    * Nếu `period_type == 'QUARTER'` (Q1, Q3, hoặc Q4 có soát xét `audit_status == 'REVIEWED'`): $\text{effective\_available\_at} = \text{period\_end\_date} + 45\text{ ngày}$.
+    * Nếu `period_type == 'SEMI_ANNUAL'` (hoặc Q2 có `audit_status IN ('REVIEWED', 'UNKNOWN')`): $\text{effective\_available\_at} = \text{period\_end\_date} + 60\text{ ngày}$.
     * Nếu `period_type == 'ANNUAL'` (Báo cáo năm kiểm toán): $\text{effective\_available\_at} = \text{period\_end\_date} + 90\text{ ngày}$.
+    * Với bản đính chính hoặc cập nhật kiểm toán (`revision_no >= 2`) thiếu `published_at`, mốc `effective_available_at` không sớm hơn ngày hệ thống quan sát phiên bản đó (`fetched_at`).
 
 ---
 

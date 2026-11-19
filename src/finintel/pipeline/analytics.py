@@ -1,20 +1,26 @@
-"""Run Layer 4A against a normalized fact history and issuer reference table."""
+"""Run Layer 4A and optional gated Layer 4B against normalized fact history."""
 
+import hashlib
 import json
 import logging
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import polars as pl
 
-from finintel.analytics.tables import RATIOS_TABLE, build_analytics_tables
+from finintel.analytics.tables import (
+    BENCHMARKS_TABLE,
+    RATIOS_TABLE,
+    build_analytics_tables,
+)
 from finintel.exceptions import ContractViolationError
 from finintel.pipeline.normalize import NORMALIZATION_METADATA, _period_filter
 from finintel.pipeline.runner import StepContext, StepOutcome
 from finintel.pipeline.state_store import StateStore
+from finintel.storage.schemas import ML_SCORES_TABLE
 
 logger = logging.getLogger("finintel.pipeline.analytics")
 
@@ -62,6 +68,17 @@ class AnalyticsHandler:
             ) from exc
 
         tables = build_analytics_tables(facts, issuers, as_of=as_of)
+        ml_artifacts = self._maybe_run_ml(
+            facts,
+            issuers,
+            facts_path=facts_path,
+            issuers_path=issuers_path,
+            as_of=as_of,
+            benchmarks=tables[BENCHMARKS_TABLE],
+        )
+        if ml_artifacts is not None:
+            tables[ML_SCORES_TABLE] = ml_artifacts.scores_table
+
         ratios = tables[RATIOS_TABLE]
         if context.tickers or context.request.period:
             # Calculate history and peers first. A replay filter limits only outputs.
@@ -96,12 +113,114 @@ class AnalyticsHandler:
                         "facts_path": str(facts_path),
                         "issuers_path": str(issuers_path),
                         "source": context.request.source,
+                        "ml_enabled": ml_artifacts is not None,
                     }
                 ),
                 encoding="utf-8",
             )
+            if ml_artifacts is not None:
+                (staging / "model_evaluation_report.json").write_text(
+                    json.dumps(
+                        ml_artifacts.evaluation_report,
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+                (staging / "_ml_run_manifest.json").write_text(
+                    json.dumps(
+                        ml_artifacts.run_manifest,
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
             staging.rename(parent / context.run_id)
         return StepOutcome()
+
+    def _maybe_run_ml(
+        self,
+        facts: pl.DataFrame,
+        issuers: pl.DataFrame,
+        *,
+        facts_path: Path,
+        issuers_path: Path,
+        as_of: date,
+        benchmarks: pl.DataFrame,
+    ) -> Any:
+        raw_ml = self.settings.get("ml")
+        if raw_ml is None:
+            return None
+        if not isinstance(raw_ml, Mapping):
+            raise ContractViolationError(
+                "Analytics ml configuration must be a mapping."
+            )
+        enabled = raw_ml.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ContractViolationError("Analytics ml.enabled must be a boolean.")
+        if not enabled:
+            return None
+
+        require_exact = raw_ml.get("require_exact_filing", True)
+        if require_exact is not True:
+            raise ContractViolationError(
+                "Guardrail G1 prohibits disabling require_exact_filing in pipeline ML runs."
+            )
+        approved_target = raw_ml.get("approved_target", False)
+        if not isinstance(approved_target, bool):
+            raise ContractViolationError(
+                "Analytics ml.approved_target must be a boolean."
+            )
+        validation_start = self._parse_iso_date(
+            raw_ml.get("validation_start"), "ml.validation_start"
+        )
+        test_start = self._parse_iso_date(raw_ml.get("test_start"), "ml.test_start")
+        scope = raw_ml.get("statement_scope", "CONSOLIDATED")
+        taxonomy = raw_ml.get("taxonomy_version", "VAS_TT200_2014")
+        if not isinstance(scope, str) or not isinstance(taxonomy, str):
+            raise ContractViolationError(
+                "Analytics ml.statement_scope and ml.taxonomy_version must be strings."
+            )
+
+        from finintel.ml.tables import build_ml_artifacts
+
+        return build_ml_artifacts(
+            facts,
+            issuers,
+            as_of=as_of,
+            validation_start=validation_start,
+            test_start=test_start,
+            approved_target=approved_target,
+            require_exact_filing=True,
+            statement_scope=scope,
+            taxonomy_version=taxonomy,
+            peer_benchmarks=benchmarks,
+            facts_sha256=self._sha256_file(facts_path),
+            issuers_sha256=self._sha256_file(issuers_path),
+        )
+
+    @staticmethod
+    def _parse_iso_date(value: object, field_name: str) -> date:
+        if type(value) is date:
+            return value
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                pass
+        raise ContractViolationError(
+            f"Analytics {field_name} must be an ISO calendar date."
+        )
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def _input_path(self, key: str, default: Path | None = None) -> Path | None:
         value = self.settings.get(key)
@@ -120,6 +239,11 @@ class AnalyticsHandler:
         explicit = self._input_path("facts_path")
         if explicit is not None:
             return explicit
+        clean_from_qg1 = (
+            curated / "quality" / context.run_id / "clean_financial_facts.parquet"
+        )
+        if clean_from_qg1.is_file():
+            return clean_from_qg1
         source = context.request.source
         batches = curated / "financial_facts"
         for run_id, legacy_full in self.state.completed_normalizations(source):

@@ -16,8 +16,87 @@ from finintel.ingestion.base import FilingMetadata
 from finintel.ingestion.file_adapter import FileAdapter
 from finintel.ingestion.hasher import canonical_content_sha256, payload_file_sha256
 from finintel.normalization.mapper import FACT_SCHEMA, UNMAPPED_SCHEMA, TaxonomyMapper
+from finintel.normalization.periods import derive_quarters
 from finintel.normalization.restatement import map_restatement
 from finintel.pipeline.state_store import StateStore
+
+ALLOWED_FILING_SETTINGS = {"unit_multiplier", "cash_flow_method", "comparative"}
+ALLOWED_COMPARATIVE_KEYS = {
+    "value_column",
+    "fiscal_year",
+    "fiscal_quarter",
+    "fiscal_year_start_date",
+    "period_type",
+    "period_start_date",
+    "period_end_date",
+}
+
+
+def _period_filter(period: str) -> pl.Expr:
+    year, _, quarter = period.partition("-Q")
+    selected = pl.col("fiscal_year") == int(year)
+    if not quarter:
+        return selected & (pl.col("period_type") == "ANNUAL")
+    return selected & (
+        (pl.col("fiscal_quarter") == int(quarter)).fill_null(False)
+        | ((int(quarter) == 2) & (pl.col("period_type") == "SEMI_ANNUAL"))
+    )
+
+
+def build_normalized_batch(
+    facts: pl.DataFrame,
+    unmapped: pl.DataFrame,
+    *,
+    period: str | None = None,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Combine normalized facts with derived discrete quarters for curated storage."""
+    derived = derive_quarters(facts).filter(
+        pl.col("derivation_method") != "REPORTED_DIRECTLY"
+    )
+    if period is not None:
+        selected = _period_filter(period)
+        restated = pl.col("revision_reason") == "RESTATED_REGIME_CHANGE"
+        reported_ids = pl.concat(
+            [
+                facts.filter(selected & ~restated).select("filing_id"),
+                unmapped.filter(selected & ~restated).select("filing_id"),
+            ]
+        ).unique()
+        include = selected | (
+            restated & pl.col("filing_id").is_in(reported_ids["filing_id"].implode())
+        )
+        facts = facts.filter(include)
+        unmapped = unmapped.filter(include)
+        derived = pl.concat(
+            [
+                derived.filter(selected),
+                derived.join(reported_ids, on="filing_id", how="semi"),
+            ]
+        ).unique(maintain_order=True)
+    q = pl.col("fiscal_quarter")
+    days = pl.col("period_days")
+    start = pl.col("period_start_date")
+    end = pl.col("period_end_date")
+    fiscal_start = pl.col("fiscal_year_start_date")
+    discrete_quarter_flow = (
+        q.is_between(1, 4)
+        & days.is_between(80, 100)
+        & (days == ((end - start).dt.total_days() + 1).cast(pl.Int32))
+        & (start - fiscal_start).dt.total_days().is_between((q - 1) * 80, (q - 1) * 100)
+    )
+    retained_facts = facts.filter(
+        ~(
+            (pl.col("value_type") == "FLOW")
+            & (pl.col("period_type") == "QUARTER")
+            & ~discrete_quarter_flow
+        )
+    )
+    normalized = pl.concat([retained_facts, derived])
+    deduped_unmapped = unmapped.unique(
+        subset=["filing_id", "period_end_date", "raw_metric_key"],
+        maintain_order=True,
+    )
+    return normalized, deduped_unmapped
 
 
 def _fields(value: object) -> dict[str, object]:
@@ -103,6 +182,8 @@ def _archived_filing(
 ) -> list[tuple[pl.DataFrame, pl.DataFrame]]:
     metadata = FilingMetadata.from_mapping(row)
     filing_id, source = _text(row, "filing_id"), _text(row, "source_provider")
+    if set(settings) - ALLOWED_FILING_SETTINGS:
+        raise ContractViolationError("Unsupported normalization filing settings.")
     comparison = settings.get("comparative")
     unit_multiplier = _integer(
         settings, "unit_multiplier", 1 if source == "fhsc" else None
@@ -144,6 +225,8 @@ def _archived_filing(
     ]
     if comparison is not None:
         fields = _fields(comparison)
+        if set(fields) - ALLOWED_COMPARATIVE_KEYS:
+            raise ContractViolationError("Unsupported comparative period settings.")
         value_column = _text(fields, "value_column")
         if value_column == attrs.get("value_column"):
             raise ContractViolationError(

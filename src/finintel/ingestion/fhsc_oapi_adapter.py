@@ -8,8 +8,7 @@ from collections.abc import Iterator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from finintel.exceptions import ContractViolationError, RateLimitOrCircuitOpenError
-from finintel.ingestion.base import (
+from finintel.domain.schemas import (
     FilingMetadata,
     FinancialStatementProvider,
     PaginationStatus,
@@ -19,6 +18,7 @@ from finintel.ingestion.base import (
     RawPayload,
     StatementType,
 )
+from finintel.exceptions import ContractViolationError, RateLimitOrCircuitOpenError
 from finintel.pipeline.health import (
     fhsc_retried_rate_limit,
     fhsc_source_errors,
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from vnstock_oapi.core.envelope import Envelope
 
 OPERATION = "financial-statement/statement"
+MAX_TRACE_ID_LEN = 128
 STATEMENTS = {
     StatementType.BALANCE_SHEET: "balance-sheet",
     StatementType.INCOME_STATEMENT: "income-statement",
@@ -47,7 +48,16 @@ def _payload(envelope: Envelope, query: dict[str, object]) -> RawPayload:
         raise ContractViolationError(
             "FHSC returned an invalid JSON envelope."
         ) from None
-    trace = envelope.body.get("traceId") if isinstance(envelope.body, dict) else None
+    raw_trace = (
+        envelope.body.get("traceId") if isinstance(envelope.body, dict) else None
+    )
+    trace = (
+        raw_trace
+        if isinstance(raw_trace, str)
+        and len(raw_trace) <= MAX_TRACE_ID_LEN
+        and raw_trace.isprintable()
+        else None
+    )
     return RawPayload(
         content,
         "json",
@@ -61,7 +71,7 @@ def _payload(envelope: Envelope, query: dict[str, object]) -> RawPayload:
             "request": query,
             "http_status": envelope.http_status,
             "body_sha256": envelope.body_sha256,
-            "traceId": trace if isinstance(trace, str) else None,
+            "traceId": trace,
             "request_count": (envelope.transport or {}).get("request_count"),
         },
     )
@@ -107,15 +117,31 @@ class FhscOapiAdapter(FinancialStatementProvider):
         self.year = year
         self.quarter = quarter
         self.limit = limit
+        self._next_page = 1
+        self._seen: set[tuple[int, int | None]] = set()
         self.metadata: dict[tuple[int, int | None], FilingMetadata] = {}
         for filing in metadata:
             if (
                 filing.ticker_at_filing != ticker
                 or filing.statement_type != statement_type
-                or filing.period_type != period_type
             ):
                 continue
-            key = (filing.fiscal_year, filing.fiscal_quarter)
+            if period_type == PeriodType.ANNUAL:
+                if filing.period_type != PeriodType.ANNUAL:
+                    continue
+                key: tuple[int, int | None] = (filing.fiscal_year, None)
+            else:
+                if filing.period_type not in (
+                    PeriodType.QUARTER,
+                    PeriodType.SEMI_ANNUAL,
+                ):
+                    continue
+                key = (
+                    filing.fiscal_year,
+                    2
+                    if filing.period_type == PeriodType.SEMI_ANNUAL
+                    else filing.fiscal_quarter,
+                )
             if key in self.metadata:
                 raise ContractViolationError("Ambiguous metadata for an FHSC period.")
             self.metadata[key] = filing
@@ -132,8 +158,7 @@ class FhscOapiAdapter(FinancialStatementProvider):
             raise ContractViolationError("Unexpected FHSC financials operation.")
         plan = plans[0]
         max_pages = source.spec.ops[OPERATION].max_pages
-        seen: set[tuple[int, int | None]] = set()
-        for page in range(1, max_pages + 1):
+        for page in range(self._next_page, max_pages + 1):
             query: dict[str, object] = {
                 key: plan.params[key] for key in ("symbol", "type", "period")
             }
@@ -148,8 +173,9 @@ class FhscOapiAdapter(FinancialStatementProvider):
                 raise ContractViolationError("FHSC must return one envelope per page.")
             envelope = pages[0]
             payload = _payload(envelope, query)
+            page_seen = set(self._seen)
             try:
-                filings, deferred, empty = self._records(envelope.body, seen)
+                filings, deferred, empty = self._records(envelope.body, page_seen)
             except ContractViolationError:
                 yield RawFilingBundle(payload, pagination_status="INVALID_RESPONSE")
                 raise
@@ -162,10 +188,16 @@ class FhscOapiAdapter(FinancialStatementProvider):
             elif page == max_pages:
                 status = "PAGE_LIMIT_REACHED"
             yield RawFilingBundle(payload, filings, deferred, status)
+            self._seen = page_seen
+            self._next_page = page + 1
             if status == "THROTTLED":
                 raise RateLimitOrCircuitOpenError("FHSC is throttling requests.")
             if empty:
+                self._next_page = 1
+                self._seen.clear()
                 return
+        self._next_page = 1
+        self._seen.clear()
 
     def _records(
         self, body: object, seen: set[tuple[int, int | None]]

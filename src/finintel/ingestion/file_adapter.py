@@ -4,26 +4,34 @@ from __future__ import annotations
 
 import csv
 import json
+import re
+import zlib
 from collections.abc import Iterable, Iterator, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from importlib import import_module
 from io import BytesIO, StringIO
+from itertools import zip_longest
 from pathlib import Path
 from typing import Literal, cast
 from xml.etree.ElementTree import ParseError
-from zipfile import BadZipFile
+from zipfile import BadZipFile, ZipFile
 
-from finintel.exceptions import ContractViolationError
-from finintel.ingestion.base import (
+from finintel.domain.schemas import (
     FilingMetadata,
     FinancialStatementProvider,
     RawFiling,
     RawFilingBundle,
     RawPayload,
 )
+from finintel.exceptions import ContractViolationError
 
 FORMATS = {"csv", "json", "xlsx", "parquet"}
+MAX_FILING_BYTES = 50 * 1024 * 1024
+MAX_XLSX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+MAX_XLSX_ROWS = 10_000
+MAX_XLSX_COLS = 256
+MAX_METRIC_KEY_LEN = 256
 
 
 def _unique_object(items: list[tuple[str, object]]) -> dict[str, object]:
@@ -52,7 +60,11 @@ class FileAdapter(FinancialStatementProvider):
             raise ContractViolationError(
                 "Expected an XLSX, CSV, JSON, or Parquet filing."
             )
-        if not source_provider.strip() or source_provider.strip().lower() == "fhsc":
+        normalized_source = source_provider.strip().lower()
+        if (
+            not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", normalized_source)
+            or normalized_source == "fhsc"
+        ):
             raise ContractViolationError(
                 "Provide the offline document's original source."
             )
@@ -66,7 +78,7 @@ class FileAdapter(FinancialStatementProvider):
             raise ContractViolationError("Sheet and header_row only apply to XLSX.")
         self.path = path
         self.metadata = metadata
-        self.source_provider = source_provider.strip().lower()
+        self.source_provider = normalized_source
         self.extension = cast(Literal["csv", "json", "xlsx", "parquet"], extension)
         self.metric_column = metric_column
         self.value_column = value_column
@@ -75,6 +87,14 @@ class FileAdapter(FinancialStatementProvider):
 
     def fetch(self) -> Iterator[RawFilingBundle]:
         try:
+            if self.path.is_symlink():
+                raise ContractViolationError(
+                    "Offline filing path cannot be a symbolic link."
+                )
+            if self.path.stat().st_size > MAX_FILING_BYTES:
+                raise ContractViolationError(
+                    "Offline filing exceeds the maximum allowed size."
+                )
             content = self.path.read_bytes()
         except OSError:
             raise ContractViolationError("Unable to read the offline filing.") from None
@@ -101,17 +121,38 @@ class FileAdapter(FinancialStatementProvider):
 
     def read_metrics(self, content: bytes) -> dict[str, object]:
         """Read the configured column pair from supplied original filing bytes."""
+        if len(content) > MAX_FILING_BYTES:
+            raise ContractViolationError(
+                "Offline filing exceeds the maximum allowed size."
+            )
         try:
             return self._read_metrics(content)
-        except (OSError, ValueError, csv.Error, BadZipFile, ParseError):
+        except (
+            OSError,
+            ValueError,
+            csv.Error,
+            BadZipFile,
+            ParseError,
+            RecursionError,
+            zlib.error,
+        ):
             raise ContractViolationError("Unable to read the offline filing.") from None
 
     def _read_metrics(self, content: bytes) -> dict[str, object]:
         metrics: dict[str, object] = {}
         for raw_code, value in self._pairs(content):
-            if raw_code is None and value is None:
+            code_blank = raw_code is None or (
+                isinstance(raw_code, str) and not raw_code.strip()
+            )
+            val_blank = value is None or (isinstance(value, str) and not value.strip())
+            if code_blank and val_blank:
                 continue
-            if not isinstance(raw_code, str) or not raw_code.strip():
+            if (
+                not isinstance(raw_code, str)
+                or not raw_code.strip()
+                or len(raw_code) > MAX_METRIC_KEY_LEN
+                or any(ord(ch) < 32 for ch in raw_code)
+            ):
                 raise ContractViolationError(
                     "Offline raw metric codes must be nonempty text."
                 )
@@ -119,9 +160,7 @@ class FileAdapter(FinancialStatementProvider):
                 raise ContractViolationError(
                     "Duplicate raw metric code in offline filing."
                 )
-            metrics[raw_code] = (
-                None if isinstance(value, str) and not value.strip() else value
-            )
+            metrics[raw_code] = None if val_blank else value
         if not metrics:
             raise ContractViolationError("No raw metrics in the offline filing.")
         return metrics
@@ -175,74 +214,88 @@ class FileAdapter(FinancialStatementProvider):
             yield row[code_index], row[value_index]
 
     def _xlsx_pairs(self, content: bytes) -> Iterator[tuple[object, object]]:
+        with ZipFile(BytesIO(content), "r") as archive_zip:
+            total_uncompressed = 0
+            for info in archive_zip.infolist():
+                if info.file_size < 0 or info.file_size > MAX_XLSX_UNCOMPRESSED_BYTES:
+                    raise ContractViolationError(
+                        "XLSX archive exceeds the maximum uncompressed size."
+                    )
+                total_uncompressed += info.file_size
+                if total_uncompressed > MAX_XLSX_UNCOMPRESSED_BYTES:
+                    raise ContractViolationError(
+                        "XLSX archive exceeds the maximum uncompressed size."
+                    )
+
         openpyxl = import_module("openpyxl")
+        book = None
+        formula_book = None
         try:
-            book = openpyxl.load_workbook(
-                BytesIO(content), read_only=True, data_only=True, keep_links=False
-            )
-        except (KeyError, openpyxl.utils.exceptions.InvalidFileException):
-            raise ContractViolationError("Invalid XLSX filing.") from None
+            try:
+                book = openpyxl.load_workbook(
+                    BytesIO(content), read_only=True, data_only=True, keep_links=False
+                )
+                formula_book = openpyxl.load_workbook(
+                    BytesIO(content), read_only=True, data_only=False, keep_links=False
+                )
+            except (KeyError, openpyxl.utils.exceptions.InvalidFileException):
+                raise ContractViolationError("Invalid XLSX filing.") from None
 
-        try:
-            formula_book = openpyxl.load_workbook(
-                BytesIO(content), read_only=True, data_only=False, keep_links=False
-            )
-        except (KeyError, openpyxl.utils.exceptions.InvalidFileException):
-            book.close()
-            raise ContractViolationError("Invalid XLSX filing.") from None
-
-        try:
-            sheet_name = self.sheet or book.sheetnames[0]
-            sheet = book[sheet_name]
-            formula_sheet = formula_book[sheet_name]
+            try:
+                sheet_name = self.sheet or book.sheetnames[0]
+                sheet = book[sheet_name]
+                formula_sheet = formula_book[sheet_name]
+            except (KeyError, IndexError):
+                raise ContractViolationError(
+                    "The requested XLSX sheet is missing."
+                ) from None
 
             # Reset worksheet dimensions so openpyxl does not rely on
             # declared dimensions that might understate the data extent.
             sheet.reset_dimensions()
             formula_sheet.reset_dimensions()
 
-            # Determine the parsed header width from the header row.
-            header_iter = sheet.iter_rows(
+            data_stream = sheet.iter_rows(
                 min_row=self.header_row,
-                max_row=self.header_row,
                 values_only=True,
             )
-            header_tuple = next(header_iter, ())
-            column_indexes = self._column_indexes(header_tuple)
+            formula_stream = formula_sheet.iter_rows(
+                min_row=self.header_row,
+                values_only=True,
+            )
+            header_tuple = next(data_stream, ())
+            next(formula_stream, ())
+            if len(header_tuple) > MAX_XLSX_COLS:
+                raise ContractViolationError(
+                    "XLSX header exceeds the maximum column limit."
+                )
+            code_index, value_index = self._column_indexes(header_tuple)
+            column_indexes = (code_index, value_index)
             header_width = len(header_tuple)
 
-            # Limit columns to the parsed header width and pad trailing empty
-            # cells that openpyxl read-only mode trims after reset_dimensions.
-            data_rows = [
-                tuple(
-                    list(row)[:header_width] + [None] * max(0, header_width - len(row))
+            sentinel = object()
+            for row_offset, (raw_d_row, raw_f_row) in enumerate(
+                zip_longest(data_stream, formula_stream, fillvalue=sentinel),
+                start=1,
+            ):
+                if raw_d_row is sentinel or raw_f_row is sentinel:
+                    raise ContractViolationError(
+                        "Row count mismatch between data and formula views of the XLSX."
+                    )
+                if row_offset > MAX_XLSX_ROWS:
+                    raise ContractViolationError(
+                        "XLSX filing exceeds the maximum row limit."
+                    )
+                d_seq = cast(Sequence[object], raw_d_row)
+                f_seq = cast(Sequence[object], raw_f_row)
+                d_row = tuple(
+                    list(d_seq)[:header_width]
+                    + [None] * max(0, header_width - len(d_seq))
                 )
-                for row in sheet.iter_rows(
-                    min_row=self.header_row,
-                    max_col=header_width if header_width > 0 else None,
-                    values_only=True,
+                f_row = tuple(
+                    list(f_seq)[:header_width]
+                    + [None] * max(0, header_width - len(f_seq))
                 )
-            ]
-            formula_rows = [
-                tuple(
-                    list(row)[:header_width] + [None] * max(0, header_width - len(row))
-                )
-                for row in formula_sheet.iter_rows(
-                    min_row=self.header_row,
-                    max_col=header_width if header_width > 0 else None,
-                    values_only=True,
-                )
-            ]
-
-            if len(data_rows) != len(formula_rows):
-                raise ContractViolationError(
-                    "Row count mismatch between data and formula views of the XLSX."
-                )
-
-            # Check caches only for cells that contribute a raw metric.
-            for row_idx in range(1, len(data_rows)):
-                d_row = data_rows[row_idx]
-                f_row = formula_rows[row_idx]
                 for col_idx in column_indexes:
                     formula_val = f_row[col_idx]
                     data_val = d_row[col_idx]
@@ -253,19 +306,18 @@ class FileAdapter(FinancialStatementProvider):
                     ):
                         raise ContractViolationError(
                             f"Formula without cached value at row "
-                            f"{self.header_row + row_idx}, column {col_idx + 1}. "
+                            f"{self.header_row + row_offset}, column {col_idx + 1}. "
                             f"Open and save the workbook in Excel to populate cached "
                             f"formula results before ingestion."
                         )
-
-            yield from self._table_pairs(iter(data_rows))
-        except (KeyError, IndexError):
-            raise ContractViolationError(
-                "The requested XLSX sheet is missing."
-            ) from None
+                if all(cell is None or cell == "" for cell in d_row):
+                    continue
+                yield d_row[code_index], d_row[value_index]
         finally:
-            formula_book.close()
-            book.close()
+            if formula_book is not None:
+                formula_book.close()
+            if book is not None:
+                book.close()
 
     def _parquet_pairs(self, content: bytes) -> Iterator[tuple[object, object]]:
         polars = import_module("polars")
@@ -277,6 +329,10 @@ class FileAdapter(FinancialStatementProvider):
             raise ContractViolationError(
                 "Invalid Parquet filing or missing raw metric columns."
             ) from None
+        if frame.height > MAX_XLSX_ROWS:
+            raise ContractViolationError(
+                "Parquet filing exceeds the maximum row limit."
+            )
         columns = cast(dict[str, list[object]], frame.to_dict(as_series=False))
         yield from zip(
             columns[self.metric_column], columns[self.value_column], strict=True

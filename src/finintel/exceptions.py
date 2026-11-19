@@ -27,3 +27,7 @@ class ArchiveIntegrityError(ContractViolationError):
 
 class CriticalDataQualityError(FinIntelError):
     """Sai đẳng thức kế toán nghiêm trọng hoặc tỷ lệ bản ghi lỗi vượt ngưỡng batch."""
+
+
+class InsufficientDiskSpaceError(FinIntelError):
+    """The state volume has less free space than required."""

@@ -13,46 +13,59 @@ from pathlib import Path
 FHSC_CONNECTOR_VERSION = "0.1.2"
 FHSC_KEY_LIFETIME = timedelta(days=30)
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS pipeline_runs (
-    run_id TEXT PRIMARY KEY,
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    status TEXT NOT NULL,
-    trigger_mode TEXT NOT NULL,
-    cli_args_json TEXT NOT NULL,
-    git_commit_sha TEXT,
-    published_snapshot_id TEXT,
-    snapshot_publish_order INTEGER
-);
-CREATE TABLE IF NOT EXISTS pipeline_steps (
-    step_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id TEXT NOT NULL REFERENCES pipeline_runs(run_id),
-    stage_name TEXT NOT NULL,
-    issuer_id TEXT,
-    filing_id TEXT,
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    status TEXT NOT NULL,
-    attempt_count INTEGER NOT NULL DEFAULT 1,
-    error_type TEXT,
-    error_message TEXT
-);
-CREATE INDEX IF NOT EXISTS pipeline_steps_by_run ON pipeline_steps(run_id, step_id);
-CREATE TABLE IF NOT EXISTS api_key_registry (
-    provider_name TEXT PRIMARY KEY,
-    key_fingerprint TEXT NOT NULL,
-    provisioned_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    package_version TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS active_snapshot (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    snapshot_id TEXT NOT NULL,
-    run_id TEXT NOT NULL REFERENCES pipeline_runs(run_id),
-    published_at TEXT NOT NULL
-);
-"""
+SCHEMA_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+        run_id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        status TEXT NOT NULL CHECK (
+            status IN ('RUNNING', 'SUCCEEDED', 'PARTIAL_SUCCESS', 'FAILED', 'ABORTED_CIRCUIT_OPEN')
+        ),
+        trigger_mode TEXT NOT NULL,
+        cli_args_json TEXT NOT NULL,
+        git_commit_sha TEXT,
+        published_snapshot_id TEXT,
+        snapshot_publish_order INTEGER
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pipeline_steps (
+        step_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL REFERENCES pipeline_runs(run_id),
+        stage_name TEXT NOT NULL,
+        issuer_id TEXT,
+        filing_id TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        status TEXT NOT NULL CHECK (
+            status IN ('RUNNING', 'SUCCEEDED', 'QUARANTINED', 'INCOMPLETE', 'SKIPPED_UNCHANGED', 'FAILED')
+        ),
+        attempt_count INTEGER NOT NULL DEFAULT 1,
+        error_type TEXT,
+        error_message TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS pipeline_steps_by_run ON pipeline_steps(run_id, step_id)",
+    """
+    CREATE TABLE IF NOT EXISTS api_key_registry (
+        provider_name TEXT PRIMARY KEY,
+        key_fingerprint TEXT NOT NULL,
+        provisioned_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        package_version TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS active_snapshot (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        snapshot_id TEXT NOT NULL,
+        run_id TEXT NOT NULL REFERENCES pipeline_runs(run_id),
+        published_at TEXT NOT NULL
+    )
+    """,
+)
+SCHEMA = ";\n".join(statement.strip() for statement in SCHEMA_STATEMENTS) + ";\n"
 
 
 def key_fingerprint(key: str) -> str:
@@ -82,9 +95,10 @@ class StateStore:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as conn:
-            conn.executescript(SCHEMA)
             conn.execute("BEGIN IMMEDIATE")
-            columns = conn.execute("PRAGMA table_info(pipeline_runs)")
+            for statement in SCHEMA_STATEMENTS:
+                conn.execute(statement)
+            columns = conn.execute("PRAGMA table_info(pipeline_runs)").fetchall()
             if not any(
                 column["name"] == "snapshot_publish_order" for column in columns
             ):
@@ -109,6 +123,7 @@ class StateStore:
         """Close abandoned RUNNING records while holding the pipeline file lock."""
         now = _now()
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """UPDATE pipeline_steps SET status = 'FAILED', finished_at = ?,
                    error_type = 'InterruptedRun',
@@ -129,6 +144,7 @@ class StateStore:
         git_commit_sha: str | None,
     ) -> None:
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """INSERT INTO pipeline_runs
                    (run_id, started_at, status, trigger_mode, cli_args_json, git_commit_sha)
@@ -149,6 +165,7 @@ class StateStore:
             snapshot_id = None
         now = _now()
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             # Publication can commit before GC fails and the runner marks the run failed.
             conn.execute(
                 "UPDATE pipeline_runs SET status = ?, finished_at = ? WHERE run_id = ?",
@@ -198,7 +215,13 @@ class StateStore:
             (run_id,),
         ).fetchone()
         if previous is not None and previous["published_snapshot_id"] == snapshot_id:
-            return  # Repeated finalization cannot reactivate an older publication.
+            # Sync timestamp if this run is still active without reactivating an older publication.
+            conn.execute(
+                """UPDATE active_snapshot SET published_at = ?
+                   WHERE singleton = 1 AND run_id = ? AND snapshot_id = ?""",
+                (published_at, run_id, snapshot_id),
+            )
+            return
         conn.execute(
             """UPDATE pipeline_runs SET published_snapshot_id = ?, snapshot_publish_order = (
                    SELECT COALESCE(MAX(snapshot_publish_order), 0) + 1 FROM pipeline_runs
@@ -230,6 +253,7 @@ class StateStore:
 
     def start_step(self, run_id: str, stage: str) -> int:
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             result = conn.execute(
                 """INSERT INTO pipeline_steps (run_id, stage_name, started_at, status)
                    VALUES (?, ?, ?, 'RUNNING')""",
@@ -240,6 +264,7 @@ class StateStore:
 
     def record_attempt(self, step_id: int, attempt: int) -> None:
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "UPDATE pipeline_steps SET attempt_count = ? WHERE step_id = ?",
                 (attempt, step_id),
@@ -256,6 +281,7 @@ class StateStore:
         error_message: str | None = None,
     ) -> None:
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """UPDATE pipeline_steps SET status = ?, finished_at = ?, issuer_id = ?,
                    filing_id = ?, error_type = ?, error_message = ? WHERE step_id = ?""",
@@ -277,6 +303,7 @@ class StateStore:
             )
         provisioned_at = provisioned_at.astimezone(UTC)
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """INSERT INTO api_key_registry VALUES ('fhsc', ?, ?, ?, ?)
                    ON CONFLICT(provider_name) DO UPDATE SET
@@ -291,9 +318,16 @@ class StateStore:
             )
 
     def get_key(self, provider: str) -> dict[str, object] | None:
-        return self._one(
-            "SELECT * FROM api_key_registry WHERE provider_name = ?", (provider,)
-        )
+        if not self.path.exists():
+            return None
+        try:
+            return self._one(
+                "SELECT * FROM api_key_registry WHERE provider_name = ?", (provider,)
+            )
+        except sqlite3.OperationalError as error:
+            if "no such table" in str(error).lower():
+                return None
+            raise
 
     def get_run(self, run_id: str) -> dict[str, object] | None:
         return self._one("SELECT * FROM pipeline_runs WHERE run_id = ?", (run_id,))

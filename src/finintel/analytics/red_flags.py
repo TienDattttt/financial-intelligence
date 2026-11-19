@@ -51,26 +51,39 @@ def _balance_sheet_amount(metric: str) -> pl.Expr:
 
 
 def _net_non_customer_receivables(inputs: tuple[str, str, str, str]) -> pl.Expr:
-    """Subtract net customer receivables from the net total for one maturity.
+    """Bound or compute net non-customer receivables for one maturity.
 
-    The balance-sheet provision is negative. The customer allowance from
-    the same filing's notes is a nonnegative part of the total provision.
-    Only an explicit zero provision or zero gross customer receivable
-    establishes a zero customer allowance without a note.
+    The balance-sheet provision is nonpositive. When the filing notes supply a
+    verified customer allowance A_m in [0, min(C_m, -P_m)], compute exact
+    N_m = T_m - (C_m - A_m). When no customer-allowance note is available,
+    use the tight mathematical lower bound max(0.0, T_m - C_m) provided the
+    balance sheet admits a valid allocation (T_m - C_m + min(C_m, -P_m) >= 0).
     """
     total, trade, provision, reported = map(_balance_sheet_amount, inputs)
-    allowance = pl.coalesce(
-        reported, pl.when((provision == 0) | (trade == 0)).then(0.0)
+    max_allowance = pl.min_horizontal(trade, -provision)
+    exact_net = total - (trade - reported)
+    exact_valid = (
+        reported.is_not_null()
+        & (trade >= 0)
+        & (provision <= 0)
+        & (reported >= 0)
+        & (reported <= max_allowance)
+        & (exact_net >= 0)
     )
-    net = total - (trade - allowance)
-    valid = (
-        (provision <= 0)
-        & (allowance >= 0)
-        & (allowance <= -provision)
-        & (allowance <= trade)
-        & (net >= 0)
+    lower_bound_valid = (
+        reported.is_null()
+        & total.is_not_null()
+        & (trade >= 0)
+        & (provision <= 0)
+        & ((total - trade + max_allowance) >= 0)
     )
-    return pl.when(valid).then(net)
+    lower_bound_net = pl.max_horizontal(pl.lit(0.0), total - trade)
+    return (
+        pl.when(exact_valid)
+        .then(exact_net)
+        .when(lower_bound_valid)
+        .then(lower_bound_net)
+    )
 
 
 def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:

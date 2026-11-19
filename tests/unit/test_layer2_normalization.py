@@ -1,6 +1,7 @@
 """Layer 2 contract tests with verified statutory codes and FPT source samples."""
 
 import json
+import math
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -22,13 +23,19 @@ from finintel.ingestion.base import (
     StatementType,
 )
 from finintel.ingestion.file_adapter import FileAdapter
-from finintel.normalization.archive import normalize_archive
-from finintel.normalization.mapper import TAXONOMIES, TaxonomyMapper, _alias_rows
+from finintel.normalization.archive import build_normalized_batch, normalize_archive
+from finintel.normalization.mapper import (
+    FACT_SCHEMA,
+    TAXONOMIES,
+    TaxonomyMapper,
+    _alias_rows,
+)
 from finintel.normalization.periods import compute_ttm, derive_quarters
 from finintel.normalization.regime_resolver import resolve_regime
 from finintel.normalization.restatement import map_restatement
 from finintel.pipeline.cli import main
 from finintel.pipeline.state_store import StateStore
+from finintel.storage.schemas import canonicalize_financial_facts
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -68,6 +75,12 @@ def test_fiscal_regime_boundary() -> None:
     assert resolve_regime(date(2026, 1, 1)) == "VAS_TT99_2025"
     assert resolve_regime(date(2025, 7, 1)) == "VAS_TT200_2014"
     assert resolve_regime(date(2026, 7, 1)) == "VAS_TT99_2025"
+    for invalid in (datetime(2026, 1, 1, 0, 0), None, "2026-01-01"):
+        with pytest.raises(
+            ContractViolationError,
+            match="Fiscal regime resolution requires a valid date",
+        ):
+            resolve_regime(invalid)  # type: ignore[arg-type]
 
 
 def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) -> None:
@@ -344,6 +357,17 @@ def test_cash_flow_disambiguation_and_signs(mapper: TaxonomyMapper) -> None:
     assert unknown.is_empty()
     assert unmapped["raw_metric_key"].to_list() == ["02"]
 
+    zero_cf, _ = mapper.map_metrics(
+        {"02": 0},
+        cf,
+        filing_id="cf-z",
+        source_provider="issuer",
+        cash_flow_method="DIRECT",
+    )
+    zero_val = zero_cf["value"].item()
+    assert zero_val == 0.0
+    assert math.copysign(1.0, zero_val) == 1.0
+
 
 def test_finance_codes_follow_the_reporting_regime(mapper: TaxonomyMapper) -> None:
     amounts = {"21": -3, "22": 10, "23": 4, "52": -2}
@@ -367,7 +391,10 @@ def test_finance_codes_follow_the_reporting_regime(mapper: TaxonomyMapper) -> No
     }
 
 
-@pytest.mark.parametrize("value", [True, "1.000,20", {"amount": 1}, float("inf")])
+@pytest.mark.parametrize(
+    "value",
+    [True, "1.000,20", {"amount": 1}, float("inf"), float("nan"), "NaN"],
+)
 def test_invalid_mapped_scalar_fails_fast(
     mapper: TaxonomyMapper, value: object
 ) -> None:
@@ -458,10 +485,17 @@ def test_audited_q4_fallback_and_filing_availability(mapper: TaxonomyMapper) -> 
         "fiscal_quarter"
     ].to_list() == [1, 2, 3]
     assert derive_quarters(table).tail(1).select(
-        "value", "derivation_method", "effective_available_at", "source_filing_ids"
+        "value",
+        "derivation_method",
+        "audit_status",
+        "audit_opinion",
+        "effective_available_at",
+        "source_filing_ids",
     ).row(0) == (
         45.0,
         "DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX",
+        AuditStatus.UNAUDITED,
+        "NOT_APPLICABLE",
         date(2026, 3, 19),
         ["filing-0", "filing-1", "filing-2", "filing-3"],
     )
@@ -510,9 +544,11 @@ def test_ttm_requires_four_non_null_contiguous_quarters(mapper: TaxonomyMapper) 
 def test_unresolvable_cumulative_q4_has_null_ttm(mapper: TaxonomyMapper) -> None:
     q1, q2, q4 = [filing(2025, q, ytd=True) for q in (1, 2, 4)]
     table = facts(mapper, [(q1, 10), (q2, 21), (q4, 46)])
-    assert compute_ttm(table).filter(pl.col("fiscal_quarter") == 4).select(
-        "value", "ttm_value", "computation_note"
-    ).row(0) == (None, None, None)
+    ttm = compute_ttm(table)
+    assert ttm.filter(pl.col("fiscal_quarter") == 4).select(
+        "value", "derivation_method", "ttm_value", "computation_note"
+    ).row(0) == (None, "REPORTED_DIRECTLY", None, None)
+    assert canonicalize_financial_facts(ttm.select(FACT_SCHEMA.names())).height == 3
 
 
 def test_cross_taxonomy_ttm_uses_compatible_quarters(mapper: TaxonomyMapper) -> None:
@@ -613,6 +649,26 @@ def test_partial_restatement_preserves_complete_original_ttm(
     assert compute_ttm(pl.concat([original, comparative])).tail(1).select(
         "ttm_value", "taxonomy_version"
     ).row(0) == (40.0, "VAS_TT200_2014")
+    q3_25, q4_25, q1_26, q2_26 = [
+        filing(y, q) for y, q in ((2025, 3), (2025, 4), (2026, 1), (2026, 2))
+    ]
+    comparable_original = facts(
+        mapper, [(q3_25, 10), (q4_25, 20), (q1_26, 30), (q2_26, 40)], "10"
+    )
+    partial_q3, _ = map_restatement(
+        mapper,
+        {"10": 100},
+        q3_25 if False else filing(2026, 3),
+        q3_25,
+        filing_id="restated-q3-only",
+        source_provider="issuer",
+    )
+    assert (
+        compute_ttm(pl.concat([comparable_original, partial_q3]))
+        .filter(pl.col("period_end_date") == q2_26.period_end_date)["ttm_value"]
+        .item()
+        == 100.0
+    )
 
 
 def test_fhsc_exact_metric_fixture(mapper: TaxonomyMapper) -> None:
@@ -859,3 +915,117 @@ normalization:
     )
     (older,) = set(path.parent.parent.glob("*/financial_facts.parquet")) - {path}
     assert pl.read_parquet(older)["fiscal_year"].to_list() == [2025]
+
+
+def test_alias_rows_rejects_ghost_metrics_and_unknown_yaml_keys(
+    tmp_path: Path,
+) -> None:
+    metric_id = "IS_GHOST_METRIC"
+    base_def: dict[str, object] = {
+        "canonical_id": metric_id,
+        "statement_type": "INCOME_STATEMENT",
+        "value_type": "FLOW",
+        "unit": "VND",
+        "sign_convention": "POSITIVE_REVENUE",
+        "tt200_code": None,
+        "tt99_code": None,
+        "comparable_across_taxonomy": True,
+    }
+    taxonomy_dir = tmp_path / "taxonomy"
+    taxonomy_dir.mkdir()
+    for taxonomy_version, (taxonomy_name, _) in TAXONOMIES.items():
+        (taxonomy_dir / taxonomy_name).write_text(
+            json.dumps({"taxonomy_version": taxonomy_version, "metrics": {}}),
+            encoding="utf-8",
+        )
+    (tmp_path / "metric_definitions.yaml").write_text(
+        json.dumps({"metrics": {metric_id: base_def}}), encoding="utf-8"
+    )
+    with pytest.raises(
+        ContractViolationError,
+        match=f"Invalid definition for canonical metric {metric_id}",
+    ):
+        _alias_rows(tmp_path)
+
+    valid_def = {**base_def, "tt200_code": "10", "tt99_code": "10", "extra_key": True}
+    (tmp_path / "metric_definitions.yaml").write_text(
+        json.dumps({"metrics": {metric_id: valid_def}}), encoding="utf-8"
+    )
+    with pytest.raises(
+        ContractViolationError,
+        match=f"Invalid definition for canonical metric {metric_id}",
+    ):
+        _alias_rows(tmp_path)
+
+
+def test_restatement_rejects_duration_or_ytd_mismatch(
+    mapper: TaxonomyMapper,
+) -> None:
+    with pytest.raises(
+        ContractViolationError,
+        match="Comparative period does not match the TT99 filing",
+    ):
+        map_restatement(
+            mapper,
+            {"10": 100},
+            filing(2026, 2),
+            filing(2025, 2, ytd=True),
+            filing_id="mismatched-ytd",
+            source_provider="issuer",
+        )
+    invalid_annual = replace(
+        filing(2025),
+        period_start_date=date(2025, 1, 1),
+        period_end_date=date(2025, 6, 30),
+    )
+    with pytest.raises(
+        ContractViolationError,
+        match="Comparative period does not match the TT99 filing",
+    ):
+        map_restatement(
+            mapper,
+            {"10": 100},
+            filing(2026),
+            invalid_annual,
+            filing_id="short-annual",
+            source_provider="issuer",
+        )
+
+
+def test_normalize_batch_drops_cumulative_ytd_quarters_and_passes_layer3(
+    mapper: TaxonomyMapper,
+) -> None:
+    q1, q2, q4 = [filing(2025, q, ytd=True) for q in (1, 2, 4)]
+    raw_facts = facts(mapper, [(q1, 100), (q2, 250), (q4, 600)])
+    _, unmapped_current = mapper.map_metrics(
+        {"10": 100, "UNMAPPED_LINE": 5},
+        filing(2026),
+        filing_id="dup-unmapped",
+        source_provider="issuer",
+    )
+    _, unmapped_prior = map_restatement(
+        mapper,
+        {"10": 90, "UNMAPPED_LINE": 4},
+        filing(2026),
+        filing(2025),
+        filing_id="dup-unmapped",
+        source_provider="issuer",
+    )
+    normalized, deduped_unmapped = build_normalized_batch(
+        raw_facts,
+        pl.concat([unmapped_current, unmapped_prior]),
+    )
+    canonical = canonicalize_financial_facts(normalized)
+    assert canonical.select(
+        "fiscal_quarter", "value", "derivation_method", "period_days"
+    ).rows() == [
+        (1, 100.0, "REPORTED_DIRECTLY", 90),
+        (2, 150.0, "DERIVED_YTD_DIFF", 91),
+    ]
+    assert derive_quarters(canonical).select(
+        "fiscal_quarter", "value", "derivation_method"
+    ).rows() == [
+        (1, 100.0, "REPORTED_DIRECTLY"),
+        (2, 150.0, "DERIVED_YTD_DIFF"),
+    ]
+    assert deduped_unmapped.height == 2

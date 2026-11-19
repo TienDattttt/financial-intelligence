@@ -1,6 +1,7 @@
 """Layer 4B acceptance tests for screening models and leakage controls."""
 
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -153,40 +154,511 @@ def test_monotone_constraints_cover_exact_model_feature_sets() -> None:
 
 
 def test_fitted_model_respects_interest_and_roa_monotonicity() -> None:
-    pytest.importorskip("xgboost")
-    from finintel.ml.supervised.train import BASE_FEATURES, train_distress_model
+    import numpy as np
 
-    def fold(offset: int) -> pl.DataFrame:
-        rows: list[dict[str, object]] = []
-        for index in range(24):
-            row: dict[str, object] = {
-                name: 0.1 + 0.01 * index for name in BASE_FEATURES
-            }
-            row.update(
-                {
-                    "accounting_regime": "CORPORATE",
-                    "statement_scope": "CONSOLIDATED",
-                    "taxonomy_version": "VAS_TT200_2014",
-                    "altman_z_double_prime": 2.0,
-                    "_period_available_at": date(2020 + offset, 1, 1),
-                    "distress_target": index % 2,
-                }
-            )
-            rows.append(row)
-        return pl.DataFrame(rows)
-
-    from finintel.ml.supervised.train import score_distress_model
-
-    result = train_distress_model(fold(0), fold(1))
-    base = fold(2).head(1)
-    higher_interest = base.with_columns(
-        (pl.col("interest_coverage") + 1.0).alias("interest_coverage")
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        score_distress_model,
+        train_distress_model,
     )
-    higher_roa = base.with_columns((pl.col("roa") + 1.0).alias("roa"))
-    base_score = score_distress_model(result, base)["distress_risk_score"][0]
-    interest_score = score_distress_model(result, higher_interest)[
+
+    def synthetic_fold(seed: int, n_rows: int, year_base: int) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        rows: dict[str, list[float]] = {name: [] for name in BASE_FEATURES}
+        roa_vals = rng.uniform(-0.18, 0.22, size=n_rows)
+        ic_vals = rng.uniform(-1.0, 12.0, size=n_rows)
+        dte_vals = rng.uniform(0.05, 4.5, size=n_rows)
+        altman_vals = (
+            2.2
+            + 2.5 * roa_vals
+            + 0.12 * ic_vals
+            - 0.4 * dte_vals
+            + rng.normal(0.0, 1.4, size=n_rows)
+        )
+        logits = (
+            -6.0 * roa_vals
+            - 0.35 * ic_vals
+            + 0.7 * dte_vals
+            + rng.normal(0.0, 0.45, size=n_rows)
+            - 0.4
+        )
+        targets = (logits > 0.0).astype(int).tolist()
+        for idx, name in enumerate(BASE_FEATURES):
+            if name == "roa":
+                rows[name] = roa_vals.tolist()
+            elif name == "interest_coverage":
+                rows[name] = ic_vals.tolist()
+            elif name == "debt_to_equity":
+                rows[name] = dte_vals.tolist()
+            elif name == "altman_z_double_prime":
+                rows[name] = altman_vals.tolist()
+            else:
+                rows[name] = rng.normal(0.2 + 0.02 * idx, 0.25, size=n_rows).tolist()
+        return pl.DataFrame(
+            {
+                **rows,
+                "issuer_id": [f"SYN_{i:03d}" for i in range(n_rows)],
+                "accounting_regime": ["CORPORATE"] * n_rows,
+                "statement_scope": ["CONSOLIDATED"] * n_rows,
+                "period_type": ["QUARTER"] * n_rows,
+                "fiscal_year": [year_base + (i % 2) for i in range(n_rows)],
+                "fiscal_quarter": [(i % 4) + 1 for i in range(n_rows)],
+                "period_end_date": [date(year_base, 12, 31)] * n_rows,
+                "filing_id": [f"FIL_{seed}_{i:03d}" for i in range(n_rows)],
+                "taxonomy_version": ["VAS_TT200_2014"] * n_rows,
+                "_period_available_at": [date(year_base, 12, 31)] * n_rows,
+                "distress_target": targets,
+            }
+        )
+
+    train_df = synthetic_fold(seed=42, n_rows=260, year_base=2019)
+    valid_df = synthetic_fold(seed=99, n_rows=120, year_base=2021)
+    result = train_distress_model(train_df, valid_df)
+
+    trees_df = result.classifier.get_booster().trees_to_dataframe()
+    split_features = set(trees_df.loc[trees_df["Feature"] != "Leaf", "Feature"])
+    assert split_features, (
+        "Expected non-trivial tree splits rather than Leaf-only trees"
+    )
+
+    probe = synthetic_fold(seed=123, n_rows=1, year_base=2023)
+    ic_grid = [-0.8, -0.2, 0.5, 1.2, 2.5, 5.0, 8.0, 11.5]
+    ic_probes = pl.concat(
+        [probe.with_columns(pl.lit(val).alias("interest_coverage")) for val in ic_grid]
+    )
+    ic_scores = score_distress_model(result, ic_probes)[
         "distress_risk_score"
-    ][0]
-    roa_score = score_distress_model(result, higher_roa)["distress_risk_score"][0]
-    assert interest_score <= base_score
-    assert roa_score <= base_score
+    ].to_numpy()
+    assert np.all(np.diff(ic_scores) <= 1e-12)
+    assert ic_scores[-1] < ic_scores[0]
+
+    roa_grid = [-0.16, -0.10, -0.04, 0.0, 0.05, 0.10, 0.16, 0.21]
+    roa_probes = pl.concat(
+        [probe.with_columns(pl.lit(val).alias("roa")) for val in roa_grid]
+    )
+    roa_scores = score_distress_model(result, roa_probes)[
+        "distress_risk_score"
+    ].to_numpy()
+    assert np.all(np.diff(roa_scores) <= 1e-12)
+    assert roa_scores[-1] < roa_scores[0]
+
+
+def test_target_preserves_debt_free_labels_positive_events_and_exact_quarter_onset() -> (
+    None
+):
+    debt_free = _periods().with_columns(
+        pl.lit(None, dtype=pl.Float64).alias("interest_coverage"),
+        pl.lit("NO_INTEREST_EXPENSE").alias("interest_coverage_flag"),
+    )
+    targets = build_distress_targets(debt_free)
+    q1_2020 = targets.filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 1)
+    ).row(0, named=True)
+    assert q1_2020["distress_target"] == 0
+    assert q1_2020["already_distressed_at_t"] is False
+
+    partial_secondary = _periods().with_columns(
+        pl.when((pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 2))
+        .then(pl.lit(None, dtype=pl.Float64))
+        .otherwise(pl.col("roa"))
+        .alias("roa")
+    )
+    q4_2020 = (
+        build_distress_targets(partial_secondary)
+        .filter((pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4))
+        .row(0, named=True)
+    )
+    assert q4_2020["distress_target"] == 1
+
+    gapped = pl.DataFrame(
+        {
+            "issuer_id": ["GAP", "GAP"],
+            "statement_scope": ["CONSOLIDATED", "CONSOLIDATED"],
+            "period_type": ["QUARTER", "QUARTER"],
+            "fiscal_year": [2020, 2023],
+            "fiscal_quarter": [1, 1],
+            "period_end_date": [date(2020, 3, 31), date(2023, 3, 31)],
+            "accounting_regime": ["CORPORATE", "CORPORATE"],
+            "BS_TOTAL_EQUITY": [100.0, 100.0],
+            "parent_equity": [100.0, 100.0],
+            "interest_coverage": [0.5, 0.5],
+            "CF_OPERATING_CASH_FLOW": [-5.0, -5.0],
+            "current_ratio": [0.8, 0.8],
+            "roa": [0.02, 0.02],
+            "_period_available_at": [date(2020, 5, 1), date(2023, 5, 1)],
+        }
+    )
+    gapped_out = build_distress_targets(gapped)
+    assert gapped_out["already_distressed_at_t"].to_list() == [False, False]
+
+
+def test_treeshap_additivity_original_feature_names_and_per_period_peer_medians() -> (
+    None
+):
+    import json
+
+    import numpy as np
+
+    from finintel.ml.supervised.explain import (
+        compute_shap_contributions,
+        explain_distress,
+        explain_global_importance,
+    )
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        score_distress_model,
+        train_distress_model,
+    )
+
+    compact_features = (
+        "roa",
+        "interest_coverage",
+        "debt_to_equity",
+        "altman_z_double_prime",
+    )
+
+    def make_split(n_rows: int, seed_offset: int) -> pl.DataFrame:
+        local_rng = np.random.default_rng(7 + seed_offset)
+        roa = local_rng.uniform(-0.15, 0.20, size=n_rows)
+        ic = local_rng.uniform(0.0, 8.0, size=n_rows)
+        dte = local_rng.uniform(0.1, 3.5, size=n_rows)
+        alt = 2.0 + 6.0 * roa + 0.3 * ic - 0.5 * dte
+        y = ((-5.0 * roa - 0.3 * ic + 0.8 * dte - 0.2) > 0).astype(int)
+        return pl.DataFrame(
+            {
+                "issuer_id": [f"C_{i:03d}" for i in range(n_rows)],
+                "accounting_regime": ["CORPORATE"] * n_rows,
+                "statement_scope": ["CONSOLIDATED"] * n_rows,
+                "period_type": ["QUARTER"] * n_rows,
+                "period_end_date": [
+                    date(2022, 3, 31) if i % 2 == 0 else date(2022, 6, 30)
+                    for i in range(n_rows)
+                ],
+                "filing_id": [f"F_{seed_offset}_{i:03d}" for i in range(n_rows)],
+                "taxonomy_version": ["VAS_TT200_2014"] * n_rows,
+                "_period_available_at": [date(2022, 8, 1)] * n_rows,
+                "roa": roa.tolist(),
+                "interest_coverage": [
+                    None if i % 9 == 0 else float(ic[i]) for i in range(n_rows)
+                ],
+                "debt_to_equity": dte.tolist(),
+                "altman_z_double_prime": alt.tolist(),
+                "distress_target": y.tolist(),
+            }
+        )
+
+    train_df = make_split(200, 0)
+    valid_df = make_split(100, 1)
+    eval_df = make_split(6, 2)
+    result = train_distress_model(train_df, valid_df, features=compact_features)
+
+    benchmarks = pl.DataFrame(
+        {
+            "issuer_id": ["C_000", "C_001"],
+            "accounting_regime": ["CORPORATE", "CORPORATE"],
+            "statement_scope": ["CONSOLIDATED", "CONSOLIDATED"],
+            "period_type": ["QUARTER", "QUARTER"],
+            "period_end_date": [date(2022, 3, 31), date(2022, 6, 30)],
+            "metric_or_ratio_name": ["debt_to_equity", "debt_to_equity"],
+            "peer_median": [0.75, 1.85],
+        }
+    )
+    explained = explain_distress(result, eval_df, peer_medians=benchmarks)
+    scored = score_distress_model(result, eval_df)
+    base_val, orig_features, orig_shap, raw_margins = compute_shap_contributions(
+        result, eval_df
+    )
+    assert orig_features == compact_features
+    assert np.allclose(
+        base_val + orig_shap.sum(axis=1),
+        scored["distress_risk_score"].to_numpy(),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    assert np.allclose(raw_margins, scored["distress_risk_score"].to_numpy(), atol=1e-6)
+
+    for idx, payload_str in enumerate(explained["shap_top_drivers_json"].to_list()):
+        payload = json.loads(payload_str)
+        drivers = payload["top_risk_increasing"] + payload["top_risk_decreasing"]
+        for item in drivers:
+            assert item["feature"] in BASE_FEATURES
+            assert not item["feature"].endswith("_missing")
+        reconstructed = payload["base_value"] + sum(d["shap_delta"] for d in drivers)
+        assert reconstructed == pytest.approx(
+            scored["distress_risk_score"][idx], abs=1e-6
+        )
+        if idx in (0, 1):
+            dte_items = [d for d in drivers if d["feature"] == "debt_to_equity"]
+            if dte_items:
+                expected_median = 0.75 if idx == 0 else 1.85
+                assert dte_items[0]["peer_median"] == pytest.approx(expected_median)
+
+    global_imp = explain_global_importance(result, eval_df)
+    assert set(global_imp) == set(compact_features)
+    assert all(not name.endswith("_missing") for name in global_imp)
+
+
+def test_pit_splits_prevent_restatement_leakage_and_enforce_exact_filing() -> None:
+    from finintel.ml.supervised.temporal_split import (
+        build_pit_ml_splits,
+        purged_walk_forward_split,
+    )
+    from tests.unit.test_layer4_analytics import facts, issuer
+
+    sample = pl.DataFrame(
+        {
+            "period_end_date": [date(2020, 12, 31), date(2020, 12, 31)],
+            "_period_available_at": [date(2021, 2, 1), date(2021, 2, 1)],
+            "label_available_at": [date(2021, 12, 31), date(2021, 12, 31)],
+            "distress_target": [0, 1],
+            "_exact_filing_basis": [True, False],
+            "_label_exact_filing_basis": [True, True],
+        }
+    )
+    strict = purged_walk_forward_split(
+        sample,
+        validation_start=date(2022, 1, 1),
+        test_start=date(2023, 1, 1),
+        require_exact_filing=True,
+    )
+    assert strict["train"].height == 1
+    assert strict["train"]["distress_target"].item() == 0
+
+    quarter_template: dict[str, float | None] = {
+        "BS_TOTAL_ASSETS": 1000.0,
+        "BS_TOTAL_EQUITY": 500.0,
+        "BS_MINORITY_INTEREST": 0.0,
+        "BS_TOTAL_LIABILITIES": 500.0,
+        "BS_CURRENT_ASSETS": 400.0,
+        "BS_CURRENT_LIABILITIES": 200.0,
+        "BS_CASH_AND_EQUIVALENTS": 100.0,
+        "BS_SHORT_TERM_BORROWINGS": 100.0,
+        "BS_RETAINED_EARNINGS": 200.0,
+        "IS_NET_REVENUE": 300.0,
+        "IS_GROSS_PROFIT": 120.0,
+        "IS_PROFIT_BEFORE_TAX": 50.0,
+        "IS_INTEREST_EXPENSE": 5.0,
+        "IS_NET_INCOME": 40.0,
+        "IS_NET_INCOME_PARENT": 40.0,
+        "CF_OPERATING_CASH_FLOW": 45.0,
+    }
+    raw_facts = facts(
+        {(y, q): quarter_template for y in range(2019, 2024) for q in range(1, 5)}
+    ).with_columns(
+        pl.lit("EXACT_FILING").alias("published_at_basis"),
+        pl.col("effective_available_at").alias("published_at"),
+    )
+    restatement_2024 = raw_facts.filter(
+        (pl.col("fiscal_year") == 2020)
+        & (pl.col("fiscal_quarter") == 4)
+        & (pl.col("metric_id") == "BS_CURRENT_ASSETS")
+    ).with_columns(
+        pl.lit(9999.0).alias("value"),
+        pl.lit(2, dtype=pl.Int64).alias("revision_no"),
+        pl.lit("FPT-2020-4-RESTATED-2024").alias("filing_id"),
+        pl.lit(["FPT-2020-4-RESTATED-2024"]).alias("source_filing_ids"),
+        pl.lit(date(2024, 5, 1)).alias("published_at"),
+        pl.lit(date(2024, 5, 1)).alias("effective_available_at"),
+    )
+    splits = build_pit_ml_splits(
+        pl.concat([raw_facts, restatement_2024]),
+        issuer(),
+        validation_start=date(2022, 3, 1),
+        test_start=date(2023, 3, 1),
+        as_of=date(2025, 1, 1),
+        require_exact_filing=True,
+    )
+    q4_2020_train = splits["train"].filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+    )
+    assert q4_2020_train.height == 1
+    assert q4_2020_train["current_ratio"].item() == pytest.approx(2.0)
+
+
+def test_ml_pipeline_guardrails_and_publishable_ml_scores_snapshot(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    from finintel.ml.unsupervised import InsufficientModelData
+    from finintel.pipeline.analytics import AnalyticsHandler
+    from finintel.pipeline.runner import RunRequest, Stage, StepContext
+    from finintel.pipeline.state_store import StateStore
+    from finintel.storage import ParquetRepository, SnapshotPublisher
+    from finintel.storage.schemas import ML_SCORES_TABLE
+    from tests.unit.test_layer4_analytics import facts
+
+    def issuer_periods(idx: int, distressed_year: int | None) -> pl.DataFrame:
+        periods_map: dict[tuple[int, int | None], dict[str, float | None]] = {}
+        for year in range(2017, 2025):
+            for q in range(1, 5):
+                hit = distressed_year == year and q == 3
+                scale = 1.0 + 0.03 * idx + 0.01 * q
+                periods_map[(year, q)] = {
+                    "BS_TOTAL_ASSETS": 1000.0 * scale,
+                    "BS_TOTAL_EQUITY": -25.0
+                    if hit
+                    else (450.0 - 8.0 * (idx % 7)) * scale,
+                    "BS_MINORITY_INTEREST": 10.0 * scale,
+                    "BS_TOTAL_LIABILITIES": (550.0 + 8.0 * (idx % 7)) * scale,
+                    "BS_CURRENT_ASSETS": (360.0 + 5.0 * (idx % 5)) * scale,
+                    "BS_CURRENT_LIABILITIES": (200.0 + 4.0 * (idx % 4)) * scale,
+                    "BS_CASH_AND_EQUIVALENTS": (80.0 + 3.0 * (idx % 6)) * scale,
+                    "BS_SHORT_TERM_BORROWINGS": (120.0 + 6.0 * (idx % 5)) * scale,
+                    "BS_LONG_TERM_BORROWINGS": (90.0 + 4.0 * (idx % 3)) * scale,
+                    "BS_RETAINED_EARNINGS": (150.0 - 5.0 * (idx % 6)) * scale,
+                    "BS_ORDINARY_SHARES_CAPITAL": 200_000.0,
+                    "BS_TREASURY_SHARES": 0.0,
+                    "BS_INVENTORIES": (70.0 + 2.0 * (idx % 5)) * scale,
+                    "BS_TRADE_RECEIVABLES_ST": (95.0 + 3.0 * (idx % 4)) * scale,
+                    "BS_TRADE_PAYABLES_ST": (65.0 + 2.0 * (idx % 3)) * scale,
+                    "BS_TANGIBLE_FIXED_ASSETS": 300.0 * scale,
+                    "IS_NET_REVENUE": (260.0 + 7.0 * (idx % 6)) * scale,
+                    "IS_COST_OF_GOODS_SOLD": (160.0 + 4.0 * (idx % 5)) * scale,
+                    "IS_GROSS_PROFIT": (100.0 + 3.0 * (idx % 6)) * scale,
+                    "IS_OPERATING_PROFIT": (42.0 - 2.0 * (idx % 5)) * scale,
+                    "IS_PROFIT_BEFORE_TAX": (38.0 - 2.0 * (idx % 5)) * scale,
+                    "IS_INTEREST_EXPENSE": (4.0 + 0.5 * (idx % 4)) * scale,
+                    "IS_CURRENT_INCOME_TAX": 7.0 * scale,
+                    "IS_DEFERRED_INCOME_TAX": 0.5 * scale,
+                    "IS_NET_INCOME": (30.5 - 2.0 * (idx % 5)) * scale,
+                    "IS_NET_INCOME_PARENT": (28.0 - 2.0 * (idx % 5)) * scale,
+                    "IS_SELLING_EXPENSES": 12.0 * scale,
+                    "IS_ADMINISTRATIVE_EXPENSES": 15.0 * scale,
+                    "CF_OPERATING_CASH_FLOW": (34.0 - 2.5 * (idx % 5)) * scale,
+                    "CF_CAPITAL_EXPENDITURE": -12.0 * scale,
+                    "CF_DEPRECIATION_AMORTIZATION": 8.0 * scale,
+                    "CF_EQUITY_ISSUANCE_PROCEEDS": 0.0,
+                }
+        return facts(periods_map, issuer_id=f"CORP_{idx:02d}")
+
+    distress_schedule = {0: 2021, 1: 2021, 2: 2021, 3: 2022, 4: 2022, 5: 2024, 6: 2024}
+    statutory_facts = pl.concat(
+        [issuer_periods(i, distress_schedule.get(i)) for i in range(12)]
+    )
+    issuers_df = pl.DataFrame(
+        {
+            "issuer_id": [f"CORP_{i:02d}" for i in range(12)],
+            "ticker": [f"C{i:02d}" for i in range(12)],
+            "accounting_regime": ["CORPORATE"] * 12,
+            "icb_code_level2": ["2000" if i < 6 else "3000" for i in range(12)],
+            "icb_code_level3": ["201010" if i < 6 else "301010" for i in range(12)],
+            "industry_snapshot_date": [date(2017, 1, 1)] * 12,
+        }
+    )
+
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    issuers_df.write_parquet(curated / "issuers.parquet")
+    statutory_facts.write_parquet(curated / "financial_facts.parquet")
+
+    state = StateStore(tmp_path / "metadata/state.sqlite")
+    state.initialize()
+    req = RunRequest(source="file")
+
+    state.start_run("run_unapproved", "CLI_MANUAL", req.log_arguments(), None)
+    with pytest.raises(ContractViolationError, match="approved_target"):
+        AnalyticsHandler(
+            state,
+            tmp_path,
+            {
+                "as_of": "2025-03-01",
+                "ml": {
+                    "enabled": True,
+                    "approved_target": False,
+                    "validation_start": "2021-12-01",
+                    "test_start": "2023-03-01",
+                },
+            },
+        )(StepContext("run_unapproved", Stage.ANALYTICS, req, (), None))
+
+    state.start_run("run_statutory", "CLI_MANUAL", req.log_arguments(), None)
+    with pytest.raises((ContractViolationError, InsufficientModelData)):
+        AnalyticsHandler(
+            state,
+            tmp_path,
+            {
+                "as_of": "2025-03-01",
+                "ml": {
+                    "enabled": True,
+                    "approved_target": True,
+                    "validation_start": "2021-12-01",
+                    "test_start": "2023-03-01",
+                },
+            },
+        )(StepContext("run_statutory", Stage.ANALYTICS, req, (), None))
+
+    exact_facts = statutory_facts.with_columns(
+        pl.lit("EXACT_FILING").alias("published_at_basis"),
+        pl.col("effective_available_at").alias("published_at"),
+    )
+    exact_facts.write_parquet(curated / "financial_facts.parquet")
+    state.start_run("run_exact", "CLI_MANUAL", req.log_arguments(), None)
+    AnalyticsHandler(
+        state,
+        tmp_path,
+        {
+            "as_of": "2025-03-01",
+            "ml": {
+                "enabled": True,
+                "approved_target": True,
+                "validation_start": "2021-12-01",
+                "test_start": "2023-03-01",
+            },
+        },
+    )(StepContext("run_exact", Stage.ANALYTICS, req, (), None))
+
+    batch = curated / "analytics/run_exact"
+    parquet_tables = {p.name: p for p in batch.glob("*.parquet")}
+    assert ML_SCORES_TABLE in parquet_tables
+    assert (batch / "model_evaluation_report.json").is_file()
+    assert (batch / "_ml_run_manifest.json").is_file()
+
+    report = json.loads(
+        (batch / "model_evaluation_report.json").read_text(encoding="utf-8")
+    )
+    assert set(report["test"]["models"]) == {
+        "Baseline_1_AltmanZ",
+        "Baseline_2_Logit",
+        "XGBoost",
+    }
+    assert "by_fiscal_year" in report["test"]
+    assert (
+        report["validation"]["evaluation_role"]
+        == "IN_SAMPLE_CALIBRATION_FOLD_DO_NOT_USE_AS_OOS_CLAIM"
+    )
+    manifest = json.loads((batch / "_ml_run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["require_exact_filing"] is True
+    assert manifest["facts_sha256"]
+
+    snap_dir = SnapshotPublisher(tmp_path / "published/snapshots").publish(
+        "snap_ml_test", parquet_tables
+    )
+    ml_table = ParquetRepository(snap_dir).read_table(ML_SCORES_TABLE)
+    assert ml_table.height > 0
+    assert ml_table["model_role"].unique().to_list() == ["SCREENING_INDICATOR"]
+    assert ml_table["shap_top_drivers_json"].drop_nulls().len() > 0
+
+
+def test_calibration_rejects_single_positive_validation_sample() -> None:
+    from finintel.ml.supervised.train import BASE_FEATURES, train_distress_model
+    from finintel.ml.unsupervised import InsufficientModelData
+
+    def make_rows(targets: list[int]) -> pl.DataFrame:
+        n = len(targets)
+        return pl.DataFrame(
+            {
+                **{name: [0.1 + 0.02 * i for i in range(n)] for name in BASE_FEATURES},
+                "accounting_regime": ["CORPORATE"] * n,
+                "statement_scope": ["CONSOLIDATED"] * n,
+                "taxonomy_version": ["VAS_TT200_2014"] * n,
+                "altman_z_double_prime": [2.0] * n,
+                "_period_available_at": [date(2021, 1, 1)] * n,
+                "distress_target": targets,
+            }
+        )
+
+    train_df = make_rows([0, 1] * 10)
+    valid_one_pos = make_rows([0] * 9 + [1])
+    with pytest.raises(InsufficientModelData, match="at least two observations"):
+        train_distress_model(train_df, valid_one_pos)

@@ -1182,10 +1182,19 @@ def test_rf03_excludes_long_term_customer_receivables() -> None:
 
 @pytest.mark.parametrize("maturity", ["ST", "LT"])
 @pytest.mark.parametrize(
-    ("allocation", "expected"), [(20, 0.35), (0, None), (None, None), (21, None)]
+    ("total_amount", "allocation", "expected"),
+    [
+        (65, 20, 0.35),
+        (65, 0, None),
+        (80, None, 0.30),
+        (65, None, None),
+        (80, 21, None),
+        (25, None, None),
+    ],
 )
-def test_rf03_uses_only_verified_customer_allowance(
+def test_rf03_uses_verified_customer_allowance_or_tight_lower_bound(
     maturity: str,
+    total_amount: int,
     allocation: int | None,
     expected: float | None,
 ) -> None:
@@ -1203,7 +1212,7 @@ def test_rf03_uses_only_verified_customer_allowance(
     total = "BS_SHORT_TERM_RECEIVABLES" if maturity == "ST" else "BS_LT_RECEIVABLES"
     raw.update(
         {
-            total: 80 if allocation is None else 65,
+            total: total_amount,
             f"BS_TRADE_RECEIVABLES_{maturity}": 50,
             f"BS_BAD_DEBT_PROVISION_{maturity}": -20,
             f"BS_TRADE_RECEIVABLES_ALLOWANCE_{maturity}": allocation,
@@ -1217,7 +1226,7 @@ def test_rf03_uses_only_verified_customer_allowance(
     else:
         evidence = json.loads(alerts["evidence_json"].item())
         assert evidence[f"BS_TRADE_RECEIVABLES_ALLOWANCE_{maturity}"] == allocation
-        assert evidence["other_receivables_to_assets"] == expected
+        assert evidence["other_receivables_to_assets"] == pytest.approx(expected)
 
 
 def test_rf03_does_not_reuse_an_allowance_from_an_older_filing_revision() -> None:
@@ -1305,3 +1314,228 @@ def test_annual_eps_implies_positive_weighted_shares_with_either_sign(
     assert row["implied_weighted_shares"] == 5
     assert row["eps_ttm_estimated"] == eps
     assert row["eps_estimate_basis"] == "IMPLIED_ANNUAL_WEIGHTED"
+
+
+def test_missing_ebit_or_ratio_operands_report_missing_input_before_boundary_flags() -> (
+    None
+):
+    from finintel.analytics.intermediates import prepare_periods
+    from finintel.analytics.ratios import calculate_ratios
+
+    bs_only = facts({(2025, None): {"BS_TOTAL_ASSETS": 100}})
+    row_bs = calculate_ratios(
+        prepare_periods(bs_only, issuer(), as_of=date(2026, 6, 1))
+    ).row(0, named=True)
+    assert row_bs["ebitda_flag"] == "MISSING_INPUT"
+    assert row_bs["ebitda_margin_flag"] == "MISSING_INPUT"
+    assert row_bs["net_debt_to_ebitda_flag"] == "MISSING_INPUT"
+
+    ebit_no_other = facts(
+        {
+            (2025, None): {
+                "IS_PROFIT_BEFORE_TAX": 100,
+                "IS_INTEREST_EXPENSE": -20,
+            }
+        }
+    )
+    row_partial = calculate_ratios(
+        prepare_periods(ebit_no_other, issuer(), as_of=date(2026, 6, 1))
+    ).row(0, named=True)
+    assert row_partial["ebitda_flag"] == "MISSING_DEPRECIATION_DIRECT_CF"
+    assert row_partial["ebitda_margin_flag"] == "MISSING_INPUT"
+    assert row_partial["net_debt_to_ebitda_flag"] == "MISSING_INPUT"
+
+    missing_current_equity = facts(
+        {
+            (2024, None): {"BS_TOTAL_EQUITY": -10, "BS_TOTAL_ASSETS": 100},
+            (2025, None): {
+                "BS_TOTAL_ASSETS": 120,
+                "BS_SHORT_TERM_BORROWINGS": 40,
+                "BS_CASH_AND_EQUIVALENTS": 10,
+                "IS_NET_INCOME": 15,
+            },
+        }
+    )
+    row_eq = calculate_ratios(
+        prepare_periods(missing_current_equity, issuer(), as_of=date(2026, 6, 1))
+    ).row(-1, named=True)
+    assert row_eq["roe_total_flag"] == "MISSING_INPUT"
+    assert row_eq["debt_to_equity_flag"] == "MISSING_INPUT"
+    assert row_eq["net_debt_to_equity_flag"] == "MISSING_INPUT"
+
+    cross_regime_equity = facts(
+        {
+            (2025, None): {"BS_TOTAL_EQUITY": -10, "BS_TOTAL_ASSETS": 100},
+            (2026, None): {
+                "BS_TOTAL_EQUITY": 100,
+                "BS_SHORT_TERM_BORROWINGS": 40,
+                "BS_CASH_AND_EQUIVALENTS": 10,
+            },
+        }
+    ).with_columns(pl.lit(False).alias("comparable_across_taxonomy"))
+    row_tt99 = calculate_ratios(
+        prepare_periods(cross_regime_equity, issuer(), as_of=date(2027, 6, 1))
+    ).row(-1, named=True)
+    assert row_tt99["debt_to_equity"] == pytest.approx(0.4)
+    assert row_tt99["debt_to_equity_flag"] == "VALID"
+    assert row_tt99["net_debt_to_equity"] == pytest.approx(0.3)
+    assert row_tt99["net_debt_to_equity_flag"] == "VALID"
+
+
+def test_dupont_five_step_populates_for_separate_scope() -> None:
+    from finintel.analytics.dupont import add_dupont
+    from finintel.analytics.intermediates import prepare_periods
+    from finintel.analytics.ratios import calculate_ratios
+
+    separate_history = facts(
+        {
+            (2024, None): {"BS_TOTAL_EQUITY": 300, "BS_TOTAL_ASSETS": 800},
+            (2025, None): {
+                "BS_TOTAL_ASSETS": 1000,
+                "BS_TOTAL_EQUITY": 400,
+                "IS_NET_INCOME": 100,
+                "IS_NET_REVENUE": 1200,
+                "IS_PROFIT_BEFORE_TAX": 125,
+                "IS_INTEREST_EXPENSE": 25,
+            },
+        },
+        scope="SEPARATE",
+    )
+    row = add_dupont(
+        calculate_ratios(
+            prepare_periods(separate_history, issuer(), as_of=date(2026, 6, 1))
+        )
+    ).row(-1, named=True)
+    five_step = prod(
+        float(row[name])
+        for name in (
+            "tax_burden",
+            "interest_burden",
+            "ebit_margin",
+            "asset_turnover",
+            "equity_multiplier_total",
+        )
+    )
+    assert abs(five_step - row["roe_total"]) <= 1e-9
+    assert row["parent_profit_share"] is None
+    assert row["dupont_valid_flag"] is False
+
+
+def test_fpt_full_raw_2017_2025_rf03_lower_bound_and_exact_filing_provenance() -> None:
+    from finintel.analytics.intermediates import (
+        LT_RECEIVABLE_INPUTS,
+        ST_RECEIVABLE_INPUTS,
+        prepare_periods,
+    )
+    from finintel.analytics.ratios import calculate_ratios
+    from finintel.analytics.red_flags import (
+        _net_non_customer_receivables,
+        detect_red_flags,
+    )
+
+    mapper = TaxonomyMapper(ROOT / "config")
+    tracked_extract = json.loads(
+        (
+            ROOT / "tests/fixtures/raw_samples/fhsc_fpt_layer4_taxonomy_extract.json"
+        ).read_text(encoding="utf-8")
+    )
+    fpt_2025_bs = next(
+        row["raw_metrics"]
+        for row in tracked_extract["rows"]
+        if row["page"] == "balance-sheet-year-001.json" and row["year"] == 2025
+    )
+    mapped_2025, unmapped_2025 = mapper.map_metrics(
+        fpt_2025_bs,
+        FilingMetadata(
+            "FPT",
+            "FPT",
+            StatementType.BALANCE_SHEET,
+            PeriodType.ANNUAL,
+            2025,
+            date(2025, 1, 1),
+            date(2025, 1, 1),
+            date(2025, 12, 31),
+            statement_scope=StatementScope.CONSOLIDATED,
+            audit_status=AuditStatus.AUDITED,
+        ),
+        filing_id="FPT-2025-BS",
+        source_provider="fhsc",
+    )
+    assert unmapped_2025.is_empty()
+    periods_2025 = prepare_periods(mapped_2025, issuer(), as_of=date(2026, 6, 1))
+    assert periods_2025["_exact_filing_basis"].to_list() == [False]
+    ratios_2025 = calculate_ratios(periods_2025)
+    fpt_2025_rf03 = ratios_2025.select(
+        (
+            (
+                _net_non_customer_receivables(ST_RECEIVABLE_INPUTS)
+                + _net_non_customer_receivables(LT_RECEIVABLE_INPUTS)
+            )
+            / pl.col("BS_TOTAL_ASSETS")
+        ).alias("other_receivables_to_assets")
+    )["other_receivables_to_assets"].item()
+    expected_2025_lb = (
+        (14_402_017_450_105 - 12_734_600_596_550) + 564_342_065_270
+    ) / 88_141_991_634_625
+    assert fpt_2025_rf03 == pytest.approx(expected_2025_lb, rel=1e-12)
+    assert detect_red_flags(ratios_2025).is_empty()
+
+    exact_2025 = mapped_2025.with_columns(
+        pl.lit("EXACT_FILING").alias("published_at_basis"),
+        pl.col("effective_available_at").alias("published_at"),
+    )
+    assert prepare_periods(exact_2025, issuer(), as_of=date(2026, 6, 1))[
+        "_exact_filing_basis"
+    ].to_list() == [True]
+
+    spike_dir = ROOT / "data/metadata/fhsc_spike_fpt"
+    if spike_dir.is_dir():
+        tables: list[pl.DataFrame] = []
+        for prefix, statement in (
+            ("balance-sheet-year", StatementType.BALANCE_SHEET),
+            ("income-statement-year", StatementType.INCOME_STATEMENT),
+            ("cash-flow-year", StatementType.CASH_FLOW),
+        ):
+            for json_path in sorted(spike_dir.glob(f"{prefix}-*.json")):
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
+                for source_row in payload.get("data", payload.get("rows", [])):
+                    year = int(source_row["year"])
+                    if year < 2017:
+                        continue
+                    start, end = date(year, 1, 1), date(year, 12, 31)
+                    metadata = FilingMetadata(
+                        "FPT",
+                        "FPT",
+                        statement,
+                        PeriodType.ANNUAL,
+                        year,
+                        start,
+                        start,
+                        end,
+                        statement_scope=StatementScope.CONSOLIDATED,
+                        audit_status=AuditStatus.AUDITED,
+                    )
+                    mapped, _ = mapper.map_metrics(
+                        {
+                            k: v
+                            for k, v in source_row.items()
+                            if k not in ("year", "quarter", "symbol", "ticker", "id")
+                        },
+                        metadata,
+                        filing_id=f"FPT-{year}",
+                        source_provider="fhsc",
+                    )
+                    tables.append(mapped)
+        periods = prepare_periods(pl.concat(tables), issuer(), as_of=date(2026, 6, 1))
+        ratios = calculate_ratios(periods)
+        rf03_series = ratios.select(
+            (
+                (
+                    _net_non_customer_receivables(ST_RECEIVABLE_INPUTS)
+                    + _net_non_customer_receivables(LT_RECEIVABLE_INPUTS)
+                )
+                / pl.col("BS_TOTAL_ASSETS")
+            ).alias("other_receivables_to_assets")
+        )["other_receivables_to_assets"]
+        assert rf03_series.null_count() == 0
+        assert detect_red_flags(ratios).is_empty()
