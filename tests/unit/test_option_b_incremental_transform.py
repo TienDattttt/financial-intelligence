@@ -654,6 +654,48 @@ def test_icb_change_triggers_auto_full_rebuild_of_industry_benchmarks(
         sort_keys=FLAG_KEY,
     )
 
+    # Pure ticker rename (unchanged ICB/regime/facts -> issuers_metadata_changed is False)
+    # must still update ticker in financial_ratios (part of RATIO_KEY) to match full rebuild.
+    issuers_renamed = issuers_v1.with_columns(
+        pl.when(pl.col("issuer_id") == "CORP_03")
+        .then(pl.lit("NEW03"))
+        .otherwise(pl.col("ticker"))
+        .alias("ticker")
+    )
+    b_ren_inc = run_incremental_analytics_transform(
+        facts,
+        issuers_renamed,
+        as_of=as_of,
+        run_id="rename-inc",
+        previous_ratios=b1.financial_ratios,
+        previous_benchmarks=b1.industry_benchmarks,
+        previous_red_flags=b1.accounting_red_flags,
+        previous_snapshot_id="snap_icb1",
+        state_path=state_path,
+    )
+    assert b_ren_inc.diff.issuers_metadata_changed is False
+    assert b_ren_inc.diff.full_rebuild is False
+    assert b_ren_inc.diff.modified_issuers == ("CORP_03",)
+    assert b_ren_inc.financial_ratios.filter(pl.col("issuer_id") == "CORP_03")[
+        "ticker"
+    ].unique().to_list() == ["NEW03"]
+    b_ren_full = run_incremental_analytics_transform(
+        facts, issuers_renamed, as_of=as_of, run_id="rename-full"
+    )
+    _assert_frames_close(
+        b_ren_inc.financial_ratios, b_ren_full.financial_ratios, sort_keys=RATIO_KEY
+    )
+    _assert_frames_close(
+        b_ren_inc.industry_benchmarks,
+        b_ren_full.industry_benchmarks,
+        sort_keys=BENCHMARK_KEY,
+    )
+    _assert_frames_close(
+        b_ren_inc.accounting_red_flags,
+        b_ren_full.accounting_red_flags,
+        sort_keys=FLAG_KEY,
+    )
+
 
 def test_incremental_partial_quarantine_empty_facts_and_corrupt_state_recovery(
     tmp_path: Path,

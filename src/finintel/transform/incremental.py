@@ -631,7 +631,7 @@ def run_incremental_analytics_transform(
         for iid in (curr_ids & prev_ids)
         if issuer_facts_sha256[iid] != prev_issuer_hashes[iid]
     }
-    if not full_rebuild and issuers_metadata_changed and previous_ratios is not None:
+    if not full_rebuild and previous_ratios is not None:
         for iid in _find_identity_changed_issuers(previous_ratios, issuers):
             if iid in curr_ids:
                 modified_set.add(iid)
