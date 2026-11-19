@@ -1,0 +1,70 @@
+{
+  "description": "Independently verified golden financial metrics, TTM totals, ratios, and boundary flags derived from FPT 2024-2025 Audited Consolidated Financial Statements PDF fixtures.",
+  "tolerances": {
+    "currency_and_ttm_rel_tol": 0.001,
+    "ratio_abs_tol": 0.0001
+  },
+  "fpt_2025_audited_consolidated": {
+    "issuer_id": "FPT",
+    "ticker": "FPT",
+    "statement_scope": "CONSOLIDATED",
+    "period_type": "ANNUAL",
+    "fiscal_year": 2025,
+    "period_end_date": "2025-12-31",
+    "taxonomy_version": "VAS_TT200_2014",
+    "source_pdf": "https://fpt.com/api/media/20260319_FPT_Audited_Consolidated_Financial_Statements_for_2025_dd62a35162.pdf",
+    "normalized_currency_vnd": {
+      "BS_TOTAL_ASSETS": 88141991634625,
+      "BS_TOTAL_LIABILITIES": 44393950887086,
+      "BS_TOTAL_EQUITY": 43748040747539,
+      "IS_NET_REVENUE": 70112825100710,
+      "IS_PROFIT_BEFORE_TAX": 13043632833797,
+      "IS_NET_INCOME": 11232339450734,
+      "IS_NET_INCOME_PARENT": 9376127629501,
+      "CF_OPERATING_CASH_FLOW": 10136043915911
+    },
+    "ttm_2025_q4_consolidated_vnd": {
+      "IS_NET_REVENUE": 70112825565238,
+      "CF_OPERATING_CASH_FLOW": 10189002966546
+    },
+    "ratios": {
+      "net_profit_margin": 0.160204,
+      "ebit_margin": 0.197587,
+      "ebitda_margin": 0.239151,
+      "roa": 0.14028,
+      "roe_total": 0.282661,
+      "roe_parent": 0.282937,
+      "liabilities_to_assets": 0.503664,
+      "equity_to_assets": 0.496336,
+      "interest_coverage": 17.108031,
+      "asset_turnover": 0.875633,
+      "ocf_to_net_income": 0.902398,
+      "fcf_to_revenue": 0.071857,
+      "accruals_to_assets": 0.013692,
+      "revenue_growth_yoy": 0.115579,
+      "ebit_growth_yoy": 0.192068,
+      "net_income_parent_growth_yoy": 0.193382,
+      "eps_ttm_estimated": 5216.0
+    },
+    "expected_flags": {
+      "roe_total_flag": "VALID",
+      "roe_parent_flag": "VALID",
+      "interest_coverage_flag": "VALID",
+      "ebitda_margin_flag": "VALID"
+    }
+  },
+  "boundary_flag_cases": {
+    "negative_equity_case": {
+      "expected_value": null,
+      "expected_flag": "NEGATIVE_OR_ZERO_EQUITY"
+    },
+    "no_interest_expense_case": {
+      "expected_value": null,
+      "expected_flag": "NO_INTEREST_EXPENSE"
+    },
+    "mixed_taxonomy_case": {
+      "expected_value": null,
+      "expected_flag": "MIXED_TAXONOMY"
+    }
+  }
+}

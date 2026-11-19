@@ -332,12 +332,14 @@ class Runner:
         completed: list[str] = []
         status = RunStatus.SUCCEEDED
         for ticker in batch.tickers:
+            archived_for_ticker: list[str] = []
             step = StepContext(
                 batch.run_id,
                 batch.stage,
                 batch.request,
                 (ticker,),
                 batch.active_snapshot_id,
+                record_archived=archived_for_ticker.append,
             )
             try:
                 outcome = self._run_step(step)
@@ -348,6 +350,8 @@ class Runner:
                 raise
             if outcome.status in {StepStatus.QUARANTINED, StepStatus.INCOMPLETE}:
                 status = RunStatus.PARTIAL_SUCCESS
+                if not batch.request.continue_on_partial_ingest:
+                    return (), status
             else:
                 completed.append(ticker)
         return tuple(completed), status

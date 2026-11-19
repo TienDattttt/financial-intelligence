@@ -19,6 +19,8 @@ from finintel.pipeline.analytics import AnalyticsHandler
 from finintel.pipeline.health import DEFAULT_MIN_FREE_BYTES, health_check
 from finintel.pipeline.ingest import IngestHandler
 from finintel.pipeline.normalize import NormalizeHandler
+from finintel.pipeline.publish import PublishHandler
+from finintel.pipeline.quality import QualityGate1Handler, QualityGate2Handler
 from finintel.pipeline.runner import (
     Handler,
     Runner,
@@ -46,6 +48,7 @@ class Settings:
     ingestion: Mapping[str, object] = field(default_factory=dict)
     normalization: Mapping[str, object] = field(default_factory=dict)
     analytics: Mapping[str, object] = field(default_factory=dict)
+    quality: Mapping[str, object] = field(default_factory=dict)
 
 
 def load_settings(path: Path) -> Settings:
@@ -62,6 +65,7 @@ def load_settings(path: Path) -> Settings:
     ingestion = content.get("ingestion", {})
     normalization = content.get("normalization", {})
     analytics = content.get("analytics", {})
+    quality = content.get("quality", {})
     if not isinstance(state_path, str) or not state_path.strip():
         raise ValueError("state_path must be a nonempty path.")
     if type(min_space) is not int or min_space < 0:
@@ -82,6 +86,10 @@ def load_settings(path: Path) -> Settings:
         not isinstance(key, str) for key in analytics
     ):
         raise ValueError("analytics must be a YAML mapping.")
+    if not isinstance(quality, dict) or any(
+        not isinstance(key, str) for key in quality
+    ):
+        raise ValueError("quality must be a YAML mapping.")
     return Settings(
         (path.resolve().parent / state_path).resolve(),
         min_space,
@@ -89,12 +97,18 @@ def load_settings(path: Path) -> Settings:
         ingestion,
         normalization,
         analytics,
+        quality,
     )
 
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        details = getattr(record, "details", {})
+        raw_details = getattr(record, "details", {})
+        details = (
+            dict(raw_details)
+            if isinstance(raw_details, Mapping)
+            else {"value": raw_details}
+        )
         return json.dumps(
             {
                 "timestamp": datetime.fromtimestamp(record.created, UTC).isoformat(),
@@ -107,6 +121,7 @@ class JsonFormatter(logging.Formatter):
                 "details": {**details, "message": record.getMessage()},
             },
             ensure_ascii=False,
+            default=str,
         )
 
 
@@ -178,15 +193,23 @@ def main(
         parser.error(str(error))
 
     store = StateStore(settings.state_path)
+    root_logger = logging.getLogger("finintel")
     log_handler = logging.StreamHandler()
     log_handler.setFormatter(JsonFormatter())
+    previous_root_level, previous_root_propagate = (
+        root_logger.level,
+        root_logger.propagate,
+    )
     previous_level, previous_propagate = logger.level, logger.propagate
+    root_logger.setLevel(logging.INFO)
+    root_logger.propagate = False
     logger.setLevel(logging.INFO)
-    logger.propagate = False
-    logger.addHandler(log_handler)
+    logger.propagate = True
+    root_logger.addHandler(log_handler)
     try:
         if request is None:
-            store.initialize()
+            if not store.path.exists():
+                store.initialize()
             health_check(
                 store,
                 online=args.source == "fhsc",
@@ -195,21 +218,29 @@ def main(
             )
             logger.info("Health check passed", extra={"event": "health_passed"})
             return 0
+        config_dir = args.config.resolve().parent
         configured = (
             handlers
             if handlers is not None
             else {
-                Stage.INGEST: IngestHandler(
-                    store, args.config.resolve().parent, settings.ingestion
-                ),
+                Stage.INGEST: IngestHandler(store, config_dir, settings.ingestion),
                 Stage.NORMALIZE: NormalizeHandler(
                     store,
-                    args.config.resolve().parent,
+                    config_dir,
                     settings.ingestion,
                     settings.normalization,
                 ),
+                Stage.QUALITY_GATE_1: QualityGate1Handler(
+                    store, config_dir, settings.analytics, settings.quality
+                ),
                 Stage.ANALYTICS: AnalyticsHandler(
-                    store, args.config.resolve().parent, settings.analytics
+                    store, config_dir, settings.analytics
+                ),
+                Stage.QUALITY_GATE_2: QualityGate2Handler(
+                    store, config_dir, settings.analytics
+                ),
+                Stage.PUBLISH: PublishHandler(
+                    store, config_dir, settings.analytics
                 ),
             }
         )
@@ -244,8 +275,10 @@ def main(
     except KeyboardInterrupt:
         return 130
     finally:
-        logger.removeHandler(log_handler)
+        root_logger.removeHandler(log_handler)
         log_handler.close()
+        root_logger.setLevel(previous_root_level)
+        root_logger.propagate = previous_root_propagate
         logger.setLevel(previous_level)
         logger.propagate = previous_propagate
 

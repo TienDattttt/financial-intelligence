@@ -33,6 +33,7 @@ from finintel.analytics.intermediates import (
     RETAINED_EARNINGS,
     REVENUE,
     SELLING_EXPENSES,
+    SHARES,
     TANGIBLE_ASSETS,
     TRADE_RECEIVABLES,
     average,
@@ -113,6 +114,14 @@ def _piotroski(frame: pl.DataFrame) -> pl.DataFrame:
         "asset_turnover",
     )
     proceeds, noncash = c(EQUITY_PROCEEDS), c(NONCASH_ISSUANCE)
+    shares, shares_prior = c(SHARES), c(f"{SHARES}_prior")
+    unchanged_charter_shares = (
+        (shares > 0)
+        & (shares_prior > 0)
+        & (shares <= shares_prior)
+        & ~cross_taxonomy(SHARES)
+        & ~input_has("mixed", SHARES, f"{SHARES}_prior")
+    ).fill_null(False)
     signals = (
         pl.when(c("roa_flag") != "MIXED_TAXONOMY").then(c("roa") > 0),
         pl.when(~input_has("mixed", CFO)).then(c(CFO) > 0),
@@ -128,7 +137,10 @@ def _piotroski(frame: pl.DataFrame) -> pl.DataFrame:
         .then(None)
         .when((proceeds > 0) | (noncash > 0))
         .then(False)
-        .when((proceeds == 0) & (noncash == 0))
+        .when(
+            (proceeds == 0)
+            & ((noncash == 0).fill_null(False) | unchanged_charter_shares)
+        )
         .then(True),
         pl.when(~cross_taxonomy(GROSS_PROFIT, REVENUE)).then(
             c("gross_margin") > c("gross_margin_prior")

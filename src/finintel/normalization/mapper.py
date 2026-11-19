@@ -94,7 +94,26 @@ ALIAS_SCHEMA = pl.Schema(
     }
 )
 ALIAS_CONTEXT = ["taxonomy_version", "statement_type", "fhsc", "cash_flow_method"]
-MISSING_VALUES = ["", "-", "—", "–", "N/A", "NaN"]
+MISSING_VALUES = ["", "-", "—", "–", "N/A"]
+ALLOWED_DEFINITION_KEYS = {
+    "canonical_id",
+    "statement_type",
+    "value_type",
+    "unit",
+    "sign_convention",
+    "tt200_code",
+    "tt99_code",
+    "filing_note",
+    "comparable_across_taxonomy",
+}
+ALLOWED_MAPPING_KEYS = {
+    "code",
+    "labels",
+    "fhsc",
+    "fhsc_fallback",
+    "cash_flow_method",
+}
+ALLOWED_TAXONOMY_KEYS = {"taxonomy_version", "metrics"}
 
 
 class _YamlModule(Protocol):
@@ -127,51 +146,90 @@ def _aliases(value: object) -> list[str]:
     return list(value)
 
 
+def _validate_definition(metric_id: str, raw_definition: object) -> dict[str, object]:
+    definition = _mapping(raw_definition)
+    statement = definition.get("statement_type")
+    sign = definition.get("sign_convention")
+    unit = definition.get("unit")
+    filing_note = definition.get("filing_note", False)
+    tt200_code = definition.get("tt200_code")
+    tt99_code = definition.get("tt99_code")
+    value_type = (
+        "STOCK"
+        if statement == "BALANCE_SHEET"
+        else "NON_ADDITIVE"
+        if unit == "VND_PER_SHARE"
+        else "FLOW"
+    )
+    if (
+        not set(definition).issubset(ALLOWED_DEFINITION_KEYS)
+        or definition.get("canonical_id") != metric_id
+        or not isinstance(statement, str)
+        or statement not in tuple(StatementType)
+        or unit not in ("VND", "VND_PER_SHARE")
+        or (unit == "VND_PER_SHARE" and statement != "INCOME_STATEMENT")
+        or definition.get("value_type") != value_type
+        or not isinstance(sign, str)
+        or sign not in SIGN_CONVENTIONS
+        or type(definition.get("comparable_across_taxonomy")) is not bool
+        or type(filing_note) is not bool
+        or (
+            tt200_code is not None
+            and (not isinstance(tt200_code, str) or not tt200_code)
+        )
+        or (tt99_code is not None and (not isinstance(tt99_code, str) or not tt99_code))
+        or (
+            (tt200_code is not None or tt99_code is not None)
+            if filing_note
+            else (tt200_code is None and tt99_code is None)
+        )
+    ):
+        raise ContractViolationError(
+            f"Invalid definition for canonical metric {metric_id}."
+        )
+    return definition
+
+
 def _alias_rows(config_dir: Path) -> list[dict[str, object]]:
-    metrics = _mapping(_yaml(config_dir / "metric_definitions.yaml").get("metrics"))
-    if not metrics:
+    definitions_doc = _yaml(config_dir / "metric_definitions.yaml")
+    if set(definitions_doc) != {"metrics"}:
+        raise ContractViolationError(
+            "Unexpected metric_definitions.yaml top-level keys."
+        )
+    raw_metrics = _mapping(definitions_doc.get("metrics"))
+    if not raw_metrics:
         raise ContractViolationError("No canonical metrics configured.")
+    metrics = {
+        metric_id: _validate_definition(metric_id, raw_def)
+        for metric_id, raw_def in raw_metrics.items()
+    }
     rows: list[dict[str, object]] = []
     for version, (filename, code_key) in TAXONOMIES.items():
         document = _yaml(config_dir / "taxonomy" / filename)
-        if document.get("taxonomy_version") != version:
+        if (
+            not set(document).issubset(ALLOWED_TAXONOMY_KEYS)
+            or document.get("taxonomy_version") != version
+        ):
             raise ContractViolationError("Unexpected taxonomy version.")
         mappings = _mapping(document.get("metrics"))
         expected = {
             metric_id
             for metric_id, definition in metrics.items()
-            if _mapping(definition).get(code_key) is not None
-            or _mapping(definition).get("filing_note") is True
+            if definition.get(code_key) is not None
+            or definition.get("filing_note") is True
         }
         if mappings.keys() != expected:
             raise ContractViolationError(
                 "Taxonomy does not match the canonical definitions."
             )
         for metric_id, entry in mappings.items():
-            definition, mapping = _mapping(metrics[metric_id]), _mapping(entry)
-            statement = definition.get("statement_type")
+            definition, mapping = metrics[metric_id], _mapping(entry)
+            statement = cast(str, definition["statement_type"])
             code = mapping.get("code")
             filing_note = definition.get("filing_note") is True
             method = mapping.get("cash_flow_method")
-            sign = definition.get("sign_convention")
-            unit = definition.get("unit")
-            value_type = (
-                "STOCK"
-                if statement == "BALANCE_SHEET"
-                else "NON_ADDITIVE"
-                if unit == "VND_PER_SHARE"
-                else "FLOW"
-            )
             if (
-                definition.get("canonical_id") != metric_id
-                or not isinstance(statement, str)
-                or statement not in tuple(StatementType)
-                or unit not in ("VND", "VND_PER_SHARE")
-                or (unit == "VND_PER_SHARE" and statement != "INCOME_STATEMENT")
-                or definition.get("value_type") != value_type
-                or not isinstance(sign, str)
-                or sign not in SIGN_CONVENTIONS
-                or type(definition.get("comparable_across_taxonomy")) is not bool
+                not set(mapping).issubset(ALLOWED_MAPPING_KEYS)
                 or (
                     (
                         code is not None
@@ -408,13 +466,15 @@ class TaxonomyMapper:
                 "Multiple source keys supplied the same canonical metric."
             )
         value = pl.col("value")
-        normalized = amounts.with_columns(
+        signed = (
             pl.when(pl.col("sign_convention") == "POSITIVE_MAGNITUDE")
             .then(value.abs())
             .when(pl.col("sign_convention") == "NEGATIVE_OUTFLOW")
             .then(-value.abs())
             .otherwise(value)
-            .alias("value"),
+        )
+        normalized = amounts.with_columns(
+            pl.when(signed == 0.0).then(0.0).otherwise(signed).alias("value"),
             pl.lit("REPORTED_DIRECTLY").alias("derivation_method"),
         ).select(FACT_SCHEMA.names())
         return normalized, unmapped
@@ -428,7 +488,21 @@ def _context(
     source_provider: str,
     revision_no: int,
     unit_multiplier: int,
-) -> dict[str, str | date | int | list[str] | None]:
+) -> dict[str, str | date | int | bool | list[str] | None]:
+    if (
+        type(period.fiscal_year_start_date) is not date
+        or type(period.period_start_date) is not date
+        or type(period.period_end_date) is not date
+        or not (
+            period.fiscal_year_start_date
+            <= period.period_start_date
+            <= period.period_end_date
+        )
+        or (period.period_end_date - period.fiscal_year_start_date).days + 1 > 380
+    ):
+        raise ContractViolationError(
+            "Filing period dates exceed the fiscal year boundary."
+        )
     start = period.period_start_date
     if period.statement_type == StatementType.BALANCE_SHEET:
         start = period.period_end_date

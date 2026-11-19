@@ -11,6 +11,10 @@ from finintel.exceptions import ContractViolationError
 RATIOS_TABLE = "financial_ratios.parquet"
 BENCHMARKS_TABLE = "industry_benchmarks.parquet"
 RED_FLAGS_TABLE = "accounting_red_flags.parquet"
+ML_SCORES_TABLE = "ml_scores_and_explanations.parquet"
+QUALITY_SUMMARY_TABLE = "quality_summary.parquet"
+AUDIT_QUARANTINE_TABLE = "audit_quarantine.parquet"
+FILINGS_MANIFEST_TABLE = "filings_manifest.parquet"
 
 RATIO_KEY = (
     "issuer_id",
@@ -128,8 +132,115 @@ FLAG_KEY = (
     "period_end_date",
     "flag_code",
 )
+ML_SCORES_KEY = (
+    "issuer_id",
+    "statement_scope",
+    "period_type",
+    "period_end_date",
+    "filing_id",
+)
+ML_SCORES_SCHEMA = pl.Schema(
+    {
+        "issuer_id": pl.String,
+        "statement_scope": pl.String,
+        "period_type": pl.String,
+        "period_end_date": pl.Date,
+        "filing_id": pl.String,
+        "model_role": pl.String,
+        "altman_z_double_prime": pl.Float64,
+        "altman_em_score": pl.Float64,
+        "altman_zone": pl.String,
+        "piotroski_f_score": pl.Int8,
+        "piotroski_valid_components_count": pl.Int8,
+        "beneish_m8_score": pl.Float64,
+        "beneish_flag": pl.String,
+        "pca_pc1": pl.Float64,
+        "pca_pc2": pl.Float64,
+        "pca_pc3": pl.Float64,
+        "cluster_id": pl.Int32,
+        "cluster_archetype_name": pl.String,
+        "anomaly_score_raw": pl.Float64,
+        "anomaly_percentile_rank": pl.Float64,
+        "statistical_outlier_flag": pl.Boolean,
+        "anomaly_flag": pl.String,
+        "distress_risk_score": pl.Float64,
+        "calibrated_distress_prob": pl.Float64,
+        "model_version": pl.String,
+        "shap_top_drivers_json": pl.String,
+    }
+)
 
-# A snapshot may contain zero peers or zero alerts. The schema still applies.
+QUALITY_SUMMARY_KEY = (
+    "issuer_id",
+    "statement_scope",
+    "period_type",
+    "period_end_date",
+    "taxonomy_version",
+)
+QUALITY_SUMMARY_SCHEMA = pl.Schema(
+    {
+        "issuer_id": pl.String(),
+        "statement_scope": pl.String(),
+        "period_type": pl.String(),
+        "fiscal_year": pl.Int32(),
+        "fiscal_quarter": pl.Int32(),
+        "period_end_date": pl.Date(),
+        "taxonomy_version": pl.String(),
+        "quality_status": pl.String(),
+        "warning_codes": pl.List(pl.String),
+        "info_codes": pl.List(pl.String),
+        "filing_ids": pl.List(pl.String),
+        "checked_at": pl.String(),
+    }
+)
+AUDIT_QUARANTINE_KEY = (
+    "issuer_id",
+    "filing_id",
+    "statement_scope",
+    "period_type",
+    "period_end_date",
+    "taxonomy_version",
+    "rule_code",
+)
+AUDIT_QUARANTINE_SCHEMA = pl.Schema(
+    {
+        "issuer_id": pl.String,
+        "filing_id": pl.String,
+        "statement_scope": pl.String,
+        "period_type": pl.String,
+        "period_end_date": pl.Date,
+        "taxonomy_version": pl.String,
+        "rule_code": pl.String,
+        "severity": pl.String,
+        "details_json": pl.String,
+        "quarantined_at": pl.String,
+    }
+)
+FILINGS_MANIFEST_KEY = ("filing_id",)
+FILINGS_MANIFEST_SCHEMA = pl.Schema(
+    {
+        "filing_id": pl.String,
+        "issuer_id": pl.String,
+        "ticker_at_filing": pl.String,
+        "source_provider": pl.String,
+        "connector_name": pl.String,
+        "statement_type": pl.String,
+        "statement_scope": pl.String,
+        "period_type": pl.String,
+        "period_end_date": pl.Date,
+        "published_at": pl.Date,
+        "published_at_basis": pl.String,
+        "effective_available_at": pl.Date,
+        "audit_status": pl.String,
+        "audit_opinion": pl.String,
+        "revision_no": pl.Int64,
+        "revision_reason": pl.String,
+        "canonical_content_sha256": pl.String,
+        "payload_file_sha256": pl.String,
+    }
+)
+
+# A snapshot may contain zero peers, alerts, quarantine rows or unmapped metrics.
 OPTIONAL_ANALYTICS_SCHEMAS = {
     BENCHMARKS_TABLE: pl.Schema(
         {
@@ -163,6 +274,10 @@ OPTIONAL_ANALYTICS_SCHEMAS = {
             "filing_id": pl.String,
         }
     ),
+    ML_SCORES_TABLE: ML_SCORES_SCHEMA,
+    QUALITY_SUMMARY_TABLE: QUALITY_SUMMARY_SCHEMA,
+    AUDIT_QUARANTINE_TABLE: AUDIT_QUARANTINE_SCHEMA,
+    FILINGS_MANIFEST_TABLE: FILINGS_MANIFEST_SCHEMA,
 }
 ANALYTICS_SCHEMAS = {
     RATIOS_TABLE: FINANCIAL_RATIOS_SCHEMA,
@@ -172,6 +287,10 @@ ANALYTICS_KEYS = {
     RATIOS_TABLE: RATIO_KEY,
     BENCHMARKS_TABLE: BENCHMARK_KEY,
     RED_FLAGS_TABLE: FLAG_KEY,
+    ML_SCORES_TABLE: ML_SCORES_KEY,
+    QUALITY_SUMMARY_TABLE: QUALITY_SUMMARY_KEY,
+    AUDIT_QUARANTINE_TABLE: AUDIT_QUARANTINE_KEY,
+    FILINGS_MANIFEST_TABLE: FILINGS_MANIFEST_KEY,
 }
 
 
@@ -307,11 +426,9 @@ NON_NULL_FINANCIAL_FACT_COLUMNS = frozenset(
 )
 
 
-def validate_required_columns(
+def _require_columns(
     frame: pl.DataFrame, schema: Mapping[str, pl.DataType] = FINANCIAL_FACTS_SCHEMA
 ) -> None:
-    """Raise a contract error when a storage table misses required columns."""
-
     optional = (
         OPTIONAL_FINANCIAL_FACT_COLUMNS
         if schema is FINANCIAL_FACTS_SCHEMA
@@ -324,6 +441,14 @@ def validate_required_columns(
         raise ContractViolationError(
             f"Storage table is missing required columns: {', '.join(missing)}."
         )
+
+
+def validate_required_columns(
+    frame: pl.DataFrame, schema: Mapping[str, pl.DataType] = FINANCIAL_FACTS_SCHEMA
+) -> None:
+    """Raise a contract error when a storage table violates its column or domain contract."""
+
+    _require_columns(frame, schema)
     if schema is FINANCIAL_FACTS_SCHEMA:
         if frame["effective_available_at"].is_null().any():
             raise ContractViolationError(
@@ -340,11 +465,23 @@ def validate_required_columns(
                 + ", ".join(sorted(null_columns))
                 + "."
             )
+        for name in ("value", "ttm_value"):
+            if (
+                name in frame.columns
+                and frame.schema[name].is_float()
+                and frame.select(
+                    (pl.col(name).is_not_null() & ~pl.col(name).is_finite()).any()
+                ).item()
+            ):
+                raise ContractViolationError(
+                    f"Financial facts contain a non-finite {name} value."
+                )
         if frame.select(list(FINANCIAL_FACTS_KEY)).is_duplicated().any():
             raise ContractViolationError(
                 "Financial facts contain duplicate composite business keys."
             )
         _validate_allowed_values(frame, ALLOWED_VALUES)
+        _validate_financial_fact_domains(frame)
     elif schema is ISSUERS_SCHEMA:
         null_columns = [
             name
@@ -363,7 +500,125 @@ def validate_required_columns(
                 + ", ".join(null_columns)
                 + "."
             )
+        if (
+            frame.schema["issuer_id"] == pl.String
+            and frame.schema["ticker"] == pl.String
+            and frame.select(
+                (
+                    pl.col("issuer_id").str.strip_chars().eq("")
+                    | pl.col("ticker").str.strip_chars().eq("")
+                ).any()
+            ).item()
+        ):
+            raise ContractViolationError(
+                "Issuers require non-empty issuer_id and ticker values."
+            )
+        if frame["issuer_id"].is_duplicated().any():
+            raise ContractViolationError("Issuers contain duplicate issuer_id keys.")
         _validate_allowed_values(frame, ISSUER_ALLOWED_VALUES)
+    elif schema is UNMAPPED_METRICS_SCHEMA:
+        null_columns = [
+            name
+            for name in UNMAPPED_METRICS_SCHEMA
+            if name != "raw_value" and frame[name].is_null().any()
+        ]
+        if null_columns:
+            raise ContractViolationError(
+                "Unmapped metrics contain nulls in non-nullable columns: "
+                + ", ".join(null_columns)
+                + "."
+            )
+        _validate_allowed_values(
+            frame,
+            {
+                "statement_scope": ALLOWED_VALUES["statement_scope"],
+                "period_type": ALLOWED_VALUES["period_type"],
+            },
+        )
+
+
+def _validate_financial_fact_domains(frame: pl.DataFrame) -> None:
+    if frame.is_empty():
+        return
+    if frame.schema["revision_no"].is_integer() and (frame["revision_no"] < 1).any():
+        raise ContractViolationError("Financial facts require revision_no >= 1.")
+    if (
+        frame.schema["fiscal_year"].is_integer()
+        and (~frame["fiscal_year"].is_between(1, 9999)).any()
+    ):
+        raise ContractViolationError("Financial facts contain an invalid fiscal_year.")
+    quarter_dtype = frame.schema["fiscal_quarter"]
+    if quarter_dtype.is_integer() or quarter_dtype == pl.Null:
+        quarter = pl.col("fiscal_quarter")
+        quarter_invalid = (
+            ((pl.col("period_type") == "ANNUAL") & quarter.is_not_null())
+            | (
+                (pl.col("period_type") == "QUARTER")
+                & ~quarter.is_between(1, 4).fill_null(False)
+            )
+            | (
+                (pl.col("period_type") == "SEMI_ANNUAL")
+                & ~(quarter.is_null() | (quarter == 2))
+            )
+        )
+        if frame.select(quarter_invalid.any()).item():
+            raise ContractViolationError(
+                "Financial facts contain an invalid fiscal_quarter for period_type."
+            )
+    date_columns = (
+        "fiscal_year_start_date",
+        "period_start_date",
+        "period_end_date",
+        "effective_available_at",
+    )
+    if all(frame.schema[name] == pl.Date for name in date_columns) and frame.schema[
+        "published_at"
+    ] in (pl.Date, pl.Null):
+        dates_out_of_order = (
+            (pl.col("fiscal_year_start_date") > pl.col("period_start_date"))
+            | (pl.col("period_start_date") > pl.col("period_end_date"))
+            | (pl.col("effective_available_at") < pl.col("period_end_date"))
+        )
+        if frame.select(dates_out_of_order.any()).item():
+            raise ContractViolationError(
+                "Financial facts contain out-of-order period or availability dates."
+            )
+        published = pl.col("published_at")
+        basis = pl.col("published_at_basis")
+        publication_invalid = (
+            ((basis == "EXACT_FILING") & published.is_null())
+            | (basis.is_in(["STATUTORY_LAG", "UNKNOWN"]) & published.is_not_null())
+            | (
+                published.is_not_null()
+                & (
+                    (published < pl.col("period_end_date"))
+                    | (pl.col("effective_available_at") < published)
+                )
+            )
+        )
+        if frame.select(publication_invalid.any()).item():
+            raise ContractViolationError(
+                "Financial facts contain inconsistent published_at and effective_available_at dates."
+            )
+
+
+def _drop_superseded_cumulative_quarters(frame: pl.DataFrame) -> pl.DataFrame:
+    """Drop YTD cumulative quarterly rows when their derived discrete quarter is present."""
+    if frame.is_empty():
+        return frame
+    is_derived_discrete = (
+        (pl.col("period_type") == "QUARTER")
+        & (pl.col("derivation_method") != "REPORTED_DIRECTLY")
+        & (pl.col("period_start_date") > pl.col("fiscal_year_start_date"))
+    )
+    is_cumulative_ytd = (
+        (pl.col("period_type") == "QUARTER")
+        & (pl.col("fiscal_quarter") > 1).fill_null(False)
+        & (pl.col("period_start_date") == pl.col("fiscal_year_start_date"))
+        & (pl.col("derivation_method") == "REPORTED_DIRECTLY")
+    )
+    has_derived = is_derived_discrete.any().over(FINANCIAL_FACTS_KEY)
+    return frame.filter(~(is_cumulative_ytd & has_derived))
 
 
 def canonicalize_financial_facts(frame: pl.DataFrame) -> pl.DataFrame:
@@ -373,7 +628,7 @@ def canonicalize_financial_facts(frame: pl.DataFrame) -> pl.DataFrame:
     available to downstream quality and analytics stages.
     """
 
-    validate_required_columns(frame)
+    _require_columns(frame, FINANCIAL_FACTS_SCHEMA)
     expressions = [
         (
             pl.col(name).cast(dtype, strict=True)
@@ -389,14 +644,8 @@ def canonicalize_financial_facts(frame: pl.DataFrame) -> pl.DataFrame:
         raise ContractViolationError(
             "Financial facts contain values that cannot be cast to the storage schema."
         ) from exc
-    for name in ("value", "ttm_value"):
-        if canonical.select(
-            (pl.col(name).is_not_null() & ~pl.col(name).is_finite()).any()
-        ).item():
-            raise ContractViolationError(
-                f"Financial facts contain a non-finite {name} value."
-            )
-    validate_required_columns(canonical)
+    canonical = _drop_superseded_cumulative_quarters(canonical)
+    validate_required_columns(canonical, FINANCIAL_FACTS_SCHEMA)
     return canonical
 
 
@@ -422,7 +671,7 @@ def canonicalize_table(
 ) -> pl.DataFrame:
     """Cast a non-fact storage table strictly while retaining provenance columns."""
 
-    validate_required_columns(frame, schema)
+    _require_columns(frame, schema)
     expressions = [
         pl.col(name).cast(dtype, strict=True).alias(name)
         for name, dtype in schema.items()

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 from finintel.exceptions import (
     ContractViolationError,
-    FinIntelError,
+    InsufficientDiskSpaceError as InsufficientDiskSpaceError,
     RateLimitOrCircuitOpenError,
     SourceEntitlementError,
     TransientSourceError,
@@ -34,10 +34,6 @@ if TYPE_CHECKING:
     from vnstock_oapi.core.envelope import Envelope
 
 
-class InsufficientDiskSpaceError(FinIntelError):
-    """The state volume has less free space than required."""
-
-
 def _parse_stamp(value: object) -> datetime:
     if not isinstance(value, str):
         raise ContractViolationError("FHSC key dates must use ISO-8601.")
@@ -51,12 +47,22 @@ def _parse_stamp(value: object) -> datetime:
 def _key_expiry(store: StateStore) -> datetime | None:
     supplied_key = os.getenv("FHSC_API_KEY")
     fingerprint = key_fingerprint(supplied_key) if supplied_key else None
+    created = os.getenv("VNSTOCK_FHSC_KEY_CREATED_AT")
     entry = store.get_key("fhsc") or store.get_key("vnstock_fhsc")
+    if supplied_key and created:
+        provisioned_at = _parse_stamp(created)
+        expires_at = provisioned_at + FHSC_KEY_LIFETIME
+        if store.path.exists() and (
+            entry is None
+            or entry.get("key_fingerprint") != fingerprint
+            or entry.get("expires_at") != expires_at.isoformat()
+        ):
+            store.register_fhsc_key(supplied_key, provisioned_at)
+        return expires_at
     if entry is not None and (
         fingerprint is None or entry["key_fingerprint"] == fingerprint
     ):
         return _parse_stamp(entry["expires_at"])
-    created = os.getenv("VNSTOCK_FHSC_KEY_CREATED_AT")
     return _parse_stamp(created) + FHSC_KEY_LIFETIME if created else None
 
 
@@ -73,13 +79,14 @@ def _check_expiry(expires: datetime | None, now: datetime, run_id: str | None) -
             "FHSC API key has expired. Rotate the key before online ingestion."
         )
     if remaining < timedelta(days=5):
+        days_remaining = max(1, remaining.days)
         logger.warning(
             "API Key will expire in %d days",
-            remaining.days,
+            days_remaining,
             extra={
                 "event": "key_expiring",
                 "run_id": run_id,
-                "details": {"provider": "fhsc", "days_remaining": remaining.days},
+                "details": {"provider": "fhsc", "days_remaining": days_remaining},
             },
         )
 
@@ -96,7 +103,8 @@ def load_fhsc_source() -> Source:
             "Install the Gate 0 approved version of vnstock-oapi."
         )
     client = import_module("vnstock_oapi")
-    return cast("Source", client.source("fhsc"))
+    with fhsc_source_errors():
+        return cast("Source", client.source("fhsc"))
 
 
 @contextmanager
@@ -149,6 +157,7 @@ def health_check(
     """Run the disk check for all sources and key checks before online ingestion."""
     if min_free_bytes < 0:
         raise ContractViolationError("min_free_bytes must be non-negative.")
+    store.path.parent.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(store.path.parent).free < min_free_bytes:
         raise InsufficientDiskSpaceError(
             "Free disk space is below the configured minimum."
@@ -168,7 +177,8 @@ def health_check(
 
     probe = load_fhsc_source()
     if expires is None:
-        rotation = probe.status().get("key_rotation")
+        with fhsc_source_errors():
+            rotation = probe.status().get("key_rotation")
         if isinstance(rotation, dict) and rotation.get("due_on") is not None:
             expires = _parse_stamp(rotation["due_on"])
         _check_expiry(expires, checked_at, run_id)

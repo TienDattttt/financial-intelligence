@@ -75,7 +75,9 @@ USABLE_FLAGS = [Flag.VALID.value, Flag.DERIVED_Q4_INPUT.value]
 
 
 def _has_bad_endpoint(name: str) -> pl.Expr:
-    return (pl.col(name) <= 0) | (pl.col(f"{name}_prior") <= 0)
+    return pl.col(name).is_not_null() & (
+        (pl.col(name) <= 0) | (pl.col(f"{name}_prior") <= 0).fill_null(False)
+    )
 
 
 def _ratio(
@@ -87,7 +89,7 @@ def _ratio(
     current_input: pl.Expr | None = None,
     universal: bool = False,
     boundary: tuple[pl.Expr, Flag] | None = None,
-    missing_depreciation: bool = False,
+    depreciation_guard: pl.Expr | None = None,
 ) -> list[pl.Expr]:
     """Return N/D and its status. Never divide by a nonpositive denominator.
 
@@ -107,6 +109,9 @@ def _ratio(
         pl.lit(False),
         Flag.ZERO_OR_NEGATIVE_DENOMINATOR,
     )
+    missing_dep = (
+        depreciation_guard if depreciation_guard is not None else pl.lit(False)
+    )
     quotient = numerator / denominator
     status = (
         pl.when(pl.lit(not universal) & ~CORPORATE)
@@ -119,10 +124,7 @@ def _ratio(
             & numerator.is_not_null()
         )
         .then(pl.lit(Flag.NEGATIVE_OR_ZERO_EQUITY.value))
-        .when(
-            pl.lit(missing_depreciation)
-            & (c("ebitda_flag") == Flag.MISSING_DEPRECIATION_DIRECT_CF.value)
-        )
+        .when(missing_dep)
         .then(pl.lit(Flag.MISSING_DEPRECIATION_DIRECT_CF.value))
         .when(missing_prior)
         .then(pl.lit(Flag.MISSING_PRIOR_YEAR_BASE.value))
@@ -217,6 +219,18 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
     """
     c = pl.col
     equity_guard = (_has_bad_endpoint(EQUITY), Flag.NEGATIVE_OR_ZERO_EQUITY)
+    comparable_prior_equity = ~cross_taxonomy(EQUITY) & ~input_has(
+        "mixed", f"{EQUITY}_prior"
+    )
+    leverage_equity_guard = (
+        c(EQUITY).is_not_null()
+        & (
+            (c(EQUITY) <= 0)
+            | (comparable_prior_equity & (c(f"{EQUITY}_prior") <= 0).fill_null(False))
+        ),
+        Flag.NEGATIVE_OR_ZERO_EQUITY,
+    )
+    missing_ebitda_dep = c("ebitda_flag") == Flag.MISSING_DEPRECIATION_DIRECT_CF.value
     net_debt_inputs = (*DEBT_INPUTS, *CASH_INPUTS)
     revenue, earnings, cfo = c(REVENUE), c(EARNINGS), c(CFO)
     ebit, ebitda = c("ebit_ttm"), c("ebitda_ttm")
@@ -232,7 +246,7 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
                 revenue,
                 *EBITDA_INPUTS,
                 REVENUE,
-                missing_depreciation=True,
+                depreciation_guard=missing_ebitda_dep & revenue.is_not_null(),
             ),
             *_ratio(
                 "operating_margin",
@@ -331,7 +345,7 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
                 c(EQUITY),
                 *DEBT_INPUTS,
                 EQUITY,
-                boundary=equity_guard,
+                boundary=leverage_equity_guard,
             ),
             *_ratio(
                 "net_debt_to_equity",
@@ -339,7 +353,7 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
                 c(EQUITY),
                 *net_debt_inputs,
                 EQUITY,
-                boundary=equity_guard,
+                boundary=leverage_equity_guard,
             ),
             *_ratio(
                 "net_debt_to_ebitda",
@@ -348,7 +362,7 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
                 *net_debt_inputs,
                 *EBITDA_INPUTS,
                 boundary=(ebitda <= 0, Flag.NON_POSITIVE_EBITDA),
-                missing_depreciation=True,
+                depreciation_guard=missing_ebitda_dep & net_debt.is_not_null(),
             ),
             *_ratio(
                 "interest_coverage",

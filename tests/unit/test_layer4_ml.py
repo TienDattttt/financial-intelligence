@@ -91,6 +91,64 @@ def test_classical_scores_exactness_and_missing_note_evidence() -> None:
     )
     assert fallback["beneish_m8_score"] == pytest.approx(-2.32795)
 
+    with_charter_shares = facts(
+        {
+            (2023, None): {**baseline, "BS_ORDINARY_SHARES_CAPITAL": 100_000},
+            (2024, None): {**baseline, "BS_ORDINARY_SHARES_CAPITAL": 100_000},
+            (2025, None): {
+                **current,
+                "BS_ORDINARY_SHARES_CAPITAL": 100_000,
+                "IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE": None,
+            },
+        }
+    )
+    unchanged_row = add_classical_scores(
+        calculate_ratios(
+            prepare_periods(
+                with_charter_shares,
+                issuer(),
+                as_of=date(2026, 6, 1),
+                include_ml_inputs=True,
+            )
+        )
+    ).row(-1, named=True)
+    assert unchanged_row["piotroski_valid_components_count"] == 9
+    assert unchanged_row["piotroski_f_score"] == 9
+
+    increased_shares_no_cash = facts(
+        {
+            (2023, None): {**baseline, "BS_ORDINARY_SHARES_CAPITAL": 100_000},
+            (2024, None): {**baseline, "BS_ORDINARY_SHARES_CAPITAL": 100_000},
+            (2025, None): {
+                **current,
+                "BS_ORDINARY_SHARES_CAPITAL": 115_000,
+                "IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE": None,
+            },
+        }
+    )
+    ambiguous_row = add_classical_scores(
+        calculate_ratios(
+            prepare_periods(
+                increased_shares_no_cash,
+                issuer(),
+                as_of=date(2026, 6, 1),
+                include_ml_inputs=True,
+            )
+        )
+    ).row(-1, named=True)
+    assert ambiguous_row["piotroski_valid_components_count"] == 8
+    assert ambiguous_row["piotroski_f_score"] is None
+
+    cash_issuance_no_note = score(
+        {
+            **current,
+            "CF_EQUITY_ISSUANCE_PROCEEDS": 50,
+            "IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE": None,
+        }
+    )
+    assert cash_issuance_no_note["piotroski_valid_components_count"] == 9
+    assert cash_issuance_no_note["piotroski_f_score"] == 8
+
 
 def test_classical_scores_exclude_noncorporate_regimes() -> None:
     source = facts({(2025, None): {"BS_TOTAL_ASSETS": 100}})
@@ -118,6 +176,7 @@ def test_preprocessor_uses_only_training_statistics() -> None:
     original = processor.transform(train)
     raw = processor.impute(train)
     assert raw["interest_coverage"][4] == pytest.approx(3.85)
+    assert raw["interest_coverage_missing"].to_list() == [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
     assert raw["roa"][3] == pytest.approx((0.103 + 0.2) / 2)
     assert raw["roa_missing"].to_list() == [0, 0, 0, 1, 0, 1]
     processor.transform(train.with_columns(pl.lit(1e15).alias("roa")))
@@ -148,3 +207,13 @@ def test_unsupervised_exports_names_and_scales_anomaly_by_training_rank() -> Non
         .item()
         == "STATISTICAL_MULTIVARIATE_OUTLIER"
     )
+    keyed = source.with_columns(
+        pl.Series("issuer_id", [f"ISS_{i:02d}" for i in range(30)]),
+        pl.lit("CONSOLIDATED").alias("statement_scope"),
+        pl.lit("QUARTER").alias("period_type"),
+        pl.lit(date(2025, 12, 31)).alias("period_end_date"),
+        pl.Series("filing_id", [f"FIL_{i:02d}" for i in range(30)]),
+    )
+    scored_keyed = model.transform(keyed)
+    assert scored_keyed["issuer_id"].to_list() == [f"ISS_{i:02d}" for i in range(30)]
+    assert scored_keyed["filing_id"].to_list() == [f"FIL_{i:02d}" for i in range(30)]

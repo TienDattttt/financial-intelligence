@@ -26,6 +26,27 @@ def map_restatement(
     is_opening_balance = comparative_period.period_end_date.toordinal() + 1 == (
         filing.fiscal_year_start_date.toordinal()
     )
+    filing_days = (filing.period_end_date - filing.period_start_date).days + 1
+    comparative_days = (
+        comparative_period.period_end_date - comparative_period.period_start_date
+    ).days + 1
+    filing_ytd = filing.period_start_date == filing.fiscal_year_start_date
+    comparative_ytd = (
+        comparative_period.period_start_date
+        == comparative_period.fiscal_year_start_date
+    )
+    comparative_q = comparative_period.fiscal_quarter or 4
+    valid_flow_days = (
+        350 <= comparative_days <= 380
+        if comparative_period.period_type == PeriodType.ANNUAL
+        else 160 <= comparative_days <= 200
+        if comparative_period.period_type == PeriodType.SEMI_ANNUAL
+        else (
+            comparative_q * 80 <= comparative_days <= comparative_q * 100
+            if comparative_ytd
+            else 80 <= comparative_days <= 100
+        )
+    )
     if (
         resolve_regime(filing.fiscal_year_start_date) != TaxonomyVersion.TT99
         or resolve_regime(comparative_period.fiscal_year_start_date)
@@ -47,6 +68,9 @@ def map_restatement(
             and (
                 comparative_period.period_type != filing.period_type
                 or comparative_period.fiscal_quarter != filing.fiscal_quarter
+                or comparative_ytd != filing_ytd
+                or abs(comparative_days - filing_days) > 10
+                or not valid_flow_days
             )
         )
     ):

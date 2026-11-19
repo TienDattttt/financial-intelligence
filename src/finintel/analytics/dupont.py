@@ -42,7 +42,7 @@ def add_dupont(ratios: pl.DataFrame) -> pl.DataFrame:
     parent_share = parent_earnings / earnings
     valid_total = (
         CORPORATE
-        & (c("statement_scope") == "CONSOLIDATED")
+        & c("statement_scope").is_in(["CONSOLIDATED", "SEPARATE"])
         & (ebt > 0)
         & (ebit > 0)
         & ~input_has("mixed", *EBIT_INPUTS)
