@@ -1,33 +1,115 @@
-"""Export immutable filing manifest lineage and latest PIT facts for snapshot publication."""
+"""Export immutable filing manifest lineage and latest PIT facts for snapshot publication.
+
+Verified Sources:
+- DuckDB SQL Window Functions / Polars DataFrame PIT resolution (exact tie-breaking parity
+  with ``ParquetRepository._query_facts``):
+  https://duckdb.org/docs/stable/sql/functions/window_functions
+- Polars Expressions & Joins: https://docs.pola.rs/
+- Internal Layer 2 TTM contract: ``finintel.normalization.periods.compute_ttm``
+"""
 
 from __future__ import annotations
 
 import sqlite3
 from datetime import date
 from pathlib import Path
+from typing import cast
 
+import duckdb
 import polars as pl
 
 from finintel.exceptions import ContractViolationError
 from finintel.normalization.mapper import FACT_SCHEMA
 from finintel.normalization.periods import compute_ttm
 from finintel.pipeline.state_store import StateStore
-from finintel.storage.repository import ParquetRepository
 from finintel.storage.schemas import (
     FILINGS_MANIFEST_KEY,
     FILINGS_MANIFEST_SCHEMA,
 )
 
 
-def build_latest_facts_table(facts_path: Path, *, as_of: date) -> pl.DataFrame:
-    """Resolve point-in-time latest facts and attach Layer 2 TTM values for Serving."""
-    latest = ParquetRepository(facts_path).get_facts_as_of(as_of)
+def _load_facts_frame(facts_source: Path | pl.DataFrame) -> pl.DataFrame:
+    if isinstance(facts_source, pl.DataFrame):
+        return facts_source
+    try:
+        return pl.read_parquet(facts_source)
+    except (OSError, pl.exceptions.PolarsError) as exc:
+        raise ContractViolationError(
+            "Unable to read financial_facts for snapshot export."
+        ) from exc
+
+
+def _resolve_pit_latest_facts(
+    facts: pl.DataFrame,
+    *,
+    as_of: date,
+    require_exact_filing_date: bool = False,
+) -> pl.DataFrame:
+    """Resolve point-in-time latest facts in memory with deterministic tie-breakers.
+
+    Matches ``ParquetRepository._query_facts`` window ranking exactly:
+    ``PARTITION BY issuer_id, statement_scope, period_type, fiscal_year_start_date,
+    period_end_date, metric_id, taxonomy_version`` ordered by
+    ``{date_column} DESC, effective_available_at DESC, revision_no DESC, filing_id DESC``.
+    """
+    if type(as_of) is not date:
+        raise TypeError("as_of must be a datetime.date instance.")
+    if type(require_exact_filing_date) is not bool:
+        raise TypeError("require_exact_filing_date must be a bool.")
+    if facts.is_empty():
+        return facts
+
+    date_column = (
+        "published_at" if require_exact_filing_date else "effective_available_at"
+    )
+    predicate = f"{date_column} IS NOT NULL AND {date_column} <= CAST(? AS DATE)"
+    if require_exact_filing_date:
+        predicate += " AND published_at_basis = 'EXACT_FILING'"
+    query = f"""
+        WITH eligible AS (
+            SELECT *
+            FROM _in_memory_facts
+            WHERE {predicate}
+        ), ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY issuer_id, statement_scope, period_type,
+                             fiscal_year_start_date, period_end_date,
+                             metric_id, taxonomy_version
+                ORDER BY {date_column} DESC, effective_available_at DESC,
+                         revision_no DESC, filing_id DESC
+            ) AS _pit_rank
+            FROM eligible
+        )
+        SELECT * EXCLUDE (_pit_rank)
+        FROM ranked
+        WHERE _pit_rank = 1
+    """
+    try:
+        with duckdb.connect(":memory:") as connection:
+            connection.register("_in_memory_facts", facts)
+            arrow = connection.execute(query, [as_of]).fetch_arrow_table()
+    except duckdb.Error as exc:
+        raise ContractViolationError(
+            "Unable to resolve point-in-time latest facts in memory."
+        ) from exc
+    return cast(pl.DataFrame, pl.from_arrow(arrow))
+
+
+def build_latest_facts_table(
+    facts_source: Path | pl.DataFrame, *, as_of: date
+) -> pl.DataFrame:
+    """Resolve point-in-time latest facts and attach Layer 2 TTM values for Serving.
+
+    Accepts either an already-loaded ``pl.DataFrame`` (zero extra disk I/O) or a ``Path``.
+    Includes ``source_provider`` in TTM join keys so multi-source rows never collide,
+    while preserving ``comparable_across_taxonomy``, ``source_filing_ids``, and
+    ``is_filed_late`` intact.
+    """
+    full_facts = _load_facts_frame(facts_source)
+    latest = _resolve_pit_latest_facts(full_facts, as_of=as_of)
     if latest.is_empty():
         return latest
-    try:
-        full_facts = pl.read_parquet(facts_path)
-    except (OSError, pl.exceptions.PolarsError):
-        return latest
+
     required_for_ttm = {
         "issuer_id",
         "statement_scope",
@@ -83,6 +165,11 @@ def build_latest_facts_table(facts_path: Path, *, as_of: date) -> pl.DataFrame:
         enriched_input = enriched_input.with_columns(
             pl.lit(False).alias("comparable_across_taxonomy")
         )
+    if "is_filed_late" not in enriched_input.columns:
+        enriched_input = enriched_input.with_columns(
+            pl.lit(None, dtype=pl.Boolean).alias("is_filed_late")
+        )
+
     projected = enriched_input.select(
         pl.col(name).cast(dtype, strict=False)
         if name in enriched_input.columns
@@ -92,6 +179,7 @@ def build_latest_facts_table(facts_path: Path, *, as_of: date) -> pl.DataFrame:
     ttm = compute_ttm(projected, as_of=as_of)
     if ttm.is_empty():
         return latest
+
     join_keys = [
         "issuer_id",
         "statement_scope",
@@ -100,6 +188,9 @@ def build_latest_facts_table(facts_path: Path, *, as_of: date) -> pl.DataFrame:
         "metric_id",
         "taxonomy_version",
     ]
+    if "source_provider" in latest.columns and "source_provider" in ttm.columns:
+        join_keys.append("source_provider")
+
     ttm_slice = ttm.select(
         *join_keys,
         pl.col("ttm_value").alias("_computed_ttm_value"),
@@ -123,21 +214,15 @@ def build_latest_facts_table(facts_path: Path, *, as_of: date) -> pl.DataFrame:
 
 
 def build_filings_manifest_snapshot(
-    state: StateStore, facts_path: Path
+    state: StateStore, facts_source: Path | pl.DataFrame
 ) -> pl.DataFrame:
-    """Project SQLite ``filings_manifest`` rows referenced by ``facts_path`` into Parquet.
+    """Project SQLite ``filings_manifest`` rows referenced by ``facts_source`` into Parquet.
 
     Includes ``source_provider``, ``connector_name``, ``published_at``,
     ``published_at_basis``, and ``canonical_content_sha256`` so Layer 5 Lineage
     Cards read 100% from the immutable published snapshot without touching SQLite.
     """
-    try:
-        facts = pl.read_parquet(facts_path)
-    except (OSError, pl.exceptions.PolarsError) as exc:
-        raise ContractViolationError(
-            "Unable to read financial_facts for manifest snapshot export."
-        ) from exc
-
+    facts = _load_facts_frame(facts_source)
     if facts.is_empty():
         return pl.DataFrame(schema=FILINGS_MANIFEST_SCHEMA)
 

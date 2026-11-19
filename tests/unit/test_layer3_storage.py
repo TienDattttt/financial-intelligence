@@ -6,7 +6,7 @@ from threading import Barrier, Event, Thread
 
 import polars as pl
 import pytest
-from filelock import FileLock, Timeout
+from filelock import ReadWriteLock, Timeout
 
 from finintel.exceptions import ContractViolationError
 from finintel.pipeline.runner import (
@@ -158,11 +158,14 @@ def test_reader_can_read_while_publishing(tmp_path: Path, explicit_file: bool) -
         read = executor.submit(repository.get_facts_as_of, as_of)
         try:
             assert query_started.wait(timeout=5)
-            with (
-                pytest.raises(Timeout),
-                FileLock(root.parent / ".snapshots.publish.lock", timeout=0),
-            ):
-                pytest.fail("The reader must hold the publisher and GC lock")
+            rw_lock = ReadWriteLock(
+                root.parent / ".snapshots.publish.lock", is_singleton=False
+            )
+            try:
+                with pytest.raises(Timeout), rw_lock.write_lock(timeout=0):
+                    pytest.fail("The reader must hold the publisher and GC lock")
+            finally:
+                rw_lock.close()
             publish = executor.submit(publish_new_snapshots)
         finally:
             release_query.set()
