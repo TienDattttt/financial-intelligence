@@ -88,15 +88,29 @@ def _solve_monotone_mle_intercept(
     """Find the exact 1D MLE intercept minimizing binary cross-entropy of sigmoid(slope * margin + b)."""
     if raw_margin.size == 0 or y.size == 0:
         return 0.0
-    y_float = y.astype(np.float64)
-    scaled_margin = slope * raw_margin
+    scaled_margin = slope * np.asarray(raw_margin, dtype=np.float64)
+    finite_mask = np.isfinite(scaled_margin)
+    if not np.any(finite_mask):
+        return 0.0
+    s_fin = scaled_margin[finite_mask]
+    y_fin = np.asarray(y, dtype=np.float64)[finite_mask]
+    base_rate = float(np.clip(np.mean(y_fin), 1e-6, 1.0 - 1e-6))
+    logit_base = float(np.log(base_rate / (1.0 - base_rate)))
+    center = -float(np.median(s_fin))
+    lower = min(center - 30.0, logit_base - float(np.max(s_fin)) - 1.0)
+    upper = max(center + 30.0, logit_base - float(np.min(s_fin)) + 1.0)
 
     def _bce_loss(intercept: float) -> float:
-        z = np.clip(scaled_margin + intercept, -60.0, 60.0)
-        return float(np.sum(np.logaddexp(0.0, z) - y_float * z))
+        z = s_fin + intercept
+        return float(np.sum(np.logaddexp(0.0, z) - y_fin * z))
 
-    result = minimize_scalar(_bce_loss, bounds=(-30.0, 30.0), method="bounded")
-    return float(result.x) if np.isfinite(result.x) else 0.0
+    result = minimize_scalar(
+        _bce_loss,
+        bounds=(lower, upper),
+        method="bounded",
+        options={"xatol": 1e-10},
+    )
+    return float(result.x) if np.isfinite(result.x) else center
 
 
 def _fit_platt_params(

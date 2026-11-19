@@ -498,7 +498,18 @@ def build_distress_targets(
             )
         )
         exact_expr = (
-            (all_future_exact | pl.col("_earliest_future_event_date").is_not_null())
+            (
+                all_future_exact
+                | (
+                    reg_positive
+                    & (
+                        ~mode_a_positive
+                        | (
+                            pl.col("_earliest_future_event_date") <= mode_a_avail
+                        ).fill_null(False)
+                    )
+                )
+            )
             if mode == "REGULATORY_DISTRESS"
             else all_future_exact
         )

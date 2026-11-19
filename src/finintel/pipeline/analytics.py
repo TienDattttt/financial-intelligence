@@ -265,7 +265,7 @@ class AnalyticsHandler:
                 f"Analytics {field_name} must be a nonempty relative path."
             )
         candidate = Path(value)
-        if candidate.is_absolute():
+        if candidate.is_absolute() or candidate.drive or candidate.root:
             raise ContractViolationError(
                 f"Analytics {field_name} must be a relative path confined to the workspace."
             )

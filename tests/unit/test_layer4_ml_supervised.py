@@ -978,6 +978,24 @@ def test_margin_platt_calibrator_oof_raw_margin_single_group_fallback_and_min_po
     assert np.all(np.diff(probs_deg) > 0.0)
     assert float(np.mean(probs_deg)) == pytest.approx(float(np.mean(y_deg)), abs=1e-4)
 
+    # 1b. Shifted raw_margin where LogisticRegression slope exceeds 10.0:
+    # _fit_platt_params clamps slope=10.0 and solves centered 1D MLE intercept (~ +40.0, not saturated at +30.0)
+    rng_shift = np.random.default_rng(0)
+    shifted_margins = np.concatenate(
+        [
+            rng_shift.uniform(-4.5, -4.05, size=2500),
+            rng_shift.uniform(-3.95, -3.5, size=2500),
+        ]
+    )
+    y_shift = np.array([0] * 2500 + [1] * 2500, dtype=np.int8)
+    cal_shift = MarginPlattCalibrator(classifier=None).fit_margins(
+        shifted_margins, y_shift
+    )
+    assert cal_shift.slope == pytest.approx(10.0)
+    assert cal_shift.intercept > 35.0
+    probs_shift = cal_shift.predict_margin_proba(shifted_margins)[:, 1]
+    assert float(np.mean(probs_shift)) == pytest.approx(0.5, abs=5e-3)
+
     # 2. Single positive group in validation (n_pos_groups == 1) falls back cleanly to StratifiedKFold
     def make_fold(
         n_rows: int,
@@ -1116,7 +1134,76 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
     assert q4_uncensored["distress_target"] == 0
     assert q4_uncensored["label_available_at"] == date(2021, 12, 31)
 
-    # (e) Path-confinement in AnalyticsHandler for ml.regulatory_events_path
+    # (d2) Mode B exact-filing guard when Mode A is STATUTORY_LAG earlier than regulatory event
+    stat_lag_periods = _periods().with_columns(
+        pl.when((pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 4))
+        .then(pl.lit(date(2021, 10, 1)))
+        .otherwise(pl.col("_period_available_at"))
+        .alias("_period_available_at"),
+        pl.when((pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 4))
+        .then(pl.lit(False))
+        .otherwise(pl.lit(True))
+        .alias("_period_exact_filing"),
+        pl.lit(True).alias("_exact_filing_basis"),
+    )
+    late_reg_events = pl.DataFrame(
+        {
+            "issuer_id": ["ABC"],
+            "event_date": [date(2021, 11, 15)],
+            "event_type": ["CONTROL"],
+        }
+    )
+    late_reg_out = build_distress_targets(
+        stat_lag_periods,
+        mode="REGULATORY_DISTRESS",
+        as_of=date(2022, 1, 1),
+        regulatory_events=late_reg_events,
+    )
+    q4_late_reg = late_reg_out.filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert q4_late_reg["distress_target"] == 1
+    assert q4_late_reg["label_available_at"] == date(2021, 10, 1)
+    assert q4_late_reg["_label_exact_filing_basis"] is False
+    split_strict_reg = purged_walk_forward_split(
+        late_reg_out,
+        validation_start=date(2021, 11, 1),
+        test_start=date(2022, 1, 1),
+        require_exact_filing=True,
+    )
+    assert (
+        split_strict_reg["train"]
+        .filter((pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4))
+        .height
+        == 0
+    )
+
+    early_reg_events = pl.DataFrame(
+        {
+            "issuer_id": ["ABC"],
+            "event_date": [date(2021, 8, 1)],
+            "event_type": ["CONTROL"],
+        }
+    )
+    early_reg_out = build_distress_targets(
+        stat_lag_periods,
+        mode="REGULATORY_DISTRESS",
+        as_of=date(2022, 1, 1),
+        regulatory_events=early_reg_events,
+    )
+    q4_early_reg = early_reg_out.filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert q4_early_reg["distress_target"] == 1
+    assert q4_early_reg["label_available_at"] == date(2021, 8, 1)
+    assert q4_early_reg["_label_exact_filing_basis"] is True
+
+    # (e) Path-confinement and end-to-end AnalyticsHandler forwarding for ml.* options
+    import json
+
+    from finintel.storage.schemas import ML_SCORES_TABLE
+    from tests.unit.test_layer4_analytics import facts
+
     state = StateStore(tmp_path / "metadata/state.sqlite")
     state.initialize()
     handler = AnalyticsHandler(
@@ -1133,15 +1220,135 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
             }
         },
     )
-    with pytest.raises(ContractViolationError, match="escapes|relative"):
-        handler._confined_ml_input_path(
-            "../outside.parquet", "ml.regulatory_events_path"
+    for bad_path in (
+        "../outside.parquet",
+        str((tmp_path / "abs.parquet").resolve()),
+        r"\outside.parquet",
+        "C:outside.parquet",
+    ):
+        with pytest.raises(ContractViolationError, match="escapes|relative"):
+            handler._confined_ml_input_path(bad_path, "ml.regulatory_events_path")
+
+    def make_e2e_issuer_facts(idx: int) -> pl.DataFrame:
+        periods_map: dict[tuple[int, int | None], dict[str, float | None]] = {}
+        for year in range(2017, 2025):
+            for q in range(1, 5):
+                scale = 1.0 + 0.03 * idx + 0.01 * q
+                periods_map[(year, q)] = {
+                    "BS_TOTAL_ASSETS": 1000.0 * scale,
+                    "BS_TOTAL_EQUITY": (450.0 - 8.0 * (idx % 7)) * scale,
+                    "BS_MINORITY_INTEREST": 10.0 * scale,
+                    "BS_TOTAL_LIABILITIES": (550.0 + 8.0 * (idx % 7)) * scale,
+                    "BS_CURRENT_ASSETS": (360.0 + 5.0 * (idx % 5)) * scale,
+                    "BS_CURRENT_LIABILITIES": (200.0 + 4.0 * (idx % 4)) * scale,
+                    "BS_CASH_AND_EQUIVALENTS": (80.0 + 3.0 * (idx % 6)) * scale,
+                    "BS_SHORT_TERM_BORROWINGS": (120.0 + 6.0 * (idx % 5)) * scale,
+                    "BS_LONG_TERM_BORROWINGS": (90.0 + 4.0 * (idx % 3)) * scale,
+                    "BS_RETAINED_EARNINGS": (150.0 - 5.0 * (idx % 6)) * scale,
+                    "BS_ORDINARY_SHARES_CAPITAL": 200_000.0,
+                    "BS_TREASURY_SHARES": 0.0,
+                    "BS_INVENTORIES": (70.0 + 2.0 * (idx % 5)) * scale,
+                    "BS_TRADE_RECEIVABLES_ST": (95.0 + 3.0 * (idx % 4)) * scale,
+                    "BS_TRADE_PAYABLES_ST": (65.0 + 2.0 * (idx % 3)) * scale,
+                    "BS_TANGIBLE_FIXED_ASSETS": 300.0 * scale,
+                    "IS_NET_REVENUE": (260.0 + 7.0 * (idx % 6)) * scale,
+                    "IS_COST_OF_GOODS_SOLD": (160.0 + 4.0 * (idx % 5)) * scale,
+                    "IS_GROSS_PROFIT": (100.0 + 3.0 * (idx % 6)) * scale,
+                    "IS_OPERATING_PROFIT": (42.0 - 2.0 * (idx % 5)) * scale,
+                    "IS_PROFIT_BEFORE_TAX": (38.0 - 2.0 * (idx % 5)) * scale,
+                    "IS_INTEREST_EXPENSE": (4.0 + 0.5 * (idx % 4)) * scale,
+                    "IS_CURRENT_INCOME_TAX": 7.0 * scale,
+                    "IS_DEFERRED_INCOME_TAX": 0.5 * scale,
+                    "IS_NET_INCOME": (30.5 - 2.0 * (idx % 5)) * scale,
+                    "IS_NET_INCOME_PARENT": (28.0 - 2.0 * (idx % 5)) * scale,
+                    "IS_SELLING_EXPENSES": 12.0 * scale,
+                    "IS_ADMINISTRATIVE_EXPENSES": 15.0 * scale,
+                    "CF_OPERATING_CASH_FLOW": (34.0 - 2.5 * (idx % 5)) * scale,
+                    "CF_CAPITAL_EXPENDITURE": -12.0 * scale,
+                    "CF_DEPRECIATION_AMORTIZATION": 8.0 * scale,
+                    "CF_EQUITY_ISSUANCE_PROCEEDS": 0.0,
+                }
+        return facts(periods_map, issuer_id=f"REG_{idx:02d}").with_columns(
+            pl.lit("EXACT_FILING").alias("published_at_basis"),
+            pl.col("effective_available_at").alias("published_at"),
         )
-    with pytest.raises(ContractViolationError, match="relative"):
-        handler._confined_ml_input_path(
-            str((tmp_path / "abs.parquet").resolve()), "ml.regulatory_events_path"
-        )
-    _ = (Stage, RunRequest, StepContext)
+
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    pl.concat([make_e2e_issuer_facts(i) for i in range(12)]).write_parquet(
+        curated / "financial_facts.parquet"
+    )
+    pl.DataFrame(
+        {
+            "issuer_id": [f"REG_{i:02d}" for i in range(12)],
+            "ticker": [f"R{i:02d}" for i in range(12)],
+            "accounting_regime": ["CORPORATE"] * 12,
+            "icb_code_level2": ["2000" if i < 6 else "3000" for i in range(12)],
+            "icb_code_level3": ["201010" if i < 6 else "301010" for i in range(12)],
+            "industry_snapshot_date": [date(2017, 1, 1)] * 12,
+        }
+    ).write_parquet(curated / "issuers.parquet")
+    pl.DataFrame(
+        {
+            "issuer_id": [
+                "REG_00",
+                "REG_01",
+                "REG_02",
+                "REG_03",
+                "REG_04",
+                "REG_05",
+            ],
+            "event_date": [
+                date(2021, 5, 1),
+                date(2021, 6, 1),
+                date(2021, 7, 1),
+                date(2022, 6, 1),
+                date(2022, 7, 1),
+                date(2024, 6, 1),
+            ],
+            "event_type": [
+                "CONTROL",
+                "TRADING_RESTRICTION",
+                "SUSPENSION",
+                "CONTROL",
+                "FORCED_DELISTING",
+                "ADVERSE_OR_DISCLAIMER_AUDIT",
+            ],
+        }
+    ).write_parquet(curated / "regulatory_events.parquet")
+
+    req = RunRequest(source="file")
+    state.start_run("run_mode_b_e2e", "CLI_MANUAL", req.log_arguments(), None)
+    AnalyticsHandler(
+        state,
+        tmp_path,
+        {
+            "as_of": "2025-03-01",
+            "ml": {
+                "enabled": True,
+                "approved_target": True,
+                "validation_start": "2021-12-01",
+                "test_start": "2023-03-01",
+                "scored_taxonomies": ["VAS_TT200_2014", "VAS_TT99_2025"],
+                "feature_set": "sector_adjusted",
+                "target_mode": "REGULATORY_DISTRESS",
+                "regulatory_events_path": "curated/regulatory_events.parquet",
+            },
+        },
+    )(StepContext("run_mode_b_e2e", Stage.ANALYTICS, req, (), None))
+
+    batch = curated / "analytics/run_mode_b_e2e"
+    assert (batch / ML_SCORES_TABLE).is_file()
+    manifest = json.loads((batch / "_ml_run_manifest.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (batch / "model_evaluation_report.json").read_text(encoding="utf-8")
+    )
+    assert manifest["target_mode"] == "REGULATORY_DISTRESS"
+    assert manifest["feature_set"] == "sector_adjusted"
+    assert manifest["scored_taxonomies"] == ["VAS_TT200_2014", "VAS_TT99_2025"]
+    assert report["target_mode"] == "REGULATORY_DISTRESS"
+    assert manifest["split_counts"]["train"]["positive_labels"] > 0
+    assert manifest["split_counts"]["validation"]["positive_labels"] > 0
 
 
 def test_treeshap_waterfall_other_features_delta_and_vietnamese_display_names() -> None:
