@@ -1,4 +1,15 @@
-"""Layer 4 acceptance and regression tests."""
+"""Layer 4 acceptance and regression tests.
+
+Verified Sources:
+    Rouen, E., So, E. C., & Wang, C. C. Y. (2021). "Core Earnings: New Data and Evidence."
+    Journal of Financial Economics, Vol. 142, Issue 3, pp. 1068-1091.
+    Schilit, H. M., Perler, J., & Engelhart, Y. (2018). Financial Shenanigans (4th Ed., McGraw-Hill).
+    Dechow, P. M., Ge, W., Larson, C. R., & Sloan, R. G. (2011). "Predicting Material Accounting
+    Misstatements." Contemporary Accounting Research, Vol. 28, Issue 1, pp. 17-82.
+    Chow, J. T. S. (2015). "Stress Testing Corporate Balance Sheets in Emerging Markets."
+    IMF Working Paper WP/15/216 (https://www.elibrary.imf.org).
+    Circular 200/2014/TT-BTC & Circular 99/2025/TT-BTC (docs/layers/LAYER_2_NORMALIZATION.md:138).
+"""
 
 import json
 from datetime import date, timedelta
@@ -202,7 +213,12 @@ def test_point_in_time_on_legacy_storage_respects_exact_and_statutory_dates() ->
 
 def test_regime_routing_and_ratio_boundary_flags() -> None:
     from finintel.analytics.intermediates import prepare_periods
-    from finintel.analytics.ratios import CORE_RATIOS, calculate_ratios
+    from finintel.analytics.ratios import (
+        CORE_RATIOS,
+        EXTRA_RATIOS,
+        FORENSIC_RATIOS,
+        calculate_ratios,
+    )
 
     history: dict[tuple[int, int | None], dict[str, float | None]] = {
         (2024, None): {
@@ -232,6 +248,8 @@ def test_regime_routing_and_ratio_boundary_flags() -> None:
     )
     row = corporate.row(-1, named=True)
     assert len(CORE_RATIOS) == 28
+    assert len(EXTRA_RATIOS) == 7
+    assert len(FORENSIC_RATIOS) == 3
     for ratio in ("roe_total", "roe_parent", "debt_to_equity"):
         assert row[ratio] is None
         assert row[f"{ratio}_flag"] == "NEGATIVE_OR_ZERO_EQUITY"
@@ -244,7 +262,12 @@ def test_regime_routing_and_ratio_boundary_flags() -> None:
     assert row["roa"] == -0.2
     assert row["liabilities_to_assets"] == 200 / 300
     assert row["eps_ttm_estimated"] == -5
-    for ratio in ("current_ratio", "quick_ratio", "inventory_turnover"):
+    for ratio in (
+        "current_ratio",
+        "quick_ratio",
+        "inventory_turnover",
+        *FORENSIC_RATIOS,
+    ):
         assert row[ratio] is None
         assert row[f"{ratio}_flag"] == "NOT_APPLICABLE_FOR_REGIME"
 
