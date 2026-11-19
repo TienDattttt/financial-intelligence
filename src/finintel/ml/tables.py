@@ -1,7 +1,11 @@
 """Assemble Layer 4B ML scores, explanations, evaluation report and run manifest.
 
 Verified Sources:
-    docs/layers/LAYER_4_ANALYTICS_AND_ML.md, sections 2.1 (G1–G5), 5.3.4 and 6.4.
+    docs/layers/LAYER_4_ANALYTICS_AND_ML.md, sections 2.1 (G1-G5), 5.3.4 and 6.4.
+    Shumway, T. (2001). "Forecasting Bankruptcy More Accurately: A Simple Hazard Model."
+        The Journal of Business, Vol. 74, No. 1, pp. 101-124.
+    Platt, J. C. (1999) & Niculescu-Mizil, A., & Caruana, R. (2005) (ICML 2005, pp. 625-632).
+    Lundberg, S. M. et al. (2020). Nature Machine Intelligence, Vol. 2, pp. 56-67.
 """
 
 from __future__ import annotations
@@ -9,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import Any, Literal
 
 import polars as pl
 
@@ -19,8 +23,14 @@ from finintel.analytics.ratios import calculate_ratios
 from finintel.exceptions import ContractViolationError
 from finintel.ml.classical_scores import add_classical_scores
 from finintel.ml.supervised.explain import explain_distress
-from finintel.ml.supervised.temporal_split import build_pit_ml_splits
+from finintel.ml.supervised.temporal_split import (
+    attach_pit_sector_z_features,
+    build_pit_ml_splits,
+    resolve_peer_standardization_mode,
+)
 from finintel.ml.supervised.train import (
+    BASE_FEATURES,
+    SECTOR_ADJUSTED_FEATURES,
     build_evaluation_report,
     score_distress_model,
     train_distress_model,
@@ -66,6 +76,11 @@ def build_ml_artifacts(
     require_exact_filing: bool = True,
     statement_scope: str = "CONSOLIDATED",
     taxonomy_version: str = "VAS_TT200_2014",
+    scored_taxonomies: tuple[str, ...] = ("VAS_TT200_2014", "VAS_TT99_2025"),
+    feature_set: Literal["sector_adjusted", "base"] = "sector_adjusted",
+    target_mode: str = "FUNDAMENTAL_DISTRESS",
+    regulatory_events: pl.DataFrame | None = None,
+    min_unique_positive_issuers: int = 3,
     peer_benchmarks: pl.DataFrame | None = None,
     facts_sha256: str | None = None,
     issuers_sha256: str | None = None,
@@ -74,13 +89,28 @@ def build_ml_artifacts(
 
     Guardrail G2 requires ``approved_target=True`` before supervised training runs.
     Guardrail G1 requires ``EXACT_FILING`` provenance across train/validation/test
-    when ``require_exact_filing=True``. Fails fast when sufficient labeled classes
-    or cross-sectional variation are absent.
+    when ``require_exact_filing=True``. Classical scores (Altman Z'', Piotroski F,
+    Beneish M) are computed for both QUARTER and ANNUAL corporate records, whereas
+    Unsupervised and Supervised ML models score strictly on QUARTER records across
+    ``scored_taxonomies``.
     """
     if not approved_target:
         raise ContractViolationError(
             "Layer 4B supervised ML requires explicit target approval (approved_target=True)."
         )
+    if not scored_taxonomies or any(
+        not isinstance(item, str) or not item.strip() for item in scored_taxonomies
+    ):
+        raise ContractViolationError(
+            "Layer 4B scored_taxonomies must be a nonempty tuple of taxonomy strings."
+        )
+    if feature_set not in ("sector_adjusted", "base"):
+        raise ContractViolationError(
+            f"Unsupported feature_set {feature_set!r}; expected 'sector_adjusted' or 'base'."
+        )
+    selected_features = (
+        SECTOR_ADJUSTED_FEATURES if feature_set == "sector_adjusted" else BASE_FEATURES
+    )
 
     periods_as_of = prepare_periods(facts, issuers, as_of=as_of, include_ml_inputs=True)
     ratios_as_of = calculate_ratios(periods_as_of)
@@ -100,23 +130,51 @@ def build_ml_artifacts(
         require_exact_filing=require_exact_filing,
         statement_scope=statement_scope,
         taxonomy_version=taxonomy_version,
+        target_mode=target_mode,
+        regulatory_events=regulatory_events,
+    )
+    peer_standardization_mode = resolve_peer_standardization_mode(
+        splits["train"], splits["validation"]
     )
     archetypes = FinancialArchetypes().fit(splits["train"])
-    training = train_distress_model(splits["train"], splits["validation"])
+    training = train_distress_model(
+        splits["train"],
+        splits["validation"],
+        features=selected_features,
+        min_unique_positive_issuers=min_unique_positive_issuers,
+    )
     evaluation_report = build_evaluation_report(
         training,
         train=splits["train"],
         validation=splits["validation"],
         test=splits["test"],
     )
+    evaluation_report.update(
+        {
+            "scored_taxonomies": list(scored_taxonomies),
+            "scored_period_types": ["QUARTER"],
+            "feature_set": feature_set,
+            "peer_standardization_mode": peer_standardization_mode,
+            "target_mode": target_mode,
+            "platt_slope": training.platt_slope,
+            "platt_intercept": training.platt_intercept,
+            "f2_thresholds": dict(training.f2_thresholds),
+        }
+    )
 
-    eligible = classical_as_of.filter(
+    eligible_quarters = classical_as_of.filter(
         (pl.col("statement_scope") == statement_scope)
         & (pl.col("period_type") == "QUARTER")
-        & (pl.col("taxonomy_version") == taxonomy_version)
+        & pl.col("taxonomy_version").is_in(list(scored_taxonomies))
     )
-    if require_exact_filing:
-        eligible = eligible.filter(pl.col("_exact_filing_basis").fill_null(False))
+    eligible_with_z = attach_pit_sector_z_features(
+        eligible_quarters, mode=peer_standardization_mode
+    )
+    eligible = (
+        eligible_with_z.filter(pl.col("_exact_filing_basis").fill_null(False))
+        if require_exact_filing
+        else eligible_with_z
+    )
 
     unsupervised_out = archetypes.transform(eligible)
     supervised_out = score_distress_model(training, eligible).drop("model_role")
@@ -146,6 +204,14 @@ def build_ml_artifacts(
         "require_exact_filing": require_exact_filing,
         "statement_scope": statement_scope,
         "taxonomy_version": taxonomy_version,
+        "scored_taxonomies": list(scored_taxonomies),
+        "scored_period_types": ["QUARTER"],
+        "feature_set": feature_set,
+        "peer_standardization_mode": peer_standardization_mode,
+        "target_mode": target_mode,
+        "platt_slope": training.platt_slope,
+        "platt_intercept": training.platt_intercept,
+        "f2_thresholds": dict(training.f2_thresholds),
         "random_seed": 42,
         "facts_sha256": facts_sha256,
         "issuers_sha256": issuers_sha256,

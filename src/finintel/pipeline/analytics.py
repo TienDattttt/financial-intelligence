@@ -1,13 +1,20 @@
-"""Run Layer 4A and optional gated Layer 4B against normalized fact history."""
+"""Run Layer 4A and optional gated Layer 4B against normalized fact history.
+
+Verified Sources:
+    docs/layers/LAYER_0_ORCHESTRATION.md and docs/layers/LAYER_4_ANALYTICS_AND_ML.md.
+    docs/v2_specs/06_STREAM_A4_LAYER4B_ML_REMEDIATION_SECTOR_ADJ_AND_REGULATORY_TARGET.md.
+    Forwards optional scored_taxonomies, feature_set, target_mode and path-confined
+    regulatory_events_path into Layer 4B build_ml_artifacts().
+"""
 
 import hashlib
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 import polars as pl
 
@@ -183,6 +190,53 @@ class AnalyticsHandler:
             raise ContractViolationError(
                 "Analytics ml.statement_scope and ml.taxonomy_version must be strings."
             )
+        raw_scored_taxonomies = raw_ml.get(
+            "scored_taxonomies", ("VAS_TT200_2014", "VAS_TT99_2025")
+        )
+        if (
+            isinstance(raw_scored_taxonomies, (str, bytes))
+            or not isinstance(raw_scored_taxonomies, Sequence)
+            or not raw_scored_taxonomies
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in raw_scored_taxonomies
+            )
+        ):
+            raise ContractViolationError(
+                "Analytics ml.scored_taxonomies must be a nonempty sequence of taxonomy strings."
+            )
+        scored_taxonomies = tuple(str(item) for item in raw_scored_taxonomies)
+
+        raw_feature_set = raw_ml.get("feature_set", "sector_adjusted")
+        if raw_feature_set not in ("sector_adjusted", "base"):
+            raise ContractViolationError(
+                "Analytics ml.feature_set must be 'sector_adjusted' or 'base'."
+            )
+        feature_set: Literal["sector_adjusted", "base"] = (
+            "sector_adjusted" if raw_feature_set == "sector_adjusted" else "base"
+        )
+
+        target_mode = raw_ml.get("target_mode", "FUNDAMENTAL_DISTRESS")
+        if not isinstance(target_mode, str) or target_mode not in (
+            "FUNDAMENTAL_DISTRESS",
+            "REGULATORY_DISTRESS",
+        ):
+            raise ContractViolationError(
+                "Analytics ml.target_mode must be 'FUNDAMENTAL_DISTRESS' or 'REGULATORY_DISTRESS'."
+            )
+
+        raw_reg_path = raw_ml.get("regulatory_events_path")
+        regulatory_events: pl.DataFrame | None = None
+        if raw_reg_path is not None:
+            reg_path = self._confined_ml_input_path(
+                raw_reg_path, "ml.regulatory_events_path"
+            )
+            try:
+                regulatory_events = pl.read_parquet(reg_path)
+            except (OSError, pl.exceptions.PolarsError) as exc:
+                raise ContractViolationError(
+                    "Analytics ml.regulatory_events_path must point to a readable Parquet file."
+                ) from exc
 
         from finintel.ml.tables import build_ml_artifacts
 
@@ -196,10 +250,40 @@ class AnalyticsHandler:
             require_exact_filing=True,
             statement_scope=scope,
             taxonomy_version=taxonomy,
+            scored_taxonomies=scored_taxonomies,
+            feature_set=feature_set,
+            target_mode=target_mode,
+            regulatory_events=regulatory_events,
             peer_benchmarks=benchmarks,
             facts_sha256=self._sha256_file(facts_path),
             issuers_sha256=self._sha256_file(issuers_path),
         )
+
+    def _confined_ml_input_path(self, value: object, field_name: str) -> Path:
+        if not isinstance(value, str) or not value.strip():
+            raise ContractViolationError(
+                f"Analytics {field_name} must be a nonempty relative path."
+            )
+        candidate = Path(value)
+        if candidate.is_absolute():
+            raise ContractViolationError(
+                f"Analytics {field_name} must be a relative path confined to the workspace."
+            )
+        resolved = (self.config_dir / candidate).resolve()
+        config_root = self.config_dir.resolve()
+        data_root = self.state.path.resolve().parent.parent
+        allowed_roots = [config_root, data_root]
+        if config_root.name == "config":
+            allowed_roots.append(config_root.parent)
+        if not any(resolved.is_relative_to(root) for root in allowed_roots):
+            raise ContractViolationError(
+                f"Analytics {field_name} escapes the confined workspace directory."
+            )
+        if not resolved.is_file():
+            raise ContractViolationError(
+                f"Analytics {field_name} does not point to a readable input file."
+            )
+        return resolved
 
     @staticmethod
     def _parse_iso_date(value: object, field_name: str) -> date:

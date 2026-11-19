@@ -1,8 +1,14 @@
-"""Layer 4B acceptance tests for screening models and leakage controls."""
+"""Layer 4B acceptance tests for screening models and leakage controls.
+
+Verified Sources:
+    docs/layers/LAYER_4_ANALYTICS_AND_ML.md, sections 5.3 and 7.2.
+    docs/v2_specs/06_STREAM_A4_LAYER4B_ML_REMEDIATION_SECTOR_ADJ_AND_REGULATORY_TARGET.md.
+"""
 
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -662,3 +668,545 @@ def test_calibration_rejects_single_positive_validation_sample() -> None:
     valid_one_pos = make_rows([0] * 9 + [1])
     with pytest.raises(InsufficientModelData, match="at least two observations"):
         train_distress_model(train_df, valid_one_pos)
+
+
+def test_target_gap03_indirect_cf_trap_4q_persistence_not_7q_and_event3_all_quarters() -> (
+    None
+):
+    quarter_ends = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+
+    # 1. POM simulation: CFO > 0 (indirect CF working capital liquidate), EBIT < 0 (IC < 0),
+    # CR = 0.35 < 0.80, total_debt > 0, ROA = -0.13 < -0.10.
+    pom_rows = []
+    for year in range(2020, 2023):
+        for q in range(1, 5):
+            m, d = quarter_ends[q]
+            in_distress = (year == 2021 and q >= 1) or (year == 2022 and q == 1)
+            pom_rows.append(
+                {
+                    "issuer_id": "POM",
+                    "statement_scope": "CONSOLIDATED",
+                    "period_type": "QUARTER",
+                    "fiscal_year": year,
+                    "fiscal_quarter": q,
+                    "period_end_date": date(year, m, d),
+                    "accounting_regime": "CORPORATE",
+                    "BS_TOTAL_EQUITY": 500.0,
+                    "parent_equity": 500.0,
+                    "total_debt": 800.0,
+                    "interest_coverage": -0.4 if in_distress else 2.5,
+                    "CF_OPERATING_CASH_FLOW": 20.0,  # CFO > 0 trap!
+                    "current_ratio": 0.35 if in_distress else 1.8,
+                    "roa": -0.13 if in_distress else 0.06,
+                    "_period_available_at": date(year, m, d),
+                }
+            )
+    pom_targets = build_distress_targets(pl.DataFrame(pom_rows))
+    q4_2020 = pom_targets.filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert q4_2020["distress_target"] == 1
+    assert q4_2020["already_distressed_at_t"] is False
+    for q_idx in range(1, 5):
+        row_2021 = pom_targets.filter(
+            (pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == q_idx)
+        ).row(0, named=True)
+        assert row_2021["already_distressed_at_t"] is True
+
+    # 2. Prove 4Q persistence (NO 7-quarter lookback bug):
+    # 2 quarters of liquidity_bad at t-6 (2020-Q1) and t-5 (2020-Q2), then healthy for 5 quarters
+    # t-4..t (2020-Q3, 2020-Q4, 2021-Q1, 2021-Q2, 2021-Q3).
+    rec_rows = []
+    for year in range(2020, 2023):
+        for q in range(1, 5):
+            m, d = quarter_ends[q]
+            liq_hit = year == 2020 and q in (1, 2)
+            rec_rows.append(
+                {
+                    "issuer_id": "REC",
+                    "statement_scope": "CONSOLIDATED",
+                    "period_type": "QUARTER",
+                    "fiscal_year": year,
+                    "fiscal_quarter": q,
+                    "period_end_date": date(year, m, d),
+                    "accounting_regime": "CORPORATE",
+                    "BS_TOTAL_EQUITY": 200.0,
+                    "parent_equity": 200.0,
+                    "interest_coverage": 0.4 if liq_hit else 3.0,
+                    "CF_OPERATING_CASH_FLOW": -10.0 if liq_hit else 15.0,
+                    "current_ratio": 0.7 if liq_hit else 1.8,
+                    "roa": 0.02,
+                    "_period_available_at": date(year, m, d),
+                }
+            )
+    rec_targets = build_distress_targets(pl.DataFrame(rec_rows))
+    # At 2020-Q4 (t-3..t includes 2020-Q1 and 2020-Q2), trailing_liquidity_4q == 2 -> True
+    assert (
+        rec_targets.filter(
+            (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+        )["already_distressed_at_t"].item()
+        is True
+    )
+    # At 2021-Q3 (t-6 and t-5 were bad, t-4..t are all healthy), already_distressed_at_t MUST be False!
+    assert (
+        rec_targets.filter(
+            (pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 3)
+        )["already_distressed_at_t"].item()
+        is False
+    )
+
+    # 3. Event 3 triggers at t+2 (not just t+4)
+    ev3_df = _periods().with_columns(
+        pl.lit(100.0).alias("BS_TOTAL_EQUITY"),
+        pl.when((pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 2))
+        .then(pl.lit(-0.15))
+        .otherwise(pl.lit(0.05))
+        .alias("roa"),
+        pl.when((pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 2))
+        .then(pl.lit(-5.0))
+        .otherwise(pl.lit(10.0))
+        .alias("CF_OPERATING_CASH_FLOW"),
+    )
+    ev3_targets = build_distress_targets(ev3_df)
+    assert (
+        ev3_targets.filter(
+            (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+        )["distress_target"].item()
+        == 1
+    )
+
+
+def test_target_gap04_label_exact_filing_basis_uses_period_exact_filing() -> None:
+    from finintel.analytics.intermediates import prepare_periods
+    from finintel.analytics.ratios import calculate_ratios
+    from tests.unit.test_layer4_analytics import facts, issuer
+
+    template: dict[str, float | None] = {
+        "BS_TOTAL_ASSETS": 1000.0,
+        "BS_TOTAL_EQUITY": 500.0,
+        "BS_MINORITY_INTEREST": 0.0,
+        "BS_TOTAL_LIABILITIES": 500.0,
+        "BS_CURRENT_ASSETS": 400.0,
+        "BS_CURRENT_LIABILITIES": 200.0,
+        "BS_CASH_AND_EQUIVALENTS": 100.0,
+        "BS_SHORT_TERM_BORROWINGS": 100.0,
+        "BS_RETAINED_EARNINGS": 200.0,
+        "IS_NET_REVENUE": 300.0,
+        "IS_GROSS_PROFIT": 120.0,
+        "IS_PROFIT_BEFORE_TAX": 50.0,
+        "IS_INTEREST_EXPENSE": 5.0,
+        "IS_NET_INCOME": 40.0,
+        "IS_NET_INCOME_PARENT": 40.0,
+        "CF_OPERATING_CASH_FLOW": 45.0,
+    }
+    raw_facts = facts(
+        {(y, q): template for y in range(2017, 2021) for q in range(1, 5)}
+    ).with_columns(
+        pl.when(pl.col("fiscal_year") == 2017)
+        .then(pl.lit("STATUTORY_LAG"))
+        .otherwise(pl.lit("EXACT_FILING"))
+        .alias("published_at_basis"),
+        pl.when(pl.col("fiscal_year") == 2017)
+        .then(pl.lit(None, dtype=pl.Date))
+        .otherwise(pl.col("effective_available_at"))
+        .alias("published_at"),
+    )
+    periods = prepare_periods(
+        raw_facts, issuer(), as_of=date(2021, 6, 1), include_ml_inputs=True
+    )
+    ratios = calculate_ratios(periods)
+    targets = build_distress_targets(ratios, as_of=date(2021, 6, 1))
+    window_rows = targets.filter(
+        ((pl.col("fiscal_year") == 2018) & (pl.col("fiscal_quarter") == 4))
+        | ((pl.col("fiscal_year") == 2019) & pl.col("fiscal_quarter").is_in([1, 2, 3]))
+    )
+    assert window_rows.height == 4
+    assert window_rows["_label_exact_filing_basis"].to_list() == [True] * 4
+
+
+def test_pit_symmetric_peer_z_prevents_future_icb_leakage_and_upgrades_when_historical_icb_present() -> (
+    None
+):
+    from finintel.ml.supervised.temporal_split import (
+        build_pit_ml_splits,
+        resolve_peer_standardization_mode,
+    )
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        SECTOR_ADJUSTED_FEATURES,
+        _constraints,
+    )
+    from tests.unit.test_layer4_analytics import facts
+
+    assert len(BASE_FEATURES) == 20
+    assert len(SECTOR_ADJUSTED_FEATURES) == 20
+    adj_constraints = dict(
+        zip(
+            SECTOR_ADJUSTED_FEATURES,
+            _constraints(SECTOR_ADJUSTED_FEATURES),
+            strict=True,
+        )
+    )
+    assert adj_constraints["sector_z_cash_conversion_cycle"] == 1
+    assert adj_constraints["sector_z_debt_to_equity"] == 1
+    assert adj_constraints["sector_z_asset_turnover"] == -1
+    assert adj_constraints["sector_z_ebit_margin"] == -1
+
+    def make_corp_facts(idx: int) -> pl.DataFrame:
+        template: dict[str, float | None] = {
+            "BS_TOTAL_ASSETS": 1000.0 * (1.0 + 0.05 * idx),
+            "BS_TOTAL_EQUITY": 450.0 * (1.0 + 0.04 * idx),
+            "BS_MINORITY_INTEREST": 10.0,
+            "BS_TOTAL_LIABILITIES": 550.0 * (1.0 + 0.06 * idx),
+            "BS_CURRENT_ASSETS": 360.0,
+            "BS_CURRENT_LIABILITIES": 200.0,
+            "BS_CASH_AND_EQUIVALENTS": 80.0,
+            "BS_SHORT_TERM_BORROWINGS": 120.0 + 10.0 * idx,
+            "BS_LONG_TERM_BORROWINGS": 90.0,
+            "BS_RETAINED_EARNINGS": 150.0,
+            "BS_INVENTORIES": 70.0 + 3.0 * idx,
+            "BS_TRADE_RECEIVABLES_ST": 95.0 + 2.0 * idx,
+            "BS_TRADE_PAYABLES_ST": 65.0 + 4.0 * idx,
+            "BS_TANGIBLE_FIXED_ASSETS": 300.0,
+            "IS_NET_REVENUE": 260.0 + 12.0 * idx,
+            "IS_COST_OF_GOODS_SOLD": 160.0 + 6.0 * idx,
+            "IS_GROSS_PROFIT": 100.0 + 6.0 * idx,
+            "IS_OPERATING_PROFIT": 42.0 + 2.0 * idx,
+            "IS_PROFIT_BEFORE_TAX": 38.0 + 2.0 * idx,
+            "IS_INTEREST_EXPENSE": 4.0,
+            "IS_CURRENT_INCOME_TAX": 7.0,
+            "IS_DEFERRED_INCOME_TAX": 0.5,
+            "IS_NET_INCOME": 30.5 + 1.5 * idx,
+            "IS_NET_INCOME_PARENT": 28.0 + 1.5 * idx,
+            "IS_SELLING_EXPENSES": 12.0,
+            "IS_ADMINISTRATIVE_EXPENSES": 15.0,
+            "CF_OPERATING_CASH_FLOW": 34.0 + 1.0 * idx,
+            "CF_CAPITAL_EXPENDITURE": -12.0,
+            "CF_DEPRECIATION_AMORTIZATION": 8.0,
+        }
+        return facts(
+            {(y, q): template for y in range(2018, 2025) for q in range(1, 5)},
+            issuer_id=f"P_{idx:02d}",
+        ).with_columns(
+            pl.lit("EXACT_FILING").alias("published_at_basis"),
+            pl.col("effective_available_at").alias("published_at"),
+        )
+
+    all_facts = pl.concat([make_corp_facts(i) for i in range(10)])
+    issuers_2025_a = pl.DataFrame(
+        {
+            "issuer_id": [f"P_{i:02d}" for i in range(10)],
+            "ticker": [f"P{i:02d}" for i in range(10)],
+            "accounting_regime": ["CORPORATE"] * 10,
+            "icb_code_level2": ["2000" if i < 5 else "3000" for i in range(10)],
+            "icb_code_level3": ["201010" if i < 5 else "301010" for i in range(10)],
+            "industry_snapshot_date": [date(2025, 1, 1)] * 10,
+        }
+    )
+    issuers_2025_b = issuers_2025_a.with_columns(
+        pl.lit("9000").alias("icb_code_level2"),
+        pl.lit("901010").alias("icb_code_level3"),
+    )
+    splits_a = build_pit_ml_splits(
+        all_facts,
+        issuers_2025_a,
+        validation_start=date(2021, 12, 1),
+        test_start=date(2023, 3, 1),
+        as_of=date(2025, 3, 1),
+    )
+    splits_b = build_pit_ml_splits(
+        all_facts,
+        issuers_2025_b,
+        validation_start=date(2021, 12, 1),
+        test_start=date(2023, 3, 1),
+        as_of=date(2025, 3, 1),
+    )
+    assert (
+        resolve_peer_standardization_mode(splits_a["train"], splits_a["validation"])
+        == "PIT_REGIME_SYMMETRIC"
+    )
+    for fold_name in ("train", "validation", "test"):
+        assert splits_a[fold_name].height > 0
+        for z_col in (
+            "sector_z_cash_conversion_cycle",
+            "sector_z_asset_turnover",
+            "sector_z_debt_to_equity",
+            "sector_z_ebit_margin",
+        ):
+            assert np.allclose(
+                splits_a[fold_name][z_col].to_numpy(),
+                splits_b[fold_name][z_col].to_numpy(),
+                atol=1e-12,
+                equal_nan=True,
+            )
+
+    issuers_2017 = issuers_2025_a.with_columns(
+        pl.lit(date(2017, 1, 1)).alias("industry_snapshot_date")
+    )
+    splits_hist = build_pit_ml_splits(
+        all_facts,
+        issuers_2017,
+        validation_start=date(2021, 12, 1),
+        test_start=date(2023, 3, 1),
+        as_of=date(2025, 3, 1),
+    )
+    assert (
+        resolve_peer_standardization_mode(
+            splits_hist["train"], splits_hist["validation"]
+        )
+        == "PIT_ICB"
+    )
+
+
+def test_margin_platt_calibrator_oof_raw_margin_single_group_fallback_and_min_positive_issuers() -> (
+    None
+):
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        MarginPlattCalibrator,
+        train_distress_model,
+    )
+    from finintel.ml.unsupervised import InsufficientModelData
+
+    # 1. Direct test on MarginPlattCalibrator: degenerate inverted margins (w <= 0)
+    # must trigger monotone MLE intercept-only fallback (slope == 1.0) matching validation prevalence
+    raw_margins_deg = np.array([-2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0])
+    y_deg = np.array([1, 1, 1, 0, 0, 0, 0, 0], dtype=np.int8)
+    cal_deg = MarginPlattCalibrator(classifier=None).fit_margins(raw_margins_deg, y_deg)
+    assert cal_deg.slope == pytest.approx(1.0)
+    probs_deg = cal_deg.predict_margin_proba(raw_margins_deg)[:, 1]
+    assert np.all(np.diff(probs_deg) > 0.0)
+    assert float(np.mean(probs_deg)) == pytest.approx(float(np.mean(y_deg)), abs=1e-4)
+
+    # 2. Single positive group in validation (n_pos_groups == 1) falls back cleanly to StratifiedKFold
+    def make_fold(
+        n_rows: int,
+        seed: int,
+        *,
+        pos_issuers: list[str],
+    ) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        targets = [1 if i < len(pos_issuers) else 0 for i in range(n_rows)]
+        issuers = [
+            pos_issuers[i] if i < len(pos_issuers) else f"NEG_{i:03d}"
+            for i in range(n_rows)
+        ]
+        feature_cols = {
+            name: [
+                (-0.15 if targets[i] == 1 else 0.12) + float(rng.normal(0.0, 0.03))
+                if name == "roa"
+                else (3.5 if targets[i] == 1 else 0.6) + float(rng.normal(0.0, 0.1))
+                if name == "debt_to_equity"
+                else float(rng.normal(0.5, 0.2))
+                for i in range(n_rows)
+            ]
+            for name in BASE_FEATURES
+        }
+        return pl.DataFrame(
+            {
+                **feature_cols,
+                "issuer_id": issuers,
+                "accounting_regime": ["CORPORATE"] * n_rows,
+                "statement_scope": ["CONSOLIDATED"] * n_rows,
+                "taxonomy_version": ["VAS_TT200_2014"] * n_rows,
+                "_period_available_at": [date(2022, 1, 1)] * n_rows,
+                "distress_target": targets,
+            }
+        )
+
+    train_3pos = make_fold(40, 10, pos_issuers=["POS_A", "POS_B", "POS_C", "POS_A"])
+    valid_1group = make_fold(24, 20, pos_issuers=["VAL_ONLY_ONE", "VAL_ONLY_ONE"])
+    trained = train_distress_model(train_3pos, valid_1group)
+    assert 0.0 < trained.platt_slope <= 10.0
+    assert len(trained.calibrated.oof_probabilities) == 24
+
+    # 3. Fail-fast when unique positive issuers in train < min_unique_positive_issuers (3)
+    train_2pos = make_fold(40, 30, pos_issuers=["POS_A", "POS_B", "POS_A", "POS_B"])
+    with pytest.raises(InsufficientModelData, match="unique positive issuers"):
+        train_distress_model(train_2pos, valid_1group, min_unique_positive_issuers=3)
+
+
+def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censoring(
+    tmp_path: Path,
+) -> None:
+    from finintel.pipeline.analytics import AnalyticsHandler
+    from finintel.pipeline.runner import RunRequest, Stage, StepContext
+    from finintel.pipeline.state_store import StateStore
+
+    base = _periods().with_columns(pl.lit(100.0).alias("BS_TOTAL_EQUITY"))
+
+    # (a) Missing or invalid regulatory_events raises ContractViolationError
+    with pytest.raises(ContractViolationError, match="regulatory_events"):
+        build_distress_targets(base, mode="REGULATORY_DISTRESS", regulatory_events=None)
+
+    bad_events = pl.DataFrame(
+        {
+            "issuer_id": ["ABC"],
+            "event_date": [date(2021, 5, 1)],
+            "event_type": ["UNKNOWN_EVENT"],
+        }
+    )
+    with pytest.raises(ContractViolationError, match="event_type"):
+        build_distress_targets(
+            base, mode="REGULATORY_DISTRESS", regulatory_events=bad_events
+        )
+
+    # (b) FORCED_DELISTING at a_t + 180d produces distress_target == 1 even when post-delisting
+    # quarters t+3 and t+4 are absent, and (c) multiple events in 1 year do not duplicate rows.
+    delisted_periods = base.filter(
+        (pl.col("fiscal_year") == 2020)
+        | ((pl.col("fiscal_year") == 2021) & pl.col("fiscal_quarter").is_in([1, 2]))
+    )
+    multi_events = pl.DataFrame(
+        {
+            "issuer_id": ["ABC", "ABC"],
+            "event_date": [date(2021, 4, 15), date(2021, 6, 20)],
+            "event_type": ["CONTROL", "FORCED_DELISTING"],
+        }
+    )
+    out_delist = build_distress_targets(
+        delisted_periods,
+        mode="REGULATORY_DISTRESS",
+        as_of=date(2022, 3, 1),
+        regulatory_events=multi_events,
+    )
+    assert out_delist.height == delisted_periods.height
+    q4_2020 = out_delist.filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert q4_2020["distress_target"] == 1
+    assert q4_2020["label_available_at"] == date(2021, 4, 15)
+
+    # (d) Right-censoring lock on negative labels y=0:
+    # For healthy issuer, 2020-Q4 has a_t = 2020-12-31, so a_t + 365d = 2021-12-31.
+    # If as_of = 2021-10-01 (even if future filings had early dates), y=0 is blocked if a_t + 365d > as_of.
+    early_filings = base.with_columns(
+        pl.when(pl.col("fiscal_year") == 2021)
+        .then(pl.lit(date(2021, 9, 1)))
+        .otherwise(pl.col("_period_available_at"))
+        .alias("_period_available_at"),
+        pl.when((pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 4))
+        .then(pl.lit(date(2021, 9, 1)))
+        .otherwise(pl.col("period_end_date"))
+        .alias("period_end_date"),
+    )
+    empty_events = pl.DataFrame(
+        schema={"issuer_id": pl.String, "event_date": pl.Date, "event_type": pl.String}
+    )
+    censored = build_distress_targets(
+        early_filings,
+        mode="REGULATORY_DISTRESS",
+        as_of=date(2021, 10, 1),
+        regulatory_events=empty_events,
+    )
+    q4_censored = censored.filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert q4_censored["distress_target"] is None
+
+    uncensored = build_distress_targets(
+        early_filings,
+        mode="REGULATORY_DISTRESS",
+        as_of=date(2022, 1, 15),
+        regulatory_events=empty_events,
+    )
+    q4_uncensored = uncensored.filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert q4_uncensored["distress_target"] == 0
+    assert q4_uncensored["label_available_at"] == date(2021, 12, 31)
+
+    # (e) Path-confinement in AnalyticsHandler for ml.regulatory_events_path
+    state = StateStore(tmp_path / "metadata/state.sqlite")
+    state.initialize()
+    handler = AnalyticsHandler(
+        state,
+        tmp_path,
+        {
+            "ml": {
+                "enabled": True,
+                "approved_target": True,
+                "validation_start": "2021-12-01",
+                "test_start": "2023-03-01",
+                "target_mode": "REGULATORY_DISTRESS",
+                "regulatory_events_path": "../outside.parquet",
+            }
+        },
+    )
+    with pytest.raises(ContractViolationError, match="escapes|relative"):
+        handler._confined_ml_input_path(
+            "../outside.parquet", "ml.regulatory_events_path"
+        )
+    with pytest.raises(ContractViolationError, match="relative"):
+        handler._confined_ml_input_path(
+            str((tmp_path / "abs.parquet").resolve()), "ml.regulatory_events_path"
+        )
+    _ = (Stage, RunRequest, StepContext)
+
+
+def test_treeshap_waterfall_other_features_delta_and_vietnamese_display_names() -> None:
+    import json
+
+    from numpy.typing import NDArray
+
+    from finintel.ml.supervised.explain import explain_distress
+    from finintel.ml.supervised.train import (
+        SECTOR_ADJUSTED_FEATURES,
+        score_distress_model,
+        train_distress_model,
+    )
+
+    def make_20feat_fold(n_rows: int, seed: int) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        cols: dict[str, list[float]] = {}
+        latent: NDArray[np.float64] = np.zeros(n_rows, dtype=np.float64)
+        for idx, feat in enumerate(SECTOR_ADJUSTED_FEATURES):
+            vals = rng.normal(0.0, 1.0, size=n_rows)
+            cols[feat] = vals.tolist()
+            sign = 1.0 if idx % 2 == 0 else -1.0
+            latent = latent + sign * (0.4 + 0.05 * idx) * vals
+        targets = (latent > np.median(latent)).astype(int).tolist()
+        return pl.DataFrame(
+            {
+                **cols,
+                "issuer_id": [f"ISS_{i:03d}" for i in range(n_rows)],
+                "accounting_regime": ["CORPORATE"] * n_rows,
+                "statement_scope": ["CONSOLIDATED"] * n_rows,
+                "period_type": ["QUARTER"] * n_rows,
+                "period_end_date": [date(2023, 12, 31)] * n_rows,
+                "filing_id": [f"FIL_{seed}_{i:03d}" for i in range(n_rows)],
+                "taxonomy_version": ["VAS_TT200_2014"] * n_rows,
+                "_period_available_at": [date(2023, 12, 31)] * n_rows,
+                "distress_target": targets,
+            }
+        )
+
+    train_df = make_20feat_fold(240, 101)
+    valid_df = make_20feat_fold(120, 202)
+    eval_df = make_20feat_fold(15, 303)
+    trained = train_distress_model(
+        train_df, valid_df, features=SECTOR_ADJUSTED_FEATURES
+    )
+    explained = explain_distress(trained, eval_df)
+    scored = score_distress_model(trained, eval_df)
+
+    for idx, payload_str in enumerate(explained["shap_top_drivers_json"].to_list()):
+        payload = json.loads(payload_str)
+        assert "other_features_delta" in payload
+        inc = payload["top_risk_increasing"]
+        dec = payload["top_risk_decreasing"]
+        total = (
+            payload["base_value"]
+            + sum(d["shap_delta"] for d in inc)
+            + sum(d["shap_delta"] for d in dec)
+            + payload["other_features_delta"]
+        )
+        assert total == pytest.approx(scored["distress_risk_score"][idx], abs=1e-6)
+        assert total == pytest.approx(payload["prediction_score"], abs=1e-6)
+        for driver in inc + dec:
+            assert driver["feature"] in SECTOR_ADJUSTED_FEATURES
+            assert (
+                isinstance(driver["display_name_vn"], str) and driver["display_name_vn"]
+            )
+            if driver["feature"].startswith("sector_z_"):
+                assert driver["peer_median"] == pytest.approx(0.0)
