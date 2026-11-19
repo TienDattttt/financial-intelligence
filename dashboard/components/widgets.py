@@ -67,7 +67,9 @@ def render_red_flags(red_flags: pl.DataFrame) -> None:
     """Display active Layer 4A Accounting Red Flags with structured JSON evidence."""
     st.subheader("Cờ Cảnh báo Kế toán (Accounting Red Flags)")
     if red_flags.is_empty():
-        st.success("Không có cờ cảnh báo kế toán nào kích hoạt trong giai đoạn đã chọn.")
+        st.success(
+            "Không có cờ cảnh báo kế toán nào kích hoạt trong giai đoạn đã chọn."
+        )
         return
 
     for flag in red_flags.to_dicts():

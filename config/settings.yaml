@@ -1,6 +1,9 @@
 state_path: ../data/metadata/state.sqlite
 min_free_bytes: 104857600
 tickers: []
+storage: {}
+ingestion: {}
+serving: {}
 # Supply the reviewed issuer reference table at data/curated/issuers.parquet
 # or configure issuers_path below. The default facts input is the latest
 # successful full-history normalization for the requested source, with

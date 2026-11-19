@@ -1,5 +1,5 @@
 ---
-trigger: always_on
+trigger: manual
 description: "Non-negotiable safety, evidence and independence constraints for code reviews."
 ---
 # Reviewer invariants

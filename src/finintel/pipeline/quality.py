@@ -28,7 +28,9 @@ def _resolve_optional_path(
         raise ContractViolationError(f"Setting {key} must be a nonempty path.")
     path = (config_dir / value).resolve()
     if not path.is_file():
-        raise ContractViolationError(f"Setting {key} does not point to a readable file.")
+        raise ContractViolationError(
+            f"Setting {key} does not point to a readable file."
+        )
     return path
 
 
@@ -45,7 +47,9 @@ def _resolve_facts_path(
     if explicit is not None:
         return explicit
 
-    current_batch = curated / "financial_facts" / context.run_id / "financial_facts.parquet"
+    current_batch = (
+        curated / "financial_facts" / context.run_id / "financial_facts.parquet"
+    )
     if current_batch.is_file():
         return current_batch
 
@@ -63,7 +67,9 @@ def _resolve_facts_path(
         try:
             content = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            raise ContractViolationError("Invalid normalization batch metadata.") from exc
+            raise ContractViolationError(
+                "Invalid normalization batch metadata."
+            ) from exc
         if isinstance(content, dict) and content.get("full_history") is True:
             return data
 

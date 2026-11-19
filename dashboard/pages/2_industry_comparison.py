@@ -47,9 +47,9 @@ def render_page() -> None:
     periods_df = service.list_ratio_periods(
         str(ticker), statement_scope=str(statement_scope)
     )
-    matching_periods = periods_df.filter(
-        periods_df["period_type"] == str(period_type)
-    )["period_end_date"].to_list()
+    matching_periods = periods_df.filter(periods_df["period_type"] == str(period_type))[
+        "period_end_date"
+    ].to_list()
 
     selected_end_date = None
     if matching_periods:

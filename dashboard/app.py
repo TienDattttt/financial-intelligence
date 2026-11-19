@@ -33,7 +33,10 @@ def main() -> None:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Snapshot đang hoạt động", overview.snapshot_id or "N/A")
     c2.metric("Số doanh nghiệp (Issuers)", overview.total_issuers)
-    c3.metric("Kỳ đạt chuẩn PASS / WARNING", f"{overview.pass_periods} / {overview.warning_periods}")
+    c3.metric(
+        "Kỳ đạt chuẩn PASS / WARNING",
+        f"{overview.pass_periods} / {overview.warning_periods}",
+    )
     c4.metric("Bản ghi cách ly (Quarantine)", overview.quarantined_rows)
 
     if overview.published_at:

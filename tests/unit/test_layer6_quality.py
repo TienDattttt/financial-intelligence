@@ -74,7 +74,11 @@ def _make_issuer_facts(
     ]
     rows: list[dict[str, object]] = []
     for metric_id, val, fid in metrics:
-        if val is None and metric_id in {"CF_OPERATING_CASH_FLOW", "CF_DEPRECIATION_AMORTIZATION", "CF_ENDING_CASH"}:
+        if val is None and metric_id in {
+            "CF_OPERATING_CASH_FLOW",
+            "CF_DEPRECIATION_AMORTIZATION",
+            "CF_ENDING_CASH",
+        }:
             continue
         rows.append(
             {
@@ -97,10 +101,14 @@ def _make_issuer_facts(
                 "effective_available_at": date(fiscal_year + 1, 3, 20),
                 "revision_reason": "ORIGINAL",
                 "derivation_method": (
-                    derivation_method if not metric_id.startswith("BS_") else "REPORTED_DIRECTLY"
+                    derivation_method
+                    if not metric_id.startswith("BS_")
+                    else "REPORTED_DIRECTLY"
                 ),
                 "audit_status": "AUDITED" if period_type == "ANNUAL" else "UNAUDITED",
-                "audit_opinion": "UNMODIFIED" if period_type == "ANNUAL" else "NOT_APPLICABLE",
+                "audit_opinion": "UNMODIFIED"
+                if period_type == "ANNUAL"
+                else "NOT_APPLICABLE",
                 "value": val,
                 "ttm_value": None,
                 "computation_note": None,
@@ -113,9 +121,7 @@ def test_dod_quarantine_1_of_20_issuers_publishes_19_clean_issuers(
     tmp_path: Path,
 ) -> None:
     """DoD #1a: 1/20 (5% <= 10%) BS identity mismatch -> quarantine 1, publish 19 cleanly."""
-    frames = [
-        _make_issuer_facts(f"CORP{i:02d}") for i in range(1, 20)
-    ]
+    frames = [_make_issuer_facts(f"CORP{i:02d}") for i in range(1, 20)]
     # Issuer 20 has a 10% Balance Sheet identity mismatch (Assets=1000, L+E=900).
     frames.append(
         _make_issuer_facts(
@@ -253,9 +259,7 @@ def test_critical_rules_subtotal_duplicate_key_and_missing_required() -> None:
     )
 
     # 2. MISSING_REQUIRED_METRICS: IS_NET_REVENUE is NULL.
-    frames.append(
-        _make_issuer_facts("BAD_MISS", net_revenue=None)
-    )
+    frames.append(_make_issuer_facts("BAD_MISS", net_revenue=None))
 
     # 3. DUPLICATE_PRIMARY_KEY: duplicate row for BS_TOTAL_ASSETS.
     dup_issuer = _make_issuer_facts("BAD_DUP")
@@ -445,13 +449,19 @@ def test_quality_gate_config_validation() -> None:
         QualityGateConfig(max_critical_issuer_ratio=1.5)
 
 
-def test_dashboard_contains_zero_accounting_calculations_and_no_raw_or_curated_reads() -> None:
+def test_dashboard_contains_zero_accounting_calculations_and_no_raw_or_curated_reads() -> (
+    None
+):
     """Architectural guard: dashboard/ must never compute financial formulas or read raw/curated."""
     dashboard_dir = REPO_ROOT / "dashboard"
     py_files = sorted(dashboard_dir.rglob("*.py"))
     assert len(py_files) >= 6
 
-    forbidden_modules = {"finintel.analytics", "finintel.normalization", "finintel.ingestion"}
+    forbidden_modules = {
+        "finintel.analytics",
+        "finintel.normalization",
+        "finintel.ingestion",
+    }
     for py_file in py_files:
         source = py_file.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(py_file))

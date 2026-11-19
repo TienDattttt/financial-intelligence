@@ -63,7 +63,9 @@ def build_latest_facts_table(facts_path: Path, *, as_of: date) -> pl.DataFrame:
     if "period_days" not in enriched_input.columns:
         enriched_input = enriched_input.with_columns(
             (
-                (pl.col("period_end_date") - pl.col("period_start_date")).dt.total_days()
+                (
+                    pl.col("period_end_date") - pl.col("period_start_date")
+                ).dt.total_days()
                 + 1
             )
             .cast(pl.Int32)
@@ -98,14 +100,11 @@ def build_latest_facts_table(facts_path: Path, *, as_of: date) -> pl.DataFrame:
         "metric_id",
         "taxonomy_version",
     ]
-    ttm_slice = (
-        ttm.select(
-            *join_keys,
-            pl.col("ttm_value").alias("_computed_ttm_value"),
-            pl.col("computation_note").alias("_computed_note"),
-        )
-        .unique(subset=join_keys, keep="last")
-    )
+    ttm_slice = ttm.select(
+        *join_keys,
+        pl.col("ttm_value").alias("_computed_ttm_value"),
+        pl.col("computation_note").alias("_computed_note"),
+    ).unique(subset=join_keys, keep="last")
     ttm_expr = (
         pl.coalesce("ttm_value", "_computed_ttm_value")
         if "ttm_value" in latest.columns
@@ -202,6 +201,8 @@ def build_filings_manifest_snapshot(
         ).alias(name)
         for name, dtype in FILINGS_MANIFEST_SCHEMA.items()
     ]
-    return raw_df.select(cast_exprs).unique(
-        subset=list(FILINGS_MANIFEST_KEY), keep="last"
-    ).sort("filing_id")
+    return (
+        raw_df.select(cast_exprs)
+        .unique(subset=list(FILINGS_MANIFEST_KEY), keep="last")
+        .sort("filing_id")
+    )

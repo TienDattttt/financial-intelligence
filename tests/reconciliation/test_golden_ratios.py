@@ -119,9 +119,9 @@ def test_reconcile_fpt_2025_audited_ratios_and_ttm_against_golden_pdf() -> None:
 
     bs_2025 = {
         **_by_year(annual_extract["balance-sheet"], 2025),
-        "nophaitra": spike_ref["audited_annual_2025"]["values_vnd"]["total_liabilities"][
-            "value"
-        ],
+        "nophaitra": spike_ref["audited_annual_2025"]["values_vnd"][
+            "total_liabilities"
+        ]["value"],
         "cophieuquy": 0,
     }
     tax_2025_is = next(
@@ -143,13 +143,11 @@ def test_reconcile_fpt_2025_audited_ratios_and_ttm_against_golden_pdf() -> None:
     facts = pl.concat([facts_2024, facts_2025])
 
     # 1. Reconcile normalized 2025 VND currency values (rel_tol = 1e-3).
-    norm_2025 = dict(
-        facts_2025.select("metric_id", "value").rows()
-    )
+    norm_2025 = dict(facts_2025.select("metric_id", "value").rows())
     for metric_id, golden_vnd in expected["normalized_currency_vnd"].items():
-        assert math.isclose(
-            norm_2025[metric_id], float(golden_vnd), rel_tol=rel_tol
-        ), f"Currency mismatch on {metric_id}: {norm_2025[metric_id]} vs {golden_vnd}"
+        assert math.isclose(norm_2025[metric_id], float(golden_vnd), rel_tol=rel_tol), (
+            f"Currency mismatch on {metric_id}: {norm_2025[metric_id]} vs {golden_vnd}"
+        )
 
     # 2. Reconcile 2025 Q4 TTM values from verified quarterly PDF lines (rel_tol = 1e-3).
     q_dates = [
@@ -161,9 +159,9 @@ def test_reconcile_fpt_2025_audited_ratios_and_ttm_against_golden_pdf() -> None:
     q_frames: list[pl.DataFrame] = []
     for q_num, p_start, p_end, pub in q_dates:
         label = f"2025-Q{q_num}"
-        rev_val = spike_ref["lines"]["income_statement"]["expected_vnd"]["CONSOLIDATED"][
-            "quarter"
-        ][label]
+        rev_val = spike_ref["lines"]["income_statement"]["expected_vnd"][
+            "CONSOLIDATED"
+        ]["quarter"][label]
         cfo_val = spike_ref["lines"]["cash_flow"]["expected_vnd"]["CONSOLIDATED"][
             "quarter"
         ][label]
@@ -197,7 +195,10 @@ def test_reconcile_fpt_2025_audited_ratios_and_ttm_against_golden_pdf() -> None:
                 audit_opinion=AuditOpinion.NOT_APPLICABLE,
             )
             mapped_q, _ = mapper.map_metrics(
-                {raw_k: raw_v}, meta, filing_id=f"fpt-2025-q{q_num}-{suf}", source_provider="fhsc"
+                {raw_k: raw_v},
+                meta,
+                filing_id=f"fpt-2025-q{q_num}-{suf}",
+                source_provider="fhsc",
             )
             q_frames.append(mapped_q)
 
@@ -206,9 +207,9 @@ def test_reconcile_fpt_2025_audited_ratios_and_ttm_against_golden_pdf() -> None:
     )
     ttm_map = dict(ttm_df.select("metric_id", "ttm_value").rows())
     for metric_id, golden_ttm in expected["ttm_2025_q4_consolidated_vnd"].items():
-        assert math.isclose(
-            ttm_map[metric_id], float(golden_ttm), rel_tol=rel_tol
-        ), f"TTM mismatch on {metric_id}: {ttm_map[metric_id]} vs {golden_ttm}"
+        assert math.isclose(ttm_map[metric_id], float(golden_ttm), rel_tol=rel_tol), (
+            f"TTM mismatch on {metric_id}: {ttm_map[metric_id]} vs {golden_ttm}"
+        )
 
     # 3. Reconcile Layer 4A Financial Ratios (abs_tol = 1e-4 for decimal ratios).
     tables = build_analytics_tables(facts, _fpt_issuer(), as_of=date(2026, 4, 1))
@@ -224,9 +225,9 @@ def test_reconcile_fpt_2025_audited_ratios_and_ttm_against_golden_pdf() -> None:
         if ratio_name == "eps_ttm_estimated":
             assert math.isclose(observed, float(golden_val), rel_tol=rel_tol)
         else:
-            assert math.isclose(
-                observed, float(golden_val), abs_tol=abs_tol
-            ), f"Ratio mismatch on {ratio_name}: observed={observed}, golden={golden_val}"
+            assert math.isclose(observed, float(golden_val), abs_tol=abs_tol), (
+                f"Ratio mismatch on {ratio_name}: observed={observed}, golden={golden_val}"
+            )
 
     for flag_col, expected_flag in expected["expected_flags"].items():
         assert row[flag_col] == expected_flag
@@ -329,12 +330,17 @@ def test_reconcile_exact_boundary_status_flags() -> None:
         }
     )
 
-    ratios = build_analytics_tables(facts, issuers, as_of=date(2027, 5, 1))[RATIOS_TABLE]
+    ratios = build_analytics_tables(facts, issuers, as_of=date(2027, 5, 1))[
+        RATIOS_TABLE
+    ]
 
     edge1_2025 = ratios.filter(
         (pl.col("issuer_id") == "EDGE1") & (pl.col("fiscal_year") == 2025)
     ).row(0, named=True)
-    assert edge1_2025["roe_total"] is golden_flags["negative_equity_case"]["expected_value"]
+    assert (
+        edge1_2025["roe_total"]
+        is golden_flags["negative_equity_case"]["expected_value"]
+    )
     assert (
         edge1_2025["roe_total_flag"]
         == golden_flags["negative_equity_case"]["expected_flag"]

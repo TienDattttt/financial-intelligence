@@ -567,11 +567,15 @@ class DashboardQueryService:
             issuer_row = issuer_rows.row(0, named=True)
             issuer_id = str(issuer_row["issuer_id"])
 
-            ratios = pinned.read_table(RATIOS_TABLE).filter(
-                (pl.col("issuer_id") == issuer_id)
-                & (pl.col("statement_scope") == statement_scope)
-                & (pl.col("period_type") == target_period_type)
-            ).sort("period_end_date")
+            ratios = (
+                pinned.read_table(RATIOS_TABLE)
+                .filter(
+                    (pl.col("issuer_id") == issuer_id)
+                    & (pl.col("statement_scope") == statement_scope)
+                    & (pl.col("period_type") == target_period_type)
+                )
+                .sort("period_end_date")
+            )
 
             facts_source = _read_optional_table(pinned, "latest_facts.parquet")
             if facts_source is None:
@@ -607,7 +611,11 @@ class DashboardQueryService:
                 if period_view == "TTM" and "ttm_value" in company_facts.columns
                 else "value"
             )
-            growth_metrics = ("IS_NET_REVENUE", "IS_NET_INCOME", "CF_OPERATING_CASH_FLOW")
+            growth_metrics = (
+                "IS_NET_REVENUE",
+                "IS_NET_INCOME",
+                "CF_OPERATING_CASH_FLOW",
+            )
             growth_series = (
                 company_facts.filter(pl.col("metric_id").is_in(growth_metrics))
                 .group_by(["period_end_date", "fiscal_year", "fiscal_quarter"])
@@ -664,7 +672,10 @@ class DashboardQueryService:
                     (pl.col("issuer_id") == issuer_id)
                     & (pl.col("statement_scope") == statement_scope)
                     & (pl.col("period_type") == target_period_type)
-                ).sort(["period_end_date", "severity", "flag_code"], descending=[True, False, False])
+                ).sort(
+                    ["period_end_date", "severity", "flag_code"],
+                    descending=[True, False, False],
+                )
             else:
                 red_flags = pl.DataFrame(
                     schema={
@@ -864,7 +875,9 @@ class DashboardQueryService:
         published_at_basis, canonical_content_sha256) and flags any orphan references.
         """
         if ratio_name not in RATIO_LINEAGE_CATALOG:
-            raise ValueError(f"Unknown financial ratio for lineage lookup: {ratio_name}")
+            raise ValueError(
+                f"Unknown financial ratio for lineage lookup: {ratio_name}"
+            )
         spec = RATIO_LINEAGE_CATALOG[ratio_name]
         clean_ticker = ticker.strip().upper()
 

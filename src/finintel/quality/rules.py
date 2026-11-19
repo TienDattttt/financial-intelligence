@@ -76,7 +76,11 @@ _METRIC_ALIASES: dict[str, str] = {
     "CF_CASH_AND_EQUIVALENTS_END": "CF_ENDING_CASH",
     "IS_NET_INCOME_TOTAL": "IS_NET_INCOME",
 }
-_REVISION_ORDER: tuple[str, ...] = ("effective_available_at", "revision_no", "filing_id")
+_REVISION_ORDER: tuple[str, ...] = (
+    "effective_available_at",
+    "revision_no",
+    "filing_id",
+)
 
 QUARANTINE_EVENT_SCHEMA = pl.Schema(
     {
@@ -242,7 +246,11 @@ def build_period_wide(
         pl.col("filing_id")
         .filter(
             pl.col("_q_metric_id").is_in(
-                ["CF_OPERATING_CASH_FLOW", "CF_ENDING_CASH", "CF_DEPRECIATION_AMORTIZATION"]
+                [
+                    "CF_OPERATING_CASH_FLOW",
+                    "CF_ENDING_CASH",
+                    "CF_DEPRECIATION_AMORTIZATION",
+                ]
             )
         )
         .last()
@@ -407,10 +415,7 @@ def check_unit_scale_jump(
         .unique(subset=[*series_keys, "period_end_date"], keep="last")
         .sort([*series_keys, "period_end_date"])
         .with_columns(
-            pl.col("BS_TOTAL_ASSETS")
-            .shift(1)
-            .over(series_keys)
-            .alias("_prev_assets"),
+            pl.col("BS_TOTAL_ASSETS").shift(1).over(series_keys).alias("_prev_assets"),
             pl.col("period_end_date")
             .shift(1)
             .over(series_keys)
@@ -437,7 +442,9 @@ def check_unit_scale_jump(
         pl.struct(
             curr.alias("current_total_assets"),
             prev.alias("previous_total_assets"),
-            pl.col("_prev_period_end_date").cast(pl.String).alias("previous_period_end_date"),
+            pl.col("_prev_period_end_date")
+            .cast(pl.String)
+            .alias("previous_period_end_date"),
             ratio.alias("scale_ratio"),
             pl.lit(upper).alias("upper_threshold"),
             pl.lit(lower).alias("lower_threshold"),
@@ -465,14 +472,14 @@ def check_missing_required_metrics(
         if metric in period_wide.columns
     ]
     absent_constants = [
-        pl.lit(metric) for metric in required_metrics if metric not in period_wide.columns
+        pl.lit(metric)
+        for metric in required_metrics
+        if metric not in period_wide.columns
     ]
-    missing_list = (
-        pl.concat_list([*missing_exprs, *absent_constants]).list.drop_nulls()
+    missing_list = pl.concat_list([*missing_exprs, *absent_constants]).list.drop_nulls()
+    violated = period_wide.with_columns(missing_list.alias("_missing_metrics")).filter(
+        pl.col("_missing_metrics").list.len() > 0
     )
-    violated = period_wide.with_columns(
-        missing_list.alias("_missing_metrics")
-    ).filter(pl.col("_missing_metrics").list.len() > 0)
     if violated.is_empty():
         return _empty_quarantine_events()
     return violated.select(
@@ -530,10 +537,9 @@ def check_partial_statement(period_wide: pl.DataFrame) -> pl.DataFrame:
         pl.col("BS_TOTAL_ASSETS").is_not_null() & pl.col("IS_NET_REVENUE").is_not_null()
     )
     missing_cf = pl.col("CF_OPERATING_CASH_FLOW").is_null()
-    missing_dep_corporate = (
-        (pl.col("accounting_regime") == "CORPORATE")
-        & pl.col("CF_DEPRECIATION_AMORTIZATION").is_null()
-    )
+    missing_dep_corporate = (pl.col("accounting_regime") == "CORPORATE") & pl.col(
+        "CF_DEPRECIATION_AMORTIZATION"
+    ).is_null()
     warned = period_wide.filter(has_bs_and_is & (missing_cf | missing_dep_corporate))
     if warned.is_empty():
         return _empty_period_signals()
@@ -563,7 +569,11 @@ def check_derived_q4_mix(
             frames.append(from_facts)
 
     if ratios is not None and not ratios.is_empty():
-        flag_cols = [col for col in ratios.columns if col.endswith("_flag") and col != "dupont_valid_flag"]
+        flag_cols = [
+            col
+            for col in ratios.columns
+            if col.endswith("_flag") and col != "dupont_valid_flag"
+        ]
         if flag_cols and all(col in ratios.columns for col in PERIOD_KEY):
             has_derived_ratio = pl.any_horizontal(
                 *(pl.col(col) == "DERIVED_Q4_INPUT" for col in flag_cols)

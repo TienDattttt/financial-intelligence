@@ -239,9 +239,7 @@ def main(
                 Stage.QUALITY_GATE_2: QualityGate2Handler(
                     store, config_dir, settings.analytics
                 ),
-                Stage.PUBLISH: PublishHandler(
-                    store, config_dir, settings.analytics
-                ),
+                Stage.PUBLISH: PublishHandler(store, config_dir, settings.analytics),
             }
         )
         return (

@@ -143,7 +143,12 @@ def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) 
                 == values["IS_NET_INCOME"]
             )
         else:
-            assert values.keys() == bs_ids
+            expected_bs_ids = (
+                bs_ids | {"BS_TOTAL_ASSETS", "BS_SHORT_TERM_RECEIVABLES"}
+                if entry["year"] == 2025
+                else bs_ids
+            )
+            assert values.keys() == expected_bs_ids
             assert (
                 values["BS_TRADE_RECEIVABLES_ST"]
                 == entry["raw_metrics"]["phaithukhachhang"]
