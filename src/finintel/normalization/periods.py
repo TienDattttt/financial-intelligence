@@ -1,4 +1,11 @@
-"""Derive fiscal quarters and four-quarter totals with explicit filing provenance."""
+"""Derive fiscal quarters and four-quarter totals with explicit filing provenance.
+
+Verified Sources:
+    https://docs.pola.rs/user-guide/lazy/
+    https://docs.pola.rs/user-guide/concepts/streaming/
+    https://congbao.chinhphu.vn/van-ban/thong-tu-so-200-2014-tt-btc-6697/3529.htm
+    https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59652?format=pdf
+"""
 
 from datetime import date
 
@@ -8,8 +15,21 @@ from finintel.exceptions import ContractViolationError
 from finintel.normalization.mapper import FACT_SCHEMA
 from finintel.normalization.regime_resolver import TT99_EFFECTIVE_DATE
 
+CROSS_TAXONOMY_TTM_BRIDGES: dict[str, str] = {
+    "IS_INTEREST_EXPENSE": "IS_BORROWING_COSTS_BRIDGE",
+    "IS_BORROWING_COSTS": "IS_BORROWING_COSTS_BRIDGE",
+}
+BRIDGED_TTM_NOTE = "BRIDGED_TT200_INTEREST_TO_TT99_BORROWING"
 SERIES = ["issuer_id", "statement_scope", "source_provider", "metric_id"]
 QUARTER_KEY = [*SERIES, "fiscal_year_start_date", "fiscal_quarter"]
+BRIDGED_SERIES = [
+    "issuer_id",
+    "statement_scope",
+    "source_provider",
+    "_ttm_series_key",
+]
+BRIDGED_ORDER = [*BRIDGED_SERIES, "period_end_date"]
+BRIDGED_QUARTER_KEY = [*BRIDGED_SERIES, "fiscal_year_start_date", "fiscal_quarter"]
 FISCAL_SERIES = [*SERIES, "fiscal_year_start_date", "taxonomy_version"]
 FISCAL_QUARTER = [*FISCAL_SERIES, "fiscal_quarter"]
 PERIOD_ORDER = [*SERIES, "period_end_date"]
@@ -267,6 +287,12 @@ def derive_quarters(facts: pl.DataFrame, *, as_of: date | None = None) -> pl.Dat
     return quarters
 
 
+def _with_bridge_key(frame: pl.DataFrame) -> pl.DataFrame:
+    return frame.with_columns(
+        pl.col("metric_id").replace(CROSS_TAXONOMY_TTM_BRIDGES).alias("_ttm_series_key")
+    )
+
+
 def compute_ttm(facts_df: pl.DataFrame, *, as_of: date | None = None) -> pl.DataFrame:
     """Compute TTM(t) = FLOW(t−3) + FLOW(t−2) + FLOW(t−1) + FLOW(t).
 
@@ -276,6 +302,8 @@ def compute_ttm(facts_df: pl.DataFrame, *, as_of: date | None = None) -> pl.Data
     yield null. No denominator is used. Availability is the latest input date.
     `ttm_contains_derived_q4` is true only for a valid window containing a
     quarter derived from audited annual figures and nine-month inputs.
+    `ttm_exact_filing` is true only when a valid TTM window is composed of
+    four quarters that all carry `published_at_basis == 'EXACT_FILING'`.
     """
     facts_df = _fact_columns(facts_df)
     quarters = derive_quarters(facts_df, as_of=as_of)
@@ -303,65 +331,107 @@ def compute_ttm(facts_df: pl.DataFrame, *, as_of: date | None = None) -> pl.Data
         & (pl.col("taxonomy_version") == "VAS_TT99_2025")
         & (FISCAL_START < TT99_EFFECTIVE_DATE)
     )
-    original = quarters.filter(~is_comparative)
+    original = _with_bridge_key(quarters.filter(~is_comparative))
     result = _ttm_windows(original)
-    comparative = quarters.filter(is_comparative & VALUE.is_not_null())
+    comparative = _with_bridge_key(
+        quarters.filter(is_comparative & VALUE.is_not_null())
+    )
     if comparative.is_empty():
-        return result
+        return result.sort(BRIDGED_ORDER).drop("_ttm_series_key")
     adjusted = pl.concat(
         [
-            original.join(comparative.select(QUARTER_KEY), on=QUARTER_KEY, how="anti"),
+            original.join(
+                comparative.select(BRIDGED_QUARTER_KEY),
+                on=BRIDGED_QUARTER_KEY,
+                how="anti",
+            ),
             comparative,
         ]
     )
+    original_comparable = adjusted.select(
+        *BRIDGED_QUARTER_KEY,
+        pl.col("comparable_across_taxonomy").alias("_orig_comparable"),
+    ).unique(subset=BRIDGED_QUARTER_KEY, keep="last")
     revised = (
         _ttm_windows(
-            adjusted.with_columns(pl.lit(False).alias("comparable_across_taxonomy"))
+            adjusted.with_columns(pl.lit(False).alias("comparable_across_taxonomy")),
+            allow_bridge=False,
         )
-        .with_columns(adjusted.sort(PERIOD_ORDER)["comparable_across_taxonomy"])
+        .join(original_comparable, on=BRIDGED_QUARTER_KEY, how="left")
+        .with_columns(pl.col("_orig_comparable").alias("comparable_across_taxonomy"))
+        .drop("_orig_comparable")
         .filter(
             (FISCAL_START >= TT99_EFFECTIVE_DATE) & pl.col("ttm_value").is_not_null()
         )
     )
-    return pl.concat(
-        [
-            result.join(revised.select(QUARTER_KEY), on=QUARTER_KEY, how="anti"),
-            revised,
-        ]
-    ).sort(PERIOD_ORDER)
+    return (
+        pl.concat(
+            [
+                result.join(
+                    revised.select(BRIDGED_QUARTER_KEY),
+                    on=BRIDGED_QUARTER_KEY,
+                    how="anti",
+                ),
+                revised,
+            ]
+        )
+        .sort(BRIDGED_ORDER)
+        .drop("_ttm_series_key")
+    )
 
 
-def _ttm_windows(quarters: pl.DataFrame) -> pl.DataFrame:
-    quarters = quarters.sort(PERIOD_ORDER)
-    previous_q = Q.shift(1).over(SERIES)
-    previous_year = FISCAL_START.shift(1).over(SERIES)
-    contiguous = (START == END.shift(1).over(SERIES).dt.offset_by("1d")) & (
+def _ttm_windows(quarters: pl.DataFrame, *, allow_bridge: bool = True) -> pl.DataFrame:
+    if "_ttm_series_key" not in quarters.columns:
+        quarters = _with_bridge_key(quarters)
+    quarters = quarters.sort(BRIDGED_ORDER)
+    previous_q = Q.shift(1).over(BRIDGED_SERIES)
+    previous_year = FISCAL_START.shift(1).over(BRIDGED_SERIES)
+    contiguous = (START == END.shift(1).over(BRIDGED_SERIES).dt.offset_by("1d")) & (
         ((Q == previous_q + 1) & (FISCAL_START == previous_year))
         | ((Q == 1) & (previous_q == 4) & (FISCAL_START > previous_year))
     )
     staged = quarters.with_columns(contiguous.alias("_contiguous"))
 
     def last_four(expr: pl.Expr) -> list[pl.Expr]:
-        return [expr, *(expr.shift(lag).over(SERIES) for lag in range(1, 4))]
+        return [expr, *(expr.shift(lag).over(BRIDGED_SERIES) for lag in range(1, 4))]
 
     valid = (
         pl.all_horizontal(*(value.is_not_null() for value in last_four(VALUE)))
         & pl.col("statement_scope").is_in(KNOWN_SCOPES)
         & pl.all_horizontal(
-            *(pl.col("_contiguous").shift(lag).over(SERIES) for lag in range(3))
+            *(pl.col("_contiguous").shift(lag).over(BRIDGED_SERIES) for lag in range(3))
         )
         & pl.sum_horizontal(*last_four(DAYS), ignore_nulls=False).is_between(350, 380)
     )
     tax = pl.col("taxonomy_version")
     mixed = ~pl.all_horizontal(*(tax == previous for previous in last_four(tax)[1:]))
     comparable = pl.all_horizontal(*last_four(pl.col("comparable_across_taxonomy")))
-    allowed = valid & (~mixed | comparable)
+    is_debt_cost_bridge = (
+        pl.lit(allow_bridge)
+        & mixed
+        & (pl.col("_ttm_series_key") == "IS_BORROWING_COSTS_BRIDGE")
+        & (pl.col("source_provider") == "fhsc")
+        & pl.all_horizontal(
+            *(
+                ((m == "IS_INTEREST_EXPENSE") & (t == "VAS_TT200_2014"))
+                | ((m == "IS_BORROWING_COSTS") & (t == "VAS_TT99_2025"))
+                for m, t in zip(
+                    last_four(pl.col("metric_id")),
+                    last_four(tax),
+                    strict=True,
+                )
+            )
+        )
+    )
+    allowed = valid & (~mixed | comparable | is_debt_cost_bridge)
     result = staged.with_columns(
         pl.when(allowed)
         .then(pl.sum_horizontal(*last_four(VALUE), ignore_nulls=False))
         .otherwise(None)
         .alias("ttm_value"),
-        pl.when(valid & mixed & ~comparable)
+        pl.when(valid & is_debt_cost_bridge & ~comparable)
+        .then(pl.lit(BRIDGED_TTM_NOTE))
+        .when(valid & mixed & ~comparable & ~is_debt_cost_bridge)
         .then(pl.lit("MIXED_TAXONOMY"))
         .otherwise(None)
         .alias("computation_note"),
@@ -387,6 +457,14 @@ def _ttm_windows(quarters: pl.DataFrame) -> pl.DataFrame:
         )
         .fill_null(False)
         .alias("ttm_contains_derived_q4"),
+        (
+            allowed
+            & pl.all_horizontal(
+                *last_four(pl.col("published_at_basis") == "EXACT_FILING")
+            )
+        )
+        .fill_null(False)
+        .alias("ttm_exact_filing"),
     ).drop("_contiguous")
     if result.select((pl.col("ttm_value").is_infinite()).any()).item():
         raise ContractViolationError("TTM computation exceeded the numeric range.")

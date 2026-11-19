@@ -52,6 +52,10 @@ metrics:
     code: "227"
     labels: ["Tài sản cố định vô hình"]
     fhsc: ["taisancodinhvohinh"]
+  BS_CIP_LONG_TERM:
+    code: "252"  # Phụ lục IV TT99: 250 Tài sản dở dang dài hạn -> 252 Chi phí XDCB dở dang (242 là hao mòn BĐSĐT)
+    labels: ["Chi phí xây dựng cơ bản dở dang"]
+    fhsc: ["chiphixaydungcobandodang"]
   BS_OTHER_NONCURRENT_ASSETS:
     code: "270"
     labels: ["VII. Tài sản dài hạn khác"]

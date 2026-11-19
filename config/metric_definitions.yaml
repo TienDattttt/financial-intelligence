@@ -51,7 +51,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "100"
     tt99_code: "100"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_CASH_AND_EQUIVALENTS:
     canonical_id: BS_CASH_AND_EQUIVALENTS
     statement_type: BALANCE_SHEET
@@ -69,7 +69,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "120"
     tt99_code: "120"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_SHORT_TERM_RECEIVABLES:
     canonical_id: BS_SHORT_TERM_RECEIVABLES
     statement_type: BALANCE_SHEET
@@ -78,7 +78,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "130"
     tt99_code: "130"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_INVENTORIES:
     canonical_id: BS_INVENTORIES
     statement_type: BALANCE_SHEET
@@ -87,7 +87,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "140"
     tt99_code: "140"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_NONCURRENT_ASSETS:
     canonical_id: BS_NONCURRENT_ASSETS
     statement_type: BALANCE_SHEET
@@ -96,7 +96,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "200"
     tt99_code: "200"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_FIXED_ASSETS:
     canonical_id: BS_FIXED_ASSETS
     statement_type: BALANCE_SHEET
@@ -105,7 +105,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "220"
     tt99_code: "220"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_TANGIBLE_FIXED_ASSETS:
     canonical_id: BS_TANGIBLE_FIXED_ASSETS
     statement_type: BALANCE_SHEET
@@ -114,7 +114,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "221"
     tt99_code: "221"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_INTANGIBLE_FIXED_ASSETS:
     canonical_id: BS_INTANGIBLE_FIXED_ASSETS
     statement_type: BALANCE_SHEET
@@ -123,7 +123,16 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "227"
     tt99_code: "227"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
+  BS_CIP_LONG_TERM:
+    canonical_id: BS_CIP_LONG_TERM
+    statement_type: BALANCE_SHEET
+    value_type: STOCK
+    unit: VND
+    sign_convention: POSITIVE_NORMAL
+    tt200_code: "242"
+    tt99_code: "252"  # Phụ lục IV TT99: 250 Tài sản dở dang dài hạn -> 252 Chi phí XDCB dở dang (242 TT99 là hao mòn lũy kế BĐSĐT!)
+    comparable_across_taxonomy: true
   BS_OTHER_NONCURRENT_ASSETS:
     canonical_id: BS_OTHER_NONCURRENT_ASSETS
     statement_type: BALANCE_SHEET
@@ -159,7 +168,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "310"
     tt99_code: "310"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_SHORT_TERM_BORROWINGS:
     canonical_id: BS_SHORT_TERM_BORROWINGS
     statement_type: BALANCE_SHEET
@@ -168,7 +177,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "320"
     tt99_code: "321"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_NONCURRENT_LIABILITIES:
     canonical_id: BS_NONCURRENT_LIABILITIES
     statement_type: BALANCE_SHEET
@@ -177,7 +186,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "330"
     tt99_code: "330"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_LONG_TERM_BORROWINGS:
     canonical_id: BS_LONG_TERM_BORROWINGS
     statement_type: BALANCE_SHEET
@@ -186,7 +195,7 @@ metrics:
     sign_convention: POSITIVE_NORMAL
     tt200_code: "338"
     tt99_code: "339"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   BS_TOTAL_EQUITY:
     canonical_id: BS_TOTAL_EQUITY
     statement_type: BALANCE_SHEET
@@ -240,7 +249,9 @@ metrics:
     sign_convention: SIGNED_EXPENSE
     tt200_code: "11"
     tt99_code: "11"
-    comparable_across_taxonomy: false
+    # Policy note (TT99 B02-DN Code 21): consistent with IS_NET_REVENUE=true;
+    # affected only if issuer disposes of investment property (tracked on TT99 Code 21).
+    comparable_across_taxonomy: true
   IS_GROSS_PROFIT:
     canonical_id: IS_GROSS_PROFIT
     statement_type: INCOME_STATEMENT
@@ -249,7 +260,9 @@ metrics:
     sign_convention: SIGNED
     tt200_code: "20"
     tt99_code: "20"
-    comparable_across_taxonomy: false
+    # Policy note (TT99 B02-DN Code 21): consistent with IS_NET_REVENUE=true;
+    # affected only if issuer disposes of investment property (tracked on TT99 Code 21).
+    comparable_across_taxonomy: true
   IS_INVESTMENT_PROPERTY_DISPOSAL_GAIN_LOSS:
     canonical_id: IS_INVESTMENT_PROPERTY_DISPOSAL_GAIN_LOSS
     statement_type: INCOME_STATEMENT
@@ -267,7 +280,7 @@ metrics:
     sign_convention: POSITIVE_REVENUE
     tt200_code: "21"
     tt99_code: "22"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   IS_FINANCIAL_EXPENSES:
     canonical_id: IS_FINANCIAL_EXPENSES
     statement_type: INCOME_STATEMENT
@@ -276,7 +289,7 @@ metrics:
     sign_convention: SIGNED_EXPENSE
     tt200_code: "22"
     tt99_code: "23"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   IS_INTEREST_EXPENSE:
     canonical_id: IS_INTEREST_EXPENSE
     statement_type: INCOME_STATEMENT
@@ -303,7 +316,7 @@ metrics:
     sign_convention: SIGNED_EXPENSE
     tt200_code: "25"
     tt99_code: "25"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   IS_ADMINISTRATIVE_EXPENSES:
     canonical_id: IS_ADMINISTRATIVE_EXPENSES
     statement_type: INCOME_STATEMENT
@@ -312,7 +325,7 @@ metrics:
     sign_convention: SIGNED_EXPENSE
     tt200_code: "26"
     tt99_code: "26"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   IS_OPERATING_PROFIT:
     canonical_id: IS_OPERATING_PROFIT
     statement_type: INCOME_STATEMENT
@@ -321,7 +334,9 @@ metrics:
     sign_convention: SIGNED
     tt200_code: "30"
     tt99_code: "30"
-    comparable_across_taxonomy: false
+    # Policy note (TT99 B02-DN Code 21): Code 30 aggregates Code 21 disposal gain/loss,
+    # making it algebraically identical to TT200 Code 30 (RF_08 tracks Code 21 separately).
+    comparable_across_taxonomy: true
   IS_OTHER_INCOME:
     canonical_id: IS_OTHER_INCOME
     statement_type: INCOME_STATEMENT
@@ -330,7 +345,7 @@ metrics:
     sign_convention: SIGNED
     tt200_code: "31"
     tt99_code: "31"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   IS_OTHER_EXPENSES:
     canonical_id: IS_OTHER_EXPENSES
     statement_type: INCOME_STATEMENT
@@ -339,7 +354,7 @@ metrics:
     sign_convention: SIGNED
     tt200_code: "32"
     tt99_code: "32"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   IS_OTHER_PROFIT:
     canonical_id: IS_OTHER_PROFIT
     statement_type: INCOME_STATEMENT
@@ -348,7 +363,7 @@ metrics:
     sign_convention: SIGNED
     tt200_code: "40"
     tt99_code: "40"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   IS_PROFIT_BEFORE_TAX:
     canonical_id: IS_PROFIT_BEFORE_TAX
     statement_type: INCOME_STATEMENT
@@ -366,7 +381,7 @@ metrics:
     sign_convention: SIGNED
     tt200_code: "51"
     tt99_code: "51"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   IS_DEFERRED_INCOME_TAX:
     canonical_id: IS_DEFERRED_INCOME_TAX
     statement_type: INCOME_STATEMENT
@@ -375,7 +390,7 @@ metrics:
     sign_convention: SIGNED
     tt200_code: "52"
     tt99_code: "52"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   IS_NET_INCOME:
     canonical_id: IS_NET_INCOME
     statement_type: INCOME_STATEMENT
@@ -420,7 +435,7 @@ metrics:
     sign_convention: NEGATIVE_OUTFLOW
     tt200_code: "21"
     tt99_code: "21"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   CF_INVESTING_CASH_FLOW:
     canonical_id: CF_INVESTING_CASH_FLOW
     statement_type: CASH_FLOW
@@ -429,7 +444,7 @@ metrics:
     sign_convention: SIGNED
     tt200_code: "30"
     tt99_code: "30"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   CF_PROCEEDS_FROM_BORROWINGS:
     canonical_id: CF_PROCEEDS_FROM_BORROWINGS
     statement_type: CASH_FLOW
@@ -456,7 +471,7 @@ metrics:
     sign_convention: SIGNED
     tt200_code: "40"
     tt99_code: "40"
-    comparable_across_taxonomy: false
+    comparable_across_taxonomy: true
   CF_NET_CASH_CHANGE:
     canonical_id: CF_NET_CASH_CHANGE
     statement_type: CASH_FLOW
