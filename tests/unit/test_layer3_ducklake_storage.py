@@ -52,7 +52,10 @@ from finintel.storage import (
     StorageConfig,
     collect_curated_garbage,
 )
-from finintel.storage.ducklake_store import build_postgres_secret_statements
+from finintel.storage.ducklake_store import (
+    build_postgres_secret_statements,
+    ensure_ducklake_attached,
+)
 from finintel.storage.manifest_export import build_latest_facts_table
 from finintel.storage.schemas import (
     AUDIT_QUARANTINE_SCHEMA,
@@ -746,12 +749,14 @@ def test_ducklake_crash_between_phase1_and_phase2_and_rollback(
     with pytest.raises(ValueError, match="not found"):
         store.rollback_snapshot("snap_does_not_exist", state)
 
-    # Publish snap_4 & snap_5 then expire snap_1 -> rollback to snap_1 must fail closed.
+    # Publish snap_4 & snap_5 then expire snap_1 & snap_003_orphan -> rollback to snap_1
+    # must fail closed AND reconcile_unpromoted_snapshots() must stop reporting expired orphans.
     _publish_ducklake_version(state, store, 4)
     _publish_ducklake_version(state, store, 5)
     store.maintain(keep_snapshots=2, min_snapshot_age_seconds=0)
     with pytest.raises(ContractViolationError, match="expired"):
         store.rollback_snapshot(snap_1, state)
+    assert store.reconcile_unpromoted_snapshots() == []
 
 
 # ---------------------------------------------------------------------------
@@ -1351,3 +1356,268 @@ def test_build_latest_facts_table_preserves_multi_source_ttm_and_provenance() ->
     assert q4_row["comparable_across_taxonomy"].to_list() == [True]
     assert q4_row["source_filing_ids"].to_list() == [["fhsc-q4"]]
     assert q4_row["is_filed_late"].to_list() == [False]
+
+
+# ---------------------------------------------------------------------------
+# 8. Independent Review Regressions (P1 #1, P1 #2, P2 & P3 Hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_curated_gc_preserves_asymmetric_analytics_and_quality_for_ticker_scoped_run(
+    tmp_path: Path,
+) -> None:
+    """P1 #1 regression: deleting financial_facts/r1 must NOT erase _normalize_meta.json before
+    evaluating quality/r1 and analytics/r1 when cli_args_json contains configured tickers."""
+    data_root = tmp_path / "data"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    curated = data_root / "curated"
+    old_ts = time.time() - 7200
+
+    # r1: full 6-stage run with configured tickers=["FPT"] (db_legacy_full == False),
+    # while _normalize_meta.json explicitly records full_history=True.
+    state.start_run("r1", "CLI_MANUAL", {"source": "fhsc", "tickers": ["FPT"]}, None)
+    state.finish_run("r1", "SUCCEEDED")
+    for sub in ("financial_facts", "quality", "analytics"):
+        d = curated / sub / "r1"
+        d.mkdir(parents=True, exist_ok=True)
+    _sample_facts().write_parquet(
+        curated / "financial_facts" / "r1" / "financial_facts.parquet"
+    )
+    (curated / "financial_facts" / "r1" / "_normalize_meta.json").write_text(
+        json.dumps({"source": "fhsc", "full_history": True}), encoding="utf-8"
+    )
+    pl.DataFrame(schema=AUDIT_QUARANTINE_SCHEMA).write_parquet(
+        curated / "quality" / "r1" / AUDIT_QUARANTINE_TABLE
+    )
+    (curated / "analytics" / "r1" / "_analytics_meta.json").write_text(
+        json.dumps({"source": "fhsc", "as_of": "2026-06-01"}), encoding="utf-8"
+    )
+    for sub in ("financial_facts", "quality", "analytics"):
+        os.utime(curated / sub / "r1", (old_ts, old_ts))
+
+    # r2 and r3: only completed NORMALIZE (present only under financial_facts/).
+    for run_id in ("r2", "r3"):
+        state.start_run(
+            run_id, "CLI_MANUAL", {"source": "fhsc", "tickers": ["FPT"]}, None
+        )
+        state.finish_run(run_id, "FAILED")
+        ff_dir = curated / "financial_facts" / run_id
+        ff_dir.mkdir(parents=True, exist_ok=True)
+        _sample_facts().write_parquet(ff_dir / "financial_facts.parquet")
+        (ff_dir / "_normalize_meta.json").write_text(
+            json.dumps({"source": "fhsc", "full_history": True}), encoding="utf-8"
+        )
+        os.utime(ff_dir, (old_ts, old_ts))
+
+    removed = collect_curated_garbage(
+        data_root, state, keep_runs=2, min_age_seconds=3600
+    )
+
+    # financial_facts/r1 is pruned (r2 & r3 are newest 2), but quality/r1 and analytics/r1
+    # MUST survive because r1 is the sole full_history run for fhsc in those subdirs.
+    assert not (curated / "financial_facts" / "r1").exists()
+    assert (curated / "financial_facts" / "r2").is_dir()
+    assert (curated / "financial_facts" / "r3").is_dir()
+    assert (curated / "quality" / "r1").is_dir()
+    assert (curated / "analytics" / "r1").is_dir()
+    assert [p.resolve() for p in removed] == [
+        (curated / "financial_facts" / "r1").resolve()
+    ]
+
+
+def test_curated_gc_waits_for_pipeline_lock_and_skips_symlinks_deterministically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify curated_gc serializes on pipeline.lock and skips symlinked entries."""
+    data_root = tmp_path / "data"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    curated = data_root / "curated"
+
+    # Seed an aged directory marked as a symlink via Path.is_symlink monkeypatch so
+    # symlink protection is deterministically verified even on non-privileged Windows.
+    symlink_dir = curated / "financial_facts" / "run-symlink-fake"
+    symlink_dir.mkdir(parents=True, exist_ok=True)
+    (symlink_dir / "keep.txt").write_text("precious", encoding="utf-8")
+    old_ts = time.time() - 7200
+    os.utime(symlink_dir, (old_ts, old_ts))
+
+    real_is_symlink = Path.is_symlink
+
+    def fake_is_symlink(self: Path) -> bool:
+        if self.name == "run-symlink-fake":
+            return True
+        return real_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+
+    lock_path = state.path.with_name("pipeline.lock")
+    entered = threading.Event()
+    release = threading.Event()
+    gc_done = threading.Event()
+    removed_out: list[Path] = []
+
+    def hold_lock() -> None:
+        with FileLock(lock_path, timeout=5.0):
+            entered.set()
+            assert release.wait(timeout=5.0)
+
+    def run_gc() -> None:
+        removed_out.extend(
+            collect_curated_garbage(data_root, state, keep_runs=1, min_age_seconds=0)
+        )
+        gc_done.set()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert entered.wait(timeout=5.0)
+    worker = threading.Thread(target=run_gc)
+    worker.start()
+    time.sleep(0.15)
+    assert not gc_done.is_set(), (
+        "collect_curated_garbage must wait for pipeline.lock serialization"
+    )
+    release.set()
+    holder.join(timeout=5.0)
+    worker.join(timeout=10.0)
+    assert gc_done.is_set()
+    assert not removed_out
+    assert (symlink_dir / "keep.txt").is_file()
+
+
+@pytest.mark.parametrize("backend_mode", ["ducklake", "auto"])
+def test_repository_supports_postgres_catalog_driver_without_local_sqlite_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend_mode: str,
+) -> None:
+    """P1 #2 regression: ParquetRepository with catalog_driver='postgres' MUST NOT require
+    a local ducklake_catalog.sqlite file and must invoke ensure_ducklake_attached."""
+    # Publish snap_001 into an isolated backing DuckLake catalog simulating remote Postgres.
+    remote_root = tmp_path / "remote_pg_sim"
+    remote_state = StateStore(remote_root / "metadata" / "state.sqlite")
+    remote_state.initialize()
+    remote_store = DuckLakeStore(
+        catalog_path=remote_root / "metadata" / "backing_catalog.sqlite",
+        data_path=remote_root / "lakehouse" / "data",
+        state_store=remote_state,
+    )
+    snap_id, ver = _publish_ducklake_version(remote_state, remote_store, 1)
+
+    # Local deployment data_root has ONLY state.sqlite (NO local ducklake_catalog.sqlite).
+    local_root = tmp_path / "local_pg_deploy"
+    local_state = StateStore(local_root / "metadata" / "state.sqlite")
+    local_state.initialize()
+    local_state.start_run("run-1", "CLI_MANUAL", {"source": "fhsc"}, None)
+    local_state.publish_snapshot("run-1", snap_id)
+    assert not (local_root / "metadata" / "ducklake_catalog.sqlite").exists()
+
+    attach_calls: list[tuple[str, str, bool]] = []
+    real_attach = ensure_ducklake_attached
+
+    def mocked_attach(
+        connection: duckdb.DuckDBPyConnection,
+        *,
+        catalog_path: Path,
+        data_path: Path,
+        catalog_alias: str = "finintel_lake",
+        catalog_driver: str = "sqlite",
+        postgres_dsn_env: str = "FININTEL_DUCKLAKE_PG_DSN",
+        read_only: bool = True,
+    ) -> None:
+        _ = (catalog_path, data_path)
+        attach_calls.append((catalog_driver, postgres_dsn_env, read_only))
+        real_attach(
+            connection,
+            catalog_path=remote_store.catalog_path,
+            data_path=remote_store.data_path,
+            catalog_alias=catalog_alias,
+            catalog_driver="sqlite",
+            read_only=read_only,
+        )
+
+    monkeypatch.setattr(
+        "finintel.storage.repository.ensure_ducklake_attached", mocked_attach
+    )
+
+    repo = ParquetRepository(
+        data_root=local_root,
+        catalog_driver="postgres",
+        postgres_dsn_env="FININTEL_TEST_PG_DSN",
+        backend="ducklake" if backend_mode == "ducklake" else "auto",
+    )
+    meta = repo.get_snapshot_metadata()
+    assert meta["storage_backend"] == "ducklake"
+    assert meta["snapshot_id"] == snap_id
+    assert meta["ducklake_version"] == ver
+    assert attach_calls
+    assert all(
+        drv == "postgres" and env == "FININTEL_TEST_PG_DSN" and ro is True
+        for drv, env, ro in attach_calls
+    )
+
+    with repo.snapshot_session() as pinned:
+        issuers = pinned.read_table("issuers", filters={"issuer_id": "FPT"})
+        assert issuers["company_name_vn"].to_list() == ["FPT Corp v1"]
+
+
+def test_postgres_attach_redacts_password_on_duckdb_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2 security regression: DuckDB errors during Postgres CREATE SECRET must not leak password."""
+    secret_pw = "UltraSecret_PgPass!77"
+    monkeypatch.setenv(
+        "FININTEL_TEST_PG_ERR_DSN",
+        f"postgresql://lake_user:{secret_pw}@db.internal:5432/finintel_cat",
+    )
+
+    class _FakeResult:
+        def fetchone(self) -> None:
+            return None
+
+    class _FailingDuckDBConn:
+        def execute(self, sql: str, params: object = None) -> _FakeResult:
+            _ = params
+            if "CREATE OR REPLACE SECRET" in sql:
+                raise duckdb.BinderException(f"Simulated error in SQL: {sql}")
+            return _FakeResult()
+
+    fake_conn: object = _FailingDuckDBConn()
+    with pytest.raises(ContractViolationError) as exc_info:
+        ensure_ducklake_attached(
+            fake_conn,  # type: ignore[arg-type]
+            catalog_path=tmp_path / "unused.sqlite",
+            data_path=tmp_path / "lake_data",
+            catalog_driver="postgres",
+            postgres_dsn_env="FININTEL_TEST_PG_ERR_DSN",
+        )
+    assert secret_pw not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
+
+
+def test_parquet_snapshot_session_get_facts_as_of_reuses_session_connection(
+    tmp_path: Path,
+) -> None:
+    """P3 regression: get_facts_as_of() in Parquet snapshot_session reuses non-owning connection."""
+    data_root = tmp_path / "data"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    state.start_run("run-1", "CLI_MANUAL", {}, None)
+    SnapshotPublisher(data_root / "published" / "snapshots", state_store=state).publish(
+        "snap_001", {"financial_facts.parquet": _sample_facts()}, run_id="run-1"
+    )
+
+    repo = ParquetRepository(data_root=data_root)
+    base_conn = duckdb.connect(":memory:")
+    cursor = base_conn.cursor()
+    try:
+        with repo.snapshot_session(connection=cursor) as pinned:
+            facts = pinned.get_facts_as_of(date(2026, 2, 1))
+            assert facts.height == 3
+        # Non-owning cursor MUST remain open after session exit.
+        assert cursor.execute("SELECT 42").fetchone() == (42,)
+    finally:
+        cursor.close()
+        base_conn.close()

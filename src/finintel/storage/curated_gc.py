@@ -103,19 +103,45 @@ def _read_state_protection(
     return protected, run_info
 
 
-def _resolve_source_and_full_history(
+def _preload_normalize_metadata(
     curated_root: Path,
+) -> dict[str, dict[str, object]]:
+    """Preload all ``financial_facts/<run_id>/_normalize_meta.json`` prior to any deletion."""
+    ff_root = curated_root / "financial_facts"
+    if ff_root.is_symlink() or not ff_root.is_dir():
+        return {}
+    try:
+        if not ff_root.resolve().is_relative_to(curated_root):
+            return {}
+    except OSError:
+        return {}
+
+    cache: dict[str, dict[str, object]] = {}
+    for entry in ff_root.iterdir():
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            if not entry.resolve().is_relative_to(curated_root):
+                continue
+        except OSError:
+            continue
+        meta = _load_json_dict(entry / "_normalize_meta.json")
+        if meta is not None:
+            cache[entry.name] = meta
+    return cache
+
+
+def _resolve_source_and_full_history(
     subdir: str,
     run_id: str,
     entry: Path,
     run_info: dict[str, tuple[str, bool, str]],
+    norm_meta_cache: dict[str, dict[str, object]],
 ) -> tuple[str, bool]:
     """Determine ``(source, is_full_history)`` for a curated run directory."""
     db_source, db_legacy_full, _ = run_info.get(run_id, ("unknown", True, ""))
 
-    norm_meta = _load_json_dict(
-        curated_root / "financial_facts" / run_id / "_normalize_meta.json"
-    )
+    norm_meta = norm_meta_cache.get(run_id)
     if norm_meta is not None:
         raw_src = norm_meta.get("source")
         source = str(raw_src) if isinstance(raw_src, str) and raw_src else db_source
@@ -209,6 +235,12 @@ def collect_curated_garbage(
         }
         now = time.time()
 
+        # Phase 1: Preload normalization metadata and plan all deletions across
+        # every curated subdir before mutating disk so deleting financial_facts/<run_id>
+        # never erases _normalize_meta.json needed by quality/ or analytics/.
+        norm_meta_cache = _preload_normalize_metadata(curated_root)
+        planned_removals: list[Path] = []
+
         for subdir in _ALLOWED_CURATED_SUBDIRS:
             subdir_path = curated_root / subdir
             if subdir_path.is_symlink() or not subdir_path.is_dir():
@@ -250,15 +282,14 @@ def collect_curated_garbage(
                 age_seconds = now - stat_result.st_mtime
                 if entry.name.startswith(_STAGING_PREFIXES):
                     if age_seconds >= min_age_seconds:
-                        if SnapshotPublisher._remove_snapshot(entry):
-                            removed.append(entry)
+                        planned_removals.append(entry)
                     continue
                 if entry.name.startswith("_tmp_gc_"):
                     continue
 
                 run_id = entry.name
                 source, is_full_history = _resolve_source_and_full_history(
-                    curated_root, subdir, run_id, entry, run_info
+                    subdir, run_id, entry, run_info, norm_meta_cache
                 )
                 run_entries.append(
                     (run_id, entry, stat_result.st_mtime_ns, source, is_full_history)
@@ -291,7 +322,11 @@ def collect_curated_garbage(
                     continue
                 if subdir == "quality" and _has_forensic_quarantine_evidence(entry):
                     continue
-                if SnapshotPublisher._remove_snapshot(entry):
-                    removed.append(entry)
+                planned_removals.append(entry)
+
+        # Phase 2: Execute planned removals atomically.
+        for target in planned_removals:
+            if SnapshotPublisher._remove_snapshot(target):
+                removed.append(target)
 
     return removed

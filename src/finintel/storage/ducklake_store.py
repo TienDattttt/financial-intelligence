@@ -379,8 +379,14 @@ def ensure_ducklake_attached(
             catalog_alias=alias,
             read_only=read_only,
         )
-        for stmt in stmts:
-            connection.execute(stmt)
+        try:
+            for stmt in stmts:
+                connection.execute(stmt)
+        except duckdb.Error:
+            # Suppress DuckDB error text so CREATE SECRET credentials never appear in tracebacks.
+            raise ContractViolationError(
+                f"Failed to attach PostgreSQL DuckLake catalog configured via {postgres_dsn_env}."
+            ) from None
         return
 
     connection.execute("LOAD sqlite;")
@@ -592,6 +598,15 @@ class DuckLakeStore:
             )
 
         with pipeline_write_lock(self.lock_path):
+            # Re-verify run status inside the write lock to avoid TOCTOU orphan commits.
+            locked_run_row = self.state_store.get_run(run_id)
+            if locked_run_row is None:
+                raise ValueError(f"Unknown pipeline run: {run_id}")
+            if locked_run_row.get("status") != "RUNNING":
+                raise ValueError(
+                    f"Pipeline run {run_id} is not publishable from status {locked_run_row.get('status')}."
+                )
+
             con = self._open_rw_connection()
             registered_views: list[str] = []
             try:
@@ -726,6 +741,12 @@ class DuckLakeStore:
             con = self._open_rw_connection()
             try:
                 self._ensure_audit_table(con)
+                live_versions = {
+                    int(row[0])
+                    for row in con.execute(
+                        f"SELECT snapshot_id FROM ducklake_snapshots('{self.catalog_alias}')"
+                    ).fetchall()
+                }
                 rows = con.execute(
                     f"""
                     SELECT snapshot_id, ducklake_version, run_id, published_at, tables_json
@@ -739,10 +760,11 @@ class DuckLakeStore:
             orphans: list[dict[str, object]] = []
             for snap_id, version, run_id, published_at, tables_json in rows:
                 sid = str(snap_id)
-                if sid not in promoted:
+                ver_int = int(version)
+                if sid not in promoted and ver_int in live_versions:
                     record: dict[str, object] = {
                         "snapshot_id": sid,
-                        "ducklake_version": int(version),
+                        "ducklake_version": ver_int,
                         "run_id": str(run_id),
                         "published_at": str(published_at),
                         "tables_json": str(tables_json),
@@ -755,7 +777,7 @@ class DuckLakeStore:
                             "run_id": str(run_id),
                             "details": {
                                 "snapshot_id": sid,
-                                "ducklake_version": int(version),
+                                "ducklake_version": ver_int,
                             },
                         },
                     )

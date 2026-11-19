@@ -274,7 +274,33 @@ class ParquetRepository:
         self._session_connection = _session_connection
 
     def _find_ducklake_catalog(self) -> tuple[Path, Path, Path] | None:
-        """Return ``(catalog_path, state_path, lake_data_path)`` if DuckLake exists."""
+        """Return ``(catalog_path, state_path, lake_data_path)`` if DuckLake is configured or present."""
+        if self._catalog_driver == "postgres":
+            state_candidates = (
+                (self._catalog_path.parent / "state.sqlite",)
+                if self._catalog_path is not None
+                else (
+                    self._source / "metadata" / "state.sqlite",
+                    self._source / "data" / "metadata" / "state.sqlite",
+                )
+            )
+            for state_path in state_candidates:
+                if state_path.exists():
+                    meta_dir = state_path.parent
+                    data_root = meta_dir.parent
+                    cat_path = self._catalog_path or (
+                        meta_dir / "ducklake_catalog.sqlite"
+                    )
+                    lake_data = self._lakehouse_data_path or (
+                        data_root / "lakehouse" / "data"
+                    )
+                    return (
+                        cat_path.resolve(),
+                        state_path.resolve(),
+                        lake_data.resolve(),
+                    )
+            return None
+
         if self._catalog_path is not None:
             if not self._catalog_path.is_file():
                 return None
@@ -849,12 +875,15 @@ class ParquetRepository:
         with self._read_path() as path:
             if not path.is_file():
                 raise FileNotFoundError(path)
-            if connection is not None:
+            active_conn = (
+                connection if connection is not None else self._session_connection
+            )
+            if active_conn is not None:
                 query = self._pit_facts_sql(
                     "read_parquet(?)", require_exact_filing_date
                 )
                 try:
-                    result = connection.execute(
+                    result = active_conn.execute(
                         query, [str(path), as_of_date]
                     ).fetch_arrow_table()
                 except (duckdb.Error, OSError) as exc:
@@ -959,6 +988,12 @@ class ParquetRepository:
         columns: Sequence[str] | None,
         filters: Mapping[str, object] | None,
     ) -> pl.DataFrame:
+        if columns is None and not filters:
+            arrow = con.execute(
+                f"SELECT * FROM {source_sql}", source_params
+            ).fetch_arrow_table()
+            return cast(pl.DataFrame, pl.from_arrow(arrow))
+
         schema_cursor = con.execute(
             f"SELECT * FROM {source_sql} WHERE 1 = 0", source_params
         )
