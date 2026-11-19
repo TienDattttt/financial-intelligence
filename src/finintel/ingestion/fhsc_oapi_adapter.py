@@ -1,10 +1,20 @@
-"""Read the FHSC statement endpoint through the Gate 0 connector."""
+"""Read the FHSC statement endpoint through the Gate 0 connector.
+
+Verified Sources:
+    - ``vnstock-oapi==0.1.2`` runtime inspection in project ``.venv``:
+      ``vnstock_oapi.source("fhsc").spec.rate_per_second == 0.6`` and
+      ``Transport.request`` retries HTTP 429 at most once (``request_count > 1``).
+    - ``docs/layers/LAYER_1_INGESTION.md`` and FHSC Open API reference:
+      https://developers.fhsc.com.vn/api-reference/phan-tich-co-ban/bao-cao-tai-chinh
+"""
 
 from __future__ import annotations
 
 import json
+import math
 import re
-from collections.abc import Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -31,11 +41,20 @@ if TYPE_CHECKING:
 
 OPERATION = "financial-statement/statement"
 MAX_TRACE_ID_LEN = 128
+DEFAULT_RATE_PER_SECOND = 0.6
 STATEMENTS = {
     StatementType.BALANCE_SHEET: "balance-sheet",
     StatementType.INCOME_STATEMENT: "income-statement",
     StatementType.CASH_FLOW: "cash-flow",
 }
+
+
+def _default_sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _default_clock() -> float:
+    return time.monotonic()
 
 
 def _payload(envelope: Envelope, query: dict[str, object]) -> RawPayload:
@@ -90,6 +109,12 @@ class FhscOapiAdapter(FinancialStatementProvider):
         year: int | None = None,
         quarter: int | None = None,
         limit: int = 5,
+        min_request_interval_seconds: float | None = None,
+        early_stop_predicate: Callable[[tuple[RawFiling, ...]], bool] | None = None,
+        metadata_resolver: Callable[[int, int | None], FilingMetadata | None]
+        | None = None,
+        sleeper: Callable[[float], None] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         if not re.fullmatch(r"[A-Z0-9]{1,16}", ticker):
             raise ContractViolationError("Invalid FHSC ticker.")
@@ -111,12 +136,31 @@ class FhscOapiAdapter(FinancialStatementProvider):
             raise ContractViolationError(
                 "An FHSC quarter filter requires a quarterly year."
             )
+        if min_request_interval_seconds is not None and (
+            isinstance(min_request_interval_seconds, bool)
+            or not isinstance(min_request_interval_seconds, (int, float))
+            or not math.isfinite(min_request_interval_seconds)
+            or min_request_interval_seconds < 0
+        ):
+            raise ContractViolationError(
+                "FHSC min_request_interval_seconds must be a finite non-negative number."
+            )
         self.ticker = ticker
         self.statement_type = statement_type
         self.period_type = period_type
         self.year = year
         self.quarter = quarter
         self.limit = limit
+        self.min_request_interval_seconds = (
+            float(min_request_interval_seconds)
+            if min_request_interval_seconds is not None
+            else None
+        )
+        self.early_stop_predicate = early_stop_predicate
+        self._metadata_resolver = metadata_resolver
+        self._sleeper = sleeper
+        self._clock = clock
+        self._last_request_at: float | None = None
         self._next_page = 1
         self._seen: set[tuple[int, int | None]] = set()
         self.metadata: dict[tuple[int, int | None], FilingMetadata] = {}
@@ -146,6 +190,18 @@ class FhscOapiAdapter(FinancialStatementProvider):
                 raise ContractViolationError("Ambiguous metadata for an FHSC period.")
             self.metadata[key] = filing
 
+    def _resolve_interval(self, rate_per_second: object) -> float:
+        if self.min_request_interval_seconds is not None:
+            return self.min_request_interval_seconds
+        if (
+            isinstance(rate_per_second, (int, float))
+            and not isinstance(rate_per_second, bool)
+            and math.isfinite(rate_per_second)
+            and rate_per_second > 0
+        ):
+            return 1.0 / float(rate_per_second)
+        return 1.0 / DEFAULT_RATE_PER_SECOND
+
     def fetch(self) -> Iterator[RawFilingBundle]:
         source = load_fhsc_source()
         period = "quarter" if self.period_type == PeriodType.QUARTER else "year"
@@ -158,6 +214,12 @@ class FhscOapiAdapter(FinancialStatementProvider):
             raise ContractViolationError("Unexpected FHSC financials operation.")
         plan = plans[0]
         max_pages = source.spec.ops[OPERATION].max_pages
+        interval = self._resolve_interval(
+            getattr(source.spec, "rate_per_second", DEFAULT_RATE_PER_SECOND)
+        )
+        sleeper = self._sleeper if self._sleeper is not None else _default_sleep
+        clock = self._clock if self._clock is not None else _default_clock
+
         for page in range(self._next_page, max_pages + 1):
             query: dict[str, object] = {
                 key: plan.params[key] for key in ("symbol", "type", "period")
@@ -165,6 +227,12 @@ class FhscOapiAdapter(FinancialStatementProvider):
             query.update(page=page, limit=self.limit)
             if self.year is not None:
                 query["year"] = self.year
+            if self._last_request_at is not None and interval > 0:
+                elapsed = clock() - self._last_request_at
+                remaining = interval - elapsed
+                if remaining > 0:
+                    sleeper(remaining)
+            self._last_request_at = clock()
             with fhsc_source_errors():
                 pages = source.raw(
                     plan.operation, only_page=page, page_cap=None, **query
@@ -185,6 +253,13 @@ class FhscOapiAdapter(FinancialStatementProvider):
                 status = "THROTTLED"
             elif empty:
                 status = "COMPLETE"
+            elif (
+                self.early_stop_predicate is not None
+                and bool(filings)
+                and not deferred
+                and self.early_stop_predicate(filings)
+            ):
+                status = "EARLY_STOPPED"
             elif page == max_pages:
                 status = "PAGE_LIMIT_REACHED"
             yield RawFilingBundle(payload, filings, deferred, status)
@@ -192,7 +267,7 @@ class FhscOapiAdapter(FinancialStatementProvider):
             self._next_page = page + 1
             if status == "THROTTLED":
                 raise RateLimitOrCircuitOpenError("FHSC is throttling requests.")
-            if empty:
+            if empty or status == "EARLY_STOPPED":
                 self._next_page = 1
                 self._seen.clear()
                 return
@@ -237,6 +312,24 @@ class FhscOapiAdapter(FinancialStatementProvider):
                 continue
             locator = f"/data/{index}"
             metadata = self.metadata.get(key)
+            if metadata is None and self._metadata_resolver is not None:
+                resolved = self._metadata_resolver(year, quarter)
+                if resolved is not None:
+                    expected_quarter = (
+                        2
+                        if resolved.period_type == PeriodType.SEMI_ANNUAL
+                        else resolved.fiscal_quarter
+                    )
+                    if (
+                        resolved.ticker_at_filing != self.ticker
+                        or resolved.statement_type != self.statement_type
+                        or resolved.fiscal_year != year
+                        or expected_quarter != quarter
+                    ):
+                        raise ContractViolationError(
+                            "Resolved metadata does not match the FHSC period."
+                        )
+                    metadata = resolved
             if metadata is None:
                 deferred.append(locator)
             else:
