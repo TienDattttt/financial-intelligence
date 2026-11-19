@@ -309,7 +309,8 @@ def test_reconcile_exact_boundary_status_flags() -> None:
         [
             _case_facts("EDGE1", 2024, equity=-50_000_000.0, interest=0.0),
             _case_facts("EDGE1", 2025, equity=-30_000_000.0, interest=0.0),
-            # Case 3: Cross TT200 (2025) -> TT99 (2026) on non-comparable inventory_turnover.
+            # Case 3: Cross TT200 (2025) -> TT99 (2026) on non-comparable ebit_growth_yoy
+            # (IS_INTEREST_EXPENSE code 23 vs IS_BORROWING_COSTS code 24 stay comparable=false).
             _case_facts("EDGE2", 2025, equity=500_000_000.0, interest=10_000_000.0),
             _case_facts("EDGE2", 2026, equity=550_000_000.0, interest=10_000_000.0),
         ]
@@ -358,10 +359,10 @@ def test_reconcile_exact_boundary_status_flags() -> None:
         (pl.col("issuer_id") == "EDGE2") & (pl.col("fiscal_year") == 2026)
     ).row(0, named=True)
     assert (
-        edge2_2026["inventory_turnover"]
+        edge2_2026["ebit_growth_yoy"]
         is golden_flags["mixed_taxonomy_case"]["expected_value"]
     )
     assert (
-        edge2_2026["inventory_turnover_flag"]
+        edge2_2026["ebit_growth_yoy_flag"]
         == golden_flags["mixed_taxonomy_case"]["expected_flag"]
     )

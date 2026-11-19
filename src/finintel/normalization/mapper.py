@@ -1,9 +1,19 @@
-"""Build canonical facts from exact, statement-specific taxonomy mappings."""
+"""Build canonical facts from exact, statement-specific taxonomy mappings.
+
+Verified Sources:
+    Boncz, P. A., Zukowski, M., & Nes, N. (2005). "MonetDB/X100: Hyper-Pipelining
+    Query Execution." CIDR 2005 — vectorized batch execution replacing per-filing loops.
+    https://docs.pola.rs/user-guide/lazy/
+    https://docs.pola.rs/user-guide/concepts/streaming/
+    https://congbao.chinhphu.vn/van-ban/thong-tu-so-200-2014-tt-btc-6697/3529.htm
+    https://congbao.chinhphu.vn/tai-ve-van-ban-so-99-2025-tt-btc-46529-59652?format=pdf
+"""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from importlib import import_module
@@ -322,6 +332,38 @@ def _numeric_value() -> pl.Expr:
     return pl.when(raw.is_in(MISSING_VALUES)).then(None).otherwise(numeric)
 
 
+@dataclass(frozen=True, slots=True)
+class FilingMappingInput:
+    """Normalized input bundle for vectorized batch mapping of one filing or restatement."""
+
+    filing_id: str
+    source_provider: str
+    revision_no: int
+    unit_multiplier: int | float
+    cash_flow_method: str | None
+    period: FilingMetadata
+    filing: FilingMetadata
+    taxonomy: TaxonomyVersion
+    metrics: Mapping[str, object]
+
+
+BATCH_CONTEXT_SCHEMA = pl.Schema(
+    {
+        "filing_idx": pl.UInt32(),
+        "fhsc": pl.Boolean(),
+        "cash_flow_method": pl.String(),
+        **CONTEXT_SCHEMA,
+    }
+)
+BATCH_RAW_SCHEMA = pl.Schema(
+    {
+        "filing_idx": pl.UInt32(),
+        "raw_metric_key": pl.String(),
+        "raw_value": pl.String(),
+    }
+)
+
+
 class TaxonomyMapper:
     """Load verified aliases once and apply them with vectorized joins."""
 
@@ -329,9 +371,162 @@ class TaxonomyMapper:
         frame = pl.DataFrame(_alias_rows(config_dir), schema=ALIAS_SCHEMA)
         if frame.select([*ALIAS_CONTEXT, "raw_metric_key"]).is_duplicated().any():
             raise ContractViolationError("Ambiguous exact taxonomy alias.")
+        self._aliases_all = frame.rechunk()
         self._aliases = frame.partition_by(
             ALIAS_CONTEXT, as_dict=True, include_key=False
         )
+
+    def map_batch(
+        self,
+        entries: Sequence[FilingMappingInput],
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
+        """Map a batch of filings/restatements with a single vectorized alias join."""
+        if not entries:
+            return (
+                pl.DataFrame(schema=FACT_SCHEMA),
+                pl.DataFrame(schema=UNMAPPED_SCHEMA),
+            )
+
+        ctx_cols: dict[str, list[object]] = {
+            name: [] for name in BATCH_CONTEXT_SCHEMA.names()
+        }
+        raw_filing_idx: list[int] = []
+        raw_keys: list[str] = []
+        raw_values: list[str | None] = []
+
+        for idx, entry in enumerate(entries):
+            if (
+                not entry.filing_id
+                or not entry.source_provider
+                or type(entry.revision_no) is not int
+                or not 0 < entry.revision_no < 2**63
+                or type(entry.unit_multiplier) is not int
+                or not 0 < entry.unit_multiplier < 2**63
+                or (
+                    entry.cash_flow_method is not None
+                    and (
+                        entry.cash_flow_method not in CASH_FLOW_METHODS
+                        or entry.period.statement_type != StatementType.CASH_FLOW
+                    )
+                )
+            ):
+                raise ContractViolationError(
+                    "Invalid normalization provenance, unit or cash flow method."
+                )
+            context = _context(
+                entry.period,
+                entry.filing,
+                entry.taxonomy,
+                entry.filing_id,
+                entry.source_provider,
+                entry.revision_no,
+                entry.unit_multiplier,
+            )
+            ctx_cols["filing_idx"].append(idx)
+            ctx_cols["fhsc"].append(entry.source_provider == "fhsc")
+            ctx_cols["cash_flow_method"].append(entry.cash_flow_method or "")
+            for name in CONTEXT_SCHEMA:
+                ctx_cols[name].append(context[name])
+
+            for key, val in entry.metrics.items():
+                if not isinstance(key, str) or not key.strip():
+                    raise ContractViolationError(
+                        "Raw metric keys must be nonempty text."
+                    )
+                raw_filing_idx.append(idx)
+                raw_keys.append(key)
+                raw_values.append(_raw_value(val))
+
+        ctx_df = pl.DataFrame(ctx_cols, schema=BATCH_CONTEXT_SCHEMA)
+        raw_df = pl.DataFrame(
+            {
+                "filing_idx": raw_filing_idx,
+                "raw_metric_key": raw_keys,
+                "raw_value": raw_values,
+            },
+            schema=BATCH_RAW_SCHEMA,
+        )
+        if raw_df.is_empty():
+            return (
+                pl.DataFrame(schema=FACT_SCHEMA),
+                pl.DataFrame(schema=UNMAPPED_SCHEMA),
+            )
+
+        ctx_keys = ctx_df.select(["filing_idx", *ALIAS_CONTEXT, "unit_multiplier"])
+        joined = raw_df.join(
+            ctx_keys, on="filing_idx", how="left", maintain_order="left"
+        ).join(
+            self._aliases_all,
+            on=[*ALIAS_CONTEXT, "raw_metric_key"],
+            how="left",
+            maintain_order="left",
+        )
+
+        ctx_for_unmapped = ctx_df.drop(["fhsc", "cash_flow_method"])
+        unmapped = (
+            joined.filter(pl.col("metric_id").is_null())
+            .select(["filing_idx", "raw_metric_key", "raw_value"])
+            .join(ctx_for_unmapped, on="filing_idx", how="left", maintain_order="left")
+            .select(UNMAPPED_SCHEMA.names())
+            .rechunk()
+        )
+
+        scale = (
+            pl.when(pl.col("unit") == "VND_PER_SHARE")
+            .then(1)
+            .otherwise(pl.col("unit_multiplier"))
+        )
+        amounts = joined.filter(pl.col("metric_id").is_not_null()).with_columns(
+            (_numeric_value() * scale).alias("value")
+        )
+        invalid = (
+            pl.col("raw_value").is_not_null()
+            & ~pl.col("raw_value").str.strip_chars().is_in(MISSING_VALUES)
+            & ~pl.col("value").is_finite().fill_null(False)
+        )
+        if amounts.select(invalid.any()).item():
+            raise ContractViolationError(
+                "A mapped metric has an invalid or nonfinite amount."
+            )
+        fallback = pl.col("_fallback")
+        priority = pl.when(pl.col("value").is_not_null()).then(2).otherwise(
+            0
+        ) - fallback.cast(pl.Int8)
+        amounts = amounts.filter(
+            ~fallback.any().over(["filing_idx", "metric_id"])
+            | (priority == priority.max().over(["filing_idx", "metric_id"]))
+        )
+        if amounts.select(["filing_idx", "metric_id"]).is_duplicated().any():
+            raise ContractViolationError(
+                "Multiple source keys supplied the same canonical metric."
+            )
+        value = pl.col("value")
+        signed = (
+            pl.when(pl.col("sign_convention") == "POSITIVE_MAGNITUDE")
+            .then(value.abs())
+            .when(pl.col("sign_convention") == "NEGATIVE_OUTFLOW")
+            .then(-value.abs())
+            .otherwise(value)
+        )
+        ctx_for_facts = ctx_df.drop(
+            [
+                "taxonomy_version",
+                "statement_type",
+                "fhsc",
+                "cash_flow_method",
+                "unit_multiplier",
+            ]
+        )
+        normalized = (
+            amounts.with_columns(
+                pl.when(signed == 0.0).then(0.0).otherwise(signed).alias("value"),
+                pl.lit("REPORTED_DIRECTLY").alias("derivation_method"),
+            )
+            .join(ctx_for_facts, on="filing_idx", how="left", maintain_order="left")
+            .select(FACT_SCHEMA.names())
+            .rechunk()
+        )
+        return normalized, unmapped
 
     def map_metrics(
         self,

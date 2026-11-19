@@ -52,6 +52,10 @@ metrics:
     code: "227"
     labels: ["Tài sản cố định vô hình"]
     fhsc: ["taisancodinhvohinh"]
+  BS_CIP_LONG_TERM:
+    code: "242"
+    labels: ["Chi phí xây dựng cơ bản dở dang"]
+    fhsc: ["chiphixaydungcobandodang"]
   BS_OTHER_NONCURRENT_ASSETS:
     code: "260"
     labels: ["VI. Tài sản dài hạn khác"]
