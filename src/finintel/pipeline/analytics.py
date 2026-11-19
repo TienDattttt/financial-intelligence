@@ -12,7 +12,7 @@ import json
 import logging
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import TemporaryDirectory
 from typing import Any, Literal, NoReturn
 
@@ -265,7 +265,17 @@ class AnalyticsHandler:
                 f"Analytics {field_name} must be a nonempty relative path."
             )
         candidate = Path(value)
-        if candidate.is_absolute() or candidate.drive or candidate.root:
+        posix_candidate = PurePosixPath(value)
+        win_candidate = PureWindowsPath(value)
+        if (
+            candidate.is_absolute()
+            or candidate.drive
+            or candidate.root
+            or posix_candidate.is_absolute()
+            or win_candidate.is_absolute()
+            or bool(win_candidate.drive)
+            or bool(win_candidate.root)
+        ):
             raise ContractViolationError(
                 f"Analytics {field_name} must be a relative path confined to the workspace."
             )

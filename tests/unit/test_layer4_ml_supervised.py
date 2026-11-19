@@ -1223,6 +1223,7 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
     for bad_path in (
         "../outside.parquet",
         str((tmp_path / "abs.parquet").resolve()),
+        "/outside.parquet",
         r"\outside.parquet",
         "C:outside.parquet",
     ):
