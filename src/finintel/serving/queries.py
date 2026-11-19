@@ -39,7 +39,12 @@ from typing import Literal, cast
 import duckdb
 import polars as pl
 
-from finintel.analytics.stress_test import REQUIRED_STRESS_COLUMNS
+from finintel.analytics.stress_test import (
+    REQUIRED_STRESS_COLUMNS,
+    StressScenario as StressScenario,
+    simulate_financial_stress as simulate_financial_stress,
+    summarize_stress_by_sector as summarize_stress_by_sector,
+)
 from finintel.exceptions import ContractViolationError
 from finintel.storage.ducklake_store import ensure_ducklake_attached
 from finintel.storage.repository import ParquetRepository, _normalize_table_name
@@ -696,6 +701,48 @@ def resolve_data_root(explicit: Path | None = None) -> Path:
     if env_root:
         return Path(env_root).resolve()
     return DEFAULT_DATA_ROOT
+
+
+def percent_to_decimal(pct: float) -> float:
+    """Convert a UI percentage / percentage-point control value to a decimal ratio."""
+    if isinstance(pct, bool) or not isinstance(pct, (int, float)):
+        raise ValueError("pct must be a finite numeric value.")
+    value = float(pct)
+    if not math.isfinite(value):
+        raise ValueError("pct must be finite.")
+    return value / 100.0
+
+
+def pagination_offset(page_num: int, page_size: int) -> int:
+    """Compute a 0-based offset from a 1-based page number and page size."""
+    if isinstance(page_num, bool) or not isinstance(page_num, int) or page_num < 1:
+        raise ValueError("page_num must be an integer >= 1.")
+    if isinstance(page_size, bool) or not isinstance(page_size, int) or page_size < 1:
+        raise ValueError("page_size must be an integer >= 1.")
+    return (page_num - 1) * page_size
+
+
+def pagination_total_pages(total: int, page_size: int) -> int:
+    """Return total number of 1-based pages (at least 1) for a paginated table."""
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise ValueError("total must be a non-negative integer.")
+    if isinstance(page_size, bool) or not isinstance(page_size, int) or page_size < 1:
+        raise ValueError("page_size must be an integer >= 1.")
+    return max(1, (total + page_size - 1) // page_size)
+
+
+def pagination_window(offset: int, limit: int, total: int) -> tuple[int, int, int]:
+    """Return ``(current_page, start_row, end_row)`` for 1-based pagination display."""
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("offset must be a non-negative integer.")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be an integer >= 1.")
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise ValueError("total must be a non-negative integer.")
+    current_page = (offset // limit) + 1
+    if total == 0 or offset >= total:
+        return current_page, 0, 0
+    return current_page, offset + 1, min(offset + limit, total)
 
 
 @contextmanager

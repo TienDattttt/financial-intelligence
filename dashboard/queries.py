@@ -39,7 +39,14 @@ from finintel.serving.queries import (
     RatioLineageSpec,
     SnapshotOverview,
     StatementScope,
+    StressScenario,
+    pagination_offset,
+    pagination_total_pages,
+    pagination_window,
+    percent_to_decimal,
     resolve_data_root,
+    simulate_financial_stress,
+    summarize_stress_by_sector,
 )
 
 __all__ = [
@@ -69,5 +76,12 @@ __all__ = [
     "RatioLineageSpec",
     "SnapshotOverview",
     "StatementScope",
+    "StressScenario",
+    "pagination_offset",
+    "pagination_total_pages",
+    "pagination_window",
+    "percent_to_decimal",
     "resolve_data_root",
+    "simulate_financial_stress",
+    "summarize_stress_by_sector",
 ]
