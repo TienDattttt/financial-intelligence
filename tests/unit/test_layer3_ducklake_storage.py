@@ -1621,3 +1621,122 @@ def test_parquet_snapshot_session_get_facts_as_of_reuses_session_connection(
     finally:
         cursor.close()
         base_conn.close()
+
+
+def test_ducklake_snapshot_cache_hit_eliminates_catalog_and_where_1_eq_0_roundtrips_and_invalidates_on_publish_and_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DEFECT-B6-01 regression: cached DuckLake reads do zero redundant WHERE 1=0 / catalog queries and immediately observe publish + rollback."""
+    data_root, state, store = _make_ducklake_env(tmp_path, keep_snapshots=3)
+    _publish_ducklake_version(state, store, 1)
+
+    repo = ParquetRepository(data_root=data_root)
+
+    # 1. Cold pass warms binding, table resolution, and table data caches.
+    with repo.snapshot_session() as pinned1:
+        assert pinned1.snapshot_id == "snap_001"
+        meta1 = pinned1.get_snapshot_metadata()
+        assert meta1 is not None
+        assert meta1["snapshot_id"] == "snap_001"
+        cols1 = pinned1.get_table_columns("issuers.parquet")
+        assert cols1 is not None and "ticker" in cols1
+        df1 = pinned1.read_table(
+            "issuers.parquet",
+            columns=["issuer_id", "ticker", "company_name_vn"],
+            filters={"ticker": "FPT"},
+        )
+        assert df1["company_name_vn"].to_list() == ["FPT Corp v1"]
+
+    # 2. Warm pass: spy on ensure_ducklake_attached and connection.execute to prove zero
+    # redundant catalog / _snapshot_audit / WHERE 1=0 queries run on cache hits.
+    import finintel.storage.repository as repo_mod
+
+    attach_calls: list[str] = []
+    orig_attach = ensure_ducklake_attached
+
+    def _spy_attach(
+        connection: duckdb.DuckDBPyConnection,
+        *,
+        catalog_path: Path,
+        data_path: Path,
+        catalog_alias: str = "finintel_lake",
+        read_only: bool = True,
+        catalog_driver: str = "sqlite",
+        postgres_dsn_env: str = "FININTEL_DUCKLAKE_PG_DSN",
+    ) -> None:
+        attach_calls.append("attach")
+        orig_attach(
+            connection,
+            catalog_path=catalog_path,
+            data_path=data_path,
+            catalog_alias=catalog_alias,
+            read_only=read_only,
+            catalog_driver="postgres" if catalog_driver == "postgres" else "sqlite",
+            postgres_dsn_env=postgres_dsn_env,
+        )
+
+    monkeypatch.setattr(repo_mod, "ensure_ducklake_attached", _spy_attach)
+
+    executed_sql: list[str] = []
+
+    class _SpyCursor:
+        def __init__(self, inner: duckdb.DuckDBPyConnection) -> None:
+            self._inner = inner
+
+        def execute(self, sql: str, params: object = None) -> duckdb.DuckDBPyConnection:
+            executed_sql.append(sql)
+            if params is not None:
+                return self._inner.execute(sql, params)
+            return self._inner.execute(sql)
+
+    base_conn = duckdb.connect(":memory:")
+    spy_conn = _SpyCursor(base_conn)
+    try:
+        with repo.snapshot_session(
+            connection=spy_conn  # type: ignore[arg-type]
+        ) as pinned_warm:
+            assert pinned_warm.snapshot_id == "snap_001"
+            warm_meta = pinned_warm.get_snapshot_metadata()
+            assert warm_meta is not None and warm_meta["snapshot_id"] == "snap_001"
+            assert pinned_warm.get_table_columns("issuers.parquet") == cols1
+            warm_df = pinned_warm.read_table(
+                "issuers.parquet",
+                columns=["issuer_id", "ticker", "company_name_vn"],
+                filters={"ticker": "FPT"},
+            )
+            assert warm_df["company_name_vn"].to_list() == ["FPT Corp v1"]
+    finally:
+        base_conn.close()
+
+    assert attach_calls == []
+    assert not any("WHERE 1 = 0" in sql for sql in executed_sql)
+    assert not any("_snapshot_audit" in sql for sql in executed_sql)
+
+    # Restore real ensure_ducklake_attached before publishing snap_002.
+    monkeypatch.setattr(repo_mod, "ensure_ducklake_attached", orig_attach)
+
+    # 3. Publish snap_002 -> repository must immediately observe snap_002 with zero stale reads.
+    _publish_ducklake_version(state, store, 2)
+    with repo.snapshot_session() as pinned2:
+        assert pinned2.snapshot_id == "snap_002"
+        meta2 = pinned2.get_snapshot_metadata()
+        assert meta2 is not None and meta2["snapshot_id"] == "snap_002"
+        df2 = pinned2.read_table(
+            "issuers.parquet",
+            columns=["issuer_id", "ticker", "company_name_vn"],
+            filters={"ticker": "FPT"},
+        )
+        assert df2["company_name_vn"].to_list() == ["FPT Corp v2"]
+
+    # 4. Rollback to snap_001 -> repository must immediately observe snap_001 again.
+    store.rollback_snapshot("snap_001", state)
+    with repo.snapshot_session() as pinned_rb:
+        assert pinned_rb.snapshot_id == "snap_001"
+        meta_rb = pinned_rb.get_snapshot_metadata()
+        assert meta_rb is not None and meta_rb["snapshot_id"] == "snap_001"
+        df_rb = pinned_rb.read_table(
+            "issuers.parquet",
+            columns=["issuer_id", "ticker", "company_name_vn"],
+            filters={"ticker": "FPT"},
+        )
+        assert df_rb["company_name_vn"].to_list() == ["FPT Corp v1"]

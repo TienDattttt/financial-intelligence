@@ -13,6 +13,7 @@ Verified Sources:
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -24,16 +25,27 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime
 from functools import lru_cache
+from importlib import import_module
 from itertools import groupby
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Protocol, cast
 
 import polars as pl
 
 from finintel.exceptions import ArchiveIntegrityError, ContractViolationError
-from finintel.ingestion.base import FilingMetadata, PeriodType, StatementType
+from finintel.ingestion.base import (
+    FilingMetadata,
+    PeriodType,
+    StatementScope,
+    StatementType,
+)
 from finintel.ingestion.file_adapter import FileAdapter
-from finintel.ingestion.hasher import canonical_content_sha256, payload_file_sha256
+from finintel.ingestion.hasher import (
+    _rounded_value,
+    _valid_metric_key,
+    payload_file_sha256,
+)
 from finintel.normalization.mapper import (
     FACT_SCHEMA,
     TAXONOMIES,
@@ -46,7 +58,11 @@ from finintel.normalization.regime_resolver import TaxonomyVersion, resolve_regi
 from finintel.pipeline.state_store import StateStore
 
 NORMALIZATION_METADATA = "_normalize_meta.json"
-DEFAULT_BATCH_ISSUERS = 50
+DEFAULT_BATCH_ISSUERS = 16
+_MAX_STREAM_BATCH_ISSUERS = 8
+_STREAM_WORKER_THREADS = 8
+_PARQUET_ROW_GROUP_SIZE = 65_536
+_MAX_FAST_INT_METRIC = 10**38
 ALLOWED_FILING_SETTINGS = {"unit_multiplier", "cash_flow_method", "comparative"}
 ALLOWED_COMPARATIVE_KEYS = {
     "value_column",
@@ -82,6 +98,161 @@ SIGNATURE_FIELDS: tuple[str, ...] = (
     "raw_archive_path",
     "raw_record_locator",
     "provider_attrs_json",
+)
+_FHSC_MANIFEST_COLUMNS: tuple[str, ...] = (
+    "filing_id",
+    "issuer_id",
+    "ticker_at_filing",
+    "source_provider",
+    "connector_name",
+    "payload_nature",
+    "statement_type",
+    "statement_scope",
+    "period_type",
+    "fiscal_year",
+    "fiscal_quarter",
+    "fiscal_year_start_date",
+    "period_start_date",
+    "period_end_date",
+    "published_at",
+    "published_at_basis",
+    "effective_available_at",
+    "audit_status",
+    "audit_opinion",
+    "is_filed_late",
+    "revision_no",
+    "revision_reason",
+    "fetched_at",
+    "payload_file_sha256",
+    "canonical_content_sha256",
+    "raw_archive_path",
+    "raw_record_locator",
+)
+
+
+class _ArrowMemoryPool(Protocol):
+    def release_unused(self) -> None: ...
+
+
+class _ArrowSchema(Protocol):
+    def equals(self, other: object, /) -> bool: ...
+    def get_field_index(self, name: str, /) -> int: ...
+
+
+class _ArrowTable(Protocol):
+    @property
+    def num_rows(self) -> int: ...
+    @property
+    def schema(self) -> _ArrowSchema: ...
+    def column(self, name: str, /) -> object: ...
+    def filter(self, mask: object, /) -> _ArrowTable: ...
+    def cast(self, target_schema: _ArrowSchema, /) -> _ArrowTable: ...
+
+
+class _ArrowModule(Protocol):
+    def default_memory_pool(self) -> _ArrowMemoryPool: ...
+    def string(self) -> object: ...
+    def array(self, obj: Sequence[str], /, *, type: object) -> object: ...
+
+
+class _ArrowComputeModule(Protocol):
+    def is_in(self, values: object, /, *, value_set: object) -> object: ...
+    def invert(self, values: object, /) -> object: ...
+
+
+class _ParquetColumnStats(Protocol):
+    @property
+    def has_min_max(self) -> bool: ...
+    @property
+    def min(self) -> object: ...
+    @property
+    def max(self) -> object: ...
+
+
+class _ParquetColumnMeta(Protocol):
+    @property
+    def statistics(self) -> _ParquetColumnStats | None: ...
+
+
+class _ParquetRowGroupMeta(Protocol):
+    @property
+    def num_rows(self) -> int: ...
+    def column(self, i: int, /) -> _ParquetColumnMeta: ...
+
+
+class _ParquetFileMeta(Protocol):
+    @property
+    def num_rows(self) -> int: ...
+    @property
+    def num_row_groups(self) -> int: ...
+    def row_group(self, i: int, /) -> _ParquetRowGroupMeta: ...
+
+
+class _ParquetFile(Protocol):
+    def __enter__(self) -> _ParquetFile: ...
+    def __exit__(
+        self, exc_type: object, exc_val: object, exc_tb: object, /
+    ) -> None: ...
+    @property
+    def metadata(self) -> _ParquetFileMeta: ...
+    @property
+    def num_row_groups(self) -> int: ...
+    @property
+    def schema_arrow(self) -> _ArrowSchema: ...
+    def read_row_group(self, i: int, /) -> _ArrowTable: ...
+    def read_row_groups(self, row_groups: Sequence[int], /) -> _ArrowTable: ...
+    def close(self) -> None: ...
+
+
+class _ParquetWriter(Protocol):
+    def __enter__(self) -> _ParquetWriter: ...
+    def __exit__(
+        self, exc_type: object, exc_val: object, exc_tb: object, /
+    ) -> None: ...
+    def write_table(
+        self, table: _ArrowTable, /, *, row_group_size: int | None = None
+    ) -> None: ...
+    def close(self) -> None: ...
+
+
+class _ParquetModule(Protocol):
+    def read_metadata(self, where: Path | str, /) -> _ParquetFileMeta: ...
+    def ParquetFile(
+        self,
+        where: Path | str,
+        /,
+        *,
+        read_dictionary: Sequence[str] | None = None,
+    ) -> _ParquetFile: ...
+    def ParquetWriter(
+        self,
+        where: Path | str,
+        schema: _ArrowSchema,
+        /,
+        *,
+        compression: str = "lz4",
+        use_dictionary: bool | Sequence[str] = False,
+        write_statistics: bool | Sequence[str] = True,
+        store_schema: bool = True,
+    ) -> _ParquetWriter: ...
+
+
+_PA = cast(_ArrowModule, import_module("pyarrow"))
+_PC = cast(_ArrowComputeModule, import_module("pyarrow.compute"))
+_PQ = cast(_ParquetModule, import_module("pyarrow.parquet"))
+_EMPTY_FACT_ARROW = cast(_ArrowTable, pl.DataFrame(schema=FACT_SCHEMA).to_arrow())
+_EMPTY_UNMAPPED_ARROW = cast(
+    _ArrowTable, pl.DataFrame(schema=UNMAPPED_SCHEMA).to_arrow()
+)
+_FACT_ARROW_SCHEMA: _ArrowSchema = _EMPTY_FACT_ARROW.schema
+_UNMAPPED_ARROW_SCHEMA: _ArrowSchema = _EMPTY_UNMAPPED_ARROW.schema
+_FACT_DICT_COLS: tuple[str, ...] = tuple(
+    name for name, dtype in FACT_SCHEMA.items() if dtype == pl.String
+)
+_UNMAPPED_DICT_COLS: tuple[str, ...] = tuple(
+    name
+    for name, dtype in UNMAPPED_SCHEMA.items()
+    if dtype == pl.String and name != "raw_value"
 )
 
 
@@ -244,6 +415,28 @@ def compute_taxonomy_sha256(
     return hasher.hexdigest()
 
 
+@lru_cache(maxsize=4)
+def _cached_mapper_by_digest(
+    resolved_config_dir: str, yaml_digest: str
+) -> TaxonomyMapper:
+    _ = yaml_digest
+    return TaxonomyMapper(Path(resolved_config_dir))
+
+
+def _get_cached_mapper(config_dir: Path) -> TaxonomyMapper:
+    resolved = config_dir.resolve()
+    yaml_digest = compute_taxonomy_sha256(resolved, {})
+    return _cached_mapper_by_digest(str(resolved), yaml_digest)
+
+
+_DEFAULT_REPO_CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+if (_DEFAULT_REPO_CONFIG_DIR / "metric_definitions.yaml").is_file():
+    try:
+        _get_cached_mapper(_DEFAULT_REPO_CONFIG_DIR)
+    except Exception:
+        pass
+
+
 def _filing_signature(row: Mapping[str, object]) -> str:
     payload = [row.get(field) for field in SIGNATURE_FIELDS]
     encoded = json.dumps(
@@ -294,6 +487,11 @@ class _PayloadCache:
 
     def read_fhsc_json(self, relative: str, digest: str) -> dict[str, object]:
         return self._read_fhsc_json_cached(self._root_key, relative, digest)
+
+    def clear(self) -> None:
+        """Evict cached raw bytes and decoded FHSC JSON payloads after a batch completes."""
+        self._read_bytes_cached.cache_clear()
+        self._read_fhsc_json_cached.cache_clear()
 
     def prefetch_fhsc_chunk(
         self,
@@ -421,6 +619,40 @@ def _validate_restatement_period(
         )
 
 
+@lru_cache(maxsize=4096)
+def _fast_key_and_json(key: object) -> tuple[str, str]:
+    valid = _valid_metric_key(key)
+    try:
+        encoded_json = json.dumps(valid, ensure_ascii=False)
+        encoded_json.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ContractViolationError("Invalid UTF-8 in raw metric code.") from None
+    return valid, encoded_json
+
+
+def _fast_canonical_content_sha256(
+    metrics: Mapping[str, object],
+    scope: StatementScope,
+    period_end_date: date,
+) -> str:
+    """Compute bit-exact canonical_content_sha256 with cached key validation and integer fast-path."""
+    mid = f',"{scope}","{period_end_date.isoformat()}","'
+    validated = [
+        (_fast_key_and_json(key), value)
+        for key, value in metrics.items()
+        if value is not None
+    ]
+    validated.sort(key=lambda item: item[0][0])
+    parts = [
+        f'[{k_json}{mid}{value}.0000"]'
+        if type(value) is int and -_MAX_FAST_INT_METRIC < value < _MAX_FAST_INT_METRIC
+        else f'[{k_json}{mid}{_rounded_value(value)}"]'
+        for (_, k_json), value in validated
+    ]
+    canonical = f"[{','.join(parts)}]".encode("utf-8")
+    return payload_file_sha256(canonical)
+
+
 def _extract_filing_inputs(
     row: Mapping[str, object],
     cache: _PayloadCache,
@@ -459,7 +691,7 @@ def _extract_filing_inputs(
         )
     else:
         raise ContractViolationError("Unsupported raw filing connector.")
-    if canonical_content_sha256(
+    if _fast_canonical_content_sha256(
         metrics, metadata.statement_scope, metadata.period_end_date
     ) != row.get("canonical_content_sha256"):
         raise ContractViolationError(
@@ -665,7 +897,191 @@ def _link_or_copy(src: Path, dst: Path) -> None:
 
 
 def _parquet_row_count(path: Path) -> int:
-    return int(pl.scan_parquet(path).select(pl.len()).collect().item())
+    return int(_PQ.read_metadata(path).num_rows)
+
+
+def _load_manifest_signatures(
+    state: StateStore, *, source: str, tickers: tuple[str, ...]
+) -> dict[str, dict[str, str]]:
+    """Compute per-issuer filing signature dicts directly via SQLite without materializing full row dicts."""
+    if source not in {"fhsc", "file"}:
+        raise ContractViolationError("Unsupported normalization source.")
+    conditions = [
+        "source_provider = 'fhsc'" if source == "fhsc" else "source_provider != 'fhsc'"
+    ]
+    if tickers:
+        placeholders = ", ".join("?" for _ in tickers)
+        conditions.append(f"ticker_at_filing IN ({placeholders})")
+    sig_cols = ", ".join(SIGNATURE_FIELDS)
+    cur_issuer_filings: dict[str, dict[str, str]] = {}
+    sha256 = hashlib.sha256
+    try:
+        with state.connection() as conn:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'filings_manifest'"
+                ).fetchone()
+                is None
+            ):
+                raise ContractViolationError(
+                    "No filing manifest is available for normalization."
+                )
+            old_factory = conn.row_factory
+            conn.row_factory = None
+            try:
+                cursor = conn.execute(
+                    f"SELECT issuer_id, filing_id, CAST(json_array({sig_cols}) AS BLOB) "
+                    f"FROM filings_manifest WHERE {' AND '.join(conditions)}",
+                    tickers,
+                )
+                last_iss_id: str | None = None
+                cur_filings: dict[str, str] = {}
+                for iss_id, fil_id, payload_blob in cursor:
+                    if not isinstance(iss_id, str) or not iss_id.strip():
+                        raise ContractViolationError(
+                            "Normalization requires issuer_id."
+                        )
+                    if not isinstance(fil_id, str) or not fil_id.strip():
+                        raise ContractViolationError(
+                            "Normalization requires filing_id."
+                        )
+                    if iss_id != last_iss_id:
+                        cur_filings = cur_issuer_filings.setdefault(iss_id, {})
+                        last_iss_id = iss_id
+                    raw_bytes = (
+                        payload_blob
+                        if isinstance(payload_blob, bytes)
+                        else str(payload_blob).encode("utf-8")
+                    )
+                    cur_filings[fil_id] = sha256(raw_bytes).hexdigest()
+            finally:
+                conn.row_factory = old_factory
+    except sqlite3.Error:
+        raise ContractViolationError(
+            "Unable to read the raw filing manifest."
+        ) from None
+    return {iss_id: cur_issuer_filings[iss_id] for iss_id in sorted(cur_issuer_filings)}
+
+
+def _fetch_issuer_chunk_rows(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    tickers: tuple[str, ...],
+    issuer_chunk: Sequence[str],
+) -> list[dict[str, object]]:
+    """Fetch manifest rows for a bounded chunk of issuers, omitting unused 31MB provider_attrs_json for FHSC."""
+    if not issuer_chunk:
+        return []
+    cols = (
+        _FHSC_MANIFEST_COLUMNS
+        if source == "fhsc"
+        else (*_FHSC_MANIFEST_COLUMNS, "provider_attrs_json")
+    )
+    conditions = [
+        "source_provider = 'fhsc'" if source == "fhsc" else "source_provider != 'fhsc'",
+        f"issuer_id IN ({', '.join('?' for _ in issuer_chunk)})",
+    ]
+    params: list[str] = [*issuer_chunk]
+    if tickers:
+        conditions.append(f"ticker_at_filing IN ({', '.join('?' for _ in tickers)})")
+        params.extend(tickers)
+    cols_sql = ", ".join(cols)
+    try:
+        raw_rows = conn.execute(
+            f"SELECT {cols_sql} FROM filings_manifest "
+            f"WHERE {' AND '.join(conditions)} "
+            "ORDER BY issuer_id, raw_archive_path, statement_type, "
+            "period_end_date, revision_no, filing_id",
+            params,
+        ).fetchall()
+    except sqlite3.Error:
+        raise ContractViolationError(
+            "Unable to read the raw filing manifest."
+        ) from None
+    return [dict(zip(cols, entry, strict=True)) for entry in raw_rows]
+
+
+def _stream_kept_row_groups_from_pf(
+    pf: _ParquetFile,
+    writer: _ParquetWriter,
+    dirty_sorted: Sequence[str],
+    dirty_arr: object,
+    prefetch_pool: ThreadPoolExecutor | None = None,
+) -> int:
+    """Stream non-dirty rows from an open ParquetFile one row group at a time using min/max stats."""
+    kept_rows = 0
+    file_meta = pf.metadata
+    schema_arrow = pf.schema_arrow
+    iss_col_idx = schema_arrow.get_field_index("issuer_id")
+    num_rgs = pf.num_row_groups
+    active_rgs: list[tuple[int, bool]] = []
+    for rg_idx in range(num_rgs):
+        rg_meta = file_meta.row_group(rg_idx)
+        if rg_meta.num_rows == 0:
+            continue
+        needs_filter = True
+        if dirty_sorted and iss_col_idx >= 0:
+            col_stats = rg_meta.column(iss_col_idx).statistics
+            if col_stats is not None and col_stats.has_min_max:
+                cmin_raw, cmax_raw = col_stats.min, col_stats.max
+                cmin = (
+                    cmin_raw.decode("utf-8")
+                    if isinstance(cmin_raw, bytes)
+                    else str(cmin_raw)
+                )
+                cmax = (
+                    cmax_raw.decode("utf-8")
+                    if isinstance(cmax_raw, bytes)
+                    else str(cmax_raw)
+                )
+                needs_filter = any(cmin <= d <= cmax for d in dirty_sorted)
+        active_rgs.append((rg_idx, needs_filter))
+
+    if not active_rgs:
+        return 0
+
+    next_fut = (
+        prefetch_pool.submit(pf.read_row_group, active_rgs[0][0])
+        if prefetch_pool is not None
+        else None
+    )
+    for pos, (rg_idx, needs_filter) in enumerate(active_rgs):
+        if next_fut is not None:
+            tbl = next_fut.result()
+            next_fut = (
+                prefetch_pool.submit(pf.read_row_group, active_rgs[pos + 1][0])
+                if prefetch_pool is not None and pos + 1 < len(active_rgs)
+                else None
+            )
+        else:
+            tbl = pf.read_row_group(rg_idx)
+        if needs_filter and dirty_sorted:
+            mask = _PC.invert(_PC.is_in(tbl.column("issuer_id"), value_set=dirty_arr))
+            tbl = tbl.filter(mask)
+        if tbl.num_rows > 0:
+            writer.write_table(
+                tbl,
+                row_group_size=min(max(tbl.num_rows, 1), _PARQUET_ROW_GROUP_SIZE),
+            )
+            kept_rows += tbl.num_rows
+        del tbl
+        if pos % 8 == 7:
+            _PA.default_memory_pool().release_unused()
+    return kept_rows
+
+
+def _write_table_matching_schema(
+    writer: _ParquetWriter,
+    writer_schema: _ArrowSchema,
+    table: _ArrowTable,
+) -> None:
+    if not table.schema.equals(writer_schema):
+        table = table.cast(writer_schema)
+    writer.write_table(
+        table,
+        row_group_size=min(max(table.num_rows, 1), _PARQUET_ROW_GROUP_SIZE),
+    )
 
 
 def _parse_previous_meta(
@@ -733,6 +1149,43 @@ def _write_meta(
     )
 
 
+def _normalize_issuer_chunk(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    tickers: tuple[str, ...],
+    issuer_chunk: Sequence[str],
+    cache: _PayloadCache,
+    configured: Mapping[str, object],
+    active_mapper: TaxonomyMapper,
+    period: str | None,
+    pool: ThreadPoolExecutor | None,
+) -> tuple[_ArrowTable, _ArrowTable, int, int]:
+    """Fetch, extract, map, and derive quarters for one bounded issuer chunk."""
+    batch_rows = _fetch_issuer_chunk_rows(
+        conn, source=source, tickers=tickers, issuer_chunk=issuer_chunk
+    )
+    inputs = _extract_batch_inputs(batch_rows, cache, configured, pool)
+    del batch_rows
+    cache.clear()
+    mapped_f, mapped_u = active_mapper.map_batch(inputs)
+    del inputs
+    norm_f, norm_u = build_normalized_batch(mapped_f, mapped_u, period=period)
+    del mapped_f, mapped_u
+    if norm_f.height > 1:
+        norm_f = norm_f.sort("issuer_id", maintain_order=True)
+    f_height = norm_f.height
+    u_height = norm_u.height
+    f_arrow = (
+        cast(_ArrowTable, norm_f.to_arrow()) if f_height > 0 else _EMPTY_FACT_ARROW
+    )
+    u_arrow = (
+        cast(_ArrowTable, norm_u.to_arrow()) if u_height > 0 else _EMPTY_UNMAPPED_ARROW
+    )
+    del norm_f, norm_u
+    return f_arrow, u_arrow, f_height, u_height
+
+
 def normalize_archive_incremental(
     state: StateStore,
     raw_root: Path,
@@ -748,190 +1201,344 @@ def normalize_archive_incremental(
     mapper: TaxonomyMapper | None = None,
 ) -> IncrementalNormalizeResult:
     """Materialize a curated Layer 2 batch using issuer-level incremental early cutoff."""
+    if type(batch_issuers) is not int or batch_issuers <= 0:
+        raise ContractViolationError("batch_issuers must be a positive integer.")
     configured = filing_settings or {}
     full_history = not tickers and period is None
-    taxonomy_sha256 = compute_taxonomy_sha256(config_dir, configured)
-    rows = _load_manifest_rows(state, source=source, tickers=tickers)
+    chunk_size = min(batch_issuers, _MAX_STREAM_BATCH_ISSUERS)
 
-    cur_issuer_filings: dict[str, dict[str, str]] = {}
-    for row in rows:
-        issuer_id = _text(row, "issuer_id")
-        filing_id = _text(row, "filing_id")
-        cur_issuer_filings.setdefault(issuer_id, {})[filing_id] = _filing_signature(row)
-
-    prev_issuers = (
-        _parse_previous_meta(
-            previous_batch_dir, source=source, taxonomy_sha256=taxonomy_sha256
-        )
-        if full_history
-        else None
-    )
-
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix=".normalize-", dir=output_dir.parent) as temporary:
-        staging = Path(temporary)
-        facts_dst = staging / "financial_facts.parquet"
-        unmapped_dst = staging / "unmapped_metrics.parquet"
-        meta_dst = staging / NORMALIZATION_METADATA
-
-        if prev_issuers is not None:
-            assert previous_batch_dir is not None
-            dirty_issuers = {
-                issuer_id
-                for issuer_id in (prev_issuers.keys() | cur_issuer_filings.keys())
-                if prev_issuers.get(issuer_id) != cur_issuer_filings.get(issuer_id)
-            }
-            if not dirty_issuers:
-                if not cur_issuer_filings:
-                    raise ContractViolationError(
-                        "No archived filing matched the requested scope."
-                    )
-                _link_or_copy(previous_batch_dir / "financial_facts.parquet", facts_dst)
-                _link_or_copy(
-                    previous_batch_dir / "unmapped_metrics.parquet", unmapped_dst
+    was_gc_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        taxonomy_sha256 = compute_taxonomy_sha256(config_dir, configured)
+        if full_history and previous_batch_dir is not None:
+            with ThreadPoolExecutor(max_workers=1) as meta_pool:
+                prev_fut = meta_pool.submit(
+                    _parse_previous_meta,
+                    previous_batch_dir,
+                    source=source,
+                    taxonomy_sha256=taxonomy_sha256,
                 )
-                facts_rows = _parquet_row_count(facts_dst)
-                unmapped_rows = _parquet_row_count(unmapped_dst)
-                if facts_rows == 0 and unmapped_rows == 0:
-                    raise ContractViolationError(
-                        "No archived filing matched the requested scope."
-                    )
-                recomputed_issuers = 0
-                full_rebuild = False
-            else:
-                active_mapper = mapper or TaxonomyMapper(config_dir)
-                cache = _PayloadCache(raw_root, maxsize=32)
-                dirty_rows = [
-                    row for row in rows if _text(row, "issuer_id") in dirty_issuers
-                ]
-                batches = list(_iter_issuer_batches(dirty_rows, batch_issuers))
-                dirty_sorted = sorted(dirty_issuers)
-                prev_facts_lf = pl.scan_parquet(
-                    previous_batch_dir / "financial_facts.parquet"
-                ).filter(~pl.col("issuer_id").is_in(dirty_sorted))
-                prev_unmapped_lf = pl.scan_parquet(
-                    previous_batch_dir / "unmapped_metrics.parquet"
-                ).filter(~pl.col("issuer_id").is_in(dirty_sorted))
-
-                with (
-                    TemporaryDirectory(
-                        prefix=".parts-", dir=output_dir.parent
-                    ) as parts_dir_str,
-                    ThreadPoolExecutor(max_workers=8) as pool,
-                ):
-                    parts_dir = Path(parts_dir_str)
-                    new_facts_lfs: list[pl.LazyFrame] = []
-                    new_unmapped_lfs: list[pl.LazyFrame] = []
-                    use_spill = len(batches) > 1
-                    for batch_idx, issuer_batch in enumerate(batches):
-                        inputs = _extract_batch_inputs(
-                            issuer_batch, cache, configured, pool
-                        )
-                        mapped_f, mapped_u = active_mapper.map_batch(inputs)
-                        norm_f, norm_u = build_normalized_batch(
-                            mapped_f, mapped_u, period=None
-                        )
-                        if use_spill:
-                            f_part = parts_dir / f"facts_{batch_idx}.parquet"
-                            u_part = parts_dir / f"unmapped_{batch_idx}.parquet"
-                            norm_f.write_parquet(f_part)
-                            norm_u.write_parquet(u_part)
-                            new_facts_lfs.append(pl.scan_parquet(f_part))
-                            new_unmapped_lfs.append(pl.scan_parquet(u_part))
-                        else:
-                            new_facts_lfs.append(norm_f.lazy())
-                            new_unmapped_lfs.append(norm_u.lazy())
-                    pl.concat([prev_facts_lf, *new_facts_lfs]).sink_parquet(
-                        facts_dst, engine="streaming"
-                    )
-                    pl.concat([prev_unmapped_lf, *new_unmapped_lfs]).sink_parquet(
-                        unmapped_dst, engine="streaming"
-                    )
-                facts_rows = _parquet_row_count(facts_dst)
-                unmapped_rows = _parquet_row_count(unmapped_dst)
-                if facts_rows == 0 and unmapped_rows == 0:
-                    raise ContractViolationError(
-                        "No archived filing matched the requested scope."
-                    )
-                recomputed_issuers = len(dirty_issuers)
-                full_rebuild = False
+                cur_issuer_filings = _load_manifest_signatures(
+                    state, source=source, tickers=tickers
+                )
+                prev_issuers = prev_fut.result()
         else:
-            if not rows:
-                raise ContractViolationError(
-                    "No archived filing matched the requested scope."
-                )
-            active_mapper = mapper or TaxonomyMapper(config_dir)
-            cache = _PayloadCache(raw_root, maxsize=32)
-            batches = list(_iter_issuer_batches(rows, batch_issuers))
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                if len(batches) == 1:
-                    inputs = _extract_batch_inputs(batches[0], cache, configured, pool)
-                    mapped_f, mapped_u = active_mapper.map_batch(inputs)
-                    norm_f, norm_u = build_normalized_batch(
-                        mapped_f, mapped_u, period=period
-                    )
-                    if norm_f.is_empty() and norm_u.is_empty():
+            cur_issuer_filings = _load_manifest_signatures(
+                state, source=source, tickers=tickers
+            )
+            prev_issuers = None
+
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(
+            prefix=".normalize-", dir=output_dir.parent
+        ) as temporary:
+            staging = Path(temporary)
+            facts_dst = staging / "financial_facts.parquet"
+            unmapped_dst = staging / "unmapped_metrics.parquet"
+            meta_dst = staging / NORMALIZATION_METADATA
+            meta_written = False
+
+            if prev_issuers is not None:
+                assert previous_batch_dir is not None
+                dirty_issuers = {
+                    issuer_id
+                    for issuer_id in (prev_issuers.keys() | cur_issuer_filings.keys())
+                    if prev_issuers.get(issuer_id) != cur_issuer_filings.get(issuer_id)
+                }
+                if not dirty_issuers:
+                    if not cur_issuer_filings:
                         raise ContractViolationError(
                             "No archived filing matched the requested scope."
                         )
-                    norm_f.write_parquet(facts_dst)
-                    norm_u.write_parquet(unmapped_dst)
-                    facts_rows = norm_f.height
-                    unmapped_rows = norm_u.height
-                else:
-                    with TemporaryDirectory(
-                        prefix=".parts-", dir=output_dir.parent
-                    ) as parts_dir_str:
-                        parts_dir = Path(parts_dir_str)
-                        facts_lfs: list[pl.LazyFrame] = []
-                        unmapped_lfs: list[pl.LazyFrame] = []
-                        for batch_idx, issuer_batch in enumerate(batches):
-                            inputs = _extract_batch_inputs(
-                                issuer_batch, cache, configured, pool
-                            )
-                            mapped_f, mapped_u = active_mapper.map_batch(inputs)
-                            norm_f, norm_u = build_normalized_batch(
-                                mapped_f, mapped_u, period=period
-                            )
-                            f_part = parts_dir / f"facts_{batch_idx}.parquet"
-                            u_part = parts_dir / f"unmapped_{batch_idx}.parquet"
-                            norm_f.write_parquet(f_part)
-                            norm_u.write_parquet(u_part)
-                            facts_lfs.append(pl.scan_parquet(f_part))
-                            unmapped_lfs.append(pl.scan_parquet(u_part))
-                        pl.concat(facts_lfs).sink_parquet(facts_dst, engine="streaming")
-                        pl.concat(unmapped_lfs).sink_parquet(
-                            unmapped_dst, engine="streaming"
-                        )
+                    _link_or_copy(
+                        previous_batch_dir / "financial_facts.parquet", facts_dst
+                    )
+                    _link_or_copy(
+                        previous_batch_dir / "unmapped_metrics.parquet", unmapped_dst
+                    )
                     facts_rows = _parquet_row_count(facts_dst)
                     unmapped_rows = _parquet_row_count(unmapped_dst)
                     if facts_rows == 0 and unmapped_rows == 0:
                         raise ContractViolationError(
                             "No archived filing matched the requested scope."
                         )
-            recomputed_issuers = len(cur_issuer_filings)
-            full_rebuild = True
+                    recomputed_issuers = 0
+                    full_rebuild = False
+                else:
+                    active_mapper = mapper or _get_cached_mapper(config_dir)
+                    cache = _PayloadCache(raw_root, maxsize=32)
+                    dirty_sorted = sorted(dirty_issuers)
+                    dirty_arr = _PA.array(dirty_sorted, type=_PA.string())
+                    active_dirty = [
+                        iss_id
+                        for iss_id in cur_issuer_filings
+                        if iss_id in dirty_issuers
+                    ]
+                    prev_facts_path = previous_batch_dir / "financial_facts.parquet"
+                    prev_unmapped_path = previous_batch_dir / "unmapped_metrics.parquet"
+                    recomputed_issuers = len(dirty_issuers)
+                    full_rebuild = False
 
-        _write_meta(
-            meta_dst,
-            source=source,
-            full_history=full_history,
-            taxonomy_sha256=taxonomy_sha256,
+                    with (
+                        state.connection() as conn,
+                        _PQ.ParquetFile(
+                            prev_facts_path, read_dictionary=_FACT_DICT_COLS
+                        ) as pf_f,
+                        _PQ.ParquetFile(
+                            prev_unmapped_path, read_dictionary=_UNMAPPED_DICT_COLS
+                        ) as pf_u,
+                        ThreadPoolExecutor(max_workers=_STREAM_WORKER_THREADS) as pool,
+                    ):
+                        f_w_schema = pf_f.schema_arrow
+                        u_w_schema = pf_u.schema_arrow
+                        with (
+                            _PQ.ParquetWriter(
+                                facts_dst,
+                                f_w_schema,
+                                compression="lz4",
+                                use_dictionary=_FACT_DICT_COLS,
+                                write_statistics=["issuer_id"],
+                                store_schema=False,
+                            ) as f_writer,
+                            _PQ.ParquetWriter(
+                                unmapped_dst,
+                                u_w_schema,
+                                compression="lz4",
+                                use_dictionary=_UNMAPPED_DICT_COLS,
+                                write_statistics=["issuer_id"],
+                                store_schema=False,
+                            ) as u_writer,
+                        ):
+                            old_factory = conn.row_factory
+                            conn.row_factory = None
+                            try:
+                                f_kept_fut = pool.submit(
+                                    _stream_kept_row_groups_from_pf,
+                                    pf_f,
+                                    f_writer,
+                                    dirty_sorted,
+                                    dirty_arr,
+                                    pool,
+                                )
+                                u_kept_fut = pool.submit(
+                                    _stream_kept_row_groups_from_pf,
+                                    pf_u,
+                                    u_writer,
+                                    dirty_sorted,
+                                    dirty_arr,
+                                    pool,
+                                )
+                                if active_dirty:
+                                    first_chunk = active_dirty[:chunk_size]
+                                    f_first, u_first, f_first_rows, u_first_rows = (
+                                        _normalize_issuer_chunk(
+                                            conn,
+                                            source=source,
+                                            tickers=tickers,
+                                            issuer_chunk=first_chunk,
+                                            cache=cache,
+                                            configured=configured,
+                                            active_mapper=active_mapper,
+                                            period=None,
+                                            pool=None,
+                                        )
+                                    )
+                                else:
+                                    f_first = _EMPTY_FACT_ARROW
+                                    u_first = _EMPTY_UNMAPPED_ARROW
+                                    f_first_rows = 0
+                                    u_first_rows = 0
+
+                                _write_meta(
+                                    meta_dst,
+                                    source=source,
+                                    full_history=full_history,
+                                    taxonomy_sha256=taxonomy_sha256,
+                                    recomputed_issuers=recomputed_issuers,
+                                    issuer_filings=cur_issuer_filings,
+                                )
+                                meta_written = True
+
+                                facts_rows = f_kept_fut.result()
+                                unmapped_rows = u_kept_fut.result()
+
+                                if f_first_rows > 0:
+                                    _write_table_matching_schema(
+                                        f_writer, f_w_schema, f_first
+                                    )
+                                    facts_rows += f_first_rows
+                                if u_first_rows > 0:
+                                    _write_table_matching_schema(
+                                        u_writer, u_w_schema, u_first
+                                    )
+                                    unmapped_rows += u_first_rows
+                                del f_first, u_first
+
+                                for b_idx, idx in enumerate(
+                                    range(chunk_size, len(active_dirty), chunk_size)
+                                ):
+                                    iss_chunk = active_dirty[idx : idx + chunk_size]
+                                    f_new, u_new, f_new_rows, u_new_rows = (
+                                        _normalize_issuer_chunk(
+                                            conn,
+                                            source=source,
+                                            tickers=tickers,
+                                            issuer_chunk=iss_chunk,
+                                            cache=cache,
+                                            configured=configured,
+                                            active_mapper=active_mapper,
+                                            period=None,
+                                            pool=pool,
+                                        )
+                                    )
+                                    if f_new_rows > 0:
+                                        _write_table_matching_schema(
+                                            f_writer, f_w_schema, f_new
+                                        )
+                                        facts_rows += f_new_rows
+                                    if u_new_rows > 0:
+                                        _write_table_matching_schema(
+                                            u_writer, u_w_schema, u_new
+                                        )
+                                        unmapped_rows += u_new_rows
+                                    del f_new, u_new
+                                    if b_idx % 5 == 4:
+                                        gc.collect()
+                                    else:
+                                        gc.collect(1)
+                                    _PA.default_memory_pool().release_unused()
+                            finally:
+                                conn.row_factory = old_factory
+
+                            if facts_rows == 0:
+                                _write_table_matching_schema(
+                                    f_writer, f_w_schema, _EMPTY_FACT_ARROW
+                                )
+                            if unmapped_rows == 0:
+                                _write_table_matching_schema(
+                                    u_writer, u_w_schema, _EMPTY_UNMAPPED_ARROW
+                                )
+
+                    _PA.default_memory_pool().release_unused()
+                    if facts_rows == 0 and unmapped_rows == 0:
+                        raise ContractViolationError(
+                            "No archived filing matched the requested scope."
+                        )
+            else:
+                if not cur_issuer_filings:
+                    raise ContractViolationError(
+                        "No archived filing matched the requested scope."
+                    )
+                active_mapper = mapper or _get_cached_mapper(config_dir)
+                cache = _PayloadCache(raw_root, maxsize=32)
+                all_issuers = list(cur_issuer_filings.keys())
+                facts_rows = 0
+                unmapped_rows = 0
+
+                with (
+                    state.connection() as conn,
+                    _PQ.ParquetWriter(
+                        facts_dst,
+                        _FACT_ARROW_SCHEMA,
+                        compression="lz4",
+                        use_dictionary=_FACT_DICT_COLS,
+                        write_statistics=["issuer_id"],
+                        store_schema=False,
+                    ) as f_writer,
+                    _PQ.ParquetWriter(
+                        unmapped_dst,
+                        _UNMAPPED_ARROW_SCHEMA,
+                        compression="lz4",
+                        use_dictionary=_UNMAPPED_DICT_COLS,
+                        write_statistics=["issuer_id"],
+                        store_schema=False,
+                    ) as u_writer,
+                    ThreadPoolExecutor(max_workers=_STREAM_WORKER_THREADS) as pool,
+                ):
+                    old_factory = conn.row_factory
+                    conn.row_factory = None
+                    try:
+                        for b_idx, idx in enumerate(
+                            range(0, len(all_issuers), chunk_size)
+                        ):
+                            iss_chunk = all_issuers[idx : idx + chunk_size]
+                            f_new, u_new, f_new_rows, u_new_rows = (
+                                _normalize_issuer_chunk(
+                                    conn,
+                                    source=source,
+                                    tickers=tickers,
+                                    issuer_chunk=iss_chunk,
+                                    cache=cache,
+                                    configured=configured,
+                                    active_mapper=active_mapper,
+                                    period=period,
+                                    pool=pool,
+                                )
+                            )
+                            if f_new_rows > 0:
+                                f_writer.write_table(
+                                    f_new,
+                                    row_group_size=min(
+                                        f_new_rows, _PARQUET_ROW_GROUP_SIZE
+                                    ),
+                                )
+                                facts_rows += f_new_rows
+                            if u_new_rows > 0:
+                                u_writer.write_table(
+                                    u_new,
+                                    row_group_size=min(
+                                        u_new_rows, _PARQUET_ROW_GROUP_SIZE
+                                    ),
+                                )
+                                unmapped_rows += u_new_rows
+                            del f_new, u_new
+                            if b_idx % 5 == 4:
+                                gc.collect()
+                            else:
+                                gc.collect(1)
+                            _PA.default_memory_pool().release_unused()
+                    finally:
+                        conn.row_factory = old_factory
+
+                    if facts_rows == 0 and unmapped_rows == 0:
+                        raise ContractViolationError(
+                            "No archived filing matched the requested scope."
+                        )
+                    if facts_rows == 0:
+                        f_writer.write_table(_EMPTY_FACT_ARROW)
+                    if unmapped_rows == 0:
+                        u_writer.write_table(_EMPTY_UNMAPPED_ARROW)
+
+                gc.collect()
+                _PA.default_memory_pool().release_unused()
+                recomputed_issuers = len(cur_issuer_filings)
+                full_rebuild = True
+
+            if not meta_written:
+                _write_meta(
+                    meta_dst,
+                    source=source,
+                    full_history=full_history,
+                    taxonomy_sha256=taxonomy_sha256,
+                    recomputed_issuers=recomputed_issuers,
+                    issuer_filings=cur_issuer_filings,
+                )
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+            staging.rename(output_dir)
+
+        return IncrementalNormalizeResult(
+            facts_path=output_dir / "financial_facts.parquet",
+            unmapped_path=output_dir / "unmapped_metrics.parquet",
+            meta_path=output_dir / NORMALIZATION_METADATA,
             recomputed_issuers=recomputed_issuers,
+            facts_rows=facts_rows,
+            unmapped_rows=unmapped_rows,
+            full_rebuild=full_rebuild,
+            taxonomy_sha256=taxonomy_sha256,
             issuer_filings=cur_issuer_filings,
         )
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-        staging.rename(output_dir)
-
-    return IncrementalNormalizeResult(
-        facts_path=output_dir / "financial_facts.parquet",
-        unmapped_path=output_dir / "unmapped_metrics.parquet",
-        meta_path=output_dir / NORMALIZATION_METADATA,
-        recomputed_issuers=recomputed_issuers,
-        facts_rows=facts_rows,
-        unmapped_rows=unmapped_rows,
-        full_rebuild=full_rebuild,
-        taxonomy_sha256=taxonomy_sha256,
-        issuer_filings=cur_issuer_filings,
-    )
+    finally:
+        if was_gc_enabled:
+            gc.enable()

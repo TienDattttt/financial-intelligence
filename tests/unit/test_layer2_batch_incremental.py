@@ -44,12 +44,15 @@ from finintel.ingestion.archive import MANIFEST_SCHEMA, RawArchive
 from finintel.ingestion.file_adapter import FileAdapter
 from finintel.ingestion.hasher import canonical_content_sha256, payload_file_sha256
 from finintel.normalization.archive import (
+    _MAX_STREAM_BATCH_ISSUERS,
+    _PQ,
     compute_taxonomy_sha256,
     normalize_archive,
     normalize_archive_incremental,
 )
 from finintel.normalization.mapper import (
     FACT_SCHEMA,
+    UNMAPPED_SCHEMA,
     FilingMappingInput,
     TaxonomyMapper,
 )
@@ -1080,3 +1083,208 @@ def test_offline_synthetic_37_issuer_benchmark(tmp_path: Path) -> None:
     # Verify incremental output matches total rows from full build.
     assert inc_res.facts_rows == full_res.facts_rows
     assert inc_res.unmapped_rows == full_res.unmapped_rows
+
+
+def test_streaming_batch_normalization_parity_and_bounded_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DEFECT-B6-02 regression: streaming chunked ParquetWriter preserves exact parity and bounds RAM."""
+    state = StateStore(tmp_path / "metadata/state.sqlite")
+    state.initialize()
+    raw_root = tmp_path / "raw"
+    archive = RawArchive(raw_root, state)
+
+    num_issuers = 20
+    for idx in range(num_issuers):
+        issuer_id = f"STR{idx:03d}"
+        records: list[tuple[FilingMetadata, Mapping[str, object]]] = []
+        for q in range(1, 5):
+            metrics = _sample_statement_metrics(
+                StatementType.INCOME_STATEMENT, base=(idx + 1) * 100 + q
+            )
+            metrics[f"unmapped_custom_line_{q}"] = (idx + 1) * 10 + q
+            records.append(
+                (
+                    _make_metadata(
+                        issuer_id,
+                        2025,
+                        q,
+                        statement=StatementType.INCOME_STATEMENT,
+                        published_at=date(2025, q * 3 + 1, 20)
+                        if q < 4
+                        else date(2026, 1, 20),
+                    ),
+                    metrics,
+                )
+            )
+        _store_fhsc_page(archive, records)
+
+    mapper = TaxonomyMapper(CONFIG_DIR)
+    ref_facts, ref_unmapped = normalize_archive(
+        state, raw_root, mapper, source="fhsc", batch_issuers=50
+    )
+
+    seen_chunks: list[set[str]] = []
+    original_map_batch = mapper.map_batch
+
+    def spy_map_batch(
+        entries: Sequence[FilingMappingInput],
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
+        seen_chunks.append({entry.period.issuer_id for entry in entries})
+        return original_map_batch(entries)
+
+    monkeypatch.setattr(mapper, "map_batch", spy_map_batch)
+
+    rss_before = _process_rss_bytes()
+    tracemalloc.start()
+    try:
+        stream_50 = normalize_archive_incremental(
+            state,
+            raw_root,
+            CONFIG_DIR,
+            tmp_path / "stream_50",
+            source="fhsc",
+            batch_issuers=50,
+            mapper=mapper,
+        )
+        _, full_peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    rss_after = _process_rss_bytes()
+
+    # Streaming chunk size must be capped at _MAX_STREAM_BATCH_ISSUERS and never split an issuer.
+    assert len(seen_chunks) == 3
+    assert all(len(chunk) <= _MAX_STREAM_BATCH_ISSUERS for chunk in seen_chunks)
+    seen_union: set[str] = set()
+    for chunk in seen_chunks:
+        assert seen_union.isdisjoint(chunk)
+        seen_union.update(chunk)
+    assert len(seen_union) == num_issuers
+
+    # Peak traced Python heap and OS RSS delta must stay strictly bounded.
+    assert full_peak_bytes / (1024 * 1024) < 64.0
+    assert max(0, rss_after - rss_before) / (1024 * 1024) < 500.0
+
+    # Parquet files must contain per-chunk row groups with issuer_id min/max stats and exact schemas.
+    f_meta = _PQ.read_metadata(stream_50.facts_path)
+    u_meta = _PQ.read_metadata(stream_50.unmapped_path)
+    assert f_meta.num_row_groups == 3
+    assert u_meta.num_row_groups == 3
+    assert pl.read_parquet_schema(stream_50.facts_path) == FACT_SCHEMA
+    assert pl.read_parquet_schema(stream_50.unmapped_path) == UNMAPPED_SCHEMA
+
+    # Compare batch_issuers=50 and batch_issuers=3 outputs bit-for-bit against normalize_archive.
+    stream_3 = normalize_archive_incremental(
+        state,
+        raw_root,
+        CONFIG_DIR,
+        tmp_path / "stream_3",
+        source="fhsc",
+        batch_issuers=3,
+        mapper=mapper,
+    )
+    for res in (stream_50, stream_3):
+        facts_df = pl.read_parquet(res.facts_path)
+        unmapped_df = pl.read_parquet(res.unmapped_path)
+        assert facts_df.schema == FACT_SCHEMA
+        assert unmapped_df.schema == UNMAPPED_SCHEMA
+        assert _sorted_frame(facts_df).equals(_sorted_frame(ref_facts), null_equal=True)
+        assert _sorted_frame(unmapped_df).equals(
+            _sorted_frame(ref_unmapped), null_equal=True
+        )
+
+    # Multi-chunk incremental update (10 dirty issuers > _MAX_STREAM_BATCH_ISSUERS) matches clean rebuild.
+    dirty_ids = [f"STR{idx:03d}" for idx in range(10)]
+    with state.connection() as conn:
+        conn.execute(
+            f"UPDATE filings_manifest SET is_filed_late = 1 "
+            f"WHERE issuer_id IN ({', '.join('?' for _ in dirty_ids)})",
+            dirty_ids,
+        )
+    inc_multi = normalize_archive_incremental(
+        state,
+        raw_root,
+        CONFIG_DIR,
+        tmp_path / "stream_inc_multi",
+        source="fhsc",
+        previous_batch_dir=tmp_path / "stream_50",
+        batch_issuers=50,
+        mapper=mapper,
+    )
+    clean_after = normalize_archive_incremental(
+        state,
+        raw_root,
+        CONFIG_DIR,
+        tmp_path / "stream_clean_after",
+        source="fhsc",
+        previous_batch_dir=None,
+        batch_issuers=50,
+        mapper=mapper,
+    )
+    assert inc_multi.recomputed_issuers == 10
+    assert inc_multi.full_rebuild is False
+    assert pl.read_parquet_schema(inc_multi.facts_path) == FACT_SCHEMA
+    assert pl.read_parquet_schema(inc_multi.unmapped_path) == UNMAPPED_SCHEMA
+    assert _sorted_frame(pl.read_parquet(inc_multi.facts_path)).equals(
+        _sorted_frame(pl.read_parquet(clean_after.facts_path)), null_equal=True
+    )
+    assert _sorted_frame(pl.read_parquet(inc_multi.unmapped_path)).equals(
+        _sorted_frame(pl.read_parquet(clean_after.unmapped_path)), null_equal=True
+    )
+
+    # Edge case: 0-row unmapped_metrics.parquet transitioning to non-empty via incremental update.
+    empty_u_state = StateStore(tmp_path / "empty_u/state.sqlite")
+    empty_u_state.initialize()
+    empty_u_raw = tmp_path / "empty_u/raw"
+    empty_u_archive = RawArchive(empty_u_raw, empty_u_state)
+    _store_fhsc_page(
+        empty_u_archive,
+        [
+            (
+                _make_metadata(
+                    "ONLY01", 2025, 1, statement=StatementType.INCOME_STATEMENT
+                ),
+                {"doanhthuthuanvebanhangvacungcapdichvu": 1000},
+            )
+        ],
+    )
+    res_zero = normalize_archive_incremental(
+        empty_u_state,
+        empty_u_raw,
+        CONFIG_DIR,
+        tmp_path / "empty_u/b1",
+        source="fhsc",
+        mapper=mapper,
+    )
+    assert res_zero.unmapped_rows == 0
+    assert pl.read_parquet_schema(res_zero.unmapped_path) == UNMAPPED_SCHEMA
+
+    _store_fhsc_page(
+        empty_u_archive,
+        [
+            (
+                _make_metadata(
+                    "ONLY01", 2025, 2, statement=StatementType.INCOME_STATEMENT
+                ),
+                {
+                    "doanhthuthuanvebanhangvacungcapdichvu": 1200,
+                    "brand_new_unmapped_metric": 42,
+                },
+            )
+        ],
+    )
+    res_nonzero = normalize_archive_incremental(
+        empty_u_state,
+        empty_u_raw,
+        CONFIG_DIR,
+        tmp_path / "empty_u/b2",
+        source="fhsc",
+        previous_batch_dir=tmp_path / "empty_u/b1",
+        mapper=mapper,
+    )
+    assert res_nonzero.recomputed_issuers == 1
+    assert res_nonzero.unmapped_rows == 1
+    assert pl.read_parquet_schema(res_nonzero.unmapped_path) == UNMAPPED_SCHEMA
+    assert pl.read_parquet(res_nonzero.unmapped_path)["raw_metric_key"].to_list() == [
+        "brand_new_unmapped_metric"
+    ]
