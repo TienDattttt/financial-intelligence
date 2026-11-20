@@ -19,14 +19,13 @@ Runtime API Verification (Python 3.11.9, duckdb==1.4.2, polars==1.35.2, filelock
 
 from __future__ import annotations
 
-import gc
 import json
 import math
 import os
 import sqlite3
 import stat
-import sys
 import threading
+import weakref
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager, nullcontext
@@ -92,6 +91,8 @@ class _DuckLakeBinding:
     ducklake_version: int
     published_at: str | None
     catalog_identity: int = 0
+    dagster_run_id: str | None = None
+    git_commit_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -123,12 +124,40 @@ _TableDataCacheKey = tuple[object, ...]
 _MAX_BINDING_CACHE_SIZE = 128
 _MAX_TABLE_META_CACHE_SIZE = 512
 _MAX_PARQUET_SCHEMA_CACHE_SIZE = 512
-_MAX_TABLE_DATA_CACHE_SIZE = 24
+_MAX_TABLE_DATA_CACHE_SIZE = 12
+
+# Only small serving tables are eligible for process-local L1 Polars caching.
+# Large tables (financial_facts, latest_facts, industry_benchmarks, filings_manifest)
+# stay on disk and are served via DuckDB projection + predicate pushdown to prevent
+# multi-GB RSS growth across snapshot rollovers (NFR-01).
+_IN_MEMORY_CACHEABLE_TABLES: frozenset[str] = frozenset(
+    {
+        "issuers.parquet",
+        "financial_ratios.parquet",
+        "industry_benchmarks.parquet",
+        "accounting_red_flags.parquet",
+        "ml_scores_and_explanations.parquet",
+        "quality_summary.parquet",
+        "audit_quarantine.parquet",
+    }
+)
+
+
+class _WeakableLock:
+    """Thin weakref-capable wrapper around ``threading.Lock`` for lock-table GC."""
+
+    __slots__ = ("lock", "__weakref__")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+
 
 _CACHE_LOCK = threading.Lock()
 _CATALOG_DISCOVERY_LOCK = threading.Lock()
 _TABLE_LOAD_LOCKS_GUARD = threading.Lock()
-_TABLE_LOAD_LOCKS: dict[_TableDataCacheKey, threading.Lock] = {}
+_TABLE_LOAD_LOCKS: weakref.WeakValueDictionary[_TableDataCacheKey, _WeakableLock] = (
+    weakref.WeakValueDictionary()
+)
 _VALIDATED_IDENTIFIERS: set[str] = set()
 
 _ACTIVE_SNAPSHOT_POINTER_CACHE: OrderedDict[
@@ -255,15 +284,48 @@ def _parquet_file_stat_key(path: Path) -> _ParquetFileStatKey | None:
     return (path_str, st.st_mtime_ns, st.st_size)
 
 
-def _get_table_load_lock(key: _TableDataCacheKey) -> threading.Lock:
+def _get_table_load_lock(key: _TableDataCacheKey) -> _WeakableLock:
     with _TABLE_LOAD_LOCKS_GUARD:
-        lock = _TABLE_LOAD_LOCKS.get(key)
-        if lock is None:
-            if len(_TABLE_LOAD_LOCKS) >= 256:
-                _TABLE_LOAD_LOCKS.clear()
-            lock = threading.Lock()
-            _TABLE_LOAD_LOCKS[key] = lock
-        return lock
+        holder = _TABLE_LOAD_LOCKS.get(key)
+        if holder is None:
+            holder = _WeakableLock()
+            _TABLE_LOAD_LOCKS[key] = holder
+        return holder
+
+
+def _snapshot_root_and_id(
+    cache_key: _TableDataCacheKey,
+) -> tuple[tuple[object, ...], object] | None:
+    """Extract ``(root_identity, snapshot_token)`` for rollover cache eviction."""
+    if not cache_key:
+        return None
+    kind = cache_key[0]
+    if kind == "ducklake_data" and len(cache_key) >= 9:
+        # ("ducklake_data", cat_path, cat_id, data_path, alias, driver, dsn_env, snap_id, ver, ...)
+        return (cache_key[:7], (cache_key[7], cache_key[8]))
+    if kind == "parquet_data" and len(cache_key) >= 2 and isinstance(cache_key[1], str):
+        p = Path(cache_key[1])
+        parent = p.parent
+        if parent.name.startswith("snap_"):
+            return (("parquet_data", str(parent.parent)), parent.name)
+    return None
+
+
+def _evict_prior_snapshot_table_data_locked(cache_key: _TableDataCacheKey) -> None:
+    """Evict stale snapshot entries for the same data root (caller holds ``_CACHE_LOCK``)."""
+    parsed = _snapshot_root_and_id(cache_key)
+    if parsed is None:
+        return
+    target_root, target_snap = parsed
+    stale_keys = [
+        existing
+        for existing in _SNAPSHOT_TABLE_DATA_CACHE
+        if (ep := _snapshot_root_and_id(existing)) is not None
+        and ep[0] == target_root
+        and ep[1] != target_snap
+    ]
+    for stale_key in stale_keys:
+        _SNAPSHOT_TABLE_DATA_CACHE.pop(stale_key, None)
 
 
 def _build_cached_table_data(filename: str, df: pl.DataFrame) -> _CachedTableData:
@@ -276,27 +338,28 @@ def _build_cached_table_data(filename: str, df: pl.DataFrame) -> _CachedTableDat
     by_period: dict[object, pl.DataFrame] | None = None
     by_period_metric: dict[tuple[object, str], pl.DataFrame] | None = None
 
-    if "issuer_id" in allowed:
-        by_issuer = {
-            str(k[0]): sub
-            for k, sub in df.partition_by(
-                "issuer_id", as_dict=True, maintain_order=True
-            ).items()
-        }
-    if {"issuer_id", "statement_scope", "period_type"}.issubset(
+    has_isp_index = {"issuer_id", "statement_scope", "period_type"}.issubset(
         allowed
     ) and filename in (
         "financial_ratios.parquet",
         "quality_summary.parquet",
         "accounting_red_flags.parquet",
         "ml_scores_and_explanations.parquet",
-    ):
+    )
+    if has_isp_index:
         by_issuer_scope_period = {
             (str(k[0]), str(k[1]), str(k[2])): sub
             for k, sub in df.partition_by(
                 ["issuer_id", "statement_scope", "period_type"],
                 as_dict=True,
                 maintain_order=True,
+            ).items()
+        }
+    elif "issuer_id" in allowed and filename != "industry_benchmarks.parquet":
+        by_issuer = {
+            str(k[0]): sub
+            for k, sub in df.partition_by(
+                "issuer_id", as_dict=True, maintain_order=True
             ).items()
         }
     if "ticker" in allowed and filename == "issuers.parquet":
@@ -885,18 +948,41 @@ class ParquetRepository:
                     postgres_dsn_env=self._postgres_dsn_env,
                     read_only=True,
                 )
-                audit_row = con.execute(
-                    f"""
-                    SELECT ducklake_version, published_at
-                    FROM "{self._catalog_alias}"."{SNAPSHOT_AUDIT_TABLE}"
-                    WHERE snapshot_id = ?
-                    ORDER BY ducklake_version DESC
-                    LIMIT 1
-                    """,
-                    [snapshot_id],
-                ).fetchone()
+                audit_meta_json: str | None = None
+                try:
+                    audit_row_ext = con.execute(
+                        f"""
+                        SELECT ducklake_version, published_at, metadata_json
+                        FROM "{self._catalog_alias}"."{SNAPSHOT_AUDIT_TABLE}"
+                        WHERE snapshot_id = ?
+                        ORDER BY ducklake_version DESC
+                        LIMIT 1
+                        """,
+                        [snapshot_id],
+                    ).fetchone()
+                    if audit_row_ext is not None:
+                        audit_row = (audit_row_ext[0], audit_row_ext[1])
+                        audit_meta_json = (
+                            str(audit_row_ext[2])
+                            if audit_row_ext[2] is not None
+                            else None
+                        )
+                    else:
+                        audit_row = None
+                except duckdb.BinderException:
+                    audit_row = con.execute(
+                        f"""
+                        SELECT ducklake_version, published_at
+                        FROM "{self._catalog_alias}"."{SNAPSHOT_AUDIT_TABLE}"
+                        WHERE snapshot_id = ?
+                        ORDER BY ducklake_version DESC
+                        LIMIT 1
+                        """,
+                        [snapshot_id],
+                    ).fetchone()
             except duckdb.CatalogException:
                 audit_row = None
+                audit_meta_json = None
             except duckdb.Error as exc:
                 raise ContractViolationError(
                     f"Unable to query DuckLake snapshot audit metadata at {cat_path}."
@@ -912,6 +998,23 @@ class ParquetRepository:
                     )
                 return None
 
+            dagster_run_id: str | None = None
+            git_commit_sha: str | None = None
+            if audit_meta_json:
+                try:
+                    parsed_meta = json.loads(audit_meta_json)
+                    if isinstance(parsed_meta, dict):
+                        raw_run = parsed_meta.get("dagster_run_id") or parsed_meta.get(
+                            "run_id"
+                        )
+                        raw_sha = parsed_meta.get("git_commit_sha")
+                        if isinstance(raw_run, str) and raw_run.strip():
+                            dagster_run_id = raw_run.strip()
+                        if isinstance(raw_sha, str) and raw_sha.strip():
+                            git_commit_sha = raw_sha.strip()
+                except ValueError:
+                    pass
+
             binding = _DuckLakeBinding(
                 catalog_path=cat_path,
                 data_path=lake_data,
@@ -922,6 +1025,8 @@ class ParquetRepository:
                 if audit_row[1] is not None
                 else state_published_at,
                 catalog_identity=cat_id,
+                dagster_run_id=dagster_run_id,
+                git_commit_sha=git_commit_sha,
             )
             with _CACHE_LOCK:
                 _DUCKLAKE_BINDING_CACHE[cache_key] = binding
@@ -972,6 +1077,8 @@ class ParquetRepository:
                 "published_at": binding.published_at,
                 "storage_backend": "ducklake",
                 "ducklake_version": binding.ducklake_version,
+                "dagster_run_id": binding.dagster_run_id,
+                "git_commit_sha": binding.git_commit_sha,
             }
 
         source = self._source
@@ -1548,15 +1655,16 @@ class ParquetRepository:
         filename: str,
         parquet_files: tuple[str, ...],
     ) -> _CachedTableData | None:
-        if not parquet_files:
+        if not parquet_files or filename not in _IN_MEMORY_CACHEABLE_TABLES:
             return None
         with _CACHE_LOCK:
             cached = _SNAPSHOT_TABLE_DATA_CACHE.get(cache_key)
             if cached is not None:
+                _SNAPSHOT_TABLE_DATA_CACHE.move_to_end(cache_key)
                 return cached
 
-        load_lock = _get_table_load_lock(cache_key)
-        with load_lock:
+        load_holder = _get_table_load_lock(cache_key)
+        with load_holder.lock:
             with _CACHE_LOCK:
                 cached = _SNAPSHOT_TABLE_DATA_CACHE.get(cache_key)
                 if cached is not None:
@@ -1573,16 +1681,105 @@ class ParquetRepository:
 
             built = _build_cached_table_data(filename, df)
             with _CACHE_LOCK:
+                _evict_prior_snapshot_table_data_locked(cache_key)
                 _SNAPSHOT_TABLE_DATA_CACHE[cache_key] = built
                 while len(_SNAPSHOT_TABLE_DATA_CACHE) > _MAX_TABLE_DATA_CACHE_SIZE:
                     _SNAPSHOT_TABLE_DATA_CACHE.popitem(last=False)
-            if "pytest" not in sys.modules and filename in (
-                "financial_facts.parquet",
-                "industry_benchmarks.parquet",
-                "financial_ratios.parquet",
-            ):
-                gc.freeze()
             return built
+
+    def verify_active_snapshot_readable(
+        self,
+        *,
+        connection: duckdb.DuckDBPyConnection | None = None,
+        probe_tables: Sequence[str] = ("issuers.parquet", "financial_ratios.parquet"),
+    ) -> dict[str, object]:
+        """Verify DuckDB liveness and on-disk readability of the active snapshot.
+
+        Bypasses in-memory table caches so deleted/corrupt Parquet files or missing
+        active snapshots fail readiness checks immediately (NFR-04).
+        """
+        active_conn = connection if connection is not None else self._session_connection
+        owns_conn = active_conn is None
+        con = duckdb.connect(":memory:") if active_conn is None else active_conn
+        try:
+            probe_one = con.execute("SELECT 1").fetchone()
+            if probe_one is None or int(probe_one[0]) != 1:
+                raise ContractViolationError("DuckDB engine readiness probe failed.")
+
+            meta = self.get_snapshot_metadata(connection=con)
+            snap_id = meta.get("snapshot_id")
+            if not isinstance(snap_id, str) or not snap_id:
+                raise FileNotFoundError("No active published snapshot available.")
+
+            binding = self._discover_ducklake_binding(connection=con)
+            if binding is not None:
+                ver = int(binding.ducklake_version)
+                for tbl in probe_tables:
+                    filename, catalog_table = _normalize_table_name(tbl)
+                    resolved = self._resolve_ducklake_table(
+                        con, binding, filename, catalog_table
+                    )
+                    if not resolved.exists:
+                        raise FileNotFoundError(filename)
+                    if resolved.parquet_files:
+                        for pf in resolved.parquet_files:
+                            if _parquet_file_stat_key(Path(pf)) is None:
+                                raise FileNotFoundError(pf)
+                            if _read_file_prefix(pf, 4) != b"PAR1":
+                                raise ContractViolationError(
+                                    f"Corrupt Parquet header for table {filename!r}."
+                                )
+                    else:
+                        ensure_ducklake_attached(
+                            con,
+                            catalog_path=binding.catalog_path,
+                            data_path=binding.data_path,
+                            catalog_alias=binding.catalog_alias,
+                            catalog_driver=self._catalog_driver,
+                            postgres_dsn_env=self._postgres_dsn_env,
+                            read_only=True,
+                        )
+                        listed = con.execute(
+                            "SELECT data_file FROM ducklake_list_files(?, ?, snapshot_version => ?)",
+                            [binding.catalog_alias, catalog_table, ver],
+                        ).fetchall()
+                        for row in listed:
+                            data_file = row[0]
+                            if (
+                                data_file is not None
+                                and _parquet_file_stat_key(Path(str(data_file))) is None
+                            ):
+                                raise FileNotFoundError(str(data_file))
+                        probe_col = (
+                            f'"{resolved.columns[0]}"' if resolved.columns else "*"
+                        )
+                        source_sql = (
+                            f'"{binding.catalog_alias}"."{catalog_table}" '
+                            f"AT (VERSION => {ver})"
+                        )
+                        con.execute(
+                            f"SELECT {probe_col} FROM {source_sql} LIMIT 1"
+                        ).fetchall()
+            else:
+                for tbl in probe_tables:
+                    filename, _ = _normalize_table_name(tbl)
+                    with self._read_path(filename) as path:
+                        if _parquet_file_stat_key(path) is None:
+                            raise FileNotFoundError(path)
+                        if _read_file_prefix(str(path), 4) != b"PAR1":
+                            raise ContractViolationError(
+                                f"Corrupt Parquet header for table {filename!r}."
+                            )
+            return meta
+        except FileNotFoundError:
+            raise
+        except (duckdb.Error, OSError) as exc:
+            raise ContractViolationError(
+                f"Active snapshot storage readiness probe failed: {type(exc).__name__}"
+            ) from exc
+        finally:
+            if owns_conn:
+                con.close()
 
     def _inspect_parquet_columns(
         self,

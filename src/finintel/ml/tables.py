@@ -84,6 +84,7 @@ def build_ml_artifacts(
     peer_benchmarks: pl.DataFrame | None = None,
     facts_sha256: str | None = None,
     issuers_sha256: str | None = None,
+    precomputed_ratios_as_of: pl.DataFrame | None = None,
 ) -> MLArtifacts:
     """Train, calibrate, evaluate and score Layer 4B strictly from PIT real history.
 
@@ -112,8 +113,13 @@ def build_ml_artifacts(
         SECTOR_ADJUSTED_FEATURES if feature_set == "sector_adjusted" else BASE_FEATURES
     )
 
-    periods_as_of = prepare_periods(facts, issuers, as_of=as_of, include_ml_inputs=True)
-    ratios_as_of = calculate_ratios(periods_as_of)
+    if precomputed_ratios_as_of is not None:
+        ratios_as_of = precomputed_ratios_as_of
+    else:
+        periods_as_of = prepare_periods(
+            facts, issuers, as_of=as_of, include_ml_inputs=True
+        )
+        ratios_as_of = calculate_ratios(periods_as_of)
     classical_as_of = add_classical_scores(ratios_as_of)
     benchmarks = (
         peer_benchmarks
@@ -132,6 +138,7 @@ def build_ml_artifacts(
         taxonomy_version=taxonomy_version,
         target_mode=target_mode,
         regulatory_events=regulatory_events,
+        precomputed_as_of_scored=classical_as_of,
     )
     peer_standardization_mode = resolve_peer_standardization_mode(
         splits["train"], splits["validation"]

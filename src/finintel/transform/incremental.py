@@ -26,7 +26,6 @@ Verified Sources:
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import logging
 import os
@@ -215,12 +214,22 @@ def _schema_header_bytes(frame: pl.DataFrame) -> bytes:
 
 
 def _sha256_frame(frame: pl.DataFrame, *, schema_header: bytes | None = None) -> str:
-    buf = io.BytesIO()
-    frame.write_ndjson(buf)
+    """Hash a DataFrame deterministically by logical values using Rust SIMD ``hash_rows``."""
     digest = hashlib.sha256(
         schema_header if schema_header is not None else _schema_header_bytes(frame)
     )
-    digest.update(buf.getvalue())
+    if frame.is_empty():
+        digest.update(b"0")
+        return digest.hexdigest()
+    list_exprs = [
+        pl.col(name).cast(pl.List(pl.String)).list.join("\x1f").alias(name)
+        for name, dtype in frame.schema.items()
+        if isinstance(dtype, pl.List)
+    ]
+    hashable = frame.with_columns(list_exprs) if list_exprs else frame
+    row_hashes = hashable.hash_rows(seed=0, seed_1=1, seed_2=2, seed_3=3)
+    digest.update(str(frame.height).encode("ascii"))
+    digest.update(row_hashes.to_numpy().tobytes())
     return digest.hexdigest()
 
 
@@ -440,21 +449,29 @@ def _compute_ratios_and_red_flags(
     issuers: pl.DataFrame,
     *,
     as_of: date,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
+    include_ml_inputs: bool = False,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame | None]:
     """Compute Layer 4A ratios and red flags keeping intermediate columns in RAM for RF_01..RF_09."""
     rf_schema = ANALYTICS_SCHEMAS[RED_FLAGS_TABLE]
     if facts_subset.is_empty():
-        return pl.DataFrame(schema=FINANCIAL_RATIOS_SCHEMA), pl.DataFrame(
-            schema=rf_schema
+        return (
+            pl.DataFrame(schema=FINANCIAL_RATIOS_SCHEMA),
+            pl.DataFrame(schema=rf_schema),
+            None,
         )
 
-    periods = prepare_periods(facts_subset, issuers, as_of=as_of)
+    periods = prepare_periods(
+        facts_subset, issuers, as_of=as_of, include_ml_inputs=include_ml_inputs
+    )
     if periods.is_empty():
-        return pl.DataFrame(schema=FINANCIAL_RATIOS_SCHEMA), pl.DataFrame(
-            schema=rf_schema
+        return (
+            pl.DataFrame(schema=FINANCIAL_RATIOS_SCHEMA),
+            pl.DataFrame(schema=rf_schema),
+            None,
         )
 
-    ratios_rich = add_dupont(calculate_ratios(periods))
+    ratios_calc = calculate_ratios(periods)
+    ratios_rich = add_dupont(ratios_calc)
     red_flags = (
         detect_red_flags(ratios_rich)
         .select(
@@ -479,7 +496,7 @@ def _compute_ratios_and_red_flags(
         )
         .sort(list(RATIO_KEY))
     )
-    return ratios_pub, red_flags
+    return ratios_pub, red_flags, (ratios_calc if include_ml_inputs else None)
 
 
 def _compute_benchmarks(
@@ -647,9 +664,15 @@ def run_incremental_analytics_transform(
     # Step 3: Layer 4A Ratios & Red Flags (preserving intermediates for RF_01..RF_09,
     # merging via delete-by-issuer_id + concat to prevent ghost red flags and duplicate ANNUAL rows)
     rf_schema = ANALYTICS_SCHEMAS[RED_FLAGS_TABLE]
+    precomputed_ml_ratios: pl.DataFrame | None = None
     if full_rebuild:
-        financial_ratios, accounting_red_flags = _compute_ratios_and_red_flags(
-            qg1.clean_facts, issuers, as_of=as_of
+        financial_ratios, accounting_red_flags, precomputed_ml_ratios = (
+            _compute_ratios_and_red_flags(
+                qg1.clean_facts,
+                issuers,
+                as_of=as_of,
+                include_ml_inputs=effective_ml.enabled,
+            )
         )
         new_ratios_pub = financial_ratios
     else:
@@ -666,7 +689,7 @@ def run_incremental_analytics_transform(
         else:
             dirty_list = list(dirty_issuers)
             dirty_facts = qg1.clean_facts.filter(pl.col("issuer_id").is_in(dirty_list))
-            new_ratios_pub, new_red_flags = _compute_ratios_and_red_flags(
+            new_ratios_pub, new_red_flags, _ = _compute_ratios_and_red_flags(
                 dirty_facts, issuers, as_of=as_of
             )
             kept_ratios = previous_ratios.filter(
@@ -780,6 +803,7 @@ def run_incremental_analytics_transform(
             peer_benchmarks=industry_benchmarks,
             facts_sha256=diff.facts_sha256,
             issuers_sha256=diff.issuers_metadata_sha256,
+            precomputed_ratios_as_of=precomputed_ml_ratios,
         )
         ml_scores = ml_artifacts.scores_table
         evaluation_report = ml_artifacts.evaluation_report

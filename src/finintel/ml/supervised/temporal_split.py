@@ -208,6 +208,7 @@ def build_pit_ml_splits(
     taxonomy_version: str | None = "VAS_TT200_2014",
     target_mode: str = "FUNDAMENTAL_DISTRESS",
     regulatory_events: pl.DataFrame | None = None,
+    precomputed_as_of_scored: pl.DataFrame | None = None,
 ) -> dict[str, pl.DataFrame]:
     """Construct fold-specific PIT feature/label snapshots without restatement or future-ICB leakage.
 
@@ -222,9 +223,16 @@ def build_pit_ml_splits(
     if test_start > as_of:
         raise ContractViolationError("Test start must not exceed the PIT as_of date.")
 
-    def _materialize_at(cutoff: date) -> pl.DataFrame:
-        periods = prepare_periods(facts, issuers, as_of=cutoff, include_ml_inputs=True)
-        scored = add_classical_scores(calculate_ratios(periods))
+    def _materialize_at(
+        cutoff: date, *, precomputed_scored: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        if precomputed_scored is not None:
+            scored = precomputed_scored
+        else:
+            periods = prepare_periods(
+                facts, issuers, as_of=cutoff, include_ml_inputs=True
+            )
+            scored = add_classical_scores(calculate_ratios(periods))
         scoped = scored.filter(pl.col("statement_scope") == statement_scope)
         if taxonomy_version is not None:
             scoped = scoped.filter(pl.col("taxonomy_version") == taxonomy_version)
@@ -237,7 +245,7 @@ def build_pit_ml_splits(
 
     train_raw = _materialize_at(validation_start)
     valid_raw = _materialize_at(test_start)
-    test_raw = _materialize_at(as_of)
+    test_raw = _materialize_at(as_of, precomputed_scored=precomputed_as_of_scored)
 
     pre_train = purged_walk_forward_split(
         train_raw,

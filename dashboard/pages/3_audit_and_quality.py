@@ -78,15 +78,18 @@ def render_page() -> None:
         render_sanitized_error(exc, context="nạp danh sách doanh nghiệp")
         return
 
-    tab_lineage, tab_quality, tab_quarantine = st.tabs(
-        [
-            f"Thẻ Truy xuất Nguồn gốc ({len(ALL_RATIOS)} Tỷ số)",
-            "Tổng hợp Chất lượng (quality_summary)",
-            "Danh sách Cách ly (audit_quarantine)",
-        ]
+    lineage_label = f"Thẻ Truy xuất Nguồn gốc ({len(ALL_RATIOS)} Tỷ số)"
+    quality_label = "Tổng hợp Chất lượng (quality_summary)"
+    quarantine_label = "Danh sách Cách ly (audit_quarantine)"
+    active_section = st.radio(
+        "Chế độ kiểm định",
+        options=[lineage_label, quality_label, quarantine_label],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="p3_active_section",
     )
 
-    with tab_lineage:
+    if active_section == lineage_label:
         st.caption(
             f"Hỗ trợ truy xuất đầy đủ **{len(ALL_RATIOS)}/{len(ALL_RATIOS)}** tỷ số tài chính "
             f"(bao gồm {len(FORENSIC_RATIOS)} tỷ số lợi nhuận lõi `FORENSIC_RATIOS`: "
@@ -150,7 +153,7 @@ def render_page() -> None:
                 else:
                     render_lineage_card(card)
 
-    with tab_quality:
+    elif active_section == quality_label:
         st.subheader("Bảng tổng hợp chất lượng dữ liệu đã xuất bản")
         qs_limit, qs_offset = _render_paginated_controls(
             prefix="p3_quality", default_limit=50
@@ -182,7 +185,7 @@ def render_page() -> None:
                         quality_summary, use_container_width=True, hide_index=True
                     )
 
-    with tab_quarantine:
+    else:
         st.subheader("Bảng tờ khai bị cách ly (CRITICAL Quarantine)")
         aq_limit, aq_offset = _render_paginated_controls(
             prefix="p3_quarantine", default_limit=50

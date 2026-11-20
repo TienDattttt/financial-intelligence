@@ -33,6 +33,7 @@ from sklearn.metrics import (  # type: ignore[import-untyped]
     average_precision_score,
     brier_score_loss,
     fbeta_score,
+    precision_recall_curve,
     roc_auc_score,
 )
 from sklearn.model_selection import (  # type: ignore[import-untyped]
@@ -279,21 +280,27 @@ def _constraints(features: tuple[str, ...]) -> tuple[int, ...]:
 
 
 def _optimal_f2_threshold(y: NDArray[np.int8], score: NDArray[np.float64]) -> float:
-    """Select the F2-maximizing operating threshold strictly on validation."""
+    """Select the F2-maximizing operating threshold strictly on validation in O(N log N).
+
+    Uses Lipton, Elkan & Naryanaswamy (ECML-PKDD 2014) exact sort-and-scan via
+    ``precision_recall_curve`` (evaluates ``score >= threshold`` for every unique score).
+    """
     finite = np.isfinite(score)
     y_fin = y[finite]
     s_fin = score[finite]
     if y_fin.size == 0 or np.unique(y_fin).size < 2:
         return 0.5
-    candidates = np.unique(s_fin)
-    best_thr = 0.5
-    best_f2 = -1.0
-    for thr in candidates:
-        val = float(fbeta_score(y_fin, s_fin >= thr, beta=2, zero_division=0))
-        if val > best_f2:
-            best_f2 = val
-            best_thr = float(thr)
-    return best_thr
+    precisions, recalls, thresholds = precision_recall_curve(y_fin, s_fin)
+    if thresholds.size == 0:
+        return 0.5
+    p_thr = precisions[:-1]
+    r_thr = recalls[:-1]
+    denom = 4.0 * p_thr + r_thr
+    f2 = np.where(
+        denom > 0.0, (5.0 * p_thr * r_thr) / np.where(denom > 0.0, denom, 1.0), 0.0
+    )
+    best_idx = int(np.argmax(f2))
+    return float(thresholds[best_idx])
 
 
 def _metrics(

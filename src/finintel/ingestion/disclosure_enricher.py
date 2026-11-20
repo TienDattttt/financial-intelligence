@@ -33,7 +33,12 @@ from finintel.domain.schemas import (
 )
 from finintel.exceptions import ArchiveIntegrityError, ContractViolationError
 from finintel.ingestion.archive import RawArchive
-from finintel.ingestion.hasher import canonical_content_sha256, payload_file_sha256
+from finintel.ingestion.hasher import (
+    MANIFEST_SIGNATURE_FIELDS,
+    canonical_content_sha256,
+    compute_manifest_sig_sha256,
+    payload_file_sha256,
+)
 
 VN_TZ = timezone(timedelta(hours=7))
 DISCLOSURE_CONNECTOR = "disclosure_enricher_v1"
@@ -566,7 +571,12 @@ def merge_disclosure_records(
 
 
 def _extract_fhsc_metrics(
-    archive_root: Path, row: Mapping[str, object], metadata: FilingMetadata
+    archive_root: Path,
+    row: Mapping[str, object],
+    metadata: FilingMetadata,
+    *,
+    resolved_root: Path | None = None,
+    payload_cache: dict[tuple[str, str], list[object]] | None = None,
 ) -> dict[str, object]:
     rel_path = row.get("raw_archive_path")
     expected_sha = row.get("payload_file_sha256")
@@ -577,23 +587,35 @@ def _extract_fhsc_metrics(
         or not isinstance(locator, str)
     ):
         raise ContractViolationError("FHSC manifest row lacks raw payload pointers.")
-    full_path = (archive_root / rel_path).resolve()
-    if not full_path.is_relative_to(archive_root.resolve()):
-        raise ContractViolationError("FHSC raw payload path escapes raw archive root.")
-    content = full_path.read_bytes()
-    if payload_file_sha256(content) != expected_sha:
-        raise ArchiveIntegrityError("Archived FHSC payload bytes fail SHA-256 check.")
-
     loc_match = _LOCATOR_RE.fullmatch(locator)
-    body = json.loads(content)
-    records = body.get("data") if isinstance(body, dict) else None
-    if (
-        loc_match is None
-        or not isinstance(body, dict)
-        or body.get("error_code") != "0"
-        or not isinstance(records, list)
-        or int(loc_match[1]) >= len(records)
-    ):
+    cache_key = (rel_path, expected_sha)
+    records = payload_cache.get(cache_key) if payload_cache is not None else None
+    if records is None:
+        root = resolved_root if resolved_root is not None else archive_root.resolve()
+        full_path = (root / rel_path).resolve()
+        if not full_path.is_relative_to(root):
+            raise ContractViolationError(
+                "FHSC raw payload path escapes raw archive root."
+            )
+        content = full_path.read_bytes()
+        if payload_file_sha256(content) != expected_sha:
+            raise ArchiveIntegrityError(
+                "Archived FHSC payload bytes fail SHA-256 check."
+            )
+        body = json.loads(content)
+        parsed_records = body.get("data") if isinstance(body, dict) else None
+        if (
+            not isinstance(body, dict)
+            or body.get("error_code") != "0"
+            or not isinstance(parsed_records, list)
+        ):
+            raise ContractViolationError(
+                "Invalid FHSC raw payload structure or locator."
+            )
+        records = parsed_records
+        if payload_cache is not None:
+            payload_cache[cache_key] = records
+    if loc_match is None or int(loc_match[1]) >= len(records):
         raise ContractViolationError("Invalid FHSC raw payload structure or locator.")
     raw_item = records[int(loc_match[1])]
     if not isinstance(raw_item, dict):
@@ -770,6 +792,7 @@ def enrich_fhsc_manifest_disclosures(
             max_rev_by_key[rev_key] = row_rev
 
     grouped_filings: dict[str, list[RawFiling]] = {}
+    grouped_hashes: dict[str, list[str]] = {}
     grouped_superseded: dict[
         str, list[tuple[dict[str, object], FilingMetadata, DisclosureRecord]]
     ] = {}
@@ -778,9 +801,16 @@ def enrich_fhsc_manifest_disclosures(
     matched = 0
     skipped_pre_end = 0
     previously_matching = 0
+    resolved_root = archive.root.resolve()
+    payload_cache: dict[tuple[str, str], list[object]] = {}
 
     for row in manifest_rows:
-        meta = FilingMetadata.from_mapping(row)
+        meta_row = (
+            {k: v for k, v in row.items() if k != "manifest_sig_sha256"}
+            if "manifest_sig_sha256" in row
+            else row
+        )
+        meta = FilingMetadata.from_mapping(meta_row)
         raw_rev = row.get("revision_no")
         row_rev = raw_rev if type(raw_rev) is int else 1
         slot = (
@@ -835,8 +865,15 @@ def enrich_fhsc_manifest_disclosures(
             and not calendar_changed
         ):
             previously_matching += 1
+            continue
 
-        metrics = _extract_fhsc_metrics(archive.root, row, meta)
+        metrics = _extract_fhsc_metrics(
+            archive.root,
+            row,
+            meta,
+            resolved_root=resolved_root,
+            payload_cache=payload_cache,
+        )
         rev_key = (
             meta.issuer_id,
             str(meta.statement_type),
@@ -859,6 +896,9 @@ def enrich_fhsc_manifest_disclosures(
                     metrics=metrics,
                     locator=rec.raw_locator,
                 )
+            )
+            grouped_hashes.setdefault(rec.source_url, []).append(
+                str(row["canonical_content_sha256"])
             )
             if calendar_changed and isinstance(row.get("filing_id"), str):
                 calendar_sync_targets.append(
@@ -893,6 +933,7 @@ def enrich_fhsc_manifest_disclosures(
             archive.store(
                 RawFilingBundle(payload=payload, filings=tuple(filings)),
                 run_id=run_id,
+                precomputed_canonical_hashes=tuple(grouped_hashes[source_url]),
             )
         superseded_items = grouped_superseded.get(source_url, [])
         if superseded_items:
@@ -933,6 +974,23 @@ def enrich_fhsc_manifest_disclosures(
                             "fetched_at": fetched_utc_iso,
                         }
                     attrs["metadata_evidence"] = evidence
+                    attrs_json = json.dumps(attrs, ensure_ascii=False, allow_nan=False)
+                    pub_iso = (
+                        enriched_meta.published_at.isoformat()
+                        if enriched_meta.published_at is not None
+                        else None
+                    )
+                    eff_iso = enriched_meta.effective_available_at.isoformat()
+                    sig_row: dict[str, object] = {
+                        **row,
+                        "audit_status": str(enriched_meta.audit_status),
+                        "published_at": pub_iso,
+                        "published_at_basis": enriched_meta.published_at_basis,
+                        "effective_available_at": eff_iso,
+                        "is_filed_late": enriched_meta.is_filed_late,
+                        "provider_attrs_json": attrs_json,
+                    }
+                    sig_sha = compute_manifest_sig_sha256(sig_row)
                     conn.execute(
                         """UPDATE filings_manifest
                            SET audit_status = ?,
@@ -940,33 +998,47 @@ def enrich_fhsc_manifest_disclosures(
                                published_at_basis = ?,
                                effective_available_at = ?,
                                is_filed_late = ?,
-                               provider_attrs_json = ?
+                               provider_attrs_json = ?,
+                               manifest_sig_sha256 = ?
                            WHERE filing_id = ?""",
                         (
                             str(enriched_meta.audit_status),
-                            enriched_meta.published_at.isoformat()
-                            if enriched_meta.published_at is not None
-                            else None,
+                            pub_iso,
                             enriched_meta.published_at_basis,
-                            enriched_meta.effective_available_at.isoformat(),
+                            eff_iso,
                             enriched_meta.is_filed_late,
-                            json.dumps(attrs, ensure_ascii=False, allow_nan=False),
+                            attrs_json,
+                            sig_sha,
                             filing_id,
                         ),
                     )
 
     if calendar_sync_targets:
+        sig_cols = ", ".join(MANIFEST_SIGNATURE_FIELDS)
         with archive.state.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             for filing_id, pub_iso, eff_iso, is_late in calendar_sync_targets:
-                conn.execute(
+                cur = conn.execute(
                     """UPDATE filings_manifest
-                       SET effective_available_at = ?, is_filed_late = ?
+                       SET effective_available_at = ?,
+                           is_filed_late = ?,
+                           manifest_sig_sha256 = NULL
                        WHERE filing_id = ?
                          AND published_at = ?
                          AND published_at_basis = 'EXACT_FILING'""",
                     (eff_iso, is_late, filing_id, pub_iso),
                 )
+                if cur.rowcount > 0:
+                    refreshed_row = conn.execute(
+                        f"SELECT {sig_cols} FROM filings_manifest WHERE filing_id = ?",
+                        (filing_id,),
+                    ).fetchone()
+                    if refreshed_row is not None:
+                        sig_sha = compute_manifest_sig_sha256(dict(refreshed_row))
+                        conn.execute(
+                            "UPDATE filings_manifest SET manifest_sig_sha256 = ? WHERE filing_id = ?",
+                            (sig_sha, filing_id),
+                        )
 
     upgraded = matched - previously_matching
     return EnrichmentSummary(

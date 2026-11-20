@@ -1,0 +1,74 @@
+# FinIntel V2 Tier 1 Production Infrastructure Stack
+# Services:
+#   - postgres:   PostgreSQL 16 (ducklake_catalog + dagster_state databases)
+#   - valkey:     Valkey 8 shared L2 response cache across multi-worker Granian API
+#   - prometheus: RED metrics scraper targeting FastAPI /metrics
+#
+# Quick start:
+#   docker compose up -d
+#   $env:FININTEL_VALKEY_URL = "redis://127.0.0.1:6379/0"
+#   $env:FININTEL_DUCKLAKE_PG_DSN = "postgresql://finintel:finintel_dev@127.0.0.1:5432/ducklake_catalog"
+#   $env:FININTEL_SERVER_ENGINE = "granian"
+#   $env:FININTEL_WORKERS = "4"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: finintel-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${FININTEL_PG_USER:-finintel}
+      POSTGRES_PASSWORD: ${FININTEL_PG_PASSWORD:-finintel_dev}
+      POSTGRES_DB: postgres
+    ports:
+      - "127.0.0.1:${FININTEL_PG_PORT:-5432}:5432"
+    volumes:
+      - finintel_pg_data:/var/lib/postgresql/data
+      - ./config/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${FININTEL_PG_USER:-finintel} -d ducklake_catalog"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: finintel-valkey
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      - "127.0.0.1:${FININTEL_VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: finintel-prometheus
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${FININTEL_PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - finintel_prom_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+
+volumes:
+  finintel_pg_data:
+  finintel_prom_data:

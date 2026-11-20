@@ -16,23 +16,32 @@ Verified Sources:
 """
 
 import math
-from collections.abc import Mapping
-from datetime import date
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import dagster as dg
 import httpx
 import yaml  # type: ignore[import-untyped]
+from pydantic import PrivateAttr
 
 from finintel.exceptions import ContractViolationError
 from finintel.pipeline.ingest import (
     DEFAULT_CAFEF_URL_TEMPLATE,
+    DEFAULT_DISCLOSURE_BACKOFF_BASE_SECONDS,
+    DEFAULT_DISCLOSURE_BACKOFF_MAX_SECONDS,
+    DEFAULT_DISCLOSURE_COOLDOWN_FAILURE_THRESHOLD,
+    DEFAULT_DISCLOSURE_COOLDOWN_SECONDS,
+    DEFAULT_DISCLOSURE_MAX_RETRIES,
+    DEFAULT_DISCLOSURE_OUTAGE_FAILURE_THRESHOLD,
     DEFAULT_DISCLOSURE_TIMEOUT_SECONDS,
     DEFAULT_VIETCAP_URL_TEMPLATE,
     DISCLOSURE_ALLOWED_HOSTS,
     MAX_DISCLOSURE_FILE_BYTES,
     MAX_DISCLOSURE_TIMEOUT_SECONDS,
+    fetch_disclosure_bytes_with_retry,
 )
 from finintel.pipeline.state_store import StateStore
 from finintel.storage.curated_gc import collect_curated_garbage
@@ -165,6 +174,7 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
     min_snapshot_age_seconds: int | None = None
     curated_keep_runs: int | None = None
     publish_unmapped: bool | None = None
+    override_data_path: bool | None = None
     lock_timeout_seconds: float = DEFAULT_PIPELINE_LOCK_TIMEOUT
 
     def resolve_lock_timeout(self) -> float:
@@ -265,6 +275,11 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
             if self.publish_unmapped is not None
             else base.publish_unmapped
         )
+        override_data_path = (
+            self.override_data_path
+            if self.override_data_path is not None
+            else base.override_data_path
+        )
 
         return StorageConfig(
             backend=effective_backend,
@@ -281,6 +296,7 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
                 curated_keep_runs=curated_keep,
             ),
             publish_unmapped=publish_unmapped,
+            override_data_path=override_data_path,
         )
 
     def build_repository(self, paths: FinIntelPathsResource) -> ParquetRepository:
@@ -352,6 +368,15 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
         lock_path = state_store.path.with_name("pipeline.lock")
 
         with pipeline_write_lock(lock_path, timeout=timeout):
+            recovered_interrupted_runs = state_store.recover_interrupted_runs()
+            unpromoted_snapshots: list[dict[str, object]] = []
+            warnings: list[str] = []
+            runs_recovered = int(recovered_interrupted_runs.get("runs_recovered", 0))
+            if runs_recovered > 0:
+                warnings.append(
+                    f"Recovered {runs_recovered} interrupted RUNNING pipeline run(s)."
+                )
+
             backend_result: dict[str, object]
             if cfg.backend == "ducklake":
                 if (
@@ -364,6 +389,15 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
                     }
                 else:
                     store = DuckLakeStore.from_config(cfg, state_store=state_store)
+                    unpromoted_snapshots = store.reconcile_unpromoted_snapshots()
+                    if unpromoted_snapshots:
+                        snap_ids = [
+                            str(item.get("snapshot_id", ""))
+                            for item in unpromoted_snapshots
+                        ]
+                        warnings.append(
+                            f"Detected {len(unpromoted_snapshots)} unpromoted DuckLake snapshot(s): {', '.join(snap_ids)}."
+                        )
                     backend_result = store.maintain()
             else:
                 publisher = SnapshotPublisher(
@@ -387,6 +421,10 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
             "backend": cfg.backend,
             "backend_maintenance": backend_result,
             "removed_curated_dirs": [str(path) for path in removed_curated],
+            "recovered_interrupted_runs": recovered_interrupted_runs,
+            "unpromoted_snapshots": unpromoted_snapshots,
+            "unpromoted_snapshot_count": len(unpromoted_snapshots),
+            "warnings": warnings,
         }
 
 
@@ -409,6 +447,15 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
     fetch_online: bool = False
     on_error: str = "warn"
     max_date: str | None = None
+    max_retries: int = DEFAULT_DISCLOSURE_MAX_RETRIES
+    backoff_base_seconds: float = DEFAULT_DISCLOSURE_BACKOFF_BASE_SECONDS
+    backoff_max_seconds: float = DEFAULT_DISCLOSURE_BACKOFF_MAX_SECONDS
+    cooldown_failure_threshold: int = DEFAULT_DISCLOSURE_COOLDOWN_FAILURE_THRESHOLD
+    cooldown_seconds: float = DEFAULT_DISCLOSURE_COOLDOWN_SECONDS
+    outage_failure_threshold: float | None = DEFAULT_DISCLOSURE_OUTAGE_FAILURE_THRESHOLD
+
+    _client: httpx.Client | None = PrivateAttr(default=None)
+    _session_depth: int = PrivateAttr(default=0)
 
     def validate_config(self) -> None:
         """Validate security bounds eagerly before performing any I/O."""
@@ -430,6 +477,51 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
         if self.on_error not in ("warn", "fail"):
             raise ContractViolationError(
                 "DisclosureFetcherResource.on_error must be 'warn' or 'fail'."
+            )
+        if type(self.max_retries) is not int or not 0 <= self.max_retries <= 10:
+            raise ContractViolationError(
+                "DisclosureFetcherResource.max_retries must be an integer within [0, 10]."
+            )
+        if (
+            isinstance(self.backoff_base_seconds, bool)
+            or not math.isfinite(self.backoff_base_seconds)
+            or not 0.0 <= float(self.backoff_base_seconds) <= 60.0
+        ):
+            raise ContractViolationError(
+                "DisclosureFetcherResource.backoff_base_seconds must be within [0, 60]."
+            )
+        if (
+            isinstance(self.backoff_max_seconds, bool)
+            or not math.isfinite(self.backoff_max_seconds)
+            or not float(self.backoff_base_seconds)
+            <= float(self.backoff_max_seconds)
+            <= 300.0
+        ):
+            raise ContractViolationError(
+                "DisclosureFetcherResource.backoff_max_seconds must be within [backoff_base_seconds, 300]."
+            )
+        if (
+            type(self.cooldown_failure_threshold) is not int
+            or self.cooldown_failure_threshold < 1
+        ):
+            raise ContractViolationError(
+                "DisclosureFetcherResource.cooldown_failure_threshold must be an integer >= 1."
+            )
+        if (
+            isinstance(self.cooldown_seconds, bool)
+            or not math.isfinite(self.cooldown_seconds)
+            or float(self.cooldown_seconds) < 0.0
+        ):
+            raise ContractViolationError(
+                "DisclosureFetcherResource.cooldown_seconds must be a finite non-negative number."
+            )
+        if self.outage_failure_threshold is not None and (
+            isinstance(self.outage_failure_threshold, bool)
+            or not math.isfinite(self.outage_failure_threshold)
+            or not 0.0 < float(self.outage_failure_threshold) <= 1.0
+        ):
+            raise ContractViolationError(
+                "DisclosureFetcherResource.outage_failure_threshold must be within (0, 1] or None."
             )
         self.validate_url(self.vietcap_url_template.format(ticker="FPT"))
         self.validate_url(self.cafef_url_template.format(ticker="FPT"))
@@ -483,6 +575,53 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
             timeout=httpx.Timeout(float(self.timeout_seconds)),
         )
 
+    def close(self) -> None:
+        """Close any pooled HTTPX client held by the current session."""
+        client = self._client
+        self._client = None
+        if client is not None:
+            client.close()
+
+    @contextmanager
+    def session(self) -> Iterator["DisclosureFetcherResource"]:
+        """Re-entrant session context pooling one ``httpx.Client`` across calls."""
+        self._session_depth += 1
+        try:
+            yield self
+        finally:
+            self._session_depth = max(0, self._session_depth - 1)
+            if self._session_depth == 0:
+                self.close()
+
+    def setup_for_execution(self, context: dg.InitResourceContext) -> None:
+        _ = context
+        self._session_depth += 1
+
+    def teardown_after_execution(self, context: dg.InitResourceContext) -> None:
+        _ = context
+        self._session_depth = max(0, self._session_depth - 1)
+        if self._session_depth == 0:
+            self.close()
+
+    def _acquire_client(self) -> tuple[httpx.Client, bool]:
+        if self._session_depth > 0:
+            if self._client is None:
+                client = self._create_http_client()
+                if client.follow_redirects:
+                    client.close()
+                    raise ContractViolationError(
+                        "Disclosure HTTP client must keep follow_redirects=False."
+                    )
+                self._client = client
+            return self._client, False
+        client = self._create_http_client()
+        if client.follow_redirects:
+            client.close()
+            raise ContractViolationError(
+                "Disclosure HTTP client must keep follow_redirects=False."
+            )
+        return client, True
+
     def read_local_confined(
         self, filename: str, *, base_dir: Path | None = None
     ) -> bytes | None:
@@ -529,30 +668,35 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
             )
         return content
 
-    def fetch_bytes(self, url: str) -> bytes:
+    def fetch_bytes(
+        self,
+        url: str,
+        *,
+        state_store: StateStore | None = None,
+        sleeper: Callable[[float], None] | None = None,
+        now_fn: Callable[[], datetime] | None = None,
+    ) -> bytes:
         """Fetch remote disclosure bytes after validating HTTPS allowlist and bounds."""
         self.validate_config()
         validated_url = self.validate_url(url)
-        chunks: list[bytes] = []
-        total = 0
-        with self._create_http_client() as client:
-            if client.follow_redirects:
-                raise ContractViolationError(
-                    "Disclosure HTTP client must keep follow_redirects=False."
-                )
-            with client.stream("GET", validated_url) as response:
-                if response.status_code != 200:
-                    raise RuntimeError(
-                        f"Disclosure endpoint returned HTTP {response.status_code}."
-                    )
-                for chunk in response.iter_bytes():
-                    total += len(chunk)
-                    if total > self.max_bytes:
-                        raise ContractViolationError(
-                            "Remote disclosure response exceeds the configured size limit."
-                        )
-                    chunks.append(chunk)
-        return b"".join(chunks)
+        client, owned = self._acquire_client()
+        try:
+            return fetch_disclosure_bytes_with_retry(
+                validated_url,
+                client=client,
+                max_bytes=self.max_bytes,
+                max_retries=self.max_retries,
+                backoff_base_seconds=float(self.backoff_base_seconds),
+                backoff_max_seconds=float(self.backoff_max_seconds),
+                state_store=state_store,
+                cooldown_failure_threshold=self.cooldown_failure_threshold,
+                cooldown_seconds=float(self.cooldown_seconds),
+                sleeper=sleeper,
+                now_fn=now_fn,
+            )
+        finally:
+            if owned:
+                client.close()
 
     def fetch_payload(
         self,
@@ -560,6 +704,9 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
         local_filename: str,
         source_url: str,
         base_dir: Path | None = None,
+        state_store: StateStore | None = None,
+        sleeper: Callable[[float], None] | None = None,
+        now_fn: Callable[[], datetime] | None = None,
     ) -> bytes | None:
         """Load a disclosure payload from confined local cache first, then HTTPS if enabled."""
         self.validate_config()
@@ -569,4 +716,9 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
             return local_bytes
         if not self.fetch_online:
             return None
-        return self.fetch_bytes(validated_url)
+        return self.fetch_bytes(
+            validated_url,
+            state_store=state_store,
+            sleeper=sleeper,
+            now_fn=now_fn,
+        )

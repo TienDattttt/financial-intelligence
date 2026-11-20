@@ -53,6 +53,8 @@ def _days(start: pl.Expr, end: pl.Expr) -> pl.Expr:
 
 def _fact_columns(facts: pl.DataFrame) -> pl.DataFrame:
     """Project the normalization schema, including legacy late-filing evidence."""
+    if facts.schema == FACT_SCHEMA:
+        return facts
     if "is_filed_late" not in facts.columns:
         facts = facts.with_columns(
             pl.lit(None, dtype=pl.Boolean).alias("is_filed_late")

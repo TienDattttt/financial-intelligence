@@ -32,6 +32,8 @@ import json
 import math
 import os
 import re
+import sqlite3
+import time
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -39,6 +41,8 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
+import hishel
+import hishel.httpx as hishel_httpx
 import httpx
 import polars as pl
 import streamlit as st
@@ -298,10 +302,20 @@ def sanitize_ui_error(exc: BaseException, *, context: str = "truy vấn dữ li�
 
 @st.cache_resource
 def get_http_client(base_url: str) -> httpx.Client:
-    """Return a cached, redirect-disabled, timeout-bounded HTTP client for FastAPI serving."""
+    """Return a cached, RFC 9110 ETag-revalidating HTTP client for FastAPI serving."""
     validated = validate_api_url(base_url)
+    mem_conn = sqlite3.connect(
+        ":memory:", check_same_thread=False, isolation_level=None
+    )
+    storage = hishel.SqliteStorage(connection=mem_conn)
+    cache_transport = hishel_httpx.CacheTransport(
+        next_transport=httpx.HTTPTransport(),
+        storage=storage,
+        rfc=hishel.CacheOptions(shared=False),
+    )
     return httpx.Client(
         base_url=validated,
+        transport=cache_transport,
         follow_redirects=False,
         timeout=_HTTP_TIMEOUT_SECONDS,
         headers={"Accept": "application/json"},
@@ -391,7 +405,7 @@ def _api_post_json(base_url: str, path: str, body: Mapping[str, Any]) -> dict[st
     return payload
 
 
-@st.cache_data(ttl=None)
+@st.cache_data(ttl=None, max_entries=16)
 def load_snapshot_overview(
     snapshot_id: str,
     *,
@@ -415,7 +429,7 @@ def load_snapshot_overview(
     )
 
 
-@st.cache_data(ttl=None)
+@st.cache_data(ttl=None, max_entries=16)
 def load_issuers(
     snapshot_id: str,
     *,
@@ -451,7 +465,7 @@ def load_issuers(
     return frame.sort("ticker") if not frame.is_empty() else frame
 
 
-@st.cache_data(ttl=None)
+@st.cache_data(ttl=None, max_entries=128)
 def load_company_profile(
     snapshot_id: str,
     ticker: str,
@@ -555,7 +569,7 @@ def load_company_profile(
     )
 
 
-@st.cache_data(ttl=None)
+@st.cache_data(ttl=None, max_entries=128)
 def load_ratio_periods(
     snapshot_id: str,
     ticker: str,
@@ -623,7 +637,7 @@ def load_ratio_periods(
     )
 
 
-@st.cache_data(ttl=None)
+@st.cache_data(ttl=None, max_entries=32)
 def load_available_periods(
     snapshot_id: str,
     statement_scope: str,
@@ -639,6 +653,24 @@ def load_available_periods(
             statement_scope=statement_scope,
             period_type=period_type,
         )
+
+    # Single-call authoritative period discovery via /api/v2/meta/periods (NFR-06).
+    try:
+        meta = _api_get_json(target, "/api/v2/meta/periods")
+        avail_map = meta.get("available_periods")
+        if isinstance(avail_map, Mapping):
+            scope_map = avail_map.get(statement_scope)
+            if isinstance(scope_map, Mapping):
+                raw_dates = scope_map.get(period_type)
+                if isinstance(raw_dates, list):
+                    parsed = [
+                        d
+                        for raw in raw_dates
+                        if (d := _parse_optional_date(raw)) is not None
+                    ]
+                    return sorted(set(parsed), reverse=True)
+    except Exception:
+        pass
 
     discovered: set[date] = set()
     try:
@@ -657,37 +689,10 @@ def load_available_periods(
             discovered.add(latest)
     except Exception:
         pass
-
-    issuers_df = load_issuers(snapshot_id, mode=mode, target=target)
-    if not issuers_df.is_empty():
-        sample_tickers = issuers_df["ticker"].head(3).to_list()
-        pv: PeriodView = "Annual" if period_type == "ANNUAL" else "Quarterly"
-        for sample_ticker in sample_tickers:
-            try:
-                profile = load_company_profile(
-                    snapshot_id,
-                    str(sample_ticker),
-                    statement_scope,
-                    pv,
-                    mode=mode,
-                    target=target,
-                )
-                if (
-                    not profile.ratios_table.is_empty()
-                    and "period_end_date" in profile.ratios_table.columns
-                ):
-                    for d_val in (
-                        profile.ratios_table["period_end_date"].drop_nulls().to_list()
-                    ):
-                        parsed_d = _parse_optional_date(d_val)
-                        if parsed_d is not None:
-                            discovered.add(parsed_d)
-            except Exception:
-                continue
     return sorted(discovered, reverse=True)
 
 
-@st.cache_data(ttl=None)
+@st.cache_data(ttl=None, max_entries=128)
 def load_industry_comparison(
     snapshot_id: str,
     ticker: str,
@@ -768,7 +773,7 @@ def load_industry_comparison(
     return comparison, history_df
 
 
-@st.cache_data(ttl=None)
+@st.cache_data(ttl=None, max_entries=256)
 def load_ratio_lineage(
     snapshot_id: str,
     ticker: str,
@@ -895,7 +900,7 @@ def load_ratio_lineage(
     )
 
 
-@st.cache_data(ttl=None)
+@st.cache_data(ttl=None, max_entries=64)
 def load_quality_summary_page(
     snapshot_id: str,
     limit: int,
@@ -923,7 +928,7 @@ def load_quality_summary_page(
     return frame, int(data.get("total", frame.height))
 
 
-@st.cache_data(ttl=None)
+@st.cache_data(ttl=None, max_entries=64)
 def load_audit_quarantine_page(
     snapshot_id: str,
     limit: int,
@@ -951,7 +956,7 @@ def load_audit_quarantine_page(
     return frame, int(data.get("total", frame.height))
 
 
-@st.cache_data(ttl=None)
+@st.cache_data(ttl=None, max_entries=64)
 def load_screener_page(
     snapshot_id: str,
     *,
@@ -1042,6 +1047,8 @@ class DashboardClient:
     def __init__(self, *, mode: ClientMode, target: str) -> None:
         self._mode: ClientMode = mode
         self._target: str = target
+        self._pinned_snapshot_id: str | None = None
+        self._pinned_snapshot_at: float = 0.0
 
     @classmethod
     def from_env(
@@ -1063,13 +1070,24 @@ class DashboardClient:
     def mode(self) -> ClientMode:
         return self._mode
 
-    def get_active_snapshot_id(self) -> str:
-        """Resolve the current immutable snapshot ID (uncached so cache auto-invalidates)."""
+    def get_active_snapshot_id(self, *, refresh: bool = False) -> str:
+        """Resolve the current immutable snapshot ID (pinned once per render cycle)."""
+        now = time.monotonic()
+        if (
+            not refresh
+            and self._pinned_snapshot_id is not None
+            and (now - self._pinned_snapshot_at) < 2.0
+        ):
+            return self._pinned_snapshot_id
         if self._mode == "local":
             snap_id = get_local_query_service(self._target).repository.snapshot_id
-            return str(snap_id or "unknown")
-        health = _api_get_json(self._target, "/api/v1/health")
-        return str(health.get("active_snapshot_id") or "unknown")
+            resolved = str(snap_id or "unknown")
+        else:
+            health = _api_get_json(self._target, "/api/v1/health")
+            resolved = str(health.get("active_snapshot_id") or "unknown")
+        self._pinned_snapshot_id = resolved
+        self._pinned_snapshot_at = now
+        return resolved
 
     def get_snapshot_overview(self) -> SnapshotOverview:
         snap_id = self.get_active_snapshot_id()
@@ -1244,6 +1262,7 @@ class DashboardClient:
                 "dso_shock_days": dso_shock_days,
                 "dio_shock_days": dio_shock_days,
                 "top_n": top_n,
+                "include_all_newly_distressed": True,
             }
             data = _api_post_json(self._target, "/api/v1/stress-test", payload)
             return StressTestViewResult(

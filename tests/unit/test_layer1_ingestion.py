@@ -1904,7 +1904,7 @@ def test_ingest_handler_infer_calendar_schedule_overrides_and_disclosure_enrichm
                 "on_error": "fail",
             },
         },
-        enrichment_fetched_at=datetime(2026, 11, 20, 8, 0, 0, tzinfo=UTC),
+        enrichment_fetched_at=datetime(2099, 1, 1, 0, 0, 0, tzinfo=UTC),
     )
 
     with caplog.at_level("INFO", logger="finintel.pipeline.ingest"):

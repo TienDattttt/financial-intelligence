@@ -19,7 +19,7 @@ Runtime API Verification (Python 3.11.9, duckdb==1.4.2, DuckLake format 0.3):
   ``pipeline.lock``.
 - DuckLake 0.3 raises ``BinderException`` on ``ALTER TABLE ... SET SORTED BY`` and
   ``NotImplementedException`` on table-scoped ``set_option`` for transaction-local tables;
-  tables are physically sorted via Polars + SQL ``ORDER BY`` with catalog-scoped
+  tables are physically sorted via SQL ``ORDER BY`` with catalog-scoped
   ``set_option('parquet_row_group_size', ...)``, while ``SET SORTED BY`` is probed outside
   the publish transaction so it activates automatically on DuckLake 0.4+.
 - On SQLite catalogs, 1-arg ``ducklake_cleanup_old_files(alias)`` raises ``BinderException``
@@ -57,7 +57,6 @@ from finintel.storage.snapshot_publisher import (
     pipeline_write_lock,
     prepare_storage_table,
     row_group_size_for_table,
-    sort_table_for_storage,
 )
 
 logger = logging.getLogger("finintel.storage.ducklake")
@@ -65,9 +64,26 @@ _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 SNAPSHOT_AUDIT_TABLE = "_snapshot_audit"
 DEFAULT_CATALOG_ALIAS = "finintel_lake"
 DEFAULT_POSTGRES_DSN_ENV = "FININTEL_DUCKLAKE_PG_DSN"
+DEFAULT_OVERRIDE_DATA_PATH_ENV = "FININTEL_DUCKLAKE_OVERRIDE_DATA_PATH"
 
 StorageBackend = Literal["parquet", "ducklake"]
 CatalogDriver = Literal["sqlite", "postgres"]
+
+
+def _resolve_override_data_path(explicit: bool = False) -> bool:
+    if explicit:
+        return True
+    raw = os.environ.get(DEFAULT_OVERRIDE_DATA_PATH_ENV)
+    if raw is None or not raw.strip():
+        return False
+    norm = raw.strip().lower()
+    if norm in {"1", "true", "yes", "on"}:
+        return True
+    if norm in {"0", "false", "no", "off"}:
+        return False
+    raise ContractViolationError(
+        f"{DEFAULT_OVERRIDE_DATA_PATH_ENV} must be a boolean value, got {raw!r}."
+    )
 
 
 def validate_sql_identifier(name: str, *, label: str = "identifier") -> str:
@@ -120,6 +136,7 @@ class StorageConfig:
     catalog_alias: str = DEFAULT_CATALOG_ALIAS
     retention: StorageRetentionConfig = StorageRetentionConfig()
     publish_unmapped: bool = False
+    override_data_path: bool = False
 
     @classmethod
     def from_mapping(
@@ -144,6 +161,7 @@ class StorageConfig:
                 catalog_alias=DEFAULT_CATALOG_ALIAS,
                 retention=StorageRetentionConfig(),
                 publish_unmapped=False,
+                override_data_path=False,
             )
 
         raw_backend = raw.get("backend", "parquet")
@@ -209,6 +227,10 @@ class StorageConfig:
         if type(publish_unmapped) is not bool:
             raise ValueError("storage.publish_unmapped must be a boolean.")
 
+        override_data_path = raw.get("override_data_path", False)
+        if type(override_data_path) is not bool:
+            raise ValueError("storage.override_data_path must be a boolean.")
+
         return cls(
             backend=backend,
             catalog=StorageCatalogConfig(
@@ -224,6 +246,7 @@ class StorageConfig:
                 curated_keep_runs=curated_keep_runs,
             ),
             publish_unmapped=publish_unmapped,
+            override_data_path=override_data_path,
         )
 
 
@@ -300,6 +323,7 @@ def build_postgres_secret_statements(
     data_path: Path,
     catalog_alias: str = DEFAULT_CATALOG_ALIAS,
     read_only: bool = False,
+    override_data_path: bool = False,
 ) -> tuple[str, str, str]:
     """Build DuckDB ``CREATE SECRET`` + ``ATTACH`` SQL for a PostgreSQL DuckLake catalog.
 
@@ -346,7 +370,12 @@ def build_postgres_secret_statements(
         f"METADATA_PARAMETERS MAP {{'TYPE': 'postgres', 'SECRET': '{pg_secret_name}'}}"
         ");"
     )
-    attach_opts = " (READ_ONLY)" if read_only else ""
+    attach_options: list[str] = []
+    if override_data_path:
+        attach_options.append("OVERRIDE_DATA_PATH true")
+    if read_only:
+        attach_options.append("READ_ONLY")
+    attach_opts = f" ({', '.join(attach_options)})" if attach_options else ""
     attach_stmt = f"ATTACH 'ducklake:{dl_secret_name}' AS \"{alias}\"{attach_opts};"
     return create_pg_secret, create_dl_secret, attach_stmt
 
@@ -360,6 +389,7 @@ def ensure_ducklake_attached(
     catalog_driver: CatalogDriver = "sqlite",
     postgres_dsn_env: str = DEFAULT_POSTGRES_DSN_ENV,
     read_only: bool = True,
+    override_data_path: bool = False,
 ) -> None:
     """Attach the DuckLake catalog onto ``connection`` if not already attached."""
     alias = validate_sql_identifier(catalog_alias, label="catalog_alias")
@@ -370,6 +400,7 @@ def ensure_ducklake_attached(
     if existing is not None:
         return
 
+    effective_override = _resolve_override_data_path(override_data_path)
     connection.execute("LOAD ducklake;")
     if catalog_driver == "postgres":
         connection.execute("LOAD postgres;")
@@ -378,6 +409,7 @@ def ensure_ducklake_attached(
             data_path=data_path,
             catalog_alias=alias,
             read_only=read_only,
+            override_data_path=effective_override,
         )
         try:
             for stmt in stmts:
@@ -392,9 +424,12 @@ def ensure_ducklake_attached(
     connection.execute("LOAD sqlite;")
     cat_sql = _escape_sql_literal(catalog_path.resolve().as_posix())
     data_sql = _escape_sql_literal(data_path.resolve().as_posix())
-    opts = (
-        f"DATA_PATH '{data_sql}', READ_ONLY" if read_only else f"DATA_PATH '{data_sql}'"
-    )
+    sqlite_attach_options = [f"DATA_PATH '{data_sql}'"]
+    if effective_override:
+        sqlite_attach_options.append("OVERRIDE_DATA_PATH true")
+    if read_only:
+        sqlite_attach_options.append("READ_ONLY")
+    opts = ", ".join(sqlite_attach_options)
     connection.execute(f"ATTACH 'ducklake:sqlite:{cat_sql}' AS \"{alias}\" ({opts});")
 
 
@@ -413,6 +448,7 @@ class DuckLakeStore:
         keep_snapshots: int = 2,
         min_snapshot_age_seconds: int = 3600,
         lock_path: Path | None = None,
+        override_data_path: bool = False,
     ) -> None:
         if type(keep_snapshots) is not int or keep_snapshots < 2:
             raise ValueError("keep_snapshots must be an integer >= 2.")
@@ -433,6 +469,7 @@ class DuckLakeStore:
             if lock_path is not None
             else state_store.path.with_name("pipeline.lock").resolve()
         )
+        self.override_data_path = override_data_path
         self._set_sorted_by_supported: bool | None = None
 
     @classmethod
@@ -449,6 +486,7 @@ class DuckLakeStore:
             postgres_dsn_env=config.catalog.postgres_dsn_env,
             keep_snapshots=config.retention.keep_snapshots,
             min_snapshot_age_seconds=config.retention.min_snapshot_age_seconds,
+            override_data_path=config.override_data_path,
         )
 
     def _open_rw_connection(self) -> duckdb.DuckDBPyConnection:
@@ -465,6 +503,7 @@ class DuckLakeStore:
                 catalog_driver=self.catalog_driver,
                 postgres_dsn_env=self.postgres_dsn_env,
                 read_only=False,
+                override_data_path=self.override_data_path,
             )
             return con
         except BaseException:
@@ -479,10 +518,25 @@ class DuckLakeStore:
                 ducklake_version BIGINT NOT NULL,
                 run_id VARCHAR NOT NULL,
                 published_at VARCHAR NOT NULL,
-                tables_json VARCHAR NOT NULL
+                tables_json VARCHAR NOT NULL,
+                metadata_json VARCHAR
             )
             """
         )
+        col_rows = con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_catalog = ? AND table_schema = 'main' AND table_name = ?
+            """,
+            [self.catalog_alias, SNAPSHOT_AUDIT_TABLE],
+        ).fetchall()
+        existing_cols = {str(row[0]) for row in col_rows}
+        if "metadata_json" not in existing_cols:
+            con.execute(
+                f'ALTER TABLE "{self.catalog_alias}"."{SNAPSHOT_AUDIT_TABLE}" '
+                "ADD COLUMN metadata_json VARCHAR;"
+            )
 
     def _existing_user_tables(self, con: duckdb.DuckDBPyConnection) -> set[str]:
         rows = con.execute(
@@ -531,7 +585,7 @@ class DuckLakeStore:
                 self._set_sorted_by_supported = False
                 logger.debug(
                     "DuckLake catalog does not support ALTER TABLE SET SORTED BY; "
-                    "relying on explicit Polars + SQL ORDER BY pre-sorting.",
+                    "relying on explicit SQL ORDER BY sorting.",
                     extra={"event": "ducklake_set_sorted_by_unsupported"},
                 )
                 return
@@ -563,7 +617,7 @@ class DuckLakeStore:
             validated = prepare_storage_table(filename, frame)
             if validated.is_empty() and filename not in _ALLOW_EMPTY_TABLES:
                 raise ValueError(f"Snapshot table is empty: {filename}")
-            prepared[filename] = sort_table_for_storage(filename, validated)
+            prepared[filename] = validated
         return prepared
 
     def publish_snapshot(
@@ -575,7 +629,6 @@ class DuckLakeStore:
         metadata: Mapping[str, object] | None = None,
     ) -> int:
         """Atomically publish all tables in 1 DuckLake transaction, then promote in ``state.sqlite``."""
-        _ = metadata  # Metadata provenance is captured via _snapshot_audit & state_store.
         if (
             not snapshot_id.startswith("snap_")
             or Path(snapshot_id).name != snapshot_id
@@ -606,6 +659,30 @@ class DuckLakeStore:
                 raise ValueError(
                     f"Pipeline run {run_id} is not publishable from status {locked_run_row.get('status')}."
                 )
+
+            audit_meta: dict[str, object] = (
+                dict(metadata) if metadata is not None else {}
+            )
+            audit_meta.setdefault("run_id", run_id)
+            if audit_meta.get("git_commit_sha") is None and isinstance(
+                locked_run_row.get("git_commit_sha"), str
+            ):
+                audit_meta["git_commit_sha"] = locked_run_row["git_commit_sha"]
+            raw_cli_args = locked_run_row.get("cli_args_json")
+            if audit_meta.get("dagster_run_id") is None and isinstance(
+                raw_cli_args, str
+            ):
+                try:
+                    parsed_args = json.loads(raw_cli_args)
+                except ValueError:
+                    parsed_args = None
+                if isinstance(parsed_args, dict) and isinstance(
+                    parsed_args.get("dagster_run_id"), str
+                ):
+                    audit_meta["dagster_run_id"] = parsed_args["dagster_run_id"]
+            metadata_json = json.dumps(
+                audit_meta, ensure_ascii=False, sort_keys=True, default=str
+            )
 
             con = self._open_rw_connection()
             registered_views: list[str] = []
@@ -684,14 +761,15 @@ class DuckLakeStore:
 
                     con.execute(
                         f'INSERT INTO "{self.catalog_alias}"."{SNAPSHOT_AUDIT_TABLE}" '
-                        "(snapshot_id, ducklake_version, run_id, published_at, tables_json) "
-                        "VALUES (?, ?, ?, ?, ?);",
+                        "(snapshot_id, ducklake_version, run_id, published_at, tables_json, metadata_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?);",
                         [
                             snapshot_id,
                             expected_version,
                             run_id,
                             published_at,
                             tables_json,
+                            metadata_json,
                         ],
                     )
                     con.execute("COMMIT;")
@@ -749,7 +827,7 @@ class DuckLakeStore:
                 }
                 rows = con.execute(
                     f"""
-                    SELECT snapshot_id, ducklake_version, run_id, published_at, tables_json
+                    SELECT snapshot_id, ducklake_version, run_id, published_at, tables_json, metadata_json
                     FROM "{self.catalog_alias}"."{SNAPSHOT_AUDIT_TABLE}"
                     ORDER BY ducklake_version ASC
                     """
@@ -758,7 +836,14 @@ class DuckLakeStore:
                 con.close()
 
             orphans: list[dict[str, object]] = []
-            for snap_id, version, run_id, published_at, tables_json in rows:
+            for (
+                snap_id,
+                version,
+                run_id,
+                published_at,
+                tables_json,
+                metadata_json,
+            ) in rows:
                 sid = str(snap_id)
                 ver_int = int(version)
                 if sid not in promoted and ver_int in live_versions:
@@ -768,6 +853,9 @@ class DuckLakeStore:
                         "run_id": str(run_id),
                         "published_at": str(published_at),
                         "tables_json": str(tables_json),
+                        "metadata_json": (
+                            str(metadata_json) if metadata_json is not None else None
+                        ),
                     }
                     orphans.append(record)
                     logger.warning(

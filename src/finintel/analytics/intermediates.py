@@ -226,9 +226,13 @@ def cross_taxonomy(*names: str) -> pl.Expr:
 
 
 def _visible_facts(
-    facts: pl.DataFrame, as_of: date, stocks: tuple[str, ...]
+    facts: pl.DataFrame,
+    as_of: date,
+    stocks: tuple[str, ...],
+    *,
+    _precanonicalized: bool = False,
 ) -> pl.DataFrame:
-    frame = canonicalize_financial_facts(facts)
+    frame = facts if _precanonicalized else canonicalize_financial_facts(facts)
     optional = {
         "source_provider": pl.lit("normalized"),
         "source_filing_ids": pl.concat_list("filing_id"),
@@ -343,11 +347,12 @@ def _period_amounts(
         for name, dtype in FACT_SCHEMA.items()
     )
     quarterly_series = ["issuer_id", "statement_scope", "source_provider", "metric_id"]
-    ttm_flow = compute_ttm(flow).sort([*quarterly_series, "period_end_date"])
-    ttm_exact_expr = (
-        pl.col("ttm_exact_filing").fill_null(False)
-        if "ttm_exact_filing" in ttm_flow.columns
-        else pl.all_horizontal(
+    ttm_flow = compute_ttm(flow)
+    if "ttm_exact_filing" in ttm_flow.columns:
+        ttm_exact_expr = pl.col("ttm_exact_filing").fill_null(False)
+    else:
+        ttm_flow = ttm_flow.sort([*quarterly_series, "period_end_date"])
+        ttm_exact_expr = pl.all_horizontal(
             *(
                 (pl.col("published_at_basis") == "EXACT_FILING")
                 .shift(lag)
@@ -356,7 +361,6 @@ def _period_amounts(
                 for lag in range(4)
             )
         )
-    )
     quarterly = ttm_flow.with_columns(ttm_exact_expr.alias("_ttm_exact"))
     anchor_columns = [*PERIOD, *REVISION_ORDER, "taxonomy_version", "derivation_method"]
     derived_q4 = quarterly.filter(
@@ -657,6 +661,7 @@ def prepare_periods(
     *,
     as_of: date,
     include_ml_inputs: bool = False,
+    _precanonicalized: bool = False,
 ) -> pl.DataFrame:
     """Build annual and TTM inputs from reports available by the PIT cut-off.
 
@@ -706,7 +711,11 @@ def prepare_periods(
     flows = (*FLOWS, *ML_FLOWS) if include_ml_inputs else FLOWS
     amounts = (*stocks, *flows, EPS)
     periods = (
-        _period_amounts(_visible_facts(facts, as_of, stocks), stocks, flows)
+        _period_amounts(
+            _visible_facts(facts, as_of, stocks, _precanonicalized=_precanonicalized),
+            stocks,
+            flows,
+        )
         .join(identity, on="issuer_id", how="left")
         .with_columns(pl.col("_amounts_available_at").alias("_period_available_at"))
     )

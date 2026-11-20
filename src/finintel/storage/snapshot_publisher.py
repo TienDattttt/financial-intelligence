@@ -330,8 +330,39 @@ class SnapshotPublisher:
             try:
                 for filename, table in tables.items():
                     self._write_table(staging, filename, table)
+                enriched_meta = dict(metadata) if metadata is not None else {}
+                if run_id is not None:
+                    enriched_meta.setdefault("run_id", run_id)
+                    if self.state_store is not None and (
+                        enriched_meta.get("git_commit_sha") is None
+                        or enriched_meta.get("dagster_run_id") is None
+                    ):
+                        run_row = self.state_store.get_run(run_id)
+                        if run_row is not None:
+                            if enriched_meta.get(
+                                "git_commit_sha"
+                            ) is None and isinstance(
+                                run_row.get("git_commit_sha"), str
+                            ):
+                                enriched_meta["git_commit_sha"] = run_row[
+                                    "git_commit_sha"
+                                ]
+                            raw_args = run_row.get("cli_args_json")
+                            if enriched_meta.get(
+                                "dagster_run_id"
+                            ) is None and isinstance(raw_args, str):
+                                try:
+                                    parsed_args = json.loads(raw_args)
+                                except ValueError:
+                                    parsed_args = None
+                                if isinstance(parsed_args, dict) and isinstance(
+                                    parsed_args.get("dagster_run_id"), str
+                                ):
+                                    enriched_meta["dagster_run_id"] = parsed_args[
+                                        "dagster_run_id"
+                                    ]
                 meta = {
-                    **(dict(metadata) if metadata is not None else {}),
+                    **enriched_meta,
                     "snapshot_id": snapshot_id,
                     "published_at": datetime.now(UTC).isoformat(),
                     "files": sorted(tables),
