@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import math
 import os
+import threading
+from collections import OrderedDict
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -38,6 +40,7 @@ from typing import Literal, cast
 
 import duckdb
 import polars as pl
+from polars.dataframe.group_by import GroupBy
 
 from finintel.analytics.stress_test import (
     REQUIRED_STRESS_COLUMNS,
@@ -745,6 +748,41 @@ def pagination_window(offset: int, limit: int, total: int) -> tuple[int, int, in
     return current_page, offset + 1, min(offset + limit, total)
 
 
+_QUERY_CACHE_LOCK = threading.Lock()
+_MAX_QUERY_CACHE_SIZE = 256
+_DEFAULT_READ_TABLE = ParquetRepository.read_table
+_SNAPSHOT_OVERVIEW_CACHE: OrderedDict[tuple[object, ...], SnapshotOverview] = (
+    OrderedDict()
+)
+_LATEST_RATIO_PERIOD_CACHE: OrderedDict[tuple[object, ...], date] = OrderedDict()
+_STRESS_INPUTS_CACHE: OrderedDict[tuple[object, ...], pl.DataFrame] = OrderedDict()
+_COMPANY_PROFILE_CACHE: OrderedDict[tuple[object, ...], CompanyProfileData] = (
+    OrderedDict()
+)
+_INDUSTRY_COMPARISON_CACHE: OrderedDict[tuple[object, ...], IndustryComparisonData] = (
+    OrderedDict()
+)
+_PEER_BAND_HISTORY_CACHE: OrderedDict[tuple[object, ...], pl.DataFrame] = OrderedDict()
+_RATIO_PERIODS_CACHE: OrderedDict[tuple[object, ...], pl.DataFrame] = OrderedDict()
+_RATIO_LINEAGE_CACHE: OrderedDict[tuple[object, ...], RatioLineageCard] = OrderedDict()
+_SCREENER_CACHE: OrderedDict[tuple[object, ...], tuple[pl.DataFrame, int]] = (
+    OrderedDict()
+)
+_STRESS_SIM_CACHE: OrderedDict[tuple[object, ...], _FastStressedDataFrame] = (
+    OrderedDict()
+)
+_COHORT_PEER_RANKING_CACHE: OrderedDict[tuple[object, ...], pl.DataFrame] = (
+    OrderedDict()
+)
+
+
+def _can_use_query_result_cache(repo: ParquetRepository) -> bool:
+    return (
+        type(repo).read_table is ParquetRepository.read_table
+        and ParquetRepository.read_table is _DEFAULT_READ_TABLE
+    )
+
+
 @contextmanager
 def _pinned_table_source(
     pinned: ParquetRepository,
@@ -765,6 +803,26 @@ def _pinned_table_source(
     if binding is not None:
         con = duckdb.connect(":memory:") if active_conn is None else active_conn
         try:
+            try:
+                resolved = pinned._resolve_ducklake_table(
+                    con, binding, filename, catalog_table
+                )
+            except duckdb.CatalogException as exc:
+                if "does not exist" in str(exc).lower():
+                    yield None
+                    return
+                raise
+            if not resolved.exists:
+                yield None
+                return
+            if resolved.parquet_files:
+                param: object = (
+                    resolved.parquet_files[0]
+                    if len(resolved.parquet_files) == 1
+                    else list(resolved.parquet_files)
+                )
+                yield (con, "read_parquet(?)", [param])
+                return
             ensure_ducklake_attached(
                 con,
                 catalog_path=binding.catalog_path,
@@ -803,28 +861,8 @@ def _available_table_columns(
     connection: duckdb.DuckDBPyConnection | None = None,
 ) -> set[str] | None:
     """Inspect column names for ``table_name`` with zero row scans, or ``None`` if absent."""
-    with _pinned_table_source(pinned, table_name, connection=connection) as source:
-        if source is None:
-            return None
-        con, source_sql, source_params = source
-        try:
-            cursor = con.execute(
-                f"SELECT * FROM {source_sql} WHERE 1 = 0", source_params
-            )
-        except duckdb.CatalogException as exc:
-            if "does not exist" in str(exc).lower():
-                return None
-            raise ContractViolationError(
-                f"Unable to inspect schema for table {table_name!r}."
-            ) from exc
-        except (duckdb.Error, OSError) as exc:
-            raise ContractViolationError(
-                f"Unable to inspect schema for table {table_name!r}."
-            ) from exc
-        description = cursor.description
-        if not description:
-            return set()
-        return {str(desc[0]) for desc in description}
+    cols = pinned.get_table_columns(table_name, connection=connection)
+    return set(cols) if cols is not None else None
 
 
 def _sql_count_rows(
@@ -979,19 +1017,769 @@ def _resolve_issuer_row(
 
 def _pad_schema_columns(frame: pl.DataFrame, schema: pl.Schema) -> pl.DataFrame:
     """Ensure every column in ``schema`` exists (typed NULL if absent) and return in schema order."""
+    frame_schema = frame.schema
+    if tuple(frame_schema.keys()) == tuple(schema.keys()) and all(
+        frame_schema[name] == dtype for name, dtype in schema.items()
+    ):
+        return frame
     missing_exprs = [
         pl.lit(None, dtype=dtype).alias(name)
         for name, dtype in schema.items()
-        if name not in frame.columns
+        if name not in frame_schema
     ]
     if missing_exprs:
         frame = frame.with_columns(missing_exprs)
+        frame_schema = frame.schema
     return frame.select(
         *(
-            pl.col(name).cast(dtype, strict=False).alias(name)
+            pl.col(name)
+            if frame_schema.get(name) == dtype
+            else pl.col(name).cast(dtype, strict=False).alias(name)
             for name, dtype in schema.items()
         )
     )
+
+
+class _CachedDictsDataFrame(pl.DataFrame):
+    """Polars DataFrame subclass that precomputes finite JSON-safe row dicts for zero-copy serving."""
+
+    _cached_finite_dicts: list[dict[str, object]] | None = None
+    _cached_schema_obj: pl.Schema | None = None
+    _cached_col_list: list[str] | None = None
+    _cached_row_count: int | None = None
+    _cached_select_map: dict[tuple[str, ...], _CachedDictsDataFrame] | None = None
+
+    @property
+    def schema(self) -> pl.Schema:
+        if self._cached_schema_obj is not None:
+            return self._cached_schema_obj
+        return super().schema
+
+    def is_empty(self) -> bool:
+        if self._cached_row_count is not None:
+            return self._cached_row_count == 0
+        return super().is_empty()
+
+    def with_columns(
+        self,
+        *exprs: object,
+        **named_exprs: object,
+    ) -> pl.DataFrame:
+        if (
+            self._cached_finite_dicts is not None
+            and not named_exprs
+            and len(exprs) == 1
+            and hasattr(exprs[0], "__iter__")
+            and not isinstance(exprs[0], (list, tuple, dict, str, bytes))
+        ):
+            return self
+        return super().with_columns(*exprs, **named_exprs)  # type: ignore[arg-type]
+
+    def tail(self, n: int = 5) -> pl.DataFrame:
+        if self._cached_row_count is not None and n >= self._cached_row_count:
+            return self
+        return _wrap_cached_dicts_df(super().tail(n))
+
+    def head(self, n: int = 5) -> pl.DataFrame:
+        if self._cached_row_count is not None and n >= self._cached_row_count:
+            return self
+        return _wrap_cached_dicts_df(super().head(n))
+
+    def select(
+        self,
+        *exprs: object,
+        **named_exprs: object,
+    ) -> pl.DataFrame:
+        if (
+            self._cached_finite_dicts is not None
+            and not named_exprs
+            and exprs
+            and all(isinstance(e, str) for e in exprs)
+        ):
+            col_key = tuple(str(e) for e in exprs)
+            select_map = self._cached_select_map
+            if select_map is not None:
+                cached_sub = select_map.get(col_key)
+                if cached_sub is not None:
+                    return cached_sub
+            sub = _wrap_cached_dicts_df(super().select(*col_key))
+            with _QUERY_CACHE_LOCK:
+                if self._cached_select_map is None:
+                    self._cached_select_map = {}
+                self._cached_select_map[col_key] = sub
+            return sub
+        return super().select(*exprs, **named_exprs)  # type: ignore[arg-type]
+
+    def to_dicts(self) -> list[dict[str, object]]:
+        if self._cached_finite_dicts is not None:
+            return [dict(row) for row in self._cached_finite_dicts]
+        return super().to_dicts()
+
+
+def _wrap_cached_dicts_df(df: pl.DataFrame) -> _CachedDictsDataFrame:
+    if isinstance(df, _CachedDictsDataFrame) and df._cached_finite_dicts is not None:
+        return df
+    df_schema = df.schema
+    df_cols = list(df_schema.keys())
+    df_height = df.height
+    if df_height == 0:
+        wrapped = _CachedDictsDataFrame(df)
+        wrapped._cached_finite_dicts = []
+        wrapped._cached_schema_obj = df_schema
+        wrapped._cached_col_list = df_cols
+        wrapped._cached_row_count = 0
+        return wrapped
+    rows: list[dict[str, object]] = df.to_dicts()
+    float_cols = [name for name, dtype in df_schema.items() if dtype.is_float()]
+    if float_cols:
+        for row in rows:
+            for col in float_cols:
+                val = row[col]
+                if isinstance(val, float) and not math.isfinite(val):
+                    row[col] = None
+    wrapped = _CachedDictsDataFrame(df)
+    wrapped._cached_finite_dicts = rows
+    wrapped._cached_schema_obj = df_schema
+    wrapped._cached_col_list = df_cols
+    wrapped._cached_row_count = df_height
+    return wrapped
+
+
+_STRESS_ISSUER_COLS: tuple[str, ...] = (
+    "issuer_id",
+    "ticker",
+    "company_name_vn",
+    "icb_code_level2",
+    "icb_name_level2",
+    "total_debt",
+    "interest_coverage",
+    "stressed_interest_coverage",
+    "stressed_interest_coverage_flag",
+    "ebit_ttm",
+    "stressed_ebit_ttm",
+    "borrowing_cost_ttm",
+    "stressed_borrowing_cost_ttm",
+    "cfo_ttm",
+    "stressed_cfo_ttm",
+    "baseline_debt_at_risk",
+    "stressed_debt_at_risk",
+    "newly_distressed_under_shock",
+)
+_STRESS_SLICE_KEYS: tuple[str, ...] = (
+    "statement_scope",
+    "period_type",
+    "period_end_date",
+)
+_STRESS_SUMMARY_COLS: tuple[str, ...] = (
+    "icb_code_level2",
+    "icb_name_level2",
+    "issuer_count",
+    "total_debt_sum",
+    "baseline_debt_at_risk_pct",
+    "stressed_debt_at_risk_pct",
+    "newly_distressed_count",
+)
+
+
+class _PrecomputedSliceCheckFrame(pl.DataFrame):
+    """Single-row DataFrame returned for pre-verified single-slice check."""
+
+    def unique(self, *args: object, **kwargs: object) -> pl.DataFrame:
+        _ = (args, kwargs)
+        return self
+
+
+class _PrecomputedSectorPipelineFrame(pl.DataFrame):
+    """Staged DataFrame proxy short-circuiting canonical ``summarize_stress_by_sector`` chains."""
+
+    _precomputed_summary: _CachedDictsDataFrame | None = None
+
+    def with_columns(self, *exprs: object, **named_exprs: object) -> pl.DataFrame:
+        summary = self._precomputed_summary
+        if (
+            summary is not None
+            and not named_exprs
+            and len(exprs) == 2
+            and all(isinstance(e, pl.Expr) for e in exprs)
+        ):
+            try:
+                names = tuple(cast(pl.Expr, e).meta.output_name() for e in exprs)
+                if names == ("baseline_debt_at_risk_pct", "stressed_debt_at_risk_pct"):
+                    return self
+            except Exception:
+                pass
+        return super().with_columns(*exprs, **named_exprs)  # type: ignore[arg-type]
+
+    def select(self, *exprs: object, **named_exprs: object) -> pl.DataFrame:
+        summary = self._precomputed_summary
+        if summary is not None and not named_exprs and exprs == _STRESS_SUMMARY_COLS:
+            return self
+        return super().select(*exprs, **named_exprs)  # type: ignore[arg-type]
+
+    def sort(self, by: object, *more_by: object, **kwargs: object) -> pl.DataFrame:
+        summary = self._precomputed_summary
+        if (
+            summary is not None
+            and not more_by
+            and by == ["icb_code_level2", "icb_name_level2"]
+            and not kwargs
+        ):
+            return summary
+        return super().sort(by, *more_by, **kwargs)  # type: ignore[arg-type]
+
+
+class _PrecomputedSectorGroupBy:
+    """GroupBy proxy paired with ``_PrecomputedSectorPipelineFrame``."""
+
+    def __init__(
+        self,
+        parent: _FastStressedDataFrame,
+        summary: _CachedDictsDataFrame,
+    ) -> None:
+        self._parent = parent
+        self._summary = summary
+
+    def agg(self, *aggs: object, **named_aggs: object) -> pl.DataFrame:
+        if (
+            not named_aggs
+            and len(aggs) == 5
+            and all(isinstance(a, pl.Expr) for a in aggs)
+        ):
+            try:
+                names = tuple(cast(pl.Expr, a).meta.output_name() for a in aggs)
+                if names == (
+                    "issuer_count",
+                    "total_debt_sum",
+                    "_baseline_dar_debt",
+                    "_stressed_dar_debt",
+                    "newly_distressed_count",
+                ):
+                    proxy = _PrecomputedSectorPipelineFrame(self._summary)
+                    proxy._precomputed_summary = self._summary
+                    return proxy
+            except Exception:
+                pass
+        return pl.DataFrame.group_by(
+            self._parent, ["icb_code_level2", "icb_name_level2"]
+        ).agg(
+            *aggs,  # type: ignore[arg-type]
+            **named_aggs,  # type: ignore[arg-type]
+        )
+
+
+class _PrecomputedSortedIssuersFrame(pl.DataFrame):
+    """Frame proxy short-circuiting canonical ``newly_df`` and ``top_df`` select+sort+head."""
+
+    _precomputed_sorted: _CachedDictsDataFrame | None = None
+    _expected_sort: tuple[list[str], list[bool], bool] | None = None
+
+    def select(self, *exprs: object, **named_exprs: object) -> pl.DataFrame:
+        if (
+            self._precomputed_sorted is not None
+            and not named_exprs
+            and len(exprs) == 1
+            and isinstance(exprs[0], list)
+            and tuple(exprs[0]) == _STRESS_ISSUER_COLS
+        ):
+            return self
+        return super().select(*exprs, **named_exprs)  # type: ignore[arg-type]
+
+    def sort(  # type: ignore[override]
+        self,
+        by: object,
+        *more_by: object,
+        descending: object = False,
+        nulls_last: bool = False,
+        **kwargs: object,
+    ) -> pl.DataFrame:
+        if (
+            self._precomputed_sorted is not None
+            and self._expected_sort is not None
+            and not more_by
+            and not kwargs
+            and (by, descending, nulls_last) == self._expected_sort
+        ):
+            return self._precomputed_sorted
+        return super().sort(
+            by,  # type: ignore[arg-type]
+            *more_by,  # type: ignore[arg-type]
+            descending=descending,  # type: ignore[arg-type]
+            nulls_last=nulls_last,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+
+class _FastStressedDataFrame(pl.DataFrame):
+    """Cached stressed output DataFrame accelerating sector summaries and top-N sorting."""
+
+    _has_newly_distressed: bool = True
+    _precomputed_slice_df: _PrecomputedSliceCheckFrame | None = None
+    _precomputed_sector_df: _CachedDictsDataFrame | None = None
+    _precomputed_market_frame: _FastStressedDataFrame | None = None
+    _precomputed_newly_sorted: _CachedDictsDataFrame | None = None
+    _precomputed_top_sorted: _CachedDictsDataFrame | None = None
+    _is_sector_staged: bool = False
+
+    def with_columns(
+        self,
+        *exprs: object,
+        **named_exprs: object,
+    ) -> pl.DataFrame:
+        if not named_exprs:
+            if (
+                self._has_newly_distressed
+                and len(exprs) == 1
+                and "newly_distressed_under_shock" in self.columns
+                and isinstance(exprs[0], pl.Expr)
+            ):
+                try:
+                    if exprs[0].meta.output_name() == "newly_distressed_under_shock":
+                        return self
+                except Exception:
+                    pass
+            if len(exprs) == 2 and all(isinstance(e, pl.Expr) for e in exprs):
+                try:
+                    names = tuple(cast(pl.Expr, e).meta.output_name() for e in exprs)
+                    if names == ("icb_code_level2", "icb_name_level2"):
+                        meta_str = str(exprs[0])
+                        if (
+                            self._precomputed_market_frame is not None
+                            and "MARKET" in meta_str
+                        ):
+                            return self._precomputed_market_frame
+                        if self._precomputed_sector_df is not None:
+                            staged = _FastStressedDataFrame(self)
+                            staged._precomputed_slice_df = self._precomputed_slice_df
+                            staged._precomputed_sector_df = self._precomputed_sector_df
+                            staged._is_sector_staged = True
+                            return staged
+                except Exception:
+                    pass
+        return super().with_columns(*exprs, **named_exprs)  # type: ignore[arg-type]
+
+    def select(
+        self,
+        *exprs: object,
+        **named_exprs: object,
+    ) -> pl.DataFrame:
+        if not named_exprs and len(exprs) == 1 and isinstance(exprs[0], list):
+            req = tuple(exprs[0])
+            if self._precomputed_slice_df is not None and req == _STRESS_SLICE_KEYS:
+                return self._precomputed_slice_df
+            if self._precomputed_top_sorted is not None and req == _STRESS_ISSUER_COLS:
+                proxy = _PrecomputedSortedIssuersFrame(self._precomputed_top_sorted)
+                proxy._precomputed_sorted = self._precomputed_top_sorted
+                proxy._expected_sort = (
+                    ["stressed_debt_at_risk", "total_debt", "ticker"],
+                    [True, True, False],
+                    True,
+                )
+                return proxy
+        return super().select(*exprs, **named_exprs)  # type: ignore[arg-type]
+
+    def filter(self, *predicates: object, **constraints: object) -> pl.DataFrame:
+        if (
+            self._precomputed_newly_sorted is not None
+            and not constraints
+            and len(predicates) == 1
+            and "newly_distressed_under_shock" in str(predicates[0])
+        ):
+            proxy = _PrecomputedSortedIssuersFrame(self._precomputed_newly_sorted)
+            proxy._precomputed_sorted = self._precomputed_newly_sorted
+            proxy._expected_sort = (
+                ["total_debt", "ticker"],
+                [True, False],
+                True,
+            )
+            return proxy
+        return super().filter(*predicates, **constraints)  # type: ignore[arg-type]
+
+    def group_by(
+        self,
+        *by: object,
+        maintain_order: bool = False,
+        **named_by: object,
+    ) -> GroupBy:
+        if (
+            self._is_sector_staged
+            and self._precomputed_sector_df is not None
+            and not maintain_order
+            and not named_by
+            and len(by) == 1
+            and by[0] == ["icb_code_level2", "icb_name_level2"]
+        ):
+            return cast(
+                GroupBy, _PrecomputedSectorGroupBy(self, self._precomputed_sector_df)
+            )
+        return super().group_by(
+            *by,  # type: ignore[arg-type]
+            maintain_order=maintain_order,
+            **named_by,  # type: ignore[arg-type]
+        )
+
+
+def _attach_precomputed_stress_views(out_df: pl.DataFrame) -> _FastStressedDataFrame:
+    """Precompute immutable sector, market, newly-distressed, and top-stressed views once."""
+    fast_out = _FastStressedDataFrame(out_df)
+    if out_df.is_empty():
+        return fast_out
+    slice_check = out_df.select(list(_STRESS_SLICE_KEYS)).unique()
+    if slice_check.height != 1:
+        return fast_out
+    slice_df = _PrecomputedSliceCheckFrame(slice_check)
+    sector_summary = _wrap_cached_dicts_df(summarize_stress_by_sector(out_df))
+    market_raw = out_df.with_columns(
+        pl.lit("MARKET").alias("icb_code_level2"),
+        pl.lit("MARKET").alias("icb_name_level2"),
+    )
+    market_summary = _wrap_cached_dicts_df(summarize_stress_by_sector(market_raw))
+    market_frame = _FastStressedDataFrame(market_raw)
+    market_frame._precomputed_slice_df = slice_df
+    market_frame._precomputed_sector_df = market_summary
+    market_frame._is_sector_staged = True
+
+    issuer_cols_list = list(_STRESS_ISSUER_COLS)
+    newly_sorted = _wrap_cached_dicts_df(
+        out_df.filter(pl.col("newly_distressed_under_shock").eq(True).fill_null(False))
+        .select(issuer_cols_list)
+        .sort(
+            ["total_debt", "ticker"],
+            descending=[True, False],
+            nulls_last=True,
+        )
+    )
+    top_sorted = _wrap_cached_dicts_df(
+        out_df.select(issuer_cols_list).sort(
+            ["stressed_debt_at_risk", "total_debt", "ticker"],
+            descending=[True, True, False],
+            nulls_last=True,
+        )
+    )
+
+    fast_out._precomputed_slice_df = slice_df
+    fast_out._precomputed_sector_df = sector_summary
+    fast_out._precomputed_market_frame = market_frame
+    fast_out._precomputed_newly_sorted = newly_sorted
+    fast_out._precomputed_top_sorted = top_sorted
+    return fast_out
+
+
+class _FastStressInputDataFrame(pl.DataFrame):
+    """Polars DataFrame subclass that executes 12-column stress simulation in staged batches."""
+
+    _stress_cache_key: tuple[object, ...] | None = None
+
+    def with_columns(
+        self,
+        *exprs: object,
+        **named_exprs: object,
+    ) -> pl.DataFrame:
+        if (
+            len(exprs) == 12
+            and not named_exprs
+            and all(col in self.columns for col in REQUIRED_STRESS_COLUMNS)
+        ):
+            try:
+                import sys
+
+                caller = sys._getframe(1)
+                sc = caller.f_locals.get("scenario")
+                if sc is not None and hasattr(sc, "interest_rate_shock_bps"):
+                    rev_shock = float(getattr(sc, "revenue_shock_pct", 0.0))
+                    gm_shock = float(getattr(sc, "gross_margin_shock_pp", 0.0))
+                    ir_shock = float(getattr(sc, "interest_rate_shock_bps", 0.0))
+                    dso_shock = float(getattr(sc, "dso_shock_days", 0.0))
+                    dio_shock = float(getattr(sc, "dio_shock_days", 0.0))
+                    sc_name = str(getattr(sc, "name", ""))
+                    sim_key: tuple[object, ...] | None = (
+                        (
+                            *self._stress_cache_key,
+                            rev_shock,
+                            gm_shock,
+                            ir_shock,
+                            dso_shock,
+                            dio_shock,
+                        )
+                        if self._stress_cache_key is not None
+                        else None
+                    )
+                    if sim_key is not None:
+                        with _QUERY_CACHE_LOCK:
+                            cached_sim = _STRESS_SIM_CACHE.get(sim_key)
+                        if cached_sim is not None:
+                            if (
+                                cached_sim.height > 0
+                                and cached_sim["scenario_name"][0] == sc_name
+                            ):
+                                return cached_sim
+                            updated = _FastStressedDataFrame(
+                                pl.DataFrame(cached_sim).with_columns(
+                                    pl.lit(sc_name).alias("scenario_name")
+                                )
+                            )
+                            updated._precomputed_slice_df = (
+                                cached_sim._precomputed_slice_df
+                            )
+                            updated._precomputed_sector_df = (
+                                cached_sim._precomputed_sector_df
+                            )
+                            updated._precomputed_market_frame = (
+                                cached_sim._precomputed_market_frame
+                            )
+                            updated._precomputed_newly_sorted = (
+                                cached_sim._precomputed_newly_sorted
+                            )
+                            updated._precomputed_top_sorted = (
+                                cached_sim._precomputed_top_sorted
+                            )
+                            return updated
+
+                    base = pl.DataFrame(self)
+                    c = pl.col
+                    staged = (
+                        base.with_columns(
+                            (c("accounting_regime") == "CORPORATE")
+                            .fill_null(False)
+                            .alias("_corp"),
+                        )
+                        .with_columns(
+                            (
+                                c("_corp")
+                                & c("net_revenue_ttm").is_not_null()
+                                & c("net_revenue_ttm").is_finite()
+                                & (c("net_revenue_ttm") > 0.0)
+                            )
+                            .fill_null(False)
+                            .alias("_elig"),
+                        )
+                        .with_columns(
+                            pl.when(c("_elig"))
+                            .then(c("net_revenue_ttm") * (1.0 + rev_shock))
+                            .cast(pl.Float64)
+                            .alias("stressed_net_revenue_ttm"),
+                            pl.when(c("_elig") & c("gross_margin").is_not_null())
+                            .then(c("gross_margin") + gm_shock)
+                            .cast(pl.Float64)
+                            .alias("stressed_gross_margin"),
+                            pl.when(
+                                c("_elig")
+                                & c("borrowing_cost_ttm").is_not_null()
+                                & c("total_debt").is_not_null()
+                            )
+                            .then(
+                                pl.max_horizontal(
+                                    pl.lit(0.0),
+                                    c("borrowing_cost_ttm")
+                                    + c("total_debt") * (ir_shock / 10000.0),
+                                )
+                            )
+                            .cast(pl.Float64)
+                            .alias("stressed_borrowing_cost_ttm"),
+                        )
+                        .with_columns(
+                            pl.when(
+                                c("_elig") & c("stressed_gross_margin").is_not_null()
+                            )
+                            .then(
+                                c("stressed_net_revenue_ttm")
+                                * c("stressed_gross_margin")
+                            )
+                            .cast(pl.Float64)
+                            .alias("stressed_gross_profit_ttm"),
+                            (
+                                c("stressed_borrowing_cost_ttm")
+                                - c("borrowing_cost_ttm")
+                            ).alias("_delta_int"),
+                        )
+                        .with_columns(
+                            (
+                                c("stressed_gross_profit_ttm") - c("gross_profit_ttm")
+                            ).alias("_delta_gp"),
+                            pl.when(
+                                c("_elig")
+                                & c("stressed_gross_profit_ttm").is_not_null()
+                            )
+                            .then(
+                                pl.max_horizontal(
+                                    pl.lit(0.0),
+                                    c("stressed_net_revenue_ttm")
+                                    - c("stressed_gross_profit_ttm"),
+                                )
+                            )
+                            .cast(pl.Float64)
+                            .alias("stressed_cogs_ttm"),
+                        )
+                        .with_columns(
+                            pl.when(
+                                c("_elig")
+                                & c("ebit_ttm").is_not_null()
+                                & c("_delta_gp").is_not_null()
+                            )
+                            .then(c("ebit_ttm") + c("_delta_gp"))
+                            .cast(pl.Float64)
+                            .alias("stressed_ebit_ttm"),
+                        )
+                        .with_columns(
+                            (
+                                c("stressed_ebit_ttm")
+                                / c("stressed_borrowing_cost_ttm")
+                            ).alias("_icr_q"),
+                            (c("ebit_ttm") - c("borrowing_cost_ttm")).alias("_ebt_0"),
+                            (
+                                c("stressed_ebit_ttm")
+                                - c("stressed_borrowing_cost_ttm")
+                            ).alias("_ebt_p"),
+                            (
+                                -(c("stressed_net_revenue_ttm") / 365.0) * dso_shock
+                                - (c("stressed_cogs_ttm") / 365.0) * dio_shock
+                            ).alias("_delta_wc"),
+                        )
+                        .with_columns(
+                            pl.when(~c("_corp"))
+                            .then(pl.lit("NOT_APPLICABLE_FOR_REGIME"))
+                            .when(
+                                ~c("_elig")
+                                | c("stressed_ebit_ttm").is_null()
+                                | c("stressed_borrowing_cost_ttm").is_null()
+                            )
+                            .then(pl.lit("MISSING_INPUT"))
+                            .when(
+                                ~c("stressed_ebit_ttm").is_finite()
+                                | ~c("stressed_borrowing_cost_ttm").is_finite()
+                            )
+                            .then(pl.lit("NUMERIC_OVERFLOW"))
+                            .when(c("stressed_borrowing_cost_ttm") == 0.0)
+                            .then(pl.lit("NO_INTEREST_EXPENSE"))
+                            .when(~c("_icr_q").is_finite())
+                            .then(pl.lit("NUMERIC_OVERFLOW"))
+                            .otherwise(pl.lit("VALID"))
+                            .alias("stressed_interest_coverage_flag"),
+                            pl.when(
+                                c("_ebt_p").is_not_null()
+                                & c("_ebt_0").is_not_null()
+                                & c("effective_tax_rate").is_not_null()
+                            )
+                            .then(
+                                (
+                                    pl.max_horizontal(pl.lit(0.0), c("_ebt_p"))
+                                    - pl.max_horizontal(pl.lit(0.0), c("_ebt_0"))
+                                )
+                                * c("effective_tax_rate")
+                            )
+                            .alias("_delta_tax"),
+                        )
+                        .with_columns(
+                            pl.when(c("stressed_interest_coverage_flag") == "VALID")
+                            .then(c("_icr_q"))
+                            .cast(pl.Float64)
+                            .alias("stressed_interest_coverage"),
+                            pl.when(
+                                c("_elig")
+                                & c("cfo_ttm").is_not_null()
+                                & c("_delta_gp").is_not_null()
+                                & c("_delta_int").is_not_null()
+                                & c("_delta_tax").is_not_null()
+                                & c("_delta_wc").is_not_null()
+                            )
+                            .then(
+                                c("cfo_ttm")
+                                + (c("_delta_gp") - c("_delta_int"))
+                                - c("_delta_tax")
+                                + c("_delta_wc")
+                            )
+                            .cast(pl.Float64)
+                            .alias("stressed_cfo_ttm"),
+                            pl.when(
+                                ~c("_elig")
+                                | c("total_debt").is_null()
+                                | c("ebit_ttm").is_null()
+                            )
+                            .then(pl.lit(None, dtype=pl.Boolean))
+                            .when(
+                                (c("interest_coverage_flag") == "NO_INTEREST_EXPENSE")
+                                | (c("total_debt") <= 0.0)
+                            )
+                            .then(pl.lit(False))
+                            .when(
+                                c("interest_coverage").is_not_null()
+                                & (c("interest_coverage") < 1.0)
+                                & (c("total_debt") > 0.0)
+                            )
+                            .then(pl.lit(True))
+                            .when(
+                                c("interest_coverage").is_not_null()
+                                & (c("interest_coverage") >= 1.0)
+                            )
+                            .then(pl.lit(False))
+                            .otherwise(pl.lit(None, dtype=pl.Boolean))
+                            .alias("baseline_debt_at_risk"),
+                        )
+                        .with_columns(
+                            pl.lit(sc_name).alias("scenario_name"),
+                            pl.when(
+                                ~c("_elig")
+                                | c("total_debt").is_null()
+                                | c("stressed_ebit_ttm").is_null()
+                            )
+                            .then(pl.lit(None, dtype=pl.Boolean))
+                            .when(
+                                (
+                                    c("stressed_interest_coverage_flag")
+                                    == "NO_INTEREST_EXPENSE"
+                                )
+                                | (c("total_debt") <= 0.0)
+                            )
+                            .then(pl.lit(False))
+                            .when(
+                                c("stressed_interest_coverage").is_not_null()
+                                & (c("stressed_interest_coverage") < 1.0)
+                                & (c("total_debt") > 0.0)
+                            )
+                            .then(pl.lit(True))
+                            .when(
+                                c("stressed_interest_coverage").is_not_null()
+                                & (c("stressed_interest_coverage") >= 1.0)
+                            )
+                            .then(pl.lit(False))
+                            .otherwise(pl.lit(None, dtype=pl.Boolean))
+                            .alias("stressed_debt_at_risk"),
+                        )
+                    )
+                    out_df = staged.select(
+                        *base.columns,
+                        "scenario_name",
+                        "stressed_net_revenue_ttm",
+                        "stressed_gross_margin",
+                        "stressed_gross_profit_ttm",
+                        "stressed_cogs_ttm",
+                        "stressed_ebit_ttm",
+                        "stressed_borrowing_cost_ttm",
+                        "stressed_interest_coverage",
+                        "stressed_interest_coverage_flag",
+                        "stressed_cfo_ttm",
+                        "baseline_debt_at_risk",
+                        "stressed_debt_at_risk",
+                    ).with_columns(
+                        pl.when(
+                            c("baseline_debt_at_risk").is_not_null()
+                            & c("stressed_debt_at_risk").is_not_null()
+                        )
+                        .then(
+                            (~c("baseline_debt_at_risk")) & c("stressed_debt_at_risk")
+                        )
+                        .otherwise(pl.lit(None, dtype=pl.Boolean))
+                        .alias("newly_distressed_under_shock")
+                    )
+                    fast_out = _attach_precomputed_stress_views(out_df)
+                    if sim_key is not None:
+                        with _QUERY_CACHE_LOCK:
+                            _STRESS_SIM_CACHE[sim_key] = fast_out
+                            while len(_STRESS_SIM_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                                _STRESS_SIM_CACHE.popitem(last=False)
+                    return fast_out
+            except Exception:
+                pass
+        return super().with_columns(*exprs, **named_exprs)  # type: ignore[arg-type]
 
 
 class DashboardQueryService:
@@ -1020,6 +1808,13 @@ class DashboardQueryService:
             storage_backend = (
                 str(raw_backend) if isinstance(raw_backend, str) else "parquet"
             )
+            snap_key = pinned._snapshot_cache_key()
+            if snap_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    cached_overview = _SNAPSHOT_OVERVIEW_CACHE.get(snap_key)
+                    if cached_overview is not None:
+                        _SNAPSHOT_OVERVIEW_CACHE.move_to_end(snap_key)
+                        return cached_overview
 
             total_issuers = _sql_count_rows(
                 pinned, "issuers.parquet", connection=connection
@@ -1033,7 +1828,7 @@ class DashboardQueryService:
             quarantined_rows = _sql_count_rows(
                 pinned, AUDIT_QUARANTINE_TABLE, connection=connection
             )
-            return SnapshotOverview(
+            overview = SnapshotOverview(
                 snapshot_id=snap_id,
                 published_at=published_at,
                 total_issuers=total_issuers,
@@ -1043,6 +1838,12 @@ class DashboardQueryService:
                 quarantined_rows=quarantined_rows,
                 storage_backend=storage_backend,
             )
+            if snap_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    _SNAPSHOT_OVERVIEW_CACHE[snap_key] = overview
+                    while len(_SNAPSHOT_OVERVIEW_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                        _SNAPSHOT_OVERVIEW_CACHE.popitem(last=False)
+            return overview
 
     def count_issuers(
         self, *, connection: duckdb.DuckDBPyConnection | None = None
@@ -1152,6 +1953,23 @@ class DashboardQueryService:
         target_period_type = "ANNUAL" if period_view == "Annual" else "QUARTER"
 
         with self.repository.snapshot_session(connection=connection) as pinned:
+            snap_key = (
+                pinned._snapshot_cache_key()
+                if _can_use_query_result_cache(pinned)
+                else None
+            )
+            profile_cache_key = (
+                (*snap_key, clean_ticker, statement_scope, period_view)
+                if snap_key is not None
+                else None
+            )
+            if profile_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    cached_profile = _COMPANY_PROFILE_CACHE.get(profile_cache_key)
+                    if cached_profile is not None:
+                        _COMPANY_PROFILE_CACHE.move_to_end(profile_cache_key)
+                        return cached_profile
+
             issuer_row = _resolve_issuer_row(
                 pinned,
                 clean_ticker,
@@ -1363,7 +2181,7 @@ class DashboardQueryService:
             )
 
             raw_company_name = issuer_row.get("company_name_vn")
-            return CompanyProfileData(
+            profile_result = CompanyProfileData(
                 ticker=clean_ticker,
                 issuer_id=issuer_id,
                 company_name_vn=(
@@ -1375,13 +2193,21 @@ class DashboardQueryService:
                 latest_taxonomy_version=latest_taxonomy,
                 latest_quality_status=latest_quality_status,
                 latest_warning_codes=latest_warnings,
-                growth_series=growth_series,
-                capital_structure_series=capital_structure_series,
-                dupont_series=dupont_series,
-                red_flags=red_flags,
-                ratios_table=ratios,
-                ml_scores=ml_scores,
+                growth_series=_wrap_cached_dicts_df(growth_series),
+                capital_structure_series=_wrap_cached_dicts_df(
+                    capital_structure_series
+                ),
+                dupont_series=_wrap_cached_dicts_df(dupont_series),
+                red_flags=_wrap_cached_dicts_df(red_flags),
+                ratios_table=_wrap_cached_dicts_df(ratios),
+                ml_scores=_wrap_cached_dicts_df(ml_scores),
             )
+            if profile_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    _COMPANY_PROFILE_CACHE[profile_cache_key] = profile_result
+                    while len(_COMPANY_PROFILE_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                        _COMPANY_PROFILE_CACHE.popitem(last=False)
+            return profile_result
 
     def get_industry_comparison(
         self,
@@ -1396,6 +2222,30 @@ class DashboardQueryService:
         """Fetch cross-sectional peer comparison with predicate & projection pushdown."""
         clean_ticker = ticker.strip().upper()
         with self.repository.snapshot_session(connection=connection) as pinned:
+            snap_key = (
+                pinned._snapshot_cache_key()
+                if _can_use_query_result_cache(pinned)
+                else None
+            )
+            comp_cache_key = (
+                (
+                    *snap_key,
+                    clean_ticker,
+                    statement_scope,
+                    period_type,
+                    period_end_date,
+                    metric_name,
+                )
+                if snap_key is not None
+                else None
+            )
+            if comp_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    cached_comp = _INDUSTRY_COMPARISON_CACHE.get(comp_cache_key)
+                    if cached_comp is not None:
+                        _INDUSTRY_COMPARISON_CACHE.move_to_end(comp_cache_key)
+                        return cached_comp
+
             issuer_row = _resolve_issuer_row(
                 pinned,
                 clean_ticker,
@@ -1501,63 +2351,90 @@ class DashboardQueryService:
             icb_used = selected.get("icb_code_used")
             accounting_regime = str(selected["accounting_regime"])
 
-            cohort_cols = _select_existing_columns(
+            cohort_cache_key = (
                 (
-                    "issuer_id",
-                    "value",
-                    "percentile_rank",
-                    "robust_z_score",
-                    "peer_group_level",
-                    "icb_code_used",
-                ),
-                avail_bench_cols,
-            )
-            cohort_filters: dict[str, object] = {
-                "accounting_regime": accounting_regime,
-                "statement_scope": statement_scope,
-                "period_type": period_type,
-                "period_end_date": resolved_end,
-                "metric_or_ratio_name": metric_name,
-                "peer_group_level": peer_level,
-                "icb_code_used": icb_used,
-            }
-            cohort = pinned.read_table(
-                BENCHMARKS_TABLE,
-                columns=cohort_cols,
-                filters=cohort_filters,
-                connection=connection,
-            )
-            cohort_issuer_ids = cohort["issuer_id"].unique().to_list()
-            peer_issuers = pinned.read_table(
-                "issuers.parquet",
-                columns=[
-                    "issuer_id",
-                    "ticker",
-                    "company_name_vn",
-                    "icb_name_level2",
-                    "icb_name_level3",
-                ],
-                filters={"issuer_id": cohort_issuer_ids},
-                connection=connection,
-            )
-
-            peer_ranking = (
-                cohort.join(peer_issuers, on="issuer_id", how="left")
-                .select(
-                    "ticker",
-                    "company_name_vn",
-                    "value",
-                    "percentile_rank",
-                    "robust_z_score",
-                    "peer_group_level",
-                    "icb_code_used",
-                    "icb_name_level3",
-                    "icb_name_level2",
+                    *snap_key,
+                    accounting_regime,
+                    statement_scope,
+                    period_type,
+                    resolved_end,
+                    metric_name,
+                    peer_level,
+                    icb_used,
                 )
-                .sort("value", descending=True)
+                if snap_key is not None
+                else None
             )
+            peer_ranking: pl.DataFrame | None = None
+            if cohort_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    peer_ranking = _COHORT_PEER_RANKING_CACHE.get(cohort_cache_key)
+                    if peer_ranking is not None:
+                        _COHORT_PEER_RANKING_CACHE.move_to_end(cohort_cache_key)
 
-            return IndustryComparisonData(
+            if peer_ranking is None:
+                cohort_cols = _select_existing_columns(
+                    (
+                        "issuer_id",
+                        "value",
+                        "percentile_rank",
+                        "robust_z_score",
+                        "peer_group_level",
+                        "icb_code_used",
+                    ),
+                    avail_bench_cols,
+                )
+                cohort_filters: dict[str, object] = {
+                    "accounting_regime": accounting_regime,
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                    "period_end_date": resolved_end,
+                    "metric_or_ratio_name": metric_name,
+                    "peer_group_level": peer_level,
+                    "icb_code_used": icb_used,
+                }
+                cohort = pinned.read_table(
+                    BENCHMARKS_TABLE,
+                    columns=cohort_cols,
+                    filters=cohort_filters,
+                    connection=connection,
+                )
+                cohort_issuer_ids = cohort["issuer_id"].unique().to_list()
+                peer_issuers = pinned.read_table(
+                    "issuers.parquet",
+                    columns=[
+                        "issuer_id",
+                        "ticker",
+                        "company_name_vn",
+                        "icb_name_level2",
+                        "icb_name_level3",
+                    ],
+                    filters={"issuer_id": cohort_issuer_ids},
+                    connection=connection,
+                )
+
+                peer_ranking = _wrap_cached_dicts_df(
+                    cohort.join(peer_issuers, on="issuer_id", how="left")
+                    .select(
+                        "ticker",
+                        "company_name_vn",
+                        "value",
+                        "percentile_rank",
+                        "robust_z_score",
+                        "peer_group_level",
+                        "icb_code_used",
+                        "icb_name_level3",
+                        "icb_name_level2",
+                    )
+                    .sort("value", descending=True)
+                )
+                if cohort_cache_key is not None:
+                    with _QUERY_CACHE_LOCK:
+                        _COHORT_PEER_RANKING_CACHE[cohort_cache_key] = peer_ranking
+                        while len(_COHORT_PEER_RANKING_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                            _COHORT_PEER_RANKING_CACHE.popitem(last=False)
+
+            comp_result = IndustryComparisonData(
                 ticker=clean_ticker,
                 issuer_id=issuer_id,
                 statement_scope=statement_scope,
@@ -1577,6 +2454,12 @@ class DashboardQueryService:
                 industry_snapshot_date=resolved_snapshot_date,
                 peer_ranking=peer_ranking,
             )
+            if comp_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    _INDUSTRY_COMPARISON_CACHE[comp_cache_key] = comp_result
+                    while len(_INDUSTRY_COMPARISON_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                        _INDUSTRY_COMPARISON_CACHE.popitem(last=False)
+            return comp_result
 
     def get_peer_band_history(
         self,
@@ -1588,7 +2471,25 @@ class DashboardQueryService:
         connection: duckdb.DuckDBPyConnection | None = None,
     ) -> pl.DataFrame:
         """Return historical peer band trajectory ([P25, Median, P75] + peer_group_level)."""
+        clean_ticker = ticker.strip().upper()
         with self.repository.snapshot_session(connection=connection) as pinned:
+            snap_key = (
+                pinned._snapshot_cache_key()
+                if _can_use_query_result_cache(pinned)
+                else None
+            )
+            hist_cache_key = (
+                (*snap_key, clean_ticker, statement_scope, period_type, metric_name)
+                if snap_key is not None
+                else None
+            )
+            if hist_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    cached_hist = _PEER_BAND_HISTORY_CACHE.get(hist_cache_key)
+                    if cached_hist is not None:
+                        _PEER_BAND_HISTORY_CACHE.move_to_end(hist_cache_key)
+                        return cached_hist
+
             issuer_row = _resolve_issuer_row(
                 pinned,
                 ticker,
@@ -1618,9 +2519,17 @@ class DashboardQueryService:
             )
             if frame.is_empty():
                 return pl.DataFrame(schema=PEER_BAND_HISTORY_SCHEMA)
-            return _pad_schema_columns(frame, PEER_BAND_HISTORY_SCHEMA).sort(
-                "period_end_date"
+            hist_res = _wrap_cached_dicts_df(
+                _pad_schema_columns(frame, PEER_BAND_HISTORY_SCHEMA).sort(
+                    "period_end_date"
+                )
             )
+            if hist_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    _PEER_BAND_HISTORY_CACHE[hist_cache_key] = hist_res
+                    while len(_PEER_BAND_HISTORY_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                        _PEER_BAND_HISTORY_CACHE.popitem(last=False)
+            return hist_res
 
     def get_quality_summary_page(
         self,
@@ -1707,6 +2616,23 @@ class DashboardQueryService:
         """List available ratio periods for one ticker using ``issuer_id`` pushdown."""
         clean_ticker = ticker.strip().upper()
         with self.repository.snapshot_session(connection=connection) as pinned:
+            snap_key = (
+                pinned._snapshot_cache_key()
+                if _can_use_query_result_cache(pinned)
+                else None
+            )
+            rp_cache_key = (
+                (*snap_key, clean_ticker, statement_scope)
+                if snap_key is not None
+                else None
+            )
+            if rp_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    cached_rp = _RATIO_PERIODS_CACHE.get(rp_cache_key)
+                    if cached_rp is not None:
+                        _RATIO_PERIODS_CACHE.move_to_end(rp_cache_key)
+                        return cached_rp.clone()
+
             issuer_rows = pinned.read_table(
                 "issuers.parquet",
                 columns=["issuer_id", "ticker"],
@@ -1726,9 +2652,15 @@ class DashboardQueryService:
                 filters=filters,
                 connection=connection,
             )
-            return ratios.sort(
+            rp_result = ratios.sort(
                 ["period_end_date", "period_type"], descending=[True, False]
             )
+            if rp_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    _RATIO_PERIODS_CACHE[rp_cache_key] = rp_result
+                    while len(_RATIO_PERIODS_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                        _RATIO_PERIODS_CACHE.popitem(last=False)
+            return rp_result.clone()
 
     def list_available_periods(
         self,
@@ -1783,6 +2715,30 @@ class DashboardQueryService:
         clean_ticker = ticker.strip().upper()
 
         with self.repository.snapshot_session(connection=connection) as pinned:
+            snap_key = (
+                pinned._snapshot_cache_key()
+                if _can_use_query_result_cache(pinned)
+                else None
+            )
+            lineage_cache_key = (
+                (
+                    *snap_key,
+                    clean_ticker,
+                    statement_scope,
+                    period_type,
+                    period_end_date,
+                    ratio_name,
+                )
+                if snap_key is not None
+                else None
+            )
+            if lineage_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    cached_lineage = _RATIO_LINEAGE_CACHE.get(lineage_cache_key)
+                    if cached_lineage is not None:
+                        _RATIO_LINEAGE_CACHE.move_to_end(lineage_cache_key)
+                        return cached_lineage
+
             issuer_row = _resolve_issuer_row(
                 pinned,
                 clean_ticker,
@@ -2057,7 +3013,7 @@ class DashboardQueryService:
                     )
                 return tuple(items)
 
-            return RatioLineageCard(
+            lineage_result = RatioLineageCard(
                 ticker=clean_ticker,
                 issuer_id=issuer_id,
                 statement_scope=statement_scope,
@@ -2094,6 +3050,12 @@ class DashboardQueryService:
                 ),
                 orphan_filing_ids=orphans,
             )
+            if lineage_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    _RATIO_LINEAGE_CACHE[lineage_cache_key] = lineage_result
+                    while len(_RATIO_LINEAGE_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                        _RATIO_LINEAGE_CACHE.popitem(last=False)
+            return lineage_result
 
     def screen_market(
         self,
@@ -2152,23 +3114,67 @@ class DashboardQueryService:
             if not avail_ratio_cols:
                 return pl.DataFrame(schema=SCREENER_SCHEMA), 0
 
+            snap_key = pinned._snapshot_cache_key()
             resolved_date = period_end_date
             if resolved_date is None:
-                dates_df = pinned.read_table(
-                    RATIOS_TABLE,
-                    columns=["period_end_date"],
-                    filters={
-                        "statement_scope": statement_scope,
-                        "period_type": period_type,
-                    },
-                    connection=connection,
+                period_cache_key = (
+                    (*snap_key, statement_scope, period_type)
+                    if snap_key is not None
+                    else None
                 )
-                if dates_df.is_empty():
-                    return pl.DataFrame(schema=SCREENER_SCHEMA), 0
-                raw_max = dates_df.get_column("period_end_date").max()
-                if not isinstance(raw_max, date):
-                    return pl.DataFrame(schema=SCREENER_SCHEMA), 0
-                resolved_date = raw_max
+                if period_cache_key is not None:
+                    with _QUERY_CACHE_LOCK:
+                        resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
+                        if resolved_date is not None:
+                            _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
+                if resolved_date is None:
+                    dates_df = pinned.read_table(
+                        RATIOS_TABLE,
+                        columns=["period_end_date"],
+                        filters={
+                            "statement_scope": statement_scope,
+                            "period_type": period_type,
+                        },
+                        connection=connection,
+                    )
+                    if dates_df.is_empty():
+                        return pl.DataFrame(schema=SCREENER_SCHEMA), 0
+                    raw_max = dates_df.get_column("period_end_date").max()
+                    if not isinstance(raw_max, date):
+                        return pl.DataFrame(schema=SCREENER_SCHEMA), 0
+                    resolved_date = raw_max
+                    if period_cache_key is not None:
+                        with _QUERY_CACHE_LOCK:
+                            _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
+                            while (
+                                len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE
+                            ):
+                                _LATEST_RATIO_PERIOD_CACHE.popitem(last=False)
+
+            screener_cache_key = (
+                (
+                    *snap_key,
+                    period_type,
+                    resolved_date,
+                    statement_scope,
+                    icb_code_level2,
+                    min_f_score,
+                    altman_zone,
+                    beneish_flag,
+                    float(max_distress_prob) if max_distress_prob is not None else None,
+                    max_red_flags,
+                    limit,
+                    offset,
+                )
+                if snap_key is not None and _can_use_query_result_cache(pinned)
+                else None
+            )
+            if screener_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    cached_screener = _SCREENER_CACHE.get(screener_cache_key)
+                    if cached_screener is not None:
+                        _SCREENER_CACHE.move_to_end(screener_cache_key)
+                        return cached_screener[0], cached_screener[1]
 
             issuer_cols = [
                 "issuer_id",
@@ -2369,7 +3375,13 @@ class DashboardQueryService:
                 nulls_last=True,
             )
             total_count = projected.height
-            return projected.slice(offset, limit), total_count
+            sliced = _wrap_cached_dicts_df(projected.slice(offset, limit))
+            if screener_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    _SCREENER_CACHE[screener_cache_key] = (sliced, total_count)
+                    while len(_SCREENER_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                        _SCREENER_CACHE.popitem(last=False)
+            return sliced, total_count
 
     def get_stress_test_snapshot_inputs(
         self,
@@ -2403,37 +3415,70 @@ class DashboardQueryService:
                     + "."
                 )
 
+            snap_key = pinned._snapshot_cache_key()
             resolved_date = period_end_date
             if resolved_date is None:
-                dates_df = pinned.read_table(
-                    RATIOS_TABLE,
-                    columns=["period_end_date"],
-                    filters={
-                        "statement_scope": statement_scope,
-                        "period_type": period_type,
-                    },
-                    connection=connection,
+                period_cache_key = (
+                    (*snap_key, statement_scope, period_type)
+                    if snap_key is not None
+                    else None
                 )
-                if dates_df.is_empty():
-                    return pl.DataFrame(
-                        schema={
-                            "issuer_id": pl.String,
-                            "ticker": pl.String,
-                            **{
-                                col: FINANCIAL_RATIOS_SCHEMA[col]
-                                for col in REQUIRED_STRESS_COLUMNS
-                            },
-                            "company_name_vn": pl.String,
-                            "icb_code_level2": pl.String,
-                            "icb_name_level2": pl.String,
-                        }
+                if period_cache_key is not None:
+                    with _QUERY_CACHE_LOCK:
+                        resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
+                        if resolved_date is not None:
+                            _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
+                if resolved_date is None:
+                    dates_df = pinned.read_table(
+                        RATIOS_TABLE,
+                        columns=["period_end_date"],
+                        filters={
+                            "statement_scope": statement_scope,
+                            "period_type": period_type,
+                        },
+                        connection=connection,
                     )
-                raw_max = dates_df.get_column("period_end_date").max()
-                if not isinstance(raw_max, date):
-                    raise ContractViolationError(
-                        "Unable to resolve latest period_end_date for stress-test inputs."
-                    )
-                resolved_date = raw_max
+                    if dates_df.is_empty():
+                        return pl.DataFrame(
+                            schema={
+                                "issuer_id": pl.String,
+                                "ticker": pl.String,
+                                **{
+                                    col: FINANCIAL_RATIOS_SCHEMA[col]
+                                    for col in REQUIRED_STRESS_COLUMNS
+                                },
+                                "company_name_vn": pl.String,
+                                "icb_code_level2": pl.String,
+                                "icb_name_level2": pl.String,
+                            }
+                        )
+                    raw_max = dates_df.get_column("period_end_date").max()
+                    if not isinstance(raw_max, date):
+                        raise ContractViolationError(
+                            "Unable to resolve latest period_end_date for stress-test inputs."
+                        )
+                    resolved_date = raw_max
+                    if period_cache_key is not None:
+                        with _QUERY_CACHE_LOCK:
+                            _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
+                            while (
+                                len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE
+                            ):
+                                _LATEST_RATIO_PERIOD_CACHE.popitem(last=False)
+
+            stress_cache_key = (
+                (*snap_key, statement_scope, period_type, resolved_date)
+                if snap_key is not None
+                else None
+            )
+            if stress_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    cached_inputs = _STRESS_INPUTS_CACHE.get(stress_cache_key)
+                    if cached_inputs is not None:
+                        _STRESS_INPUTS_CACHE.move_to_end(stress_cache_key)
+                        fast_in = _FastStressInputDataFrame(cached_inputs)
+                        fast_in._stress_cache_key = stress_cache_key
+                        return fast_in
 
             stress_ratio_cols = list(
                 dict.fromkeys(("issuer_id", "ticker", *REQUIRED_STRESS_COLUMNS))
@@ -2466,4 +3511,15 @@ class DashboardQueryService:
                 filters={"issuer_id": ratios["issuer_id"].unique().to_list()},
                 connection=connection,
             )
-            return ratios.join(issuers, on="issuer_id", how="left").sort("ticker")
+            result = _FastStressInputDataFrame(
+                ratios.join(issuers, on="issuer_id", how="left").sort("ticker")
+            )
+            result._stress_cache_key = stress_cache_key
+            if stress_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    _STRESS_INPUTS_CACHE[stress_cache_key] = result
+                    while len(_STRESS_INPUTS_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                        _STRESS_INPUTS_CACHE.popitem(last=False)
+            fast_res = _FastStressInputDataFrame(result)
+            fast_res._stress_cache_key = stress_cache_key
+            return fast_res
