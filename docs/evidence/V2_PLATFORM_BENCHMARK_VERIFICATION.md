@@ -219,7 +219,7 @@ Loaded strictly from frozen archived evidence receipts inside `live_fhsc_univers
 | **Baseline B:** Merged (Vietcap+CafeF+Audit Guard) + Raw Calendar | `30,672` | `8,835` | `2,945` | **`28.8048%`** | `-23.19%` (`-889` periods) |
 | **V2 Patched:** Merged + VN Holiday Calendar (`2016–2026`) | `30,672` | **`7,758`** | **`2,586`** | **`25.2934%`** | **`-32.5509%`** (`-1,248` periods / `-3,744` filings; `-12.19%` / `-359` periods vs B) |
 
-Published `accounting_red_flags` (`RF_07_LATE_FILING`) count matches **`2,586`** exact rows.
+Published `accounting_red_flags` (`RF_07_AUDIT_OR_FILING_WARNING`) count matches **`2,586`** exact rows.
 
 ### 5.3 Verified Real Case Examples Eliminated / Guarded
 
@@ -235,7 +235,7 @@ Published `accounting_red_flags` (`RF_07_LATE_FILING`) count matches **`2,586`**
 
 ## 6. Gate 5 — Anti-"Clever Hans", ML Calibration & Mandatory Ablations (`GAP-03..06`, `HI-18`)
 
-* **Temporal PIT Split Dates:** `as_of = 2026-11-20`, `validation_start = 2021-12-01`, `test_start = 2023-09-01`, `target_mode = ACCOUNTING_DISTRESS`, `period_type = QUARTER`, taxonomies `{"VAS_TT200_2014", "VAS_TT99_2025"}`.
+* **Temporal PIT Split Dates:** `as_of = 2026-11-20`, `validation_start = 2021-12-01`, `test_start = 2023-09-01`, `target_mode = FUNDAMENTAL_DISTRESS`, `period_type = QUARTER`, taxonomies `{"VAS_TT200_2014", "VAS_TT99_2025"}`.
 * **Primary V2 Split Counts (`EXACT_FILING`, `sector_adjusted`, `PIT_ICB`):**
   * **Train:** `1,864` raw rows (`48` raw pos, `239` issuers) -> **`1,822` common eval rows (`30` pos, `1.65%` prevalence, `238` issuers)**
   * **Validation (`IN_SAMPLE_CALIBRATION_FOLD`):** `703` raw rows (`24` raw pos, `238` issuers) -> **`682` common eval rows (`15` pos, `2.20%` prevalence)**

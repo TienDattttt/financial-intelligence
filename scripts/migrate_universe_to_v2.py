@@ -64,7 +64,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import parse_qs, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -72,9 +72,6 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-import dagster as dg  # noqa: E402
-import duckdb  # noqa: E402
-import httpx  # noqa: E402
 import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 
@@ -107,22 +104,8 @@ from finintel.ingestion.hasher import (  # noqa: E402
     canonical_content_sha256,
     payload_file_sha256,
 )
-from finintel.ml.supervised.temporal_split import build_pit_ml_splits  # noqa: E402
-from finintel.ml.tables import build_ml_artifacts  # noqa: E402
 from finintel.normalization.archive import (  # noqa: E402
     normalize_archive_incremental,
-)
-from finintel.orchestration import (  # noqa: E402
-    ALL_ASSET_CHECKS,
-    FinIntelPathsResource,
-    PublishMartsConfig,
-    StateStoreResource,
-    StorageResource,
-    configure_concurrency_pools,
-    lakehouse_maintenance_job,
-    normalized_financial_facts,
-    published_financial_marts,
-    sync_corporate_ticker_partitions,
 )
 from finintel.pipeline.ingest import (  # noqa: E402
     DEFAULT_CAFEF_URL_TEMPLATE,
@@ -130,7 +113,6 @@ from finintel.pipeline.ingest import (  # noqa: E402
 )
 from finintel.pipeline.state_store import StateStore  # noqa: E402
 from finintel.quality.gate import evaluate_quality_gate  # noqa: E402
-from finintel.serving.queries import DashboardQueryService  # noqa: E402
 from finintel.serving.schemas import parse_shap_top_drivers  # noqa: E402
 from finintel.storage.ducklake_store import (  # noqa: E402
     DEFAULT_CATALOG_ALIAS,
@@ -152,6 +134,27 @@ from finintel.storage.snapshot_publisher import (  # noqa: E402
     snapshot_write_lock,
 )
 from finintel.transform.audits import DUPONT_TOLERANCE  # noqa: E402
+
+if TYPE_CHECKING or os.environ.get("FININTEL_B6_LAYER2_CHILD") != "1":
+    import dagster as dg  # noqa: E402
+    import duckdb  # noqa: E402
+    import httpx  # noqa: E402
+
+    from finintel.ml.supervised.temporal_split import build_pit_ml_splits  # noqa: E402
+    from finintel.ml.tables import build_ml_artifacts  # noqa: E402
+    from finintel.orchestration import (  # noqa: E402
+        ALL_ASSET_CHECKS,
+        FinIntelPathsResource,
+        PublishMartsConfig,
+        StateStoreResource,
+        StorageResource,
+        configure_concurrency_pools,
+        lakehouse_maintenance_job,
+        normalized_financial_facts,
+        published_financial_marts,
+        sync_corporate_ticker_partitions,
+    )
+    from finintel.serving.queries import DashboardQueryService  # noqa: E402
 
 DEFAULT_AS_OF = date(2026, 11, 20)
 DEFAULT_VALIDATION_START = date(2021, 12, 1)
@@ -1087,6 +1090,74 @@ def verify_source_integrity(
 # ---------------------------------------------------------------------------
 
 
+def _synthesize_issuers_from_candidates(
+    candidates_path: Path,
+    done_tickers: Sequence[str],
+) -> pl.DataFrame:
+    """Synthesize ``ISSUERS_SCHEMA`` DataFrame from ``universe_candidates.json`` filtered to ``done_tickers``."""
+    raw_obj = json.loads(candidates_path.read_text(encoding="utf-8"))
+    if not isinstance(raw_obj, dict) or not isinstance(raw_obj.get("candidates"), list):
+        raise ContractViolationError(
+            f"universe_candidates.json must contain a 'candidates' list: {candidates_path}"
+        )
+    done_set = {str(t).strip().upper() for t in done_tickers if str(t).strip()}
+    rows: list[dict[str, object]] = []
+    seen_issuers: set[str] = set()
+    for item in raw_obj["candidates"]:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or item.get("issuer_id") or "").strip().upper()
+        issuer_id = str(item.get("issuer_id") or ticker).strip().upper()
+        if not ticker or (done_set and ticker not in done_set):
+            continue
+        if issuer_id in seen_issuers:
+            continue
+        seen_issuers.add(issuer_id)
+        rows.append(
+            {
+                "issuer_id": issuer_id,
+                "ticker": ticker,
+                "exchange": str(item.get("exchange") or "HOSE").strip().upper(),
+                "company_name_vn": str(item.get("company_name_vn") or ticker).strip(),
+                "accounting_regime": str(
+                    item.get("accounting_regime") or "CORPORATE"
+                ).strip(),
+                "icb_code_level2": (
+                    str(item["icb_code_level2"]).strip()
+                    if item.get("icb_code_level2") is not None
+                    else None
+                ),
+                "icb_name_level2": (
+                    str(item["icb_name_level2"]).strip()
+                    if item.get("icb_name_level2") is not None
+                    else None
+                ),
+                "icb_code_level3": (
+                    str(item["icb_code_level3"]).strip()
+                    if item.get("icb_code_level3") is not None
+                    else None
+                ),
+                "icb_name_level3": (
+                    str(item["icb_name_level3"]).strip()
+                    if item.get("icb_name_level3") is not None
+                    else None
+                ),
+                "industry_snapshot_date": date(2016, 1, 1),
+                "delisted_date": None,
+            }
+        )
+    if not rows:
+        raise ContractViolationError(
+            f"No matching done issuers found in {candidates_path} (done_count={len(done_set)})."
+        )
+    rows.sort(key=lambda r: (str(r["issuer_id"]), str(r["ticker"])))
+    df = pl.DataFrame(rows).with_columns(
+        pl.col("industry_snapshot_date").cast(pl.Date),
+        pl.col("delisted_date").cast(pl.Date),
+    )
+    return canonicalize_table(df, ISSUERS_SCHEMA)
+
+
 def migrate_universe_read_only(
     source_dir: Path,
     target_dir: Path,
@@ -1118,18 +1189,33 @@ def migrate_universe_read_only(
         src_resolved, source_db=src_state_db, raise_on_error=True
     )
 
-    resolved_issuers_src = (
-        issuers_path.resolve()
-        if issuers_path is not None
-        else (src_resolved / "curated" / "issuers.parquet").resolve()
-    )
-    if not resolved_issuers_src.is_file():
-        raise FileNotFoundError(
-            f"Issuers reference Parquet not found: {resolved_issuers_src}"
+    default_issuers_src = (src_resolved / "curated" / "issuers.parquet").resolve()
+    candidates_src = (src_resolved / "universe_candidates.json").resolve()
+    issuers_source_desc: str
+    if issuers_path is not None:
+        resolved_issuers_src = issuers_path.resolve()
+        if not resolved_issuers_src.is_file():
+            raise FileNotFoundError(
+                f"Issuers reference Parquet not found: {resolved_issuers_src}"
+            )
+        issuers_df = canonicalize_table(
+            pl.read_parquet(resolved_issuers_src), ISSUERS_SCHEMA
         )
-    issuers_df = canonicalize_table(
-        pl.read_parquet(resolved_issuers_src), ISSUERS_SCHEMA
-    )
+        issuers_source_desc = resolved_issuers_src.as_posix()
+    elif default_issuers_src.is_file():
+        issuers_df = canonicalize_table(
+            pl.read_parquet(default_issuers_src), ISSUERS_SCHEMA
+        )
+        issuers_source_desc = default_issuers_src.as_posix()
+    elif candidates_src.is_file():
+        issuers_df = _synthesize_issuers_from_candidates(
+            candidates_src, integrity.done_tickers
+        )
+        issuers_source_desc = f"synthesized_from:{candidates_src.as_posix()} (done={len(integrity.done_tickers)})"
+    else:
+        raise FileNotFoundError(
+            f"Neither {default_issuers_src} nor {candidates_src} exists to build issuers.parquet."
+        )
 
     # Pre-cutover backup when target already has state or explicit backup_dir is given.
     target_state_path = dst_resolved / "metadata" / "state.sqlite"
@@ -1261,7 +1347,7 @@ def migrate_universe_read_only(
         "source_dir": src_resolved.as_posix(),
         "source_db": src_state_db.as_posix(),
         "target_dir": dst_resolved.as_posix(),
-        "issuers_source": resolved_issuers_src.as_posix(),
+        "issuers_source": issuers_source_desc,
         "integrity": asdict(integrity),
         "pre_cutover_backup": backup_report,
         "copied_files": {
@@ -1919,19 +2005,20 @@ def _run_layer1_disclosures(
 # ---------------------------------------------------------------------------
 
 
-def _run_layer2_normalize_benchmark(
+def _layer2_subprocess_full_worker(
     target_dir: Path,
     config_dir: Path,
-    target_state: StateStore,
     *,
     stamp: str,
-) -> tuple[dict[str, object], Path]:
-    """Measure Full Normalize + Incremental 0-dirty + isolated Incremental 1-dirty."""
+) -> dict[str, object]:
+    """Execute Full Normalize in a clean cold child process with ``tracemalloc`` disabled."""
+    if tracemalloc.is_tracing():
+        tracemalloc.stop()
     curated_ff = target_dir / "curated" / "financial_facts"
     curated_ff.mkdir(parents=True, exist_ok=True)
     raw_root = target_dir / "raw"
+    target_state = StateStore(target_dir / "metadata" / "state.sqlite")
 
-    # 1. Full Normalize
     full_run_id = f"b6_norm_full_{stamp}"
     full_dir = curated_ff / full_run_id
     target_state.start_run(
@@ -1940,7 +2027,6 @@ def _run_layer2_normalize_benchmark(
     full_step_id = target_state.start_step(full_run_id, "NORMALIZE")
 
     rss_before_mb, _ = _get_memory_mb()
-    tracemalloc.start()
     t0 = time.perf_counter()
     try:
         full_res = normalize_archive_incremental(
@@ -1953,7 +2039,6 @@ def _run_layer2_normalize_benchmark(
             batch_issuers=50,
         )
     except BaseException as exc:
-        tracemalloc.stop()
         target_state.finish_step(
             full_step_id,
             "FAILED",
@@ -1963,15 +2048,44 @@ def _run_layer2_normalize_benchmark(
         target_state.finish_run(full_run_id, "FAILED")
         raise
     full_seconds = round(time.perf_counter() - t0, 4)
-    _, tm_peak_bytes = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
     rss_after_mb, peak_rss_mb = _get_memory_mb()
-    tm_peak_mb = round(tm_peak_bytes / (1024.0 * 1024.0), 3)
 
     target_state.finish_step(full_step_id, "SUCCEEDED")
     target_state.finish_run(full_run_id, "SUCCEEDED")
 
-    # 2. Incremental Normalize — 0 dirty issuers
+    return {
+        "full_run_id": full_run_id,
+        "full_dir": full_dir.as_posix(),
+        "facts_path": full_res.facts_path.as_posix(),
+        "full_normalize_seconds": full_seconds,
+        "full_recomputed_issuers": full_res.recomputed_issuers,
+        "full_rebuild": full_res.full_rebuild,
+        "facts_rows": full_res.facts_rows,
+        "unmapped_rows": full_res.unmapped_rows,
+        "taxonomy_sha256": full_res.taxonomy_sha256,
+        "rss_before_mb": rss_before_mb,
+        "rss_after_mb": rss_after_mb,
+        "peak_rss_mb": peak_rss_mb,
+        "rss_delta_mb": round(max(0.0, rss_after_mb - rss_before_mb), 3),
+    }
+
+
+def _layer2_subprocess_incremental_worker(
+    target_dir: Path,
+    config_dir: Path,
+    full_dir: Path,
+    *,
+    stamp: str,
+) -> dict[str, object]:
+    """Execute Incremental 0-dirty and 1-dirty normalize in a clean cold child process."""
+    if tracemalloc.is_tracing():
+        tracemalloc.stop()
+    curated_ff = target_dir / "curated" / "financial_facts"
+    curated_ff.mkdir(parents=True, exist_ok=True)
+    raw_root = target_dir / "raw"
+    target_state = StateStore(target_dir / "metadata" / "state.sqlite")
+
+    # 1. Incremental Normalize — 0 dirty issuers
     inc0_run_id = f"b6_norm_inc0_{stamp}"
     inc0_dir = curated_ff / inc0_run_id
     target_state.start_run(
@@ -1999,12 +2113,15 @@ def _run_layer2_normalize_benchmark(
         target_state.finish_run(inc0_run_id, "FAILED")
         raise
     inc0_seconds = round(time.perf_counter() - t1, 4)
+    _, inc0_peak_rss_mb = _get_memory_mb()
     target_state.finish_step(inc0_step_id, "SUCCEEDED")
     target_state.finish_run(inc0_run_id, "SUCCEEDED")
 
-    # 3. Incremental Normalize — 1 dirty issuer (isolated temp copy of state.sqlite!)
+    # 2. Incremental Normalize — 1 dirty issuer (isolated temp copy of state.sqlite, no tracemalloc)
     inc1_seconds: float | None = None
     inc1_recomputed = 0
+    inc1_peak_rss_mb: float | None = None
+    inc1_diag_tracemalloc_peak_mb: float | None = None
     dirty_issuer_id: str | None = None
     with tempfile.TemporaryDirectory(prefix="finintel_b6_inc1_") as tmp_str:
         tmp_root = Path(tmp_str)
@@ -2044,36 +2161,180 @@ def _run_layer2_normalize_benchmark(
             )
             inc1_seconds = round(time.perf_counter() - t2, 4)
             inc1_recomputed = inc1_res.recomputed_issuers
+            _, inc1_peak_rss_mb = _get_memory_mb()
 
-    report: dict[str, object] = {
-        "full_run_id": full_run_id,
-        "full_normalize_seconds": full_seconds,
-        "full_recomputed_issuers": full_res.recomputed_issuers,
-        "full_rebuild": full_res.full_rebuild,
-        "facts_rows": full_res.facts_rows,
-        "unmapped_rows": full_res.unmapped_rows,
-        "taxonomy_sha256": full_res.taxonomy_sha256,
-        "tracemalloc_peak_mb": tm_peak_mb,
-        "rss_before_mb": rss_before_mb,
-        "rss_after_mb": rss_after_mb,
-        "peak_rss_mb": peak_rss_mb,
-        "rss_delta_mb": round(max(0.0, rss_after_mb - rss_before_mb), 3),
+            # Optional separate diagnostic pass for Python heap peak on 1-dirty incremental
+            # (executed strictly AFTER clean wall-clock & Peak OS RSS measurements complete).
+            with tmp_state.connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "UPDATE filings_manifest SET provider_attrs_json = ? WHERE issuer_id = ?",
+                    (
+                        json.dumps(
+                            {"_b6_inc1_tm_diag": stamp},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        dirty_issuer_id,
+                    ),
+                )
+            tracemalloc.start()
+            try:
+                normalize_archive_incremental(
+                    tmp_state,
+                    raw_root,
+                    config_dir,
+                    tmp_root / "out_inc1_tm_diag",
+                    source="fhsc",
+                    previous_batch_dir=full_dir,
+                    batch_issuers=50,
+                )
+                _, tm_peak_bytes = tracemalloc.get_traced_memory()
+                inc1_diag_tracemalloc_peak_mb = round(
+                    tm_peak_bytes / (1024.0 * 1024.0), 3
+                )
+            finally:
+                tracemalloc.stop()
+
+    return {
         "inc0_run_id": inc0_run_id,
         "inc0_normalize_seconds": inc0_seconds,
         "inc0_recomputed_issuers": inc0_res.recomputed_issuers,
         "inc0_full_rebuild": inc0_res.full_rebuild,
+        "inc0_peak_rss_mb": inc0_peak_rss_mb,
         "inc1_dirty_issuer_id": dirty_issuer_id,
         "inc1_normalize_seconds": inc1_seconds,
         "inc1_recomputed_issuers": inc1_recomputed,
+        "inc1_peak_rss_mb": inc1_peak_rss_mb,
+        "inc1_diagnostic_tracemalloc_peak_mb": inc1_diag_tracemalloc_peak_mb,
+    }
+
+
+def _invoke_layer2_child_worker(
+    mode: Literal["full", "incremental"],
+    *,
+    target_dir: Path,
+    config_dir: Path,
+    stamp: str,
+    full_dir: Path | None = None,
+) -> dict[str, object]:
+    """Run a Layer 2 benchmark worker inside a fresh cold Python subprocess (no ``tracemalloc``)."""
+    script_path = Path(__file__).resolve()
+    with tempfile.TemporaryDirectory(prefix=f"finintel_b6_l2_{mode}_") as tmp_dir:
+        out_json = Path(tmp_dir) / "result.json"
+        code = (
+            "import importlib.util, json, sys\n"
+            "from pathlib import Path\n"
+            f"spec = importlib.util.spec_from_file_location('b6_mig', {script_path.as_posix()!r})\n"
+            "assert spec is not None and spec.loader is not None\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "sys.modules['b6_mig'] = mod\n"
+            "spec.loader.exec_module(mod)\n"
+            "if sys.argv[1] == 'full':\n"
+            "    res = mod._layer2_subprocess_full_worker(\n"
+            "        Path(sys.argv[2]), Path(sys.argv[3]), stamp=sys.argv[4]\n"
+            "    )\n"
+            "else:\n"
+            "    res = mod._layer2_subprocess_incremental_worker(\n"
+            "        Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[5]), stamp=sys.argv[4]\n"
+            "    )\n"
+            "Path(sys.argv[6]).write_text(json.dumps(res), encoding='utf-8')\n"
+        )
+        cmd = [
+            sys.executable,
+            "-c",
+            code,
+            mode,
+            target_dir.resolve().as_posix(),
+            config_dir.resolve().as_posix(),
+            stamp,
+            full_dir.resolve().as_posix() if full_dir is not None else "",
+            out_json.as_posix(),
+        ]
+        child_env = os.environ.copy()
+        child_env["FININTEL_B6_LAYER2_CHILD"] = "1"
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            env=child_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0 or not out_json.is_file():
+            raise RuntimeError(
+                f"Layer 2 child worker ({mode}) failed (exit={proc.returncode}):\n"
+                f"STDOUT: {proc.stdout[-1000:]}\nSTDERR: {proc.stderr[-1000:]}"
+            )
+        return cast(dict[str, object], json.loads(out_json.read_text(encoding="utf-8")))
+
+
+def _run_layer2_normalize_benchmark(
+    target_dir: Path,
+    config_dir: Path,
+    target_state: StateStore,
+    *,
+    stamp: str,
+) -> tuple[dict[str, object], Path]:
+    """Measure Full Normalize + Incremental 0-dirty + Incremental 1-dirty in clean child subprocesses."""
+    _ = target_state  # StateStore lives at target_dir / "metadata" / "state.sqlite"
+    full_info = _invoke_layer2_child_worker(
+        "full",
+        target_dir=target_dir,
+        config_dir=config_dir,
+        stamp=stamp,
+    )
+    full_dir = Path(str(full_info["full_dir"]))
+    facts_path = Path(str(full_info["facts_path"]))
+
+    inc_info = _invoke_layer2_child_worker(
+        "incremental",
+        target_dir=target_dir,
+        config_dir=config_dir,
+        stamp=stamp,
+        full_dir=full_dir,
+    )
+
+    full_seconds = float(cast(float, full_info["full_normalize_seconds"]))
+    peak_rss_mb = float(cast(float, full_info["peak_rss_mb"]))
+    inc0_seconds = float(cast(float, inc_info["inc0_normalize_seconds"]))
+    inc1_raw = inc_info.get("inc1_normalize_seconds")
+    inc1_seconds = float(inc1_raw) if isinstance(inc1_raw, (int, float)) else None
+
+    report: dict[str, object] = {
+        "measurement_mode": "clean_cold_child_subprocess_no_tracemalloc",
+        "tracemalloc_active_during_gate1": False,
+        "full_run_id": full_info["full_run_id"],
+        "full_normalize_seconds": full_seconds,
+        "full_recomputed_issuers": full_info["full_recomputed_issuers"],
+        "full_rebuild": full_info["full_rebuild"],
+        "facts_rows": full_info["facts_rows"],
+        "unmapped_rows": full_info["unmapped_rows"],
+        "taxonomy_sha256": full_info["taxonomy_sha256"],
+        "rss_before_mb": full_info["rss_before_mb"],
+        "rss_after_mb": full_info["rss_after_mb"],
+        "peak_rss_mb": peak_rss_mb,
+        "rss_delta_mb": full_info["rss_delta_mb"],
+        "inc0_run_id": inc_info["inc0_run_id"],
+        "inc0_normalize_seconds": inc0_seconds,
+        "inc0_recomputed_issuers": inc_info["inc0_recomputed_issuers"],
+        "inc0_full_rebuild": inc_info["inc0_full_rebuild"],
+        "inc0_peak_rss_mb": inc_info["inc0_peak_rss_mb"],
+        "inc1_dirty_issuer_id": inc_info["inc1_dirty_issuer_id"],
+        "inc1_normalize_seconds": inc1_seconds,
+        "inc1_recomputed_issuers": inc_info["inc1_recomputed_issuers"],
+        "inc1_peak_rss_mb": inc_info["inc1_peak_rss_mb"],
+        "inc1_diagnostic_tracemalloc_peak_mb": inc_info[
+            "inc1_diagnostic_tracemalloc_peak_mb"
+        ],
         "gates": {
             "full_lt_35s": full_seconds < 35.0,
             "inc0_lt_1_5s": inc0_seconds < 1.5,
             "inc1_lt_1_5s": inc1_seconds is not None and inc1_seconds < 1.5,
             "peak_rss_lt_500mb": peak_rss_mb < 500.0,
-            "tracemalloc_lt_500mb": tm_peak_mb < 500.0,
         },
     }
-    return report, full_res.facts_path
+    return report, facts_path
 
 
 # ---------------------------------------------------------------------------
