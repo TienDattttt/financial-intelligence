@@ -6,3 +6,9 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# Ignored on ui-develop branch (backend agent config & specs)
+/AGENT.md
+/.agents/
+/docs/
+
