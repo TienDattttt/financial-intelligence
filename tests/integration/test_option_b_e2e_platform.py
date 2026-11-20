@@ -39,6 +39,7 @@ import threading
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -1891,10 +1892,16 @@ def test_suite4_concurrent_8_readers_and_live_publish_race(tmp_path: Path) -> No
                         )
                 readers_ready.wait(timeout=15.0)
 
-                # Keep reading continuously during and after live publish
+                # Keep reading continuously across the live publish commit until publish_done
+                # is set AND at least 8 post-publish reads finish (bounded by a 30s deadline).
                 post_publish_reads = 0
-                for step in range(40):
+                step = 0
+                deadline = time.monotonic() + 30.0
+                while time.monotonic() < deadline and (
+                    not publish_done.is_set() or post_publish_reads < 8
+                ):
                     url = routes[(worker_id + step) % len(routes)]
+                    step += 1
                     resp = client.get(url)
                     if resp.status_code != 200:
                         with lock:
@@ -1934,8 +1941,12 @@ def test_suite4_concurrent_8_readers_and_live_publish_race(tmp_path: Path) -> No
                     completed += 1
                     if publish_done.is_set():
                         post_publish_reads += 1
-                        if post_publish_reads >= 8:
-                            break
+                if not publish_done.is_set() or post_publish_reads < 8:
+                    with lock:
+                        errors.append(
+                            f"worker {worker_id} timed out waiting for post-publish reads "
+                            f"(publish_done={publish_done.is_set()}, post_reads={post_publish_reads})"
+                        )
             except Exception as exc:  # pragma: no cover - captured for assertion
                 with lock:
                     errors.append(
@@ -2138,7 +2149,7 @@ def test_suite5_migration_wal_safe_backup_and_dual_sha256_integrity(
     tampered_canonical_dir = tmp_path / "tampered_canonical_universe"
     shutil.copytree(clean_source, tampered_canonical_dir)
     tc_state_path = tampered_canonical_dir / "metadata" / "state.sqlite"
-    with sqlite3.connect(tc_state_path) as conn:
+    with closing(sqlite3.connect(tc_state_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT filing_id, raw_archive_path, payload_file_sha256, canonical_content_sha256 "
