@@ -65,6 +65,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
+from urllib.parse import parse_qs, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
@@ -159,6 +160,9 @@ DEFAULT_TEST_START = date(2023, 9, 1)
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _FHSC_LOCATOR_RE = re.compile(r"^/data/(0|[1-9][0-9]{0,5})$")
 _SAFE_ISSUER_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_VCI_COMPANY_URL_RE = re.compile(
+    r"/company/([A-Z0-9]{1,16})/financial-statement", re.IGNORECASE
+)
 _SQLITE_IGNORE_PATTERNS = shutil.ignore_patterns(
     "*.sqlite",
     "*.sqlite-wal",
@@ -686,12 +690,13 @@ class SourceIntegrityReport:
     canonical_sha_mismatches: tuple[str, ...]
     provenance_mismatches: tuple[str, ...]
     passed: bool
+    progress_source: str = "ingestion_progress.json"
 
 
 def _parse_progress_and_candidates(
     source_dir: Path,
     manifest_tickers: Sequence[str],
-) -> tuple[int, tuple[str, ...], dict[str, str], dict[str, str], int]:
+) -> tuple[int, tuple[str, ...], dict[str, str], dict[str, str], int, str]:
     """Read ``ingestion_progress.json`` and ``universe_candidates.json`` read-only."""
     progress_path = source_dir / "ingestion_progress.json"
     candidates_path = source_dir / "universe_candidates.json"
@@ -699,6 +704,7 @@ def _parse_progress_and_candidates(
     done_tickers: tuple[str, ...]
     skipped_tickers: dict[str, str] = {}
     failed_tickers: dict[str, str] = {}
+    progress_source = "ingestion_progress.json"
 
     if progress_path.is_file():
         prog_raw = json.loads(progress_path.read_text(encoding="utf-8"))
@@ -727,6 +733,7 @@ def _parse_progress_and_candidates(
             }
     else:
         done_tickers = tuple(sorted(set(manifest_tickers)))
+        progress_source = "inferred_from_interim_archive"
 
     total_candidates = len(done_tickers) + len(skipped_tickers) + len(failed_tickers)
     if candidates_path.is_file():
@@ -751,12 +758,14 @@ def _parse_progress_and_candidates(
         skipped_tickers,
         failed_tickers,
         pending_count,
+        progress_source,
     )
 
 
 def verify_source_integrity(
     source_dir: Path,
     *,
+    source_db: Path | None = None,
     raise_on_error: bool = True,
 ) -> SourceIntegrityReport:
     """Strictly read-only dual SHA-256 verification of raw artifacts, provenance, and manifest.
@@ -771,9 +780,13 @@ def verify_source_integrity(
     """
     src_resolved = source_dir.resolve()
     raw_root = (src_resolved / "raw").resolve()
-    state_db = (src_resolved / "metadata" / "state.sqlite").resolve()
+    state_db = (
+        source_db.resolve()
+        if source_db is not None
+        else (src_resolved / "metadata" / "state.sqlite").resolve()
+    )
     if not state_db.is_file():
-        raise FileNotFoundError(f"Source state.sqlite not found: {state_db}")
+        raise FileNotFoundError(f"Source SQLite database not found: {state_db}")
     if not raw_root.is_dir():
         raise FileNotFoundError(f"Source raw archive directory not found: {raw_root}")
 
@@ -899,6 +912,7 @@ def verify_source_integrity(
         skipped_tickers,
         failed_tickers,
         pending_count,
+        progress_source,
     ) = _parse_progress_and_candidates(src_resolved, manifest_tickers)
 
     referenced_raw_paths: set[str] = set()
@@ -1053,6 +1067,7 @@ def verify_source_integrity(
         canonical_sha_mismatches=tuple(canonical_sha_mismatches),
         provenance_mismatches=tuple(provenance_mismatches),
         passed=passed,
+        progress_source=progress_source,
     )
     if not passed and raise_on_error:
         raise ArchiveIntegrityError(
@@ -1079,6 +1094,7 @@ def migrate_universe_read_only(
     issuers_path: Path | None = None,
     backup_dir: Path | None = None,
     dagster_home: Path | None = None,
+    source_db: Path | None = None,
 ) -> dict[str, object]:
     """Verify source archive integrity, perform pre-cutover backup, and migrate read-only.
 
@@ -1093,7 +1109,14 @@ def migrate_universe_read_only(
     ):
         raise ValueError("source_dir and target_dir must not nest inside each other.")
 
-    integrity = verify_source_integrity(src_resolved, raise_on_error=True)
+    src_state_db = (
+        source_db.resolve()
+        if source_db is not None
+        else (src_resolved / "metadata" / "state.sqlite").resolve()
+    )
+    integrity = verify_source_integrity(
+        src_resolved, source_db=src_state_db, raise_on_error=True
+    )
 
     resolved_issuers_src = (
         issuers_path.resolve()
@@ -1146,6 +1169,14 @@ def migrate_universe_read_only(
             src_disclosures, dst_resolved / "raw_disclosures"
         )
 
+    src_disc_manifest = src_resolved / "disclosure_manifest.json"
+    if src_disc_manifest.is_symlink():
+        raise ContractViolationError(
+            f"Refusing to copy symbolic link during migration: {src_disc_manifest}"
+        )
+    if src_disc_manifest.is_file():
+        shutil.copy2(src_disc_manifest, dst_resolved / "disclosure_manifest.json")
+
     dst_issuers = dst_resolved / "curated" / "issuers.parquet"
     dst_issuers.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -1163,7 +1194,7 @@ def migrate_universe_read_only(
         raise
 
     backup_sqlite_wal_safe(
-        src_resolved / "metadata" / "state.sqlite",
+        src_state_db,
         target_state_path,
         read_only_source=True,
     )
@@ -1228,6 +1259,7 @@ def migrate_universe_read_only(
     done_set = set(integrity.done_tickers)
     return {
         "source_dir": src_resolved.as_posix(),
+        "source_db": src_state_db.as_posix(),
         "target_dir": dst_resolved.as_posix(),
         "issuers_source": resolved_issuers_src.as_posix(),
         "integrity": asdict(integrity),
@@ -1273,60 +1305,245 @@ def _raw_statutory_deadline_no_holidays(meta: FilingMetadata) -> date:
     return meta.period_end_date + timedelta(days=days)
 
 
+def _extract_ticker_from_disclosure_url(
+    disclosure_source: str, source_url: str
+) -> str | None:
+    if disclosure_source == "vietcap_iq":
+        match = _VCI_COMPANY_URL_RE.search(source_url)
+        return match.group(1).strip().upper() if match is not None else None
+    if disclosure_source == "cafef_bctc":
+        parsed = urlsplit(source_url)
+        for key, vals in parse_qs(parsed.query).items():
+            if key.lower() in {"sym", "symbol"} and vals:
+                cleaned = vals[0].strip().upper()
+                if cleaned:
+                    return cleaned
+    return None
+
+
+def _unwrap_cafef_archive_payload(raw_bytes: bytes) -> bytes:
+    """Unwrap ``_json_evidence_bytes`` JSON envelope ``{"raw_utf8": ...}`` when present."""
+    try:
+        parsed = json.loads(raw_bytes)
+    except (ValueError, UnicodeError):
+        return raw_bytes
+    if isinstance(parsed, dict):
+        raw_utf8 = parsed.get("raw_utf8")
+        if isinstance(raw_utf8, str):
+            return raw_utf8.encode("utf-8")
+    return raw_bytes
+
+
 def _load_local_disclosures(
     disclosures_root: Path,
     tickers: Sequence[str],
     *,
     max_date: date,
+    raw_root: Path | None = None,
+    disclosure_manifest_path: Path | None = None,
 ) -> tuple[
     list[DisclosureRecord], list[DisclosureRecord], dict[str, bytes], dict[str, int]
 ]:
     vietcap_records: list[DisclosureRecord] = []
     cafef_records: list[DisclosureRecord] = []
     evidence_payloads: dict[str, bytes] = {}
-    counts = {
+    counts: dict[str, int] = {
         "vietcap_files_loaded": 0,
         "cafef_files_loaded": 0,
+        "vietcap_from_dir": 0,
+        "cafef_from_dir": 0,
+        "vietcap_from_archive_fallback": 0,
+        "cafef_from_archive_fallback": 0,
         "vietcap_records_parsed": 0,
         "cafef_records_parsed": 0,
     }
-    if not disclosures_root.is_dir():
-        return vietcap_records, cafef_records, evidence_payloads, counts
+    target_tickers = {t.strip().upper() for t in tickers}
+    loaded_vci: set[str] = set()
+    loaded_cafef: set[str] = set()
 
-    for ticker in tickers:
-        vci_candidates = (
-            disclosures_root / "vietcap_iq" / f"{ticker}.json",
-            disclosures_root / f"{ticker}.json",
-        )
-        vci_path = next((p for p in vci_candidates if p.is_file()), None)
-        if vci_path is not None:
-            vci_bytes = vci_path.read_bytes()
-            vci_url = DEFAULT_VIETCAP_URL_TEMPLATE.format(ticker=ticker)
-            parsed_vci = parse_vietcap_iq_disclosures(
-                ticker, vci_bytes, source_url=vci_url, max_date=max_date
+    if disclosures_root.is_dir():
+        for ticker in tickers:
+            vci_candidates = (
+                disclosures_root / "vietcap_iq" / f"{ticker}.json",
+                disclosures_root / f"{ticker}.json",
             )
-            counts["vietcap_files_loaded"] += 1
-            counts["vietcap_records_parsed"] += len(parsed_vci)
-            if parsed_vci:
-                vietcap_records.extend(parsed_vci)
-                evidence_payloads[vci_url] = vci_bytes
+            vci_path = next(
+                (p for p in vci_candidates if not p.is_symlink() and p.is_file()), None
+            )
+            if vci_path is not None:
+                vci_bytes = vci_path.read_bytes()
+                vci_url = DEFAULT_VIETCAP_URL_TEMPLATE.format(ticker=ticker)
+                parsed_vci = parse_vietcap_iq_disclosures(
+                    ticker, vci_bytes, source_url=vci_url, max_date=max_date
+                )
+                counts["vietcap_files_loaded"] += 1
+                counts["vietcap_from_dir"] += 1
+                counts["vietcap_records_parsed"] += len(parsed_vci)
+                loaded_vci.add(ticker)
+                if parsed_vci:
+                    vietcap_records.extend(parsed_vci)
+                    evidence_payloads[vci_url] = vci_bytes
 
-        cafef_candidates = (
-            disclosures_root / "cafef_bctc" / f"{ticker}.html",
-            disclosures_root / f"{ticker}.html",
-        )
-        cafef_path = next((p for p in cafef_candidates if p.is_file()), None)
-        if cafef_path is not None:
-            cafef_bytes = cafef_path.read_bytes()
-            cafef_url = DEFAULT_CAFEF_URL_TEMPLATE.format(ticker=ticker)
-            parsed_cafef = parse_cafef_bctc_disclosures(
-                ticker, cafef_bytes, source_url=cafef_url, max_date=max_date
+            cafef_candidates = (
+                disclosures_root / "cafef_bctc" / f"{ticker}.html",
+                disclosures_root / f"{ticker}.html",
             )
-            counts["cafef_files_loaded"] += 1
-            counts["cafef_records_parsed"] += len(parsed_cafef)
-            if parsed_cafef:
-                cafef_records.extend(parsed_cafef)
-                evidence_payloads[cafef_url] = cafef_bytes
+            cafef_path = next(
+                (p for p in cafef_candidates if not p.is_symlink() and p.is_file()),
+                None,
+            )
+            if cafef_path is not None:
+                cafef_bytes = cafef_path.read_bytes()
+                cafef_url = DEFAULT_CAFEF_URL_TEMPLATE.format(ticker=ticker)
+                parsed_cafef = parse_cafef_bctc_disclosures(
+                    ticker, cafef_bytes, source_url=cafef_url, max_date=max_date
+                )
+                counts["cafef_files_loaded"] += 1
+                counts["cafef_from_dir"] += 1
+                counts["cafef_records_parsed"] += len(parsed_cafef)
+                loaded_cafef.add(ticker)
+                if parsed_cafef:
+                    cafef_records.extend(parsed_cafef)
+                    evidence_payloads[cafef_url] = cafef_bytes
+
+    # Fallback: resolve archived disclosure evidence from raw/provenance/ + raw/sha256/
+    # (and optional disclosure_manifest.json) when raw_disclosures/ is absent or partial.
+    missing_vci = target_tickers - loaded_vci
+    missing_cafef = target_tickers - loaded_cafef
+    if raw_root is not None and raw_root.is_dir() and (missing_vci or missing_cafef):
+        resolved_raw = raw_root.resolve()
+        sha_to_vci_ticker: dict[str, str] = {}
+        sha_to_cafef_ticker: dict[str, str] = {}
+        ticker_to_vci_sha: dict[str, str] = {}
+        if (
+            disclosure_manifest_path is not None
+            and not disclosure_manifest_path.is_symlink()
+            and disclosure_manifest_path.is_file()
+        ):
+            try:
+                dm_raw = json.loads(
+                    disclosure_manifest_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                dm_raw = None
+            if isinstance(dm_raw, list):
+                for entry in dm_raw:
+                    if not isinstance(entry, dict):
+                        continue
+                    tkr = str(entry.get("ticker") or "").strip().upper()
+                    if not tkr or tkr not in target_tickers:
+                        continue
+                    v_sha = entry.get("vietcap_sha256")
+                    if isinstance(v_sha, str) and _SHA256_HEX_RE.fullmatch(v_sha):
+                        sha_to_vci_ticker[v_sha] = tkr
+                        ticker_to_vci_sha[tkr] = v_sha
+                    c_sha = entry.get("cafef_sha256")
+                    if isinstance(c_sha, str) and _SHA256_HEX_RE.fullmatch(c_sha):
+                        sha_to_cafef_ticker[c_sha] = tkr
+
+        # Index newest receipt per (source, ticker) under raw/provenance/
+        archived_candidates: dict[tuple[str, str], tuple[str, Path]] = {}
+        prov_dir = resolved_raw / "provenance"
+        if prov_dir.is_dir():
+            for receipt_path in sorted(prov_dir.glob("*.json")):
+                if receipt_path.is_symlink() or not receipt_path.is_file():
+                    continue
+                try:
+                    receipt_obj = json.loads(receipt_path.read_bytes())
+                except (OSError, ValueError, UnicodeError):
+                    continue
+                if not isinstance(receipt_obj, dict):
+                    continue
+                provider_attrs = receipt_obj.get("provider_attrs")
+                if not isinstance(provider_attrs, dict):
+                    continue
+                disc_source = provider_attrs.get("disclosure_source")
+                if disc_source not in ("vietcap_iq", "cafef_bctc"):
+                    continue
+                raw_rel = receipt_obj.get("raw_archive_path")
+                if not isinstance(raw_rel, str):
+                    continue
+                payload_path = (resolved_raw / raw_rel).resolve()
+                if (
+                    not payload_path.is_relative_to(resolved_raw)
+                    or payload_path.is_symlink()
+                    or not payload_path.is_file()
+                ):
+                    continue
+
+                source_url_raw = provider_attrs.get("source_url")
+                tkr_found: str | None = (
+                    _extract_ticker_from_disclosure_url(disc_source, source_url_raw)
+                    if isinstance(source_url_raw, str)
+                    else None
+                )
+                if tkr_found is None:
+                    ev_sha = provider_attrs.get("raw_evidence_sha256")
+                    if isinstance(ev_sha, str):
+                        tkr_found = (
+                            sha_to_vci_ticker.get(ev_sha)
+                            if disc_source == "vietcap_iq"
+                            else sha_to_cafef_ticker.get(ev_sha)
+                        )
+                if tkr_found is None or tkr_found not in target_tickers:
+                    continue
+                if disc_source == "vietcap_iq" and tkr_found in loaded_vci:
+                    continue
+                if disc_source == "cafef_bctc" and tkr_found in loaded_cafef:
+                    continue
+
+                fetched_str = str(receipt_obj.get("fetched_at") or "")
+                cand_key = (disc_source, tkr_found)
+                prev_cand = archived_candidates.get(cand_key)
+                if prev_cand is None or fetched_str >= prev_cand[0]:
+                    archived_candidates[cand_key] = (fetched_str, payload_path)
+
+        # Direct sha256 lookup fallback for Vietcap JSON via disclosure_manifest.json
+        for tkr in sorted(missing_vci):
+            if ("vietcap_iq", tkr) in archived_candidates:
+                continue
+            v_sha = ticker_to_vci_sha.get(tkr)
+            if v_sha is None:
+                continue
+            direct_path = (
+                resolved_raw / "sha256" / v_sha[:2] / f"{v_sha}.json"
+            ).resolve()
+            if (
+                direct_path.is_relative_to(resolved_raw)
+                and not direct_path.is_symlink()
+                and direct_path.is_file()
+            ):
+                archived_candidates[("vietcap_iq", tkr)] = ("", direct_path)
+
+        for (disc_source, ticker), (_, payload_path) in sorted(
+            archived_candidates.items()
+        ):
+            raw_bytes = payload_path.read_bytes()
+            if disc_source == "vietcap_iq":
+                vci_url = DEFAULT_VIETCAP_URL_TEMPLATE.format(ticker=ticker)
+                parsed_vci = parse_vietcap_iq_disclosures(
+                    ticker, raw_bytes, source_url=vci_url, max_date=max_date
+                )
+                counts["vietcap_files_loaded"] += 1
+                counts["vietcap_from_archive_fallback"] += 1
+                counts["vietcap_records_parsed"] += len(parsed_vci)
+                loaded_vci.add(ticker)
+                if parsed_vci:
+                    vietcap_records.extend(parsed_vci)
+                    evidence_payloads[vci_url] = raw_bytes
+            else:
+                cafef_url = DEFAULT_CAFEF_URL_TEMPLATE.format(ticker=ticker)
+                html_bytes = _unwrap_cafef_archive_payload(raw_bytes)
+                parsed_cafef = parse_cafef_bctc_disclosures(
+                    ticker, html_bytes, source_url=cafef_url, max_date=max_date
+                )
+                counts["cafef_files_loaded"] += 1
+                counts["cafef_from_archive_fallback"] += 1
+                counts["cafef_records_parsed"] += len(parsed_cafef)
+                loaded_cafef.add(ticker)
+                if parsed_cafef:
+                    cafef_records.extend(parsed_cafef)
+                    evidence_payloads[cafef_url] = html_bytes
 
     return vietcap_records, cafef_records, evidence_payloads, counts
 
@@ -1637,7 +1854,13 @@ def _run_layer1_disclosures(
             continue
 
     vci_records, cafef_records, evidence_payloads, file_counts = (
-        _load_local_disclosures(target_dir / "raw_disclosures", tickers, max_date=as_of)
+        _load_local_disclosures(
+            target_dir / "raw_disclosures",
+            tickers,
+            max_date=as_of,
+            raw_root=target_dir / "raw",
+            disclosure_manifest_path=target_dir / "disclosure_manifest.json",
+        )
     )
     merged = merge_disclosure_records(
         vci_records, cafef_records, period_end_dates=period_end_dates
@@ -3655,6 +3878,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Read-only path to archived universe directory (never modified).",
     )
     parser.add_argument(
+        "--source-db",
+        type=Path,
+        default=None,
+        help=(
+            "Optional explicit source SQLite database path "
+            "(defaults to <source-dir>/metadata/state.sqlite; e.g. state_statutory_baseline.sqlite)."
+        ),
+    )
+    parser.add_argument(
         "--target-dir",
         type=Path,
         default=Path("data"),
@@ -3726,10 +3958,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.verify_only:
-        report = verify_source_integrity(args.source_dir, raise_on_error=True)
+        report = verify_source_integrity(
+            args.source_dir, source_db=args.source_db, raise_on_error=True
+        )
         payload: dict[str, object] = {
             "mode": "verify_only",
             "source_dir": args.source_dir.resolve().as_posix(),
+            "source_db": (
+                args.source_db.resolve().as_posix()
+                if args.source_db is not None
+                else (args.source_dir / "metadata" / "state.sqlite")
+                .resolve()
+                .as_posix()
+            ),
             "integrity": asdict(report),
         }
         if args.evidence_json is not None:
@@ -3742,6 +3983,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.target_dir,
         issuers_path=args.issuers_path,
         backup_dir=args.backup_dir,
+        source_db=args.source_db,
     )
     pipeline_report = run_v2_pipeline_and_benchmarks(
         args.target_dir,
