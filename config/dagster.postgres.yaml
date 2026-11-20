@@ -1,0 +1,21 @@
+# Tier 1 Production Dagster Instance Configuration (PostgreSQL Storage)
+# Usage: copy or mount into $DAGSTER_HOME/dagster.yaml when running with docker-compose.yml.
+storage:
+  postgres:
+    postgres_db:
+      username:
+        env: FININTEL_PG_USER
+      password:
+        env: FININTEL_PG_PASSWORD
+      hostname:
+        env: FININTEL_PG_HOST
+      db_name:
+        env: FININTEL_DAGSTER_PG_DB
+      port:
+        env: FININTEL_PG_PORT
+
+run_coordinator:
+  module: dagster._core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 4

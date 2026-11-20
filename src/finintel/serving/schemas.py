@@ -22,6 +22,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from finintel.serving.dictionary import (
+    RatioCategory,
+    RatioDirection,
+    RatioFormatType,
+    StatementType,
+)
 from finintel.serving.queries import (
     AltmanZone,
     BeneishFlag,
@@ -31,6 +37,18 @@ from finintel.serving.queries import (
     PeriodView,
     StatementScope,
 )
+
+ScreenerSortField = Literal[
+    "ticker",
+    "calibrated_distress_prob",
+    "altman_z_double_prime",
+    "piotroski_f_score",
+    "beneish_m8_score",
+    "red_flag_count",
+    "roe_total",
+    "debt_to_equity",
+]
+SortDirection = Literal["asc", "desc"]
 
 RatioName = Literal[
     "gross_margin",
@@ -84,11 +102,38 @@ def _finite_float_or_none(raw: object) -> float | None:
 
 
 class HealthResponse(BaseModel):
-    """Route 1 response: service liveness and active snapshot binding."""
+    """Route 1 response: service readiness and active snapshot binding."""
 
     status: Literal["ok", "degraded"]
     active_snapshot_id: str | None
     storage_backend: str
+
+
+class LivenessResponse(BaseModel):
+    """Event-loop-only Kubernetes/Docker liveness probe response."""
+
+    status: Literal["alive"]
+
+
+class ReadinessResponse(BaseModel):
+    """Deep storage & DuckDB readiness probe response (HTTP 200 ready / HTTP 503 unready)."""
+
+    status: Literal["ready", "unready"]
+    active_snapshot_id: str | None = None
+    storage_backend: str = "parquet"
+    duckdb_ok: bool = False
+    snapshot_readable: bool = False
+    cache_enabled: bool = False
+    detail: str | None = None
+
+
+class AvailablePeriodsResponse(BaseModel):
+    """Distinct available reporting period dates for a ``(statement_scope, period_type)`` slice."""
+
+    snapshot_id: str | None
+    statement_scope: StatementScope
+    period_type: PeriodType
+    periods: list[date]
 
 
 class SnapshotOverviewResponse(BaseModel):
@@ -504,6 +549,7 @@ class StressScenarioRequest(BaseModel):
     dso_shock_days: float = Field(0.0, ge=-90.0, le=180.0, allow_inf_nan=False)
     dio_shock_days: float = Field(0.0, ge=-90.0, le=180.0, allow_inf_nan=False)
     top_n: int = Field(50, ge=1, le=200)
+    include_all_newly_distressed: bool = False
 
     @field_validator("scenario_name")
     @classmethod
@@ -617,3 +663,214 @@ class AuditQuarantinePageResponse(BaseModel):
     limit: int
     offset: int
     items: list[AuditQuarantineItem]
+
+
+class SectorOptionItem(BaseModel):
+    """ICB Level 2 sector summary option for global filters."""
+
+    icb_code_level2: str
+    icb_name_level2: str
+    issuer_count: int
+
+
+class MetaPeriodsResponse(BaseModel):
+    """Available snapshot periods per scope/type and ICB Level 2 sector directory."""
+
+    snapshot_id: str | None
+    published_at: str | None
+    available_periods: dict[str, dict[str, list[date]]]
+    sectors_level2: list[SectorOptionItem]
+
+
+class RatioDictionaryItem(BaseModel):
+    """Dictionary definition for one published financial ratio."""
+
+    ratio_name: RatioName
+    display_name_vn: str
+    category: RatioCategory
+    unit: str
+    format_type: RatioFormatType
+    direction: RatioDirection
+    formula_display: str
+    description_vn: str
+    is_overview_core: bool
+
+
+class RedFlagDictionaryItem(BaseModel):
+    """Dictionary definition for one forensic red-flag screening rule."""
+
+    flag_code: str
+    title_vn: str
+    default_severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    methodology_ref: str
+    description_vn: str
+
+
+class MetaDictionaryResponse(BaseModel):
+    """Static ratio & forensic rule dictionary for tooltips and methodology docs."""
+
+    ratios: list[RatioDictionaryItem]
+    red_flags: list[RedFlagDictionaryItem]
+
+
+class BenchmarkSummaryItem(BaseModel):
+    """Single ratio peer benchmark + 8-period sparkline for Traffic Light tables."""
+
+    metric_name: RatioName
+    display_name_vn: str
+    category: RatioCategory
+    unit: str
+    format_type: RatioFormatType
+    direction: RatioDirection
+    company_value: float | None = None
+    peer_median: float | None = None
+    peer_p25: float | None = None
+    peer_p75: float | None = None
+    percentile_rank: float | None = None
+    robust_z_score: float | None = None
+    peer_group_level: str | None = None
+    icb_code_used: str | None = None
+    peer_count: int = 0
+    sparkline: list[float | None] = Field(default_factory=list)
+
+
+class CompanyBenchmarksSummaryResponse(BaseModel):
+    """Batch peer comparison across core or all ratios for one company period."""
+
+    snapshot_id: str | None
+    ticker: str
+    issuer_id: str
+    statement_scope: StatementScope
+    period_type: PeriodType
+    period_end_date: date
+    items: list[BenchmarkSummaryItem]
+
+
+class StatementPeriodItem(BaseModel):
+    """Column metadata for one reporting period in normalized financial statements."""
+
+    period_end_date: date
+    fiscal_year: int | None = None
+    fiscal_quarter: int | None = None
+    label: str
+    taxonomy_version: str | None = None
+    audit_status: str | None = None
+
+
+class StatementRowItem(BaseModel):
+    """Single standardized VAS line item across multiple reporting periods."""
+
+    metric_id: str
+    display_name_vn: str
+    tt200_code: str | None = None
+    tt99_code: str | None = None
+    unit: str
+    is_total: bool
+    comparable_across_taxonomy: bool
+    sort_order: int
+    values: dict[str, float | None]
+
+
+class CompanyStatementsResponse(BaseModel):
+    """Multi-period normalized VAS financial statement matrix for one issuer."""
+
+    snapshot_id: str | None
+    ticker: str
+    issuer_id: str
+    statement_type: StatementType
+    statement_scope: StatementScope
+    period_type: PeriodType
+    periods: list[StatementPeriodItem]
+    rows: list[StatementRowItem]
+
+
+class CompanyFilingItem(BaseModel):
+    """Single disclosure/filing audit and restatement record for an issuer."""
+
+    filing_id: str
+    statement_type: str | None = None
+    statement_scope: str | None = None
+    period_type: str | None = None
+    period_end_date: date | None = None
+    taxonomy_version: str | None = None
+    published_at: date | None = None
+    published_at_basis: str | None = None
+    effective_available_at: date | None = None
+    audit_status: str | None = None
+    audit_opinion: str | None = None
+    revision_no: int | None = None
+    revision_reason: str | None = None
+    has_restatement: bool = False
+    source_provider: str | None = None
+
+
+class CompanyFilingsResponse(BaseModel):
+    """Issuer disclosure, audit opinion, and revision history."""
+
+    snapshot_id: str | None
+    ticker: str
+    issuer_id: str
+    items: list[CompanyFilingItem]
+
+
+class SectorRiskItem(BaseModel):
+    """Aggregated market risk metrics for one ICB Level 2 sector."""
+
+    icb_code_level2: str
+    icb_name_level2: str
+    issuer_count: int
+    safe_zone_count: int
+    grey_zone_count: int
+    distress_zone_count: int
+    beneish_flagged_count: int
+    high_red_flag_count: int
+    median_distress_prob: float | None = None
+    avg_red_flags: float
+    total_debt_sum: float
+
+
+class MarketChangeItem(BaseModel):
+    """Quarter-over-quarter or year-over-year risk transition for one issuer."""
+
+    issuer_id: str
+    ticker: str
+    company_name_vn: str | None = None
+    icb_name_level2: str | None = None
+    prev_period_end_date: date | None = None
+    curr_period_end_date: date
+    altman_zone_prev: str | None = None
+    altman_zone_curr: str | None = None
+    distress_prob_prev: float | None = None
+    distress_prob_curr: float | None = None
+    distress_prob_delta: float | None = None
+    red_flag_count_prev: int
+    red_flag_count_curr: int
+    new_red_flag_codes: list[str]
+    resolved_red_flag_codes: list[str]
+    deteriorated: bool
+
+
+class SectorRiskSummaryResponse(BaseModel):
+    """Market-wide sector risk heatmap and top deteriorating issuers."""
+
+    snapshot_id: str | None
+    statement_scope: StatementScope
+    period_type: PeriodType
+    period_end_date: date | None = None
+    total_issuers: int
+    safe_zone_count: int
+    grey_zone_count: int
+    distress_zone_count: int
+    beneish_flagged_count: int
+    high_red_flag_count: int
+    sectors: list[SectorRiskItem]
+    top_deteriorating: list[MarketChangeItem]
+
+
+class MarketChangesResponse(BaseModel):
+    """Period-over-period risk changes filtered by watchlist tickers or market-wide."""
+
+    snapshot_id: str | None
+    statement_scope: StatementScope
+    period_type: PeriodType
+    items: list[MarketChangeItem]

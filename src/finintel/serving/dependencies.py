@@ -26,9 +26,11 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import urlparse
 
+import anyio
 import duckdb
 from fastapi import FastAPI, Request
 
+from finintel.serving.cache import ValkeyResponseCache
 from finintel.serving.queries import DashboardQueryService, resolve_data_root
 from finintel.storage.ducklake_store import ensure_ducklake_attached
 from finintel.storage.repository import ParquetRepository
@@ -137,6 +139,7 @@ def build_lifespan(
     duckdb_memory_limit: str | None = None,
     stress_max_concurrency: int = DEFAULT_STRESS_MAX_CONCURRENCY,
     stress_semaphore_timeout: float = DEFAULT_STRESS_SEMAPHORE_TIMEOUT,
+    valkey_url: str | None = None,
 ) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     """Build a FastAPI lifespan context manager with explicit DuckDB setup & shutdown close."""
     if (
@@ -155,6 +158,7 @@ def build_lifespan(
             if repository is not None
             else ParquetRepository(data_root=resolve_data_root(data_root))
         )
+        response_cache = ValkeyResponseCache(url=valkey_url)
 
         duckdb_conn = duckdb.connect(":memory:")
         try:
@@ -167,10 +171,14 @@ def build_lifespan(
             app.state.duckdb_memory_limit = memory_limit
             app.state.repository = repo
             app.state.query_service = DashboardQueryService(repo)
+            app.state.response_cache = response_cache
             app.state.stress_semaphore = threading.Semaphore(stress_max_concurrency)
+            app.state.stress_max_concurrency = int(stress_max_concurrency)
             app.state.stress_semaphore_timeout = float(stress_semaphore_timeout)
+            app.state.stress_limiter = anyio.CapacityLimiter(stress_max_concurrency)
             yield
         finally:
+            response_cache.close()
             duckdb_conn.close()
 
     return _lifespan
@@ -213,3 +221,13 @@ def get_stress_semaphore(request: Request) -> tuple[threading.Semaphore, float]:
         )
     )
     return sem, timeout
+
+
+def get_response_cache(request: Request) -> ValkeyResponseCache:
+    """Return the app-scoped Valkey/Redis L2 response cache (fail-open no-op if disabled)."""
+    return cast(ValkeyResponseCache, request.app.state.response_cache)
+
+
+def get_stress_limiter(request: Request) -> anyio.CapacityLimiter:
+    """Return the dedicated AnyIO CapacityLimiter isolating stress-test workers."""
+    return cast(anyio.CapacityLimiter, request.app.state.stress_limiter)

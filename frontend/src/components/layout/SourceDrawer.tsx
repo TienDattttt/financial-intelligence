@@ -1,0 +1,233 @@
+"use client";
+
+import * as React from "react";
+import Link from "next/link";
+import { BookOpen, CheckCircle2, FileText, X } from "lucide-react";
+import { useAppState } from "@/components/providers/app-providers";
+import { ErrorState } from "@/components/layout/StateBlocks";
+import { Button } from "@/components/ui/button";
+import { Badge, Skeleton } from "@/components/ui/primitives";
+import { useRatioLineage } from "@/hooks/use-finintel-queries";
+import {
+  STATEMENT_SCOPE_LABELS,
+  TAXONOMY_LABELS,
+} from "@/lib/domain-labels";
+import {
+  formatDateVi,
+  formatPeriodLabel,
+  formatVndBillions,
+  formatVndPerShare,
+} from "@/lib/format";
+import type { LineageComponentItem } from "@/types/api";
+
+const DENOMINATOR_MODE_LABELS: Record<string, string> = {
+  AVERAGE_STOCK: "Bình quân đầu kỳ & cuối kỳ",
+  POINT_IN_TIME_STOCK: "Tại thời điểm cuối kỳ",
+  FLOW: "Lưu chuyển kỳ/TTM",
+  PRIOR_YEAR_FLOW: "So với cùng kỳ năm trước",
+  COMPOSITE: "Chỉ số tổng hợp",
+};
+
+function ComponentList({
+  title,
+  items,
+}: {
+  title: string;
+  items: readonly LineageComponentItem[];
+}) {
+  return (
+    <section className="space-y-2">
+      <h3 className="text-xs font-semibold text-ink-muted">{title}</h3>
+      {items.length === 0 ? (
+        <p className="rounded border border-dashed border-border px-3 py-2 text-xs text-ink-subtle">
+          Không có thành phần ghi nhận cho lát cắt này.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {items.map((comp, idx) => {
+            const isPerShare = comp.metric_id.includes("EPS");
+            const formattedVal = isPerShare
+              ? formatVndPerShare(comp.value)
+              : formatVndBillions(comp.value, { accountingNegative: true });
+            return (
+              <li
+                key={`${comp.metric_id}-${comp.period_end_date}-${idx}`}
+                className="rounded border border-border bg-surface-muted/40 p-2.5 text-xs"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span className="font-mono font-medium text-ink">
+                    {comp.metric_id}
+                  </span>
+                  <span className="num font-semibold text-ink">
+                    {formattedVal} {isPerShare ? "đ/cp" : "tỷ"}
+                  </span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-ink-muted">
+                  <span>
+                    Kỳ: {formatPeriodLabel(comp.period_end_date, comp.period_type)}
+                  </span>
+                  <span>
+                    Chuẩn: {TAXONOMY_LABELS[comp.taxonomy_version] ?? comp.taxonomy_version}
+                  </span>
+                  {comp.published_at ? (
+                    <span>Công bố: {formatDateVi(comp.published_at)}</span>
+                  ) : null}
+                </div>
+                <div className="mt-1 flex items-center justify-between text-[11px] text-ink-subtle">
+                  <span className="truncate font-mono" title={comp.filing_id}>
+                    Hồ sơ: {comp.filing_id}
+                  </span>
+                  {comp.canonical_content_sha256 ? (
+                    <span
+                      className="font-mono"
+                      title={comp.canonical_content_sha256}
+                    >
+                      SHA: {comp.canonical_content_sha256.slice(0, 8)}
+                    </span>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+export function SourceDrawer() {
+  const { sourceTarget, closeSourceDrawer, snapshotId } = useAppState();
+  const lineageQuery = useRatioLineage(sourceTarget, snapshotId);
+
+  React.useEffect(() => {
+    if (!sourceTarget) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        closeSourceDrawer();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [closeSourceDrawer, sourceTarget]);
+
+  if (!sourceTarget) return null;
+
+  const card = lineageQuery.data;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-ink/30"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Nguồn dữ liệu chỉ số"
+      onClick={closeSourceDrawer}
+    >
+      <div
+        className="flex h-full w-full max-w-[440px] flex-col border-l border-border-strong bg-surface shadow-[0_8px_32px_rgba(26,29,33,0.18)]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3.5">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-accent-ink">
+              <FileText className="size-3.5" aria-hidden="true" />
+              <span>Nguồn dữ liệu chỉ số</span>
+            </div>
+            <h2 className="mt-0.5 truncate text-[15px] font-semibold text-ink">
+              {card?.display_name_vn ?? sourceTarget.ratioName}
+            </h2>
+            <p className="mt-0.5 text-xs text-ink-muted">
+              {sourceTarget.ticker} ·{" "}
+              {card
+                ? formatPeriodLabel(card.period_end_date, card.period_type)
+                : formatPeriodLabel(sourceTarget.periodEndDate, sourceTarget.periodType)}{" "}
+              ·{" "}
+              {STATEMENT_SCOPE_LABELS[sourceTarget.statementScope] ??
+                sourceTarget.statementScope}
+              {card
+                ? ` · ${TAXONOMY_LABELS[card.taxonomy_version] ?? card.taxonomy_version}`
+                : ""}
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Đóng ngăn kéo nguồn"
+            onClick={closeSourceDrawer}
+          >
+            <X className="size-4" />
+          </Button>
+        </div>
+
+        <div className="flex-1 space-y-4 overflow-y-auto p-4">
+          {lineageQuery.isLoading ? (
+            <div className="space-y-3">
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-28 w-full" />
+            </div>
+          ) : lineageQuery.isError ? (
+            <ErrorState
+              message={lineageQuery.error.message}
+              onRetry={() => lineageQuery.refetch()}
+            />
+          ) : card ? (
+            <>
+              <div className="rounded border border-border bg-canvas p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-ink-muted">Giá trị công bố</span>
+                  <Badge className="bg-risk-low-soft text-risk-low">
+                    <CheckCircle2 className="size-3" aria-hidden="true" />
+                    {card.status_flag ?? "Hợp lệ"}
+                  </Badge>
+                </div>
+                <p className="num mt-1 font-mono text-xs text-ink">
+                  Công thức: {card.formula}
+                </p>
+                <p className="mt-1 text-[11px] text-ink-muted">
+                  Phương thức mẫu số:{" "}
+                  {DENOMINATOR_MODE_LABELS[card.denominator_mode] ??
+                    card.denominator_mode}
+                </p>
+              </div>
+
+              <ComponentList
+                title="Thành phần tử số"
+                items={card.numerator_components}
+              />
+              <ComponentList
+                title="Thành phần mẫu số"
+                items={card.denominator_components}
+              />
+
+              <section className="space-y-1 rounded border border-border p-3 text-xs">
+                <p className="font-semibold text-ink-muted">Hồ sơ neo & kiểm chứng</p>
+                <p className="font-mono text-[11px] text-ink">
+                  Hồ sơ neo: {card.anchor_filing_id}
+                </p>
+                <p className="text-[11px] text-ink-muted">
+                  Số hồ sơ nguồn tham gia: {card.source_filing_ids.length}
+                </p>
+                {card.orphan_filing_ids.length > 0 ? (
+                  <p className="text-[11px] text-risk-mid">
+                    Lưu ý: {card.orphan_filing_ids.length} hồ sơ tham chiếu chưa khớp đầy đủ trong bảng chi tiết.
+                  </p>
+                ) : null}
+              </section>
+            </>
+          ) : null}
+        </div>
+
+        <div className="border-t border-border bg-surface-muted/40 px-4 py-2.5">
+          <Link
+            href="/methodology"
+            onClick={closeSourceDrawer}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-accent-ink hover:underline"
+          >
+            <BookOpen className="size-3.5" aria-hidden="true" />
+            Xem định nghĩa đầy đủ trong Từ điển chỉ số →
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}

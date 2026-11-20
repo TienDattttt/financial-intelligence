@@ -36,6 +36,18 @@ _FHSC_WATERMARK_TABLE_DDL = """
     )
     """
 
+_FHSC_DISCLOSURE_COOLDOWN_TABLE_DDL = """
+    CREATE TABLE IF NOT EXISTS fhsc_disclosure_cooldowns (
+        provider_key TEXT PRIMARY KEY,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        cooldown_until TEXT,
+        last_http_status INTEGER,
+        last_error_type TEXT,
+        last_failure_at TEXT,
+        updated_at TEXT NOT NULL
+    )
+    """
+
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS pipeline_runs (
@@ -70,6 +82,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS pipeline_steps_by_run ON pipeline_steps(run_id, step_id)",
+    "CREATE INDEX IF NOT EXISTS pipeline_steps_by_stage_status ON pipeline_steps(stage_name, status, step_id)",
     """
     CREATE TABLE IF NOT EXISTS api_key_registry (
         provider_name TEXT PRIMARY KEY,
@@ -88,6 +101,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     )
     """,
     _FHSC_WATERMARK_TABLE_DDL,
+    _FHSC_DISCLOSURE_COOLDOWN_TABLE_DDL,
 )
 SCHEMA = ";\n".join(statement.strip() for statement in SCHEMA_STATEMENTS) + ";\n"
 
@@ -144,22 +158,28 @@ class StateStore:
                        FROM ranked WHERE pipeline_runs.run_id = ranked.run_id"""
                 )
 
-    def recover_interrupted_runs(self) -> None:
+    def recover_interrupted_runs(self) -> dict[str, int]:
         """Close abandoned RUNNING records while holding the pipeline file lock."""
         now = _now()
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
+            steps_cur = conn.execute(
                 """UPDATE pipeline_steps SET status = 'FAILED', finished_at = ?,
                    error_type = 'InterruptedRun',
                    error_message = 'The pipeline process stopped before recording an outcome.'
                    WHERE status = 'RUNNING'""",
                 (now,),
             )
-            conn.execute(
+            runs_cur = conn.execute(
                 "UPDATE pipeline_runs SET status = 'FAILED', finished_at = ? WHERE status = 'RUNNING'",
                 (now,),
             )
+        return {
+            "runs_recovered": int(runs_cur.rowcount if runs_cur.rowcount >= 0 else 0),
+            "steps_recovered": int(
+                steps_cur.rowcount if steps_cur.rowcount >= 0 else 0
+            ),
+        }
 
     def start_run(
         self,
@@ -447,6 +467,198 @@ class StateStore:
             "COMPLETE",
             "EARLY_STOPPED",
         }
+
+    @staticmethod
+    def _normalize_utc(value: datetime) -> datetime:
+        if value.utcoffset() is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    @staticmethod
+    def _validate_provider_key(provider_key: str) -> str:
+        clean = provider_key.strip().lower()
+        if not clean:
+            raise ValueError("provider_key must be a non-empty string.")
+        return clean
+
+    def _read_one(
+        self, query: str, parameters: tuple[object, ...]
+    ) -> dict[str, object] | None:
+        if not self.path.exists():
+            return None
+        try:
+            with closing(
+                sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, timeout=5)
+            ) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout = 5000")
+                row = conn.execute(query, parameters).fetchone()
+                return dict(row) if row is not None else None
+        except sqlite3.OperationalError as error:
+            if "no such table" in str(error).lower():
+                return None
+            raise
+
+    def get_disclosure_cooldown(self, provider_key: str) -> dict[str, object] | None:
+        """Return persisted cooldown state for ``provider_key``, or None if absent/uninitialized."""
+        clean_key = self._validate_provider_key(provider_key)
+        return self._read_one(
+            """SELECT provider_key, consecutive_failures, cooldown_until,
+                      last_http_status, last_error_type, last_failure_at, updated_at
+               FROM fhsc_disclosure_cooldowns
+               WHERE provider_key = ?""",
+            (clean_key,),
+        )
+
+    def active_disclosure_cooldown_until(
+        self, provider_key: str, *, now: datetime | None = None
+    ) -> datetime | None:
+        """Return active UTC cooldown expiry if still in the future, else None."""
+        row = self.get_disclosure_cooldown(provider_key)
+        if row is None:
+            return None
+        raw_until = row.get("cooldown_until")
+        if not isinstance(raw_until, str) or not raw_until.strip():
+            return None
+        try:
+            cooldown_dt = self._normalize_utc(datetime.fromisoformat(raw_until))
+        except ValueError:
+            return None
+        check_now = self._normalize_utc(now) if now is not None else datetime.now(UTC)
+        return cooldown_dt if cooldown_dt > check_now else None
+
+    def record_disclosure_failure(
+        self,
+        provider_key: str,
+        *,
+        failure_threshold: int = 5,
+        cooldown_seconds: float = 60.0,
+        max_cooldown_seconds: float = 900.0,
+        retry_after_seconds: float | None = None,
+        http_status: int | None = None,
+        error_type: str | None = None,
+        force_cooldown: bool = False,
+        now: datetime | None = None,
+    ) -> dict[str, object]:
+        """Increment failure count for ``provider_key`` and open cooldown when breached."""
+        clean_key = self._validate_provider_key(provider_key)
+        if type(failure_threshold) is not int or failure_threshold < 1:
+            raise ValueError("failure_threshold must be an integer >= 1.")
+        if cooldown_seconds < 0 or max_cooldown_seconds < 0:
+            raise ValueError("Cooldown durations must be non-negative.")
+        if retry_after_seconds is not None and retry_after_seconds < 0:
+            raise ValueError("retry_after_seconds must be non-negative.")
+
+        check_now = self._normalize_utc(now) if now is not None else datetime.now(UTC)
+        now_iso = check_now.isoformat()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_FHSC_DISCLOSURE_COOLDOWN_TABLE_DDL)
+            existing = conn.execute(
+                """SELECT consecutive_failures, cooldown_until
+                   FROM fhsc_disclosure_cooldowns
+                   WHERE provider_key = ?""",
+                (clean_key,),
+            ).fetchone()
+            prev_failures = (
+                int(existing["consecutive_failures"]) if existing is not None else 0
+            )
+            new_failures = prev_failures + 1
+
+            existing_until: datetime | None = None
+            if existing is not None and isinstance(existing["cooldown_until"], str):
+                try:
+                    existing_until = self._normalize_utc(
+                        datetime.fromisoformat(existing["cooldown_until"])
+                    )
+                except ValueError:
+                    existing_until = None
+
+            effective_cooldown = 0.0
+            if force_cooldown or (
+                new_failures >= failure_threshold and cooldown_seconds > 0
+            ):
+                base_dur = (
+                    cooldown_seconds if new_failures >= failure_threshold else 0.0
+                )
+                if retry_after_seconds is not None and retry_after_seconds > 0:
+                    base_dur = max(base_dur, retry_after_seconds)
+                if force_cooldown and base_dur <= 0 and cooldown_seconds > 0:
+                    base_dur = cooldown_seconds
+                if max_cooldown_seconds > 0:
+                    effective_cooldown = min(max_cooldown_seconds, base_dur)
+                else:
+                    effective_cooldown = base_dur
+
+            candidate_until = (
+                check_now + timedelta(seconds=effective_cooldown)
+                if effective_cooldown > 0
+                else None
+            )
+            if existing_until is not None and existing_until > check_now:
+                if candidate_until is None or existing_until > candidate_until:
+                    candidate_until = existing_until
+
+            cooldown_until_iso = (
+                candidate_until.isoformat() if candidate_until is not None else None
+            )
+            conn.execute(
+                """INSERT INTO fhsc_disclosure_cooldowns
+                   (provider_key, consecutive_failures, cooldown_until,
+                    last_http_status, last_error_type, last_failure_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(provider_key) DO UPDATE SET
+                       consecutive_failures = excluded.consecutive_failures,
+                       cooldown_until = excluded.cooldown_until,
+                       last_http_status = excluded.last_http_status,
+                       last_error_type = excluded.last_error_type,
+                       last_failure_at = excluded.last_failure_at,
+                       updated_at = excluded.updated_at""",
+                (
+                    clean_key,
+                    new_failures,
+                    cooldown_until_iso,
+                    http_status,
+                    error_type,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+        return {
+            "provider_key": clean_key,
+            "consecutive_failures": new_failures,
+            "cooldown_until": cooldown_until_iso,
+            "last_http_status": http_status,
+            "last_error_type": error_type,
+            "last_failure_at": now_iso,
+            "updated_at": now_iso,
+        }
+
+    def reset_disclosure_cooldown(self, provider_key: str) -> None:
+        """Reset failure counter and cooldown if an active/non-zero row exists."""
+        clean_key = self._validate_provider_key(provider_key)
+        hit = self._read_one(
+            """SELECT 1 AS hit
+               FROM fhsc_disclosure_cooldowns
+               WHERE provider_key = ?
+                 AND (consecutive_failures > 0 OR cooldown_until IS NOT NULL)""",
+            (clean_key,),
+        )
+        if hit is None:
+            return
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """UPDATE fhsc_disclosure_cooldowns
+                   SET consecutive_failures = 0,
+                       cooldown_until = NULL,
+                       last_http_status = NULL,
+                       last_error_type = NULL,
+                       updated_at = ?
+                   WHERE provider_key = ?""",
+                (_now(), clean_key),
+            )
 
     def _one(
         self, query: str, parameters: tuple[object, ...]

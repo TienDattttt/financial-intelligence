@@ -316,11 +316,19 @@ class FinancialArchetypes:
             raise InsufficientModelData(
                 "Financial archetypes require three distinct training rows."
             )
-        selector = PCA(n_components=0.80, svd_solver="full", random_state=42)
-        selector.fit(matrix)
-        axes = min(5, train.height, max(3, selector.n_components_))
-        pca = PCA(n_components=axes, svd_solver="full", random_state=42)
-        embedding = pca.fit_transform(matrix)
+        # Fit full-SVD PCA once and slice to target axes (avoids redundant 2nd full SVD).
+        pca = PCA(svd_solver="full", random_state=42)
+        full_embedding = pca.fit_transform(matrix)
+        cum_var = np.cumsum(pca.explained_variance_ratio_)
+        n_for_80 = int(np.searchsorted(cum_var, 0.80, side="left")) + 1
+        axes = min(5, train.height, full_embedding.shape[1], max(3, n_for_80))
+        pca.n_components = axes
+        pca.n_components_ = axes
+        pca.components_ = pca.components_[:axes].copy()
+        pca.explained_variance_ = pca.explained_variance_[:axes].copy()
+        pca.explained_variance_ratio_ = pca.explained_variance_ratio_[:axes].copy()
+        pca.singular_values_ = pca.singular_values_[:axes].copy()
+        embedding = full_embedding[:, :axes]
         candidates = []
         distinct = np.unique(embedding, axis=0).shape[0]
         sample_size = min(len(embedding), 5000) if len(embedding) > 5000 else None

@@ -89,128 +89,208 @@ def simulate_financial_stress(
         )
 
     c = pl.col
-    corporate = (c("accounting_regime") == "CORPORATE").fill_null(False)
-    eligible = (
-        corporate
-        & c("net_revenue_ttm").is_not_null()
-        & c("net_revenue_ttm").is_finite()
-        & (c("net_revenue_ttm") > 0.0)
-    ).fill_null(False)
+    rev_shock = float(scenario.revenue_shock_pct)
+    gm_shock = float(scenario.gross_margin_shock_pp)
+    ir_shock = float(scenario.interest_rate_shock_bps)
+    dso_shock = float(scenario.dso_shock_days)
+    dio_shock = float(scenario.dio_shock_days)
+    base_cols = list(ratios_with_inputs.columns)
 
-    rev_prime = pl.when(eligible).then(
-        c("net_revenue_ttm") * (1.0 + float(scenario.revenue_shock_pct))
-    )
-    gm_prime = pl.when(eligible & c("gross_margin").is_not_null()).then(
-        c("gross_margin") + float(scenario.gross_margin_shock_pp)
-    )
-    gp_prime = pl.when(eligible & gm_prime.is_not_null()).then(rev_prime * gm_prime)
-    delta_gp = gp_prime - c("gross_profit_ttm")
-    cogs_prime = pl.when(eligible & gp_prime.is_not_null()).then(
-        pl.max_horizontal(pl.lit(0.0), rev_prime - gp_prime)
-    )
-
-    ebit_prime = pl.when(
-        eligible & c("ebit_ttm").is_not_null() & delta_gp.is_not_null()
-    ).then(c("ebit_ttm") + delta_gp)
-    int_prime = pl.when(
-        eligible & c("borrowing_cost_ttm").is_not_null() & c("total_debt").is_not_null()
-    ).then(
-        pl.max_horizontal(
-            pl.lit(0.0),
-            c("borrowing_cost_ttm")
-            + c("total_debt") * (float(scenario.interest_rate_shock_bps) / 10000.0),
+    # Stage intermediate expressions sequentially so Polars builds a flat DAG
+    # instead of duplicating nested sub-expressions across 12 output columns.
+    staged = (
+        ratios_with_inputs.with_columns(
+            (c("accounting_regime") == "CORPORATE").fill_null(False).alias("_corp"),
+        )
+        .with_columns(
+            (
+                c("_corp")
+                & c("net_revenue_ttm").is_not_null()
+                & c("net_revenue_ttm").is_finite()
+                & (c("net_revenue_ttm") > 0.0)
+            )
+            .fill_null(False)
+            .alias("_elig"),
+        )
+        .with_columns(
+            pl.when(c("_elig"))
+            .then(c("net_revenue_ttm") * (1.0 + rev_shock))
+            .cast(pl.Float64)
+            .alias("stressed_net_revenue_ttm"),
+            pl.when(c("_elig") & c("gross_margin").is_not_null())
+            .then(c("gross_margin") + gm_shock)
+            .cast(pl.Float64)
+            .alias("stressed_gross_margin"),
+            pl.when(
+                c("_elig")
+                & c("borrowing_cost_ttm").is_not_null()
+                & c("total_debt").is_not_null()
+            )
+            .then(
+                pl.max_horizontal(
+                    pl.lit(0.0),
+                    c("borrowing_cost_ttm") + c("total_debt") * (ir_shock / 10000.0),
+                )
+            )
+            .cast(pl.Float64)
+            .alias("stressed_borrowing_cost_ttm"),
+        )
+        .with_columns(
+            pl.when(c("_elig") & c("stressed_gross_margin").is_not_null())
+            .then(c("stressed_net_revenue_ttm") * c("stressed_gross_margin"))
+            .cast(pl.Float64)
+            .alias("stressed_gross_profit_ttm"),
+            (c("stressed_borrowing_cost_ttm") - c("borrowing_cost_ttm")).alias(
+                "_delta_int"
+            ),
+        )
+        .with_columns(
+            (c("stressed_gross_profit_ttm") - c("gross_profit_ttm")).alias("_delta_gp"),
+            pl.when(c("_elig") & c("stressed_gross_profit_ttm").is_not_null())
+            .then(
+                pl.max_horizontal(
+                    pl.lit(0.0),
+                    c("stressed_net_revenue_ttm") - c("stressed_gross_profit_ttm"),
+                )
+            )
+            .cast(pl.Float64)
+            .alias("stressed_cogs_ttm"),
+        )
+        .with_columns(
+            pl.when(
+                c("_elig") & c("ebit_ttm").is_not_null() & c("_delta_gp").is_not_null()
+            )
+            .then(c("ebit_ttm") + c("_delta_gp"))
+            .cast(pl.Float64)
+            .alias("stressed_ebit_ttm"),
+        )
+        .with_columns(
+            (c("stressed_ebit_ttm") / c("stressed_borrowing_cost_ttm")).alias("_icr_q"),
+            (c("ebit_ttm") - c("borrowing_cost_ttm")).alias("_ebt_0"),
+            (c("stressed_ebit_ttm") - c("stressed_borrowing_cost_ttm")).alias("_ebt_p"),
+            (
+                -(c("stressed_net_revenue_ttm") / 365.0) * dso_shock
+                - (c("stressed_cogs_ttm") / 365.0) * dio_shock
+            ).alias("_delta_wc"),
+        )
+        .with_columns(
+            pl.when(~c("_corp"))
+            .then(pl.lit("NOT_APPLICABLE_FOR_REGIME"))
+            .when(
+                ~c("_elig")
+                | c("stressed_ebit_ttm").is_null()
+                | c("stressed_borrowing_cost_ttm").is_null()
+            )
+            .then(pl.lit("MISSING_INPUT"))
+            .when(
+                ~c("stressed_ebit_ttm").is_finite()
+                | ~c("stressed_borrowing_cost_ttm").is_finite()
+            )
+            .then(pl.lit("NUMERIC_OVERFLOW"))
+            .when(c("stressed_borrowing_cost_ttm") == 0.0)
+            .then(pl.lit("NO_INTEREST_EXPENSE"))
+            .when(~c("_icr_q").is_finite())
+            .then(pl.lit("NUMERIC_OVERFLOW"))
+            .otherwise(pl.lit("VALID"))
+            .alias("stressed_interest_coverage_flag"),
+            pl.when(
+                c("_ebt_p").is_not_null()
+                & c("_ebt_0").is_not_null()
+                & c("effective_tax_rate").is_not_null()
+            )
+            .then(
+                (
+                    pl.max_horizontal(pl.lit(0.0), c("_ebt_p"))
+                    - pl.max_horizontal(pl.lit(0.0), c("_ebt_0"))
+                )
+                * c("effective_tax_rate")
+            )
+            .alias("_delta_tax"),
+        )
+        .with_columns(
+            pl.when(c("stressed_interest_coverage_flag") == "VALID")
+            .then(c("_icr_q"))
+            .cast(pl.Float64)
+            .alias("stressed_interest_coverage"),
+            pl.when(
+                c("_elig")
+                & c("cfo_ttm").is_not_null()
+                & c("_delta_gp").is_not_null()
+                & c("_delta_int").is_not_null()
+                & c("_delta_tax").is_not_null()
+                & c("_delta_wc").is_not_null()
+            )
+            .then(
+                c("cfo_ttm")
+                + (c("_delta_gp") - c("_delta_int"))
+                - c("_delta_tax")
+                + c("_delta_wc")
+            )
+            .cast(pl.Float64)
+            .alias("stressed_cfo_ttm"),
+            pl.when(~c("_elig") | c("total_debt").is_null() | c("ebit_ttm").is_null())
+            .then(pl.lit(None, dtype=pl.Boolean))
+            .when(
+                (c("interest_coverage_flag") == "NO_INTEREST_EXPENSE")
+                | (c("total_debt") <= 0.0)
+            )
+            .then(pl.lit(False))
+            .when(
+                c("interest_coverage").is_not_null()
+                & (c("interest_coverage") < 1.0)
+                & (c("total_debt") > 0.0)
+            )
+            .then(pl.lit(True))
+            .when(
+                c("interest_coverage").is_not_null() & (c("interest_coverage") >= 1.0)
+            )
+            .then(pl.lit(False))
+            .otherwise(pl.lit(None, dtype=pl.Boolean))
+            .alias("baseline_debt_at_risk"),
+        )
+        .with_columns(
+            pl.lit(scenario.name).alias("scenario_name"),
+            pl.when(
+                ~c("_elig")
+                | c("total_debt").is_null()
+                | c("stressed_ebit_ttm").is_null()
+            )
+            .then(pl.lit(None, dtype=pl.Boolean))
+            .when(
+                (c("stressed_interest_coverage_flag") == "NO_INTEREST_EXPENSE")
+                | (c("total_debt") <= 0.0)
+            )
+            .then(pl.lit(False))
+            .when(
+                c("stressed_interest_coverage").is_not_null()
+                & (c("stressed_interest_coverage") < 1.0)
+                & (c("total_debt") > 0.0)
+            )
+            .then(pl.lit(True))
+            .when(
+                c("stressed_interest_coverage").is_not_null()
+                & (c("stressed_interest_coverage") >= 1.0)
+            )
+            .then(pl.lit(False))
+            .otherwise(pl.lit(None, dtype=pl.Boolean))
+            .alias("stressed_debt_at_risk"),
         )
     )
-    delta_int = int_prime - c("borrowing_cost_ttm")
 
-    icr_quotient = ebit_prime / int_prime
-    stressed_icr_flag = (
-        pl.when(~corporate)
-        .then(pl.lit("NOT_APPLICABLE_FOR_REGIME"))
-        .when(~eligible | ebit_prime.is_null() | int_prime.is_null())
-        .then(pl.lit("MISSING_INPUT"))
-        .when(~ebit_prime.is_finite() | ~int_prime.is_finite())
-        .then(pl.lit("NUMERIC_OVERFLOW"))
-        .when(int_prime == 0.0)
-        .then(pl.lit("NO_INTEREST_EXPENSE"))
-        .when(~icr_quotient.is_finite())
-        .then(pl.lit("NUMERIC_OVERFLOW"))
-        .otherwise(pl.lit("VALID"))
-    )
-    stressed_icr = (
-        pl.when(stressed_icr_flag == "VALID").then(icr_quotient).cast(pl.Float64)
-    )
-
-    ebt_0 = c("ebit_ttm") - c("borrowing_cost_ttm")
-    ebt_prime = ebit_prime - int_prime
-    delta_tax = pl.when(
-        ebt_prime.is_not_null()
-        & ebt_0.is_not_null()
-        & c("effective_tax_rate").is_not_null()
-    ).then(
-        (
-            pl.max_horizontal(pl.lit(0.0), ebt_prime)
-            - pl.max_horizontal(pl.lit(0.0), ebt_0)
-        )
-        * c("effective_tax_rate")
-    )
-    delta_wc_cash = -(rev_prime / 365.0) * float(scenario.dso_shock_days) - (
-        cogs_prime / 365.0
-    ) * float(scenario.dio_shock_days)
-    cfo_prime = pl.when(
-        eligible
-        & c("cfo_ttm").is_not_null()
-        & delta_gp.is_not_null()
-        & delta_int.is_not_null()
-        & delta_tax.is_not_null()
-        & delta_wc_cash.is_not_null()
-    ).then(c("cfo_ttm") + (delta_gp - delta_int) - delta_tax + delta_wc_cash)
-
-    baseline_dar = (
-        pl.when(~eligible | c("total_debt").is_null() | c("ebit_ttm").is_null())
-        .then(pl.lit(None, dtype=pl.Boolean))
-        .when(
-            (c("interest_coverage_flag") == "NO_INTEREST_EXPENSE")
-            | (c("total_debt") <= 0.0)
-        )
-        .then(pl.lit(False))
-        .when(
-            c("interest_coverage").is_not_null()
-            & (c("interest_coverage") < 1.0)
-            & (c("total_debt") > 0.0)
-        )
-        .then(pl.lit(True))
-        .when(c("interest_coverage").is_not_null() & (c("interest_coverage") >= 1.0))
-        .then(pl.lit(False))
-        .otherwise(pl.lit(None, dtype=pl.Boolean))
-    )
-    stressed_dar = (
-        pl.when(~eligible | c("total_debt").is_null() | ebit_prime.is_null())
-        .then(pl.lit(None, dtype=pl.Boolean))
-        .when((stressed_icr_flag == "NO_INTEREST_EXPENSE") | (c("total_debt") <= 0.0))
-        .then(pl.lit(False))
-        .when(
-            stressed_icr.is_not_null() & (stressed_icr < 1.0) & (c("total_debt") > 0.0)
-        )
-        .then(pl.lit(True))
-        .when(stressed_icr.is_not_null() & (stressed_icr >= 1.0))
-        .then(pl.lit(False))
-        .otherwise(pl.lit(None, dtype=pl.Boolean))
-    )
-
-    return ratios_with_inputs.with_columns(
-        pl.lit(scenario.name).alias("scenario_name"),
-        rev_prime.cast(pl.Float64).alias("stressed_net_revenue_ttm"),
-        gm_prime.cast(pl.Float64).alias("stressed_gross_margin"),
-        gp_prime.cast(pl.Float64).alias("stressed_gross_profit_ttm"),
-        cogs_prime.cast(pl.Float64).alias("stressed_cogs_ttm"),
-        ebit_prime.cast(pl.Float64).alias("stressed_ebit_ttm"),
-        int_prime.cast(pl.Float64).alias("stressed_borrowing_cost_ttm"),
-        stressed_icr.alias("stressed_interest_coverage"),
-        stressed_icr_flag.alias("stressed_interest_coverage_flag"),
-        cfo_prime.cast(pl.Float64).alias("stressed_cfo_ttm"),
-        baseline_dar.alias("baseline_debt_at_risk"),
-        stressed_dar.alias("stressed_debt_at_risk"),
+    return staged.select(
+        *base_cols,
+        "scenario_name",
+        "stressed_net_revenue_ttm",
+        "stressed_gross_margin",
+        "stressed_gross_profit_ttm",
+        "stressed_cogs_ttm",
+        "stressed_ebit_ttm",
+        "stressed_borrowing_cost_ttm",
+        "stressed_interest_coverage",
+        "stressed_interest_coverage_flag",
+        "stressed_cfo_ttm",
+        "baseline_debt_at_risk",
+        "stressed_debt_at_risk",
     ).with_columns(
         pl.when(
             c("baseline_debt_at_risk").is_not_null()

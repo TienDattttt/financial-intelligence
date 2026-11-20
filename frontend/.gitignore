@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+build/
+next-env.d.ts
+coverage/
+openapi.snapshot.json
+test-results/
+playwright-report/
+*.tsbuildinfo

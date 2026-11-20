@@ -1,0 +1,420 @@
+"use client";
+
+import * as React from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { ArrowRight, Plus, ShieldAlert } from "lucide-react";
+import { SectorHeatmapChart } from "@/components/charts/SectorHeatmapChart";
+import { RiskBadge } from "@/components/financial/RiskBadge";
+import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
+import { useAppState } from "@/components/providers/app-providers";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  useAllIssuers,
+  useMarketChanges,
+  useSectorRiskSummary,
+} from "@/hooks/use-finintel-queries";
+import {
+  ALTMAN_ZONE_META,
+  getDistressRiskBadge,
+  PERIOD_TYPE_LABELS,
+  STATEMENT_SCOPE_LABELS,
+} from "@/lib/domain-labels";
+import {
+  formatDateVi,
+  formatNumber,
+  formatPercent,
+  formatPercentPoints,
+  formatPeriodLabel,
+} from "@/lib/format";
+import {
+  addWatchlistTicker,
+  getWatchlistServerSnapshot,
+  getWatchlistSnapshot,
+  subscribePreferences,
+} from "@/lib/watchlist-store";
+
+const PREFERRED_SUGGESTIONS = ["HPG", "FPT", "VNM", "MWG", "GAS"];
+
+export default function MarketOverviewPage() {
+  const router = useRouter();
+  const { statementScope, periodType, periodEndDate, snapshotId } = useAppState();
+
+  const watchlist = React.useSyncExternalStore(
+    subscribePreferences,
+    getWatchlistSnapshot,
+    getWatchlistServerSnapshot,
+  );
+
+  const sectorSummary = useSectorRiskSummary(
+    { statementScope, periodType, periodEndDate },
+    snapshotId,
+  );
+  const watchlistChanges = useMarketChanges(
+    {
+      tickers: watchlist,
+      statementScope,
+      periodType,
+      limit: 20,
+      enabled: watchlist.length > 0,
+    },
+    snapshotId,
+  );
+  const issuersQuery = useAllIssuers(snapshotId);
+
+  const suggestedTickers = React.useMemo(() => {
+    const issuers = issuersQuery.data ?? [];
+    if (issuers.length === 0) return PREFERRED_SUGGESTIONS;
+    const available = new Set(issuers.map((i) => i.ticker.toUpperCase()));
+    const picks = PREFERRED_SUGGESTIONS.filter((t) => available.has(t));
+    if (picks.length >= 5) return picks.slice(0, 5);
+    for (const iss of issuers) {
+      const t = iss.ticker.toUpperCase();
+      if (!picks.includes(t)) picks.push(t);
+      if (picks.length >= 5) break;
+    }
+    return picks;
+  }, [issuersQuery.data]);
+
+  const data = sectorSummary.data;
+
+  const kpiCards = React.useMemo(() => {
+    if (!data) return [];
+    const total = data.total_issuers;
+    const distressShare = total > 0 ? data.distress_zone_count / total : 0;
+    const beneishShare = total > 0 ? data.beneish_flagged_count / total : 0;
+    const redFlagShare = total > 0 ? data.high_red_flag_count / total : 0;
+
+    return [
+      {
+        title: "Doanh nghiệp được đánh giá",
+        value: formatNumber(total, 0),
+        sub: `${data.safe_zone_count} An toàn · ${data.grey_zone_count} Vùng xám`,
+        href: "/screener",
+        toneClass: "text-ink",
+      },
+      {
+        title: "Vùng nguy cơ kiệt quệ (Z″ < 1,10)",
+        value: formatNumber(data.distress_zone_count, 0),
+        sub: `${formatPercent(distressShare)} số DN trong lát cắt`,
+        href: "/screener?altman_zone=DISTRESS_ZONE",
+        toneClass: "text-risk-high",
+      },
+      {
+        title: "Nghi vấn điều chỉnh LN (M-Score)",
+        value: formatNumber(data.beneish_flagged_count, 0),
+        sub: `${formatPercent(beneishShare)} vượt ngưỡng Beneish > −1,78`,
+        href: "/screener?beneish_flag=HIGH_MANIPULATION_RISK_SCREEN",
+        toneClass: "text-risk-mid",
+      },
+      {
+        title: "Cảnh báo ≥ 2 cờ đỏ kế toán",
+        value: formatNumber(data.high_red_flag_count, 0),
+        sub: `${formatPercent(redFlagShare)} DN có nhiều tín hiệu bất thường`,
+        href: "/screener?min_red_flags=2",
+        toneClass: "text-risk-high",
+      },
+    ];
+  }, [data]);
+
+  if (sectorSummary.isLoading) {
+    return <PageSkeleton />;
+  }
+
+  if (sectorSummary.isError) {
+    return (
+      <ErrorState
+        message={sectorSummary.error.message}
+        onRetry={() => sectorSummary.refetch()}
+      />
+    );
+  }
+
+  if (!data) {
+    return (
+      <EmptyState
+        title="Chưa có dữ liệu tổng quan thị trường"
+        description="Vui lòng chọn kỳ dữ liệu hoặc phạm vi báo cáo khác trên thanh công cụ."
+      />
+    );
+  }
+
+  const effectiveLabel = data.period_end_date
+    ? `${formatPeriodLabel(data.period_end_date, data.period_type)} (${formatDateVi(data.period_end_date)})`
+    : "Kỳ mới nhất";
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-ink">
+            Tổng quan rủi ro thị trường
+          </h1>
+          <p className="mt-0.5 text-xs text-ink-muted">
+            Phạm vi {STATEMENT_SCOPE_LABELS[data.statement_scope] ?? data.statement_scope} ·{" "}
+            {PERIOD_TYPE_LABELS[data.period_type] ?? data.period_type} · {effectiveLabel}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link href="/screener">
+            <Button variant="outline" size="sm">
+              Mở bảng sàng lọc
+              <ArrowRight className="size-3.5" />
+            </Button>
+          </Link>
+          <Link href="/stress-test">
+            <Button size="sm">
+              Mô phỏng kịch bản sốc
+              <ArrowRight className="size-3.5" />
+            </Button>
+          </Link>
+        </div>
+      </div>
+
+      <section
+        aria-label="Chỉ số tổng hợp rủi ro"
+        className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+      >
+        {kpiCards.map((kpi) => (
+          <Link
+            key={kpi.title}
+            href={kpi.href}
+            className="group block rounded border border-border bg-surface p-3.5 transition-colors hover:border-accent-ink/60"
+          >
+            <p className="text-xs font-medium text-ink-muted group-hover:text-accent-ink">
+              {kpi.title}
+            </p>
+            <p className={`num mt-1.5 text-[28px] font-semibold leading-8 ${kpi.toneClass}`}>
+              {kpi.value}
+            </p>
+            <p className="num mt-1.5 text-[11px] text-ink-muted">{kpi.sub}</p>
+          </Link>
+        ))}
+      </section>
+
+      <SectorHeatmapChart
+        sectors={data.sectors}
+        onSelectSector={(code) =>
+          router.push(`/screener?icb_code_level2=${encodeURIComponent(code)}`)
+        }
+      />
+
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <Card className="lg:col-span-7">
+          <CardHeader className="py-2.5">
+            <div>
+              <CardTitle className="flex items-center gap-1.5 text-[14px]">
+                <ShieldAlert className="size-4 text-risk-high" aria-hidden="true" />
+                <span>Cần chú ý trong kỳ mới</span>
+              </CardTitle>
+              <p className="mt-0.5 text-xs text-ink-muted">
+                Các doanh nghiệp có mức tăng xác suất kiệt quệ, chuyển vùng Altman hoặc phát sinh cờ đỏ mới
+              </p>
+            </div>
+            <Link
+              href="/screener?sort_by=calibrated_distress_prob&sort_dir=desc"
+              className="text-xs font-medium text-accent-ink hover:underline"
+            >
+              Xem tất cả →
+            </Link>
+          </CardHeader>
+          <CardContent className="p-0">
+            {data.top_deteriorating.length === 0 ? (
+              <p className="p-4 text-xs text-ink-muted">
+                Không ghi nhận biến động suy giảm đáng kể giữa 2 kỳ liền kề.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-border bg-surface-muted/60 text-ink-muted">
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">
+                        Mã
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">
+                        Ngành
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">
+                        Chuyển vùng Altman
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-right font-semibold">
+                        Biến động XS kiệt quệ
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-right font-semibold">
+                        Cờ đỏ mới
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.top_deteriorating.slice(0, 12).map((row) => {
+                      const prevMeta = row.altman_zone_prev
+                        ? ALTMAN_ZONE_META[row.altman_zone_prev]
+                        : null;
+                      const currMeta = row.altman_zone_curr
+                        ? ALTMAN_ZONE_META[row.altman_zone_curr]
+                        : null;
+                      return (
+                        <tr
+                          key={row.issuer_id}
+                          className="border-b border-border/60 hover:bg-surface-muted/40"
+                        >
+                          <td className="px-3 py-2">
+                            <Link
+                              href={`/companies/${row.ticker}`}
+                              className="font-mono font-semibold text-accent-ink hover:underline"
+                            >
+                              {row.ticker}
+                            </Link>
+                          </td>
+                          <td className="max-w-[160px] truncate px-3 py-2 text-ink-muted">
+                            {row.icb_name_level2 ?? "—"}
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="text-ink-muted">
+                                {prevMeta?.shortLabel ?? "N/A"} →
+                              </span>
+                              <RiskBadge
+                                tone={currMeta?.tone ?? "neutral"}
+                                label={currMeta?.shortLabel ?? "N/A"}
+                              />
+                            </div>
+                          </td>
+                          <td className="num px-3 py-2 text-right">
+                            <span
+                              className={
+                                (row.distress_prob_delta ?? 0) > 0.005
+                                  ? "font-medium text-risk-high"
+                                  : "text-ink"
+                              }
+                            >
+                              {formatPercentPoints(row.distress_prob_delta, 1)}
+                            </span>
+                            <span className="ml-1 text-[11px] text-ink-subtle">
+                              ({formatPercent(row.distress_prob_curr)})
+                            </span>
+                          </td>
+                          <td className="num px-3 py-2 text-right">
+                            {row.new_red_flag_codes.length > 0 ? (
+                              <span className="font-medium text-risk-high">
+                                +{row.new_red_flag_codes.length}
+                              </span>
+                            ) : (
+                              <span className="text-ink-subtle">
+                                {row.red_flag_count_curr}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="lg:col-span-5">
+          <CardHeader className="py-2.5">
+            <div>
+              <CardTitle className="text-[14px]">
+                Danh sách theo dõi ({watchlist.length})
+              </CardTitle>
+              <p className="mt-0.5 text-xs text-ink-muted">
+                Lưu trên trình duyệt cá nhân · Tự động cập nhật thay đổi theo kỳ
+              </p>
+            </div>
+            <Link
+              href="/watchlist"
+              className="text-xs font-medium text-accent-ink hover:underline"
+            >
+              Quản lý →
+            </Link>
+          </CardHeader>
+          <CardContent className="p-3.5">
+            {watchlist.length === 0 ? (
+              <div className="space-y-3 rounded border border-dashed border-border bg-canvas p-4 text-center">
+                <p className="text-xs text-ink-muted">
+                  Bạn chưa theo dõi doanh nghiệp nào. Chọn nhanh mã phổ biến bên dưới hoặc nhấn ngôi sao trên trang hồ sơ DN.
+                </p>
+                <div className="flex flex-wrap justify-center gap-1.5">
+                  {suggestedTickers.map((t) => (
+                    <Button
+                      key={t}
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => addWatchlistTicker(t)}
+                    >
+                      <Plus className="size-3" />
+                      <span className="font-mono">{t}</span>
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            ) : watchlistChanges.isLoading ? (
+              <p className="text-xs text-ink-muted">Đang tải biến động danh sách theo dõi...</p>
+            ) : watchlistChanges.isError ? (
+              <ErrorState
+                message={watchlistChanges.error.message}
+                onRetry={() => watchlistChanges.refetch()}
+              />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-border bg-surface-muted/60 text-ink-muted">
+                      <th scope="col" className="px-2.5 py-2 text-left font-semibold">
+                        Mã
+                      </th>
+                      <th scope="col" className="px-2.5 py-2 text-left font-semibold">
+                        Mức độ rủi ro
+                      </th>
+                      <th scope="col" className="px-2.5 py-2 text-right font-semibold">
+                        XS kiệt quệ
+                      </th>
+                      <th scope="col" className="px-2.5 py-2 text-right font-semibold">
+                        Cờ đỏ
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(watchlistChanges.data?.items ?? []).map((item) => {
+                      const badge = getDistressRiskBadge(item.distress_prob_curr);
+                      return (
+                        <tr
+                          key={item.ticker}
+                          className="border-b border-border/60 hover:bg-surface-muted/40"
+                        >
+                          <td className="px-2.5 py-2">
+                            <Link
+                              href={`/companies/${item.ticker}`}
+                              className="font-mono font-semibold text-accent-ink hover:underline"
+                            >
+                              {item.ticker}
+                            </Link>
+                          </td>
+                          <td className="px-2.5 py-2">
+                            <RiskBadge tone={badge.tone} label={badge.shortLabel} />
+                          </td>
+                          <td className="num px-2.5 py-2 text-right">
+                            {formatPercent(item.distress_prob_curr)}
+                          </td>
+                          <td className="num px-2.5 py-2 text-right">
+                            {item.red_flag_count_curr}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+    </div>
+  );
+}

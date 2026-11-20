@@ -22,14 +22,20 @@ import logging
 import math
 import re
 import sqlite3
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
+import httpx
 import polars as pl
+from tenacity import RetryCallState, Retrying, retry_if_exception, stop_after_attempt
+from tenacity.wait import wait_base, wait_random_exponential
 
 from finintel.domain.schemas import (
     AuditOpinion,
@@ -41,7 +47,11 @@ from finintel.domain.schemas import (
     StatementScope,
     StatementType,
 )
-from finintel.exceptions import ContractViolationError
+from finintel.exceptions import (
+    ContractViolationError,
+    RateLimitOrCircuitOpenError,
+    TransientSourceError,
+)
 from finintel.ingestion.archive import ArchiveOutcome, RawArchive
 from finintel.ingestion.disclosure_enricher import (
     DisclosureRecord,
@@ -64,6 +74,17 @@ _FIXTURES_ROOT = (Path(__file__).resolve().parents[3] / "tests" / "fixtures").re
 MAX_DISCLOSURE_FILE_BYTES = 20 * 1024 * 1024
 MAX_DISCLOSURE_TIMEOUT_SECONDS = 15.0
 DEFAULT_DISCLOSURE_TIMEOUT_SECONDS = 15.0
+RETRYABLE_DISCLOSURE_HTTP_STATUSES: frozenset[int] = frozenset(
+    {429, 500, 502, 503, 504}
+)
+DEFAULT_DISCLOSURE_MAX_RETRIES = 3
+DEFAULT_DISCLOSURE_BACKOFF_BASE_SECONDS = 0.5
+DEFAULT_DISCLOSURE_BACKOFF_MAX_SECONDS = 15.0
+MAX_DISCLOSURE_RETRY_AFTER_SECONDS = 300.0
+DEFAULT_DISCLOSURE_COOLDOWN_FAILURE_THRESHOLD = 5
+DEFAULT_DISCLOSURE_COOLDOWN_SECONDS = 60.0
+DEFAULT_DISCLOSURE_OUTAGE_FAILURE_THRESHOLD = 0.8
+DEFAULT_MIN_EXACT_FILING_RATIO = 0.75
 DISCLOSURE_ALLOWED_HOSTS: frozenset[str] = frozenset(
     {"iq.vietcap.com.vn", "s.cafef.vn", "cafef.vn"}
 )
@@ -197,30 +218,245 @@ def _read_confined_disclosure_file(
     return content
 
 
-def _default_http_disclosure_fetcher(url: str, *, timeout_seconds: float) -> bytes:
-    """Fetch a disclosure payload over HTTPS with redirects disabled and size cap."""
-    _validate_disclosure_url(url)
-    import httpx
+def _disclosure_provider_key(url: str) -> str:
+    parsed = urlsplit(url)
+    host = parsed.hostname.lower() if parsed.hostname is not None else ""
+    if not host:
+        raise ContractViolationError("Disclosure URL must include a valid host.")
+    return host
 
-    chunks: list[bytes] = []
-    total = 0
+
+def parse_retry_after(
+    value: str | None,
+    *,
+    now: datetime | None = None,
+    max_seconds: float = MAX_DISCLOSURE_RETRY_AFTER_SECONDS,
+) -> float | None:
+    """Parse an HTTP Retry-After header (delay-seconds or HTTP-date) into bounded seconds."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        numeric = float(stripped)
+    except ValueError:
+        numeric = math.nan
+    if math.isfinite(numeric):
+        return max(0.0, min(max_seconds, numeric))
+    try:
+        parsed_dt = parsedate_to_datetime(stripped)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if parsed_dt.tzinfo is None:
+        parsed_dt = parsed_dt.replace(tzinfo=UTC)
+    else:
+        parsed_dt = parsed_dt.astimezone(UTC)
+    ref_now = (
+        (now.astimezone(UTC) if now.tzinfo is not None else now.replace(tzinfo=UTC))
+        if now is not None
+        else datetime.now(UTC)
+    )
+    delta = (parsed_dt - ref_now).total_seconds()
+    return max(0.0, min(max_seconds, delta))
+
+
+class _RetryableDisclosureHttpError(TransientSourceError):
+    """Internal marker for retryable HTTP 429/5xx disclosure responses."""
+
+    def __init__(
+        self, status_code: int, retry_after_seconds: float | None = None
+    ) -> None:
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(f"Disclosure endpoint returned HTTP {status_code}.")
+
+
+class _RetryAfterOrFullJitterWait(wait_base):
+    """AWS Full Jitter exponential backoff respecting HTTP Retry-After hints."""
+
+    def __init__(self, *, base_seconds: float, max_seconds: float) -> None:
+        self._base_seconds = base_seconds
+        self._max_seconds = max_seconds
+        self._jitter = wait_random_exponential(
+            multiplier=base_seconds,
+            min=0.0,
+            max=max_seconds,
+        )
+
+    def __call__(self, retry_state: RetryCallState) -> float:
+        jitter_delay = float(self._jitter(retry_state))
+        outcome = retry_state.outcome
+        if outcome is not None and outcome.failed:
+            exc = outcome.exception()
+            if (
+                isinstance(exc, _RetryableDisclosureHttpError)
+                and exc.retry_after_seconds is not None
+            ):
+                return min(
+                    self._max_seconds, max(jitter_delay, exc.retry_after_seconds)
+                )
+        return min(self._max_seconds, jitter_delay)
+
+
+def fetch_disclosure_bytes_with_retry(
+    url: str,
+    *,
+    client: httpx.Client,
+    max_bytes: int = MAX_DISCLOSURE_FILE_BYTES,
+    max_retries: int = DEFAULT_DISCLOSURE_MAX_RETRIES,
+    backoff_base_seconds: float = DEFAULT_DISCLOSURE_BACKOFF_BASE_SECONDS,
+    backoff_max_seconds: float = DEFAULT_DISCLOSURE_BACKOFF_MAX_SECONDS,
+    state_store: StateStore | None = None,
+    provider_key: str | None = None,
+    cooldown_failure_threshold: int = DEFAULT_DISCLOSURE_COOLDOWN_FAILURE_THRESHOLD,
+    cooldown_seconds: float = DEFAULT_DISCLOSURE_COOLDOWN_SECONDS,
+    sleeper: Callable[[float], None] | None = None,
+    now_fn: Callable[[], datetime] | None = None,
+) -> bytes:
+    """Fetch a disclosure URL over a pooled ``httpx.Client`` with retry/jitter/cooldown."""
+    validated_url = _validate_disclosure_url(url)
+    if client.follow_redirects:
+        raise ContractViolationError(
+            "Disclosure HTTP client must keep follow_redirects=False."
+        )
+    current_now_fn: Callable[[], datetime] = (
+        now_fn if now_fn is not None else (lambda: datetime.now(UTC))
+    )
+    effective_key = (
+        provider_key.strip().lower()
+        if provider_key is not None and provider_key.strip()
+        else _disclosure_provider_key(validated_url)
+    )
+
+    if state_store is not None and cooldown_seconds > 0:
+        cooldown_until = state_store.active_disclosure_cooldown_until(
+            effective_key, now=current_now_fn()
+        )
+        if cooldown_until is not None:
+            raise RateLimitOrCircuitOpenError(
+                f"Disclosure provider {effective_key!r} is in cooldown until {cooldown_until.isoformat()}."
+            )
+
+    def _should_retry(exc: BaseException) -> bool:
+        if isinstance(exc, httpx.TransportError):
+            return True
+        if isinstance(exc, _RetryableDisclosureHttpError):
+            if (
+                exc.retry_after_seconds is not None
+                and exc.retry_after_seconds > backoff_max_seconds
+            ):
+                return False
+            return True
+        return False
+
+    wait_strategy = _RetryAfterOrFullJitterWait(
+        base_seconds=backoff_base_seconds,
+        max_seconds=backoff_max_seconds,
+    )
+    sleep_fn: Callable[[int | float], None] = (
+        sleeper if sleeper is not None else time.sleep
+    )
+    retrying = Retrying(
+        stop=stop_after_attempt(1 + max_retries),
+        wait=wait_strategy,
+        retry=retry_if_exception(_should_retry),
+        sleep=sleep_fn,
+        reraise=True,
+    )
+
+    def _attempt() -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        with client.stream("GET", validated_url) as response:
+            if response.status_code == 200:
+                for chunk in response.iter_bytes():
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ContractViolationError(
+                            "Remote disclosure response exceeds the 20 MiB size limit."
+                        )
+                    chunks.append(chunk)
+                return b"".join(chunks)
+            if response.status_code in RETRYABLE_DISCLOSURE_HTTP_STATUSES:
+                retry_after = parse_retry_after(
+                    response.headers.get("Retry-After"),
+                    now=current_now_fn(),
+                )
+                raise _RetryableDisclosureHttpError(
+                    response.status_code,
+                    retry_after_seconds=retry_after,
+                )
+            raise RuntimeError(
+                f"Disclosure endpoint returned HTTP {response.status_code}."
+            )
+
+    try:
+        payload = retrying(_attempt)
+    except (_RetryableDisclosureHttpError, httpx.TransportError) as exc:
+        http_status = (
+            exc.status_code if isinstance(exc, _RetryableDisclosureHttpError) else None
+        )
+        retry_after = (
+            exc.retry_after_seconds
+            if isinstance(exc, _RetryableDisclosureHttpError)
+            else None
+        )
+        force_cooldown = retry_after is not None and retry_after > backoff_max_seconds
+        if state_store is not None:
+            state_store.record_disclosure_failure(
+                effective_key,
+                failure_threshold=cooldown_failure_threshold,
+                cooldown_seconds=cooldown_seconds,
+                retry_after_seconds=retry_after,
+                http_status=http_status,
+                error_type=type(exc).__name__,
+                force_cooldown=force_cooldown,
+                now=current_now_fn(),
+            )
+        if http_status == 429:
+            raise RateLimitOrCircuitOpenError(
+                f"Disclosure endpoint returned HTTP 429 for {effective_key!r}."
+            ) from exc
+        raise TransientSourceError(
+            f"Disclosure endpoint transient failure for {effective_key!r}: {exc}"
+        ) from exc
+
+    if state_store is not None:
+        state_store.reset_disclosure_cooldown(effective_key)
+    return payload
+
+
+def _default_http_disclosure_fetcher(
+    url: str,
+    *,
+    timeout_seconds: float,
+    max_bytes: int = MAX_DISCLOSURE_FILE_BYTES,
+    client: httpx.Client | None = None,
+    state_store: StateStore | None = None,
+    sleeper: Callable[[float], None] | None = None,
+) -> bytes:
+    """Fetch a disclosure payload over HTTPS with redirects disabled, retry, and size cap."""
+    _validate_disclosure_url(url)
+    if client is not None:
+        return fetch_disclosure_bytes_with_retry(
+            url,
+            client=client,
+            max_bytes=max_bytes,
+            state_store=state_store,
+            sleeper=sleeper,
+        )
     with httpx.Client(
         follow_redirects=False,
         timeout=httpx.Timeout(timeout_seconds),
-    ) as client:
-        with client.stream("GET", url) as response:
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"Disclosure endpoint returned HTTP {response.status_code}."
-                )
-            for chunk in response.iter_bytes():
-                total += len(chunk)
-                if total > MAX_DISCLOSURE_FILE_BYTES:
-                    raise ContractViolationError(
-                        "Remote disclosure response exceeds the 20 MiB size limit."
-                    )
-                chunks.append(chunk)
-    return b"".join(chunks)
+    ) as owned_client:
+        return fetch_disclosure_bytes_with_retry(
+            url,
+            client=owned_client,
+            max_bytes=max_bytes,
+            state_store=state_store,
+            sleeper=sleeper,
+        )
 
 
 def _build_inferred_metadata(
@@ -626,6 +862,7 @@ class IngestHandler:
         *,
         local_filename: str,
         source_url: str,
+        http_client: httpx.Client | None = None,
     ) -> bytes | None:
         _validate_disclosure_url(source_url)
         if cfg.raw_disclosures_dir is not None:
@@ -643,7 +880,11 @@ class IngestHandler:
             return fetched
         if cfg.fetch_online:
             return _default_http_disclosure_fetcher(
-                source_url, timeout_seconds=cfg.timeout_seconds
+                source_url,
+                timeout_seconds=cfg.timeout_seconds,
+                client=http_client,
+                state_store=self.state,
+                sleeper=self._request_sleeper,
             )
         return None
 
@@ -661,55 +902,42 @@ class IngestHandler:
         cafef_records: list[DisclosureRecord] = []
         evidence_payloads: dict[str, bytes] = {}
 
-        for ticker in target_tickers:
-            vci_url = _validate_disclosure_url(
-                cfg.vietcap_url_template.format(ticker=ticker)
-            )
-            cafef_url = _validate_disclosure_url(
-                cfg.cafef_url_template.format(ticker=ticker)
-            )
-
-            # Security checks (path confinement, symlinks, HTTPS allowlist, 20 MiB cap)
-            # happen inside _fetch_disclosure_payload and fail closed with
-            # ContractViolationError even when on_error == "warn".
-            vci_bytes: bytes | None = None
-            try:
-                vci_bytes = self._fetch_disclosure_payload(
-                    cfg, local_filename=f"{ticker}.json", source_url=vci_url
-                )
-            except ContractViolationError:
-                raise
-            except Exception as exc:
-                if cfg.on_error == "fail":
-                    raise
-                logger.warning(
-                    "Vietcap IQ disclosure fetch skipped after error",
-                    extra={
-                        "event": "disclosure_enrichment_warning",
-                        "run_id": context.run_id,
-                        "stage": context.stage,
-                        "details": {
-                            "ticker": ticker,
-                            "source": "vietcap_iq",
-                            "error_type": type(exc).__name__,
-                        },
-                    },
-                )
-            if vci_bytes is not None:
-                try:
-                    parsed_vci = parse_vietcap_iq_disclosures(
-                        ticker,
-                        vci_bytes,
-                        source_url=vci_url,
-                        max_date=cfg.max_date,
+        with ExitStack() as stack:
+            http_client: httpx.Client | None = None
+            if self._disclosure_fetcher is None and cfg.fetch_online:
+                http_client = stack.enter_context(
+                    httpx.Client(
+                        follow_redirects=False,
+                        timeout=httpx.Timeout(cfg.timeout_seconds),
                     )
-                    evidence_payloads[vci_url] = vci_bytes
-                    vietcap_records.extend(parsed_vci)
+                )
+
+            for ticker in target_tickers:
+                vci_url = _validate_disclosure_url(
+                    cfg.vietcap_url_template.format(ticker=ticker)
+                )
+                cafef_url = _validate_disclosure_url(
+                    cfg.cafef_url_template.format(ticker=ticker)
+                )
+
+                # Security checks (path confinement, symlinks, HTTPS allowlist, 20 MiB cap)
+                # happen inside _fetch_disclosure_payload and fail closed with
+                # ContractViolationError even when on_error == "warn".
+                vci_bytes: bytes | None = None
+                try:
+                    vci_bytes = self._fetch_disclosure_payload(
+                        cfg,
+                        local_filename=f"{ticker}.json",
+                        source_url=vci_url,
+                        http_client=http_client,
+                    )
+                except ContractViolationError:
+                    raise
                 except Exception as exc:
                     if cfg.on_error == "fail":
                         raise
                     logger.warning(
-                        "Vietcap IQ disclosure parse skipped after error",
+                        "Vietcap IQ disclosure fetch skipped after error",
                         extra={
                             "event": "disclosure_enrichment_warning",
                             "run_id": context.run_id,
@@ -721,45 +949,48 @@ class IngestHandler:
                             },
                         },
                     )
+                if vci_bytes is not None:
+                    try:
+                        parsed_vci = parse_vietcap_iq_disclosures(
+                            ticker,
+                            vci_bytes,
+                            source_url=vci_url,
+                            max_date=cfg.max_date,
+                        )
+                        evidence_payloads[vci_url] = vci_bytes
+                        vietcap_records.extend(parsed_vci)
+                    except Exception as exc:
+                        if cfg.on_error == "fail":
+                            raise
+                        logger.warning(
+                            "Vietcap IQ disclosure parse skipped after error",
+                            extra={
+                                "event": "disclosure_enrichment_warning",
+                                "run_id": context.run_id,
+                                "stage": context.stage,
+                                "details": {
+                                    "ticker": ticker,
+                                    "source": "vietcap_iq",
+                                    "error_type": type(exc).__name__,
+                                },
+                            },
+                        )
 
-            cafef_bytes: bytes | None = None
-            try:
-                cafef_bytes = self._fetch_disclosure_payload(
-                    cfg, local_filename=f"{ticker}.html", source_url=cafef_url
-                )
-            except ContractViolationError:
-                raise
-            except Exception as exc:
-                if cfg.on_error == "fail":
-                    raise
-                logger.warning(
-                    "CafeF BCTC disclosure fetch skipped after error",
-                    extra={
-                        "event": "disclosure_enrichment_warning",
-                        "run_id": context.run_id,
-                        "stage": context.stage,
-                        "details": {
-                            "ticker": ticker,
-                            "source": "cafef_bctc",
-                            "error_type": type(exc).__name__,
-                        },
-                    },
-                )
-            if cafef_bytes is not None:
+                cafef_bytes: bytes | None = None
                 try:
-                    parsed_cafef = parse_cafef_bctc_disclosures(
-                        ticker,
-                        cafef_bytes,
+                    cafef_bytes = self._fetch_disclosure_payload(
+                        cfg,
+                        local_filename=f"{ticker}.html",
                         source_url=cafef_url,
-                        max_date=cfg.max_date,
+                        http_client=http_client,
                     )
-                    evidence_payloads[cafef_url] = cafef_bytes
-                    cafef_records.extend(parsed_cafef)
+                except ContractViolationError:
+                    raise
                 except Exception as exc:
                     if cfg.on_error == "fail":
                         raise
                     logger.warning(
-                        "CafeF BCTC disclosure parse skipped after error",
+                        "CafeF BCTC disclosure fetch skipped after error",
                         extra={
                             "event": "disclosure_enrichment_warning",
                             "run_id": context.run_id,
@@ -771,6 +1002,32 @@ class IngestHandler:
                             },
                         },
                     )
+                if cafef_bytes is not None:
+                    try:
+                        parsed_cafef = parse_cafef_bctc_disclosures(
+                            ticker,
+                            cafef_bytes,
+                            source_url=cafef_url,
+                            max_date=cfg.max_date,
+                        )
+                        evidence_payloads[cafef_url] = cafef_bytes
+                        cafef_records.extend(parsed_cafef)
+                    except Exception as exc:
+                        if cfg.on_error == "fail":
+                            raise
+                        logger.warning(
+                            "CafeF BCTC disclosure parse skipped after error",
+                            extra={
+                                "event": "disclosure_enrichment_warning",
+                                "run_id": context.run_id,
+                                "stage": context.stage,
+                                "details": {
+                                    "ticker": ticker,
+                                    "source": "cafef_bctc",
+                                    "error_type": type(exc).__name__,
+                                },
+                            },
+                        )
 
         period_end_dates = self._load_manifest_period_end_dates(target_tickers)
         merged = merge_disclosure_records(

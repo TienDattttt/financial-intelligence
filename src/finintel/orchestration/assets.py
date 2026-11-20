@@ -20,8 +20,10 @@ Verified Sources:
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import subprocess
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
@@ -32,7 +34,11 @@ from dagster._core.storage.tags import BACKFILL_ID_TAG
 from dagster._core.types.dagster_type import resolve_dagster_type
 
 from finintel.domain.schemas import PeriodType, StatementScope
-from finintel.exceptions import ContractViolationError, RateLimitOrCircuitOpenError
+from finintel.exceptions import (
+    ContractViolationError,
+    RateLimitOrCircuitOpenError,
+    TransientSourceError,
+)
 from finintel.ingestion.archive import RawArchive
 from finintel.ingestion.disclosure_enricher import (
     DisclosureRecord,
@@ -61,8 +67,10 @@ from finintel.pipeline.ingest import IngestHandler
 from finintel.pipeline.normalize import DEFAULT_TAXONOMY_DIR
 from finintel.pipeline.runner import (
     RunRequest,
+    RunStatus,
     Stage,
     StepContext,
+    StepStatus,
     TriggerMode,
 )
 from finintel.pipeline.state_store import StateStore
@@ -80,7 +88,10 @@ from finintel.storage.schemas import (
     RATIOS_TABLE,
     RED_FLAGS_TABLE,
 )
-from finintel.storage.snapshot_publisher import TableInput, pipeline_write_lock
+from finintel.storage.snapshot_publisher import (
+    TableInput,
+    pipeline_write_lock,
+)
 from finintel.transform import (
     MLTransformConfig,
     load_transform_state,
@@ -124,6 +135,35 @@ class PublishMartsConfig(dg.Config):
     ml_test_start: str | None = None
     ml_approved_target: bool = False
     max_critical_issuer_ratio: float | None = None
+
+
+_GIT_SHA_CACHE: dict[str, str | None] = {}
+
+
+def _resolve_git_commit_sha(project_root: Path) -> str | None:
+    """Resolve current git commit SHA from env or local repo (cached per root)."""
+    env_sha = os.getenv("FININTEL_GIT_COMMIT_SHA")
+    if env_sha and env_sha.strip():
+        return env_sha.strip()[:40]
+    key = str(project_root.resolve())
+    if key in _GIT_SHA_CACHE:
+        return _GIT_SHA_CACHE[key]
+    resolved: str | None = None
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=key,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            resolved = proc.stdout.strip()[:40]
+    except OSError:
+        resolved = None
+    _GIT_SHA_CACHE[key] = resolved
+    return resolved
 
 
 def _snapshot_id_for_run(run_id: str) -> str:
@@ -529,86 +569,111 @@ def raw_public_disclosures(
     cafef_records: list[DisclosureRecord] = []
     evidence_payloads: dict[str, bytes] = {}
     config_dir = paths.resolved_config_dir()
+    attempted_fetches = 0
+    failed_fetches = 0
+    parse_errors = 0
 
-    for ticker in batch_tickers:
-        vci_url = disclosure_fetcher.validate_url(
-            disclosure_fetcher.vietcap_url_template.format(ticker=ticker)
-        )
-        cafef_url = disclosure_fetcher.validate_url(
-            disclosure_fetcher.cafef_url_template.format(ticker=ticker)
-        )
+    with disclosure_fetcher.session():
+        for ticker in batch_tickers:
+            vci_url = disclosure_fetcher.validate_url(
+                disclosure_fetcher.vietcap_url_template.format(ticker=ticker)
+            )
+            cafef_url = disclosure_fetcher.validate_url(
+                disclosure_fetcher.cafef_url_template.format(ticker=ticker)
+            )
 
-        vci_bytes: bytes | None = None
-        try:
-            vci_bytes = disclosure_fetcher.fetch_payload(
-                local_filename=f"{ticker}.json",
-                source_url=vci_url,
-                base_dir=config_dir,
-            )
-        except ContractViolationError:
-            raise
-        except Exception as exc:
-            if disclosure_fetcher.on_error == "fail":
-                raise
-            context.log.warning(
-                "Vietcap IQ disclosure fetch skipped for %s (%s)",
-                ticker,
-                type(exc).__name__,
-            )
-        if vci_bytes is not None:
+            vci_bytes: bytes | None = None
+            attempted_fetches += 1
             try:
-                parsed_vci = parse_vietcap_iq_disclosures(
-                    ticker,
-                    vci_bytes,
+                vci_bytes = disclosure_fetcher.fetch_payload(
+                    local_filename=f"{ticker}.json",
                     source_url=vci_url,
-                    max_date=max_date,
+                    base_dir=config_dir,
+                    state_store=state_store,
                 )
-                evidence_payloads[vci_url] = vci_bytes
-                vietcap_records.extend(parsed_vci)
-            except Exception as exc:
-                if disclosure_fetcher.on_error == "fail":
-                    raise
-                context.log.warning(
-                    "Vietcap IQ disclosure parse skipped for %s (%s)",
-                    ticker,
-                    type(exc).__name__,
-                )
-
-        cafef_bytes: bytes | None = None
-        try:
-            cafef_bytes = disclosure_fetcher.fetch_payload(
-                local_filename=f"{ticker}.html",
-                source_url=cafef_url,
-                base_dir=config_dir,
-            )
-        except ContractViolationError:
-            raise
-        except Exception as exc:
-            if disclosure_fetcher.on_error == "fail":
+            except ContractViolationError:
                 raise
-            context.log.warning(
-                "CafeF BCTC disclosure fetch skipped for %s (%s)",
-                ticker,
-                type(exc).__name__,
-            )
-        if cafef_bytes is not None:
-            try:
-                parsed_cafef = parse_cafef_bctc_disclosures(
-                    ticker,
-                    cafef_bytes,
-                    source_url=cafef_url,
-                    max_date=max_date,
-                )
-                evidence_payloads[cafef_url] = cafef_bytes
-                cafef_records.extend(parsed_cafef)
             except Exception as exc:
+                failed_fetches += 1
                 if disclosure_fetcher.on_error == "fail":
                     raise
                 context.log.warning(
-                    "CafeF BCTC disclosure parse skipped for %s (%s)",
+                    "Vietcap IQ disclosure fetch skipped for %s (%s)",
                     ticker,
                     type(exc).__name__,
                 )
+            if vci_bytes is not None:
+                try:
+                    parsed_vci = parse_vietcap_iq_disclosures(
+                        ticker,
+                        vci_bytes,
+                        source_url=vci_url,
+                        max_date=max_date,
+                    )
+                    evidence_payloads[vci_url] = vci_bytes
+                    vietcap_records.extend(parsed_vci)
+                except Exception as exc:
+                    parse_errors += 1
+                    if disclosure_fetcher.on_error == "fail":
+                        raise
+                    context.log.warning(
+                        "Vietcap IQ disclosure parse skipped for %s (%s)",
+                        ticker,
+                        type(exc).__name__,
+                    )
+
+            cafef_bytes: bytes | None = None
+            attempted_fetches += 1
+            try:
+                cafef_bytes = disclosure_fetcher.fetch_payload(
+                    local_filename=f"{ticker}.html",
+                    source_url=cafef_url,
+                    base_dir=config_dir,
+                    state_store=state_store,
+                )
+            except ContractViolationError:
+                raise
+            except Exception as exc:
+                failed_fetches += 1
+                if disclosure_fetcher.on_error == "fail":
+                    raise
+                context.log.warning(
+                    "CafeF BCTC disclosure fetch skipped for %s (%s)",
+                    ticker,
+                    type(exc).__name__,
+                )
+            if cafef_bytes is not None:
+                try:
+                    parsed_cafef = parse_cafef_bctc_disclosures(
+                        ticker,
+                        cafef_bytes,
+                        source_url=cafef_url,
+                        max_date=max_date,
+                    )
+                    evidence_payloads[cafef_url] = cafef_bytes
+                    cafef_records.extend(parsed_cafef)
+                except Exception as exc:
+                    parse_errors += 1
+                    if disclosure_fetcher.on_error == "fail":
+                        raise
+                    context.log.warning(
+                        "CafeF BCTC disclosure parse skipped for %s (%s)",
+                        ticker,
+                        type(exc).__name__,
+                    )
+
+    if (
+        disclosure_fetcher.fetch_online
+        and attempted_fetches > 0
+        and (failed_fetches + parse_errors) >= attempted_fetches
+        and not vietcap_records
+        and not cafef_records
+    ):
+        raise TransientSourceError(
+            "All online public disclosure fetches/parses failed "
+            f"({failed_fetches} fetch failures, {parse_errors} parse failures across "
+            f"{attempted_fetches} attempts); refusing silent STATUTORY_LAG degradation."
+        )
 
     period_end_dates = _load_manifest_period_end_dates(state_store, batch_tickers)
     merged = merge_disclosure_records(
@@ -635,6 +700,9 @@ def raw_public_disclosures(
                 "upgraded_filings": summary.upgraded_filings,
                 "unchanged_filings": summary.unchanged_filings,
                 "skipped_pre_period_end": summary.skipped_pre_period_end,
+                "attempted_fetches": attempted_fetches,
+                "failed_fetches": failed_fetches,
+                "parse_errors": parse_errors,
             },
         )
 
@@ -701,17 +769,39 @@ def normalized_financial_facts(
         else None
     )
 
-    result = normalize_archive_incremental(
-        state_store,
-        paths.resolved_raw_root(),
-        tax_dir,
-        destination,
-        source=config.source,
-        period=config.period,
-        filing_settings=filing_settings,
-        previous_batch_dir=previous_batch_dir,
-        batch_issuers=config.batch_issuers,
+    git_sha = _resolve_git_commit_sha(paths.resolved_project_root())
+    norm_run_id = _allocate_pipeline_run_id(state_store, context.run.run_id)
+    state_store.start_run(
+        norm_run_id,
+        TriggerMode.SCHEDULED_CRON.value,
+        {
+            "source": config.source,
+            "period": config.period,
+            "orchestrator": "dagster",
+            "dagster_run_id": context.run.run_id,
+            "batch_dir": str(destination),
+        },
+        git_sha,
     )
+    step_id = state_store.start_step(norm_run_id, Stage.NORMALIZE.value)
+    try:
+        result = normalize_archive_incremental(
+            state_store,
+            paths.resolved_raw_root(),
+            tax_dir,
+            destination,
+            source=config.source,
+            period=config.period,
+            filing_settings=filing_settings,
+            previous_batch_dir=previous_batch_dir,
+            batch_issuers=config.batch_issuers,
+        )
+        state_store.finish_step(step_id, StepStatus.SUCCEEDED.value)
+        state_store.finish_run(norm_run_id, RunStatus.SUCCEEDED.value)
+    except BaseException:
+        state_store.finish_step(step_id, "FAILED")
+        state_store.finish_run(norm_run_id, RunStatus.FAILED.value)
+        raise
     return dg.MaterializeResult(
         metadata={
             "batch_dir": str(destination),
@@ -755,8 +845,15 @@ def published_financial_marts(
     lock_timeout = storage.resolve_lock_timeout()
     lock_path = state.pipeline_lock_path()
 
+    git_sha = _resolve_git_commit_sha(paths.resolved_project_root())
     with pipeline_write_lock(lock_path, timeout=lock_timeout):
         state_store = state.initialize()
+        recovered = state_store.recover_interrupted_runs()
+        if int(recovered.get("runs_recovered", 0)) > 0:
+            context.log.warning(
+                "Recovered %d interrupted RUNNING pipeline run(s) before publish.",
+                int(recovered.get("runs_recovered", 0)),
+            )
         pipeline_run_id = _allocate_pipeline_run_id(state_store, context.run.run_id)
         state_store.start_run(
             pipeline_run_id,
@@ -768,7 +865,7 @@ def published_financial_marts(
                 "as_of": as_of.isoformat(),
                 "ml_enabled": ml_cfg.enabled,
             },
-            None,
+            git_sha,
         )
         try:
             facts_path = _resolve_facts_path_for_publish(
@@ -874,6 +971,7 @@ def published_financial_marts(
                 metadata={
                     "run_id": pipeline_run_id,
                     "dagster_run_id": context.run.run_id,
+                    "git_commit_sha": git_sha,
                     "source": config.source,
                     "as_of": as_of.isoformat(),
                 },
