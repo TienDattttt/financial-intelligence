@@ -1,4 +1,13 @@
-"""Enrich archived FHSC filings with verified public disclosure dates via RawArchive receipts."""
+"""Enrich archived FHSC filings with verified public disclosure dates via RawArchive receipts.
+
+Verified Sources:
+    - Circular 96/2020/TT-BTC (Articles 10 & 14) and Circular 68/2024/TT-BTC:
+      https://staticfile.hsx.vn/Uploads/LocalFiles/c79e12a5dbf749b6983b63e3242326a3/20210101_Thong%20tu%2096.2020%20TT-BTC.pdf
+    - Vietnam Civil Code 2015 (Articles 147 & 148(5)) and Labor Code 2019 (Article 112),
+      applied via ``FilingMetadata._statutory_deadline`` and ``FilingMetadata.is_filed_late``.
+    - Vietcap IQ financial-statement ``publicDate`` JSON schema and CafeF BCTC AJAX HTML
+      table conventions verified against ``tests/unit/test_layer4_disclosure_enrichment.py``.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +17,10 @@ import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from finintel.domain.schemas import (
     AuditStatus,
@@ -52,6 +62,47 @@ _URL_EPOCH10_SUFFIX_RE = re.compile(
     r"[_-](1[5-9][0-9]{8})\.(?:pdf|rar|zip)$",
     flags=re.IGNORECASE,
 )
+_CAFEF_DELIMITED_TICKER_RE = re.compile(r"_-_([A-Za-z0-9]{3,4})_-_")
+_CAFEF_DATED_TICKER_RE = re.compile(r"^\d{8}[_-]+([A-Za-z][A-Za-z0-9]{2})[_-]")
+_CAFEF_LEADING_TICKER_RE = re.compile(r"^([A-Za-z][A-Za-z0-9]{2})[_-]")
+_CAFEF_DATA_SYMBOL_RE = re.compile(
+    r"""data-(?:symbol|ticker)=["']([A-Za-z0-9]{1,16})["']""",
+    flags=re.IGNORECASE,
+)
+_CAFEF_NON_TICKER_PREFIXES = frozenset(
+    {
+        "ALL",
+        "BAN",
+        "BAO",
+        "BCT",
+        "CON",
+        "CTY",
+        "DOC",
+        "ENG",
+        "FIN",
+        "GIA",
+        "HOP",
+        "IMG",
+        "NAM",
+        "NEW",
+        "OLD",
+        "PDF",
+        "QUY",
+        "RAR",
+        "REV",
+        "TAI",
+        "THE",
+        "THU",
+        "TMP",
+        "TON",
+        "USD",
+        "VIE",
+        "VND",
+        "XLS",
+        "ZIP",
+    }
+)
+_SQLITE_IN_CHUNK_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -68,6 +119,7 @@ class DisclosureRecord:
     source_url: str
     raw_locator: str
     audit_status: AuditStatus | None = None
+    revision_no: int | None = None
 
     def __post_init__(self) -> None:
         if not _TICKER_RE.fullmatch(self.ticker):
@@ -102,6 +154,12 @@ class DisclosureRecord:
         if not self.source_name.strip() or not self.source_url.strip():
             raise ContractViolationError(
                 "Disclosure record requires non-empty provenance."
+            )
+        if self.revision_no is not None and (
+            type(self.revision_no) is not int or self.revision_no < 1
+        ):
+            raise ContractViolationError(
+                "Disclosure revision_no must be a positive integer."
             )
 
 
@@ -233,6 +291,47 @@ def _extract_cafef_filename_date(url: str) -> date | None:
     return None
 
 
+def _validate_cafef_source_url_ticker(source_url: str, clean_ticker: str) -> None:
+    parsed = urlsplit(source_url)
+    for key, values in parse_qs(parsed.query).items():
+        if key.lower() not in {"sym", "symbol"}:
+            continue
+        for raw_val in values:
+            val = raw_val.strip().upper()
+            if val and val != clean_ticker:
+                raise ContractViolationError(
+                    "CafeF disclosure source_url ticker mismatches requested ticker."
+                )
+
+
+def _cafef_row_matches_ticker(tr_html: str, href: str, clean_ticker: str) -> bool:
+    for attr_match in _CAFEF_DATA_SYMBOL_RE.finditer(tr_html):
+        if attr_match[1].strip().upper() != clean_ticker:
+            return False
+
+    basename = href.split("?", 1)[0].rsplit("/", 1)[-1]
+    if not basename:
+        return True
+
+    delimited = _CAFEF_DELIMITED_TICKER_RE.search(basename)
+    if delimited is not None:
+        return delimited[1].upper() == clean_ticker
+
+    dated = _CAFEF_DATED_TICKER_RE.search(basename)
+    if dated is not None:
+        candidate = dated[1].upper()
+        if candidate not in _CAFEF_NON_TICKER_PREFIXES:
+            return candidate == clean_ticker
+
+    leading = _CAFEF_LEADING_TICKER_RE.search(basename)
+    if leading is not None:
+        candidate = leading[1].upper()
+        if candidate not in _CAFEF_NON_TICKER_PREFIXES:
+            return candidate == clean_ticker
+
+    return True
+
+
 def parse_cafef_bctc_disclosures(
     ticker: str,
     content: bytes,
@@ -244,10 +343,13 @@ def parse_cafef_bctc_disclosures(
 
     Short archival filenames without full calendar dates (e.g. ``FPT_21CN_BCTC_HNKT.pdf``
     or ``FPT_22Q2_BCTC_HNSX_2022-102346.pdf``) are strictly ignored rather than guessed.
+    Mismatched ticker query parameters in ``source_url`` raise ``ContractViolationError``,
+    and rows whose filenames or HTML attributes declare a different ticker are skipped.
     """
     clean_ticker = ticker.strip().upper()
     if not _TICKER_RE.fullmatch(clean_ticker):
         raise ContractViolationError("Invalid ticker for CafeF disclosure parsing.")
+    _validate_cafef_source_url_ticker(source_url, clean_ticker)
     html = content.decode("utf-8", errors="replace")
 
     chosen: dict[
@@ -267,6 +369,8 @@ def parse_cafef_bctc_disclosures(
         if href_match is None:
             continue
         href = href_match[1].strip()
+        if not _cafef_row_matches_ticker(tr_html, href, clean_ticker):
+            continue
 
         if "hợp nhất" in title_lower:
             scope = StatementScope.CONSOLIDATED
@@ -337,19 +441,84 @@ def parse_cafef_bctc_disclosures(
 DisclosureSlot = tuple[str, PeriodType, int, int | None, StatementScope]
 
 
+def _default_slot_end_date(
+    period_type: PeriodType, fiscal_year: int, fiscal_quarter: int | None
+) -> date:
+    if period_type == PeriodType.ANNUAL or fiscal_quarter == 4:
+        return date(fiscal_year, 12, 31)
+    if fiscal_quarter == 1:
+        return date(fiscal_year, 3, 31)
+    if fiscal_quarter == 2:
+        return date(fiscal_year, 6, 30)
+    if fiscal_quarter == 3:
+        return date(fiscal_year, 9, 30)
+    return date(fiscal_year, 12, 31)
+
+
+def _is_audit_tier_compatible(
+    vci_rec: DisclosureRecord, cafef_rec: DisclosureRecord
+) -> bool:
+    """Enforce Audit-Tier PIT Guard so lower-tier filing dates cannot replace higher-tier data."""
+    vci_audit = vci_rec.audit_status
+    cafef_audit = cafef_rec.audit_status
+    if vci_rec.period_type == PeriodType.ANNUAL:
+        if vci_audit == AuditStatus.AUDITED:
+            return cafef_audit == AuditStatus.AUDITED
+        if vci_audit == AuditStatus.REVIEWED:
+            return cafef_audit in (AuditStatus.REVIEWED, AuditStatus.AUDITED)
+        if cafef_audit == AuditStatus.UNAUDITED and vci_audit != AuditStatus.UNAUDITED:
+            return False
+        return True
+    if vci_rec.period_type == PeriodType.QUARTER and vci_rec.fiscal_quarter == 2:
+        if vci_audit == AuditStatus.AUDITED:
+            return cafef_audit == AuditStatus.AUDITED
+        if vci_audit == AuditStatus.REVIEWED:
+            return cafef_audit in (AuditStatus.REVIEWED, AuditStatus.AUDITED)
+        if cafef_audit == AuditStatus.UNAUDITED and vci_audit != AuditStatus.UNAUDITED:
+            return False
+        return True
+    # Q1, Q3, Q4 (including Q4 where Vietcap IQ overwrites publicDate with Annual date)
+    return True
+
+
+def _merge_safe_audit_status(
+    chosen: DisclosureRecord, other: DisclosureRecord
+) -> DisclosureRecord:
+    """Safely inherit a non-UNKNOWN audit_status without inflating earlier unaudited filings."""
+    if chosen.audit_status not in (None, AuditStatus.UNKNOWN):
+        return chosen
+    if other.audit_status is None or other.audit_status == AuditStatus.UNKNOWN:
+        return chosen
+    if other.audit_status == AuditStatus.UNAUDITED:
+        return replace(chosen, audit_status=AuditStatus.UNAUDITED)
+    # Only inherit REVIEWED/AUDITED when the chosen record is not earlier than the
+    # source asserting that audit tier (prevents promoting an earlier self-prepared
+    # filing to AUDITED/REVIEWED).
+    if chosen.published_at >= other.published_at:
+        return replace(chosen, audit_status=other.audit_status)
+    return chosen
+
+
 def merge_disclosure_records(
     vietcap_records: Sequence[DisclosureRecord],
     cafef_records: Sequence[DisclosureRecord] = (),
+    *,
+    period_end_dates: Mapping[DisclosureSlot, date] | None = None,
 ) -> dict[DisclosureSlot, DisclosureRecord]:
-    """Combine Vietcap IQ and CafeF BCTC disclosure records deterministically.
+    """Combine Vietcap IQ and CafeF BCTC disclosure records with PIT audit-tier guards.
 
-    Vietcap IQ provides structured ``publicDate`` history from 2018 onward. On recent
-    fourth quarters where Vietcap IQ overwrites ``Q4.publicDate`` with the subsequent
-    Annual Audited ``publicDate``, a verified CafeF Unaudited Q4 disclosure record with
-    an earlier valid date takes precedence so Q4 retains its true quarterly filing date.
+    Vietcap IQ provides structured ``publicDate`` history but can lag the original
+    filing PDF date (or overwrite ``Q4.publicDate`` with the Annual audited date).
+    When both sources cover the same ``DisclosureSlot``:
+    - A pre-period-end record never overwrites a valid record (while a lone
+      pre-period-end record is preserved so ``enrich_fhsc_manifest_disclosures``
+      rejects it and increments ``skipped_pre_period_end``).
+    - ``Audit-Tier PIT Guard`` blocks ``UNAUDITED`` CafeF filings from replacing
+      ``AUDITED`` annual or ``REVIEWED`` Q2 Vietcap IQ dates.
+    - When audit tiers are compatible and valid, a strictly earlier CafeF date
+      (``cafef.published_at < vci.published_at``) takes precedence.
     """
     merged: dict[DisclosureSlot, DisclosureRecord] = {}
-    annual_vci_dates: dict[tuple[str, int, StatementScope], date] = {}
     for rec in vietcap_records:
         slot: DisclosureSlot = (
             rec.ticker,
@@ -359,10 +528,6 @@ def merge_disclosure_records(
             rec.statement_scope,
         )
         merged[slot] = rec
-        if rec.period_type == PeriodType.ANNUAL:
-            annual_vci_dates[(rec.ticker, rec.fiscal_year, rec.statement_scope)] = (
-                rec.published_at
-            )
 
     for rec in cafef_records:
         slot = (
@@ -376,16 +541,27 @@ def merge_disclosure_records(
         if current is None:
             merged[slot] = rec
             continue
-        if rec.period_type == PeriodType.QUARTER and rec.fiscal_quarter == 4:
-            annual_dt = annual_vci_dates.get(
-                (rec.ticker, rec.fiscal_year, rec.statement_scope)
+
+        slot_end = (
+            period_end_dates[slot]
+            if period_end_dates is not None and slot in period_end_dates
+            else _default_slot_end_date(
+                rec.period_type, rec.fiscal_year, rec.fiscal_quarter
             )
-            if (
-                annual_dt is not None
-                and current.published_at == annual_dt
-                and rec.published_at < current.published_at
-            ):
-                merged[slot] = rec
+        )
+        vci_valid = current.published_at >= slot_end
+        cafef_valid = rec.published_at >= slot_end
+        if not cafef_valid:
+            continue
+        if not vci_valid:
+            merged[slot] = rec
+            continue
+        if not _is_audit_tier_compatible(current, rec):
+            continue
+        if rec.published_at < current.published_at:
+            merged[slot] = _merge_safe_audit_status(rec, current)
+        else:
+            merged[slot] = _merge_safe_audit_status(current, rec)
     return merged
 
 
@@ -452,6 +628,76 @@ def _json_evidence_bytes(source_url: str, raw_bytes: bytes) -> bytes:
     return json.dumps(envelope, ensure_ascii=False, sort_keys=True).encode("utf-8")
 
 
+def _row_revision_no(row: Mapping[str, object]) -> int:
+    raw = row.get("revision_no")
+    return raw if type(raw) is int else 1
+
+
+def _load_fhsc_manifest_rows(
+    archive: RawArchive, clean_tickers: tuple[str, ...] | None
+) -> list[dict[str, object]]:
+    try:
+        with archive.state.connection() as conn:
+            if clean_tickers is None:
+                return [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT * FROM filings_manifest WHERE source_provider = 'fhsc' "
+                        "ORDER BY ticker_at_filing, period_end_date, statement_type, revision_no"
+                    ).fetchall()
+                ]
+            rows: list[dict[str, object]] = []
+            for start in range(0, len(clean_tickers), _SQLITE_IN_CHUNK_SIZE):
+                chunk = clean_tickers[start : start + _SQLITE_IN_CHUNK_SIZE]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows.extend(
+                    dict(row)
+                    for row in conn.execute(
+                        f"SELECT * FROM filings_manifest "
+                        f"WHERE source_provider = 'fhsc' "
+                        f"AND ticker_at_filing IN ({placeholders}) "
+                        f"ORDER BY ticker_at_filing, period_end_date, statement_type, revision_no",
+                        chunk,
+                    ).fetchall()
+                )
+            rows.sort(
+                key=lambda r: (
+                    str(r.get("ticker_at_filing", "")),
+                    str(r.get("period_end_date", "")),
+                    str(r.get("statement_type", "")),
+                    _row_revision_no(r),
+                )
+            )
+            return rows
+    except sqlite3.Error as exc:
+        raise ContractViolationError(
+            "Unable to read filings_manifest for enrichment."
+        ) from exc
+
+
+def _evidence_receipt_sha256(payload: RawPayload, run_id: str | None) -> str:
+    digest = payload_file_sha256(payload.content)
+    relative_path = f"sha256/{digest[:2]}/{digest}.{payload.extension}"
+    fetched_at = payload.fetched_at.astimezone(UTC).isoformat()
+    provenance: dict[str, object] = {
+        "source_provider": payload.source_provider,
+        "connector_name": payload.connector_name,
+        "payload_nature": payload.nature,
+        "fetched_at": fetched_at,
+        "payload_file_sha256": digest,
+        "raw_archive_path": relative_path,
+        "provider_attrs": dict(payload.provider_attrs),
+        "pagination_status": None,
+        "deferred_locators": (),
+        "filing_metadata": [],
+        "run_id": run_id,
+    }
+    receipt = json.dumps(
+        provenance, ensure_ascii=False, sort_keys=True, allow_nan=False
+    ).encode("utf-8")
+    return payload_file_sha256(receipt)
+
+
 def enrich_fhsc_manifest_disclosures(
     archive: RawArchive,
     records: Sequence[DisclosureRecord],
@@ -459,59 +705,95 @@ def enrich_fhsc_manifest_disclosures(
     evidence_payloads: Mapping[str, bytes],
     fetched_at: datetime,
     run_id: str | None = None,
+    tickers: Sequence[str] | None = None,
 ) -> EnrichmentSummary:
     """Upgrade archived FHSC filings to ``EXACT_FILING`` using verified public disclosures.
 
     Every update flows through ``RawArchive.store`` so the disclosure evidence payload
     and its ``provenance/<receipt_sha256>.json`` receipt are written immutably while
     preserving the original FHSC statement payload pointers for Layer 2 normalization.
+    When ``tickers`` is provided, only manifest rows for those tickers are queried via
+    SQL ``WHERE ticker_at_filing IN (...)``. Revisions with ``revision_no >= 2`` are
+    protected from being overwritten by revision-1 disclosures unless the disclosure
+    record explicitly specifies the matching ``revision_no``.
     """
     if fetched_at.utcoffset() is None:
         raise ContractViolationError("Enrichment fetched_at must be timezone-aware.")
 
-    lookup: dict[DisclosureSlot, DisclosureRecord] = {
-        (
+    clean_tickers: tuple[str, ...] | None = None
+    if tickers is not None:
+        normalized_tickers: list[str] = []
+        for raw_ticker in tickers:
+            cleaned = raw_ticker.strip().upper()
+            if not _TICKER_RE.fullmatch(cleaned):
+                raise ContractViolationError(
+                    "Invalid ticker filter in disclosure enrichment."
+                )
+            normalized_tickers.append(cleaned)
+        clean_tickers = tuple(dict.fromkeys(normalized_tickers))
+        if not clean_tickers:
+            return EnrichmentSummary(0, 0, 0, 0)
+
+    default_lookup: dict[DisclosureSlot, DisclosureRecord] = {}
+    revision_lookup: dict[tuple[DisclosureSlot, int], DisclosureRecord] = {}
+    for r in records:
+        slot: DisclosureSlot = (
             r.ticker,
             r.period_type,
             r.fiscal_year,
             r.fiscal_quarter,
             r.statement_scope,
-        ): r
-        for r in records
-    }
-    if not lookup:
+        )
+        if r.revision_no is None:
+            default_lookup[slot] = r
+        else:
+            revision_lookup[(slot, r.revision_no)] = r
+            if r.revision_no == 1:
+                default_lookup[slot] = r
+    if not default_lookup and not revision_lookup:
         return EnrichmentSummary(0, 0, 0, 0)
 
-    try:
-        with archive.state.connection() as conn:
-            manifest_rows = [
-                dict(row)
-                for row in conn.execute(
-                    "SELECT * FROM filings_manifest WHERE source_provider = 'fhsc' "
-                    "ORDER BY ticker_at_filing, period_end_date, statement_type, revision_no"
-                ).fetchall()
-            ]
-    except sqlite3.Error as exc:
-        raise ContractViolationError(
-            "Unable to read filings_manifest for enrichment."
-        ) from exc
+    manifest_rows = _load_fhsc_manifest_rows(archive, clean_tickers)
+
+    max_rev_by_key: dict[tuple[str, str, str, str, str], int] = {}
+    for row in manifest_rows:
+        rev_key = (
+            str(row.get("issuer_id", "")),
+            str(row.get("statement_type", "")),
+            str(row.get("statement_scope", "")),
+            str(row.get("period_type", "")),
+            str(row.get("period_end_date", "")),
+        )
+        raw_rev = row.get("revision_no")
+        row_rev = raw_rev if type(raw_rev) is int else 1
+        if row_rev > max_rev_by_key.get(rev_key, 0):
+            max_rev_by_key[rev_key] = row_rev
 
     grouped_filings: dict[str, list[RawFiling]] = {}
+    grouped_superseded: dict[
+        str, list[tuple[dict[str, object], FilingMetadata, DisclosureRecord]]
+    ] = {}
     grouped_source_names: dict[str, str] = {}
+    calendar_sync_targets: list[tuple[str, str, str, bool | None]] = []
     matched = 0
     skipped_pre_end = 0
     previously_matching = 0
 
     for row in manifest_rows:
         meta = FilingMetadata.from_mapping(row)
-        slot: DisclosureSlot = (
+        raw_rev = row.get("revision_no")
+        row_rev = raw_rev if type(raw_rev) is int else 1
+        slot = (
             meta.ticker_at_filing,
             meta.period_type,
             meta.fiscal_year,
             meta.fiscal_quarter,
             meta.statement_scope,
         )
-        rec = lookup.get(slot)
+        if row_rev >= 2:
+            rec = revision_lookup.get((slot, row_rev))
+        else:
+            rec = revision_lookup.get((slot, 1)) or default_lookup.get(slot)
         if rec is None:
             continue
         if rec.source_url not in evidence_payloads:
@@ -523,24 +805,74 @@ def enrich_fhsc_manifest_disclosures(
             continue
 
         matched += 1
+        next_audit_status = (
+            rec.audit_status
+            if (
+                meta.audit_status == AuditStatus.UNKNOWN
+                and rec.audit_status is not None
+                and rec.audit_status != AuditStatus.UNKNOWN
+            )
+            else meta.audit_status
+        )
+        enriched_meta = replace(
+            meta,
+            published_at=rec.published_at,
+            audit_status=next_audit_status,
+        )
+        raw_stored_late = row.get("is_filed_late")
+        stored_late: bool | None = (
+            None if raw_stored_late is None else bool(raw_stored_late)
+        )
+        expected_effective = enriched_meta.effective_available_at.isoformat()
+        calendar_changed = (
+            stored_late != enriched_meta.is_filed_late
+            or row.get("effective_available_at") != expected_effective
+        )
         if (
             meta.published_at == rec.published_at
             and row.get("published_at_basis") == "EXACT_FILING"
+            and meta.audit_status == next_audit_status
+            and not calendar_changed
         ):
             previously_matching += 1
 
         metrics = _extract_fhsc_metrics(archive.root, row, meta)
-        enriched_meta = replace(meta, published_at=rec.published_at)
-        grouped_filings.setdefault(rec.source_url, []).append(
-            RawFiling(
-                metadata=enriched_meta,
-                metrics=metrics,
-                locator=rec.raw_locator,
-            )
+        rev_key = (
+            meta.issuer_id,
+            str(meta.statement_type),
+            str(meta.statement_scope),
+            str(meta.period_type),
+            meta.period_end_date.isoformat(),
         )
         grouped_source_names[rec.source_url] = rec.source_name
+        if row_rev < max_rev_by_key[rev_key]:
+            # Enriching a superseded revision (e.g. rev 1 when rev 2 exists) must not
+            # flow through archive.store(filings=...) or archive.store would allocate a
+            # spurious rev 3 with rev 1's older metrics.
+            grouped_superseded.setdefault(rec.source_url, []).append(
+                (row, enriched_meta, rec)
+            )
+        else:
+            grouped_filings.setdefault(rec.source_url, []).append(
+                RawFiling(
+                    metadata=enriched_meta,
+                    metrics=metrics,
+                    locator=rec.raw_locator,
+                )
+            )
+            if calendar_changed and isinstance(row.get("filing_id"), str):
+                calendar_sync_targets.append(
+                    (
+                        str(row["filing_id"]),
+                        rec.published_at.isoformat(),
+                        expected_effective,
+                        enriched_meta.is_filed_late,
+                    )
+                )
 
-    for source_url, filings in grouped_filings.items():
+    all_urls = tuple(dict.fromkeys([*grouped_filings, *grouped_superseded]))
+    fetched_utc_iso = fetched_at.astimezone(UTC).isoformat()
+    for source_url in all_urls:
         raw_bytes = evidence_payloads[source_url]
         payload_bytes = _json_evidence_bytes(source_url, raw_bytes)
         payload = RawPayload(
@@ -556,10 +888,85 @@ def enrich_fhsc_manifest_disclosures(
                 "raw_evidence_sha256": hashlib.sha256(raw_bytes).hexdigest(),
             },
         )
-        archive.store(
-            RawFilingBundle(payload=payload, filings=tuple(filings)),
-            run_id=run_id,
-        )
+        filings = grouped_filings.get(source_url, [])
+        if filings:
+            archive.store(
+                RawFilingBundle(payload=payload, filings=tuple(filings)),
+                run_id=run_id,
+            )
+        superseded_items = grouped_superseded.get(source_url, [])
+        if superseded_items:
+            archive.store(
+                RawFilingBundle(payload=payload, filings=()),
+                run_id=run_id,
+            )
+            receipt_sha256 = _evidence_receipt_sha256(payload, run_id)
+            incoming_dt = fetched_at.astimezone(UTC)
+            with archive.state.connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for row, enriched_meta, rec in superseded_items:
+                    filing_id = str(row["filing_id"])
+                    attrs = json.loads(str(row.get("provider_attrs_json") or "{}"))
+                    evidence = attrs.get("metadata_evidence", {})
+                    if not isinstance(evidence, dict):
+                        evidence = {}
+                    pub_ref = evidence.get("published_at")
+                    prior_pub_str = (
+                        pub_ref.get("fetched_at")
+                        if isinstance(pub_ref, dict)
+                        and isinstance(pub_ref.get("fetched_at"), str)
+                        else str(row.get("fetched_at") or "")
+                    )
+                    if prior_pub_str and incoming_dt < datetime.fromisoformat(
+                        prior_pub_str
+                    ).astimezone(UTC):
+                        continue
+                    evidence["published_at"] = {
+                        "receipt_sha256": receipt_sha256,
+                        "raw_record_locator": rec.raw_locator,
+                        "fetched_at": fetched_utc_iso,
+                    }
+                    if enriched_meta.audit_status != AuditStatus.UNKNOWN:
+                        evidence["audit_status"] = {
+                            "receipt_sha256": receipt_sha256,
+                            "raw_record_locator": rec.raw_locator,
+                            "fetched_at": fetched_utc_iso,
+                        }
+                    attrs["metadata_evidence"] = evidence
+                    conn.execute(
+                        """UPDATE filings_manifest
+                           SET audit_status = ?,
+                               published_at = ?,
+                               published_at_basis = ?,
+                               effective_available_at = ?,
+                               is_filed_late = ?,
+                               provider_attrs_json = ?
+                           WHERE filing_id = ?""",
+                        (
+                            str(enriched_meta.audit_status),
+                            enriched_meta.published_at.isoformat()
+                            if enriched_meta.published_at is not None
+                            else None,
+                            enriched_meta.published_at_basis,
+                            enriched_meta.effective_available_at.isoformat(),
+                            enriched_meta.is_filed_late,
+                            json.dumps(attrs, ensure_ascii=False, allow_nan=False),
+                            filing_id,
+                        ),
+                    )
+
+    if calendar_sync_targets:
+        with archive.state.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for filing_id, pub_iso, eff_iso, is_late in calendar_sync_targets:
+                conn.execute(
+                    """UPDATE filings_manifest
+                       SET effective_available_at = ?, is_filed_late = ?
+                       WHERE filing_id = ?
+                         AND published_at = ?
+                         AND published_at_basis = 'EXACT_FILING'""",
+                    (eff_iso, is_late, filing_id, pub_iso),
+                )
 
     upgraded = matched - previously_matching
     return EnrichmentSummary(

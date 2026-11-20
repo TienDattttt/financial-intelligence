@@ -1,0 +1,41 @@
+# Dagster local single-node instance configuration for FinIntel V2.
+#
+# Launch from repository root with localhost-only webserver binding:
+#   DAGSTER_HOME=config uv run dagster dev -h 127.0.0.1 -p 3000 -m finintel.orchestration.definitions
+#   (or: DAGSTER_HOME=config uv run dagster-webserver -h 127.0.0.1 -p 3000 -m finintel.orchestration.definitions)
+#
+# Verified against dagster==1.13.30 (`dagster._core.instance.config.dagster_instance_config_schema`):
+# 1. `storage.sqlite.base_dir` resolves relative to the process CWD (repo root when launched
+#    with DAGSTER_HOME=config), keeping all Dagster SQLite metadata under `data/metadata/dagster/`
+#    and out of the Git repository root and `config/`.
+# 2. `concurrency.pools` enforces OP-LEVEL CONCURRENCY (NEVER `run_coordinator.tag_concurrency_limits`,
+#    which only applies to run-level tags and conflicts with `concurrency.pools`).
+# 3. Per-pool concurrency limits are stored in Dagster's event-log storage (the `dagster.yaml`
+#    `concurrency.pools` schema accepts only `granularity`, `default_limit`, and
+#    `op_granularity_run_buffer`). Initialize per-pool slot limits once per instance via CLI:
+#      DAGSTER_HOME=config uv run dagster instance concurrency set fhsc_api_pool 1
+#      DAGSTER_HOME=config uv run dagster instance concurrency set public_disclosure_pool 3
+#    or programmatically via `finintel.orchestration.partitions.configure_concurrency_pools(instance)`.
+# 4. Separation of Concurrency vs Request-Rate Pacing:
+#    - `fhsc_api_pool` (limit = 1) bounds concurrent FHSC ops to 1 worker at a time.
+#    - `public_disclosure_pool` (limit = 3) bounds concurrent public disclosure ops to 3 workers.
+#    - Request-rate pacing (`0.6 req/s`, ~1.67 s/req) is enforced strictly inside
+#      `FhscOapiAdapter` (`src/finintel/ingestion/fhsc_oapi_adapter.py`), independent of pool slots.
+
+storage:
+  sqlite:
+    base_dir: data/metadata/dagster
+
+local_artifact_storage:
+  module: dagster._core.storage.root
+  class: LocalArtifactStorage
+  config:
+    base_dir: data/metadata/dagster
+
+concurrency:
+  pools:
+    granularity: "op"
+    default_limit: 4
+
+telemetry:
+  enabled: false

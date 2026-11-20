@@ -1,4 +1,10 @@
-"""Command-line entry point for orchestration and operational health checks."""
+"""Command-line entry point for orchestration and operational health checks.
+
+Verified Sources:
+- Python argparse & PyYAML ``safe_load``: https://docs.python.org/3/library/argparse.html
+- Internal Layer 3 storage settings contract:
+  docs/v2_specs/04_STREAM_B1_LAYER3_DUCKLAKE_STORAGE_AND_CURATED_GC.md
+"""
 
 from __future__ import annotations
 
@@ -49,6 +55,7 @@ class Settings:
     normalization: Mapping[str, object] = field(default_factory=dict)
     analytics: Mapping[str, object] = field(default_factory=dict)
     quality: Mapping[str, object] = field(default_factory=dict)
+    storage: Mapping[str, object] = field(default_factory=dict)
 
 
 def load_settings(path: Path) -> Settings:
@@ -66,6 +73,7 @@ def load_settings(path: Path) -> Settings:
     normalization = content.get("normalization", {})
     analytics = content.get("analytics", {})
     quality = content.get("quality", {})
+    storage = content.get("storage", {})
     if not isinstance(state_path, str) or not state_path.strip():
         raise ValueError("state_path must be a nonempty path.")
     if type(min_space) is not int or min_space < 0:
@@ -90,6 +98,10 @@ def load_settings(path: Path) -> Settings:
         not isinstance(key, str) for key in quality
     ):
         raise ValueError("quality must be a YAML mapping.")
+    if not isinstance(storage, dict) or any(
+        not isinstance(key, str) for key in storage
+    ):
+        raise ValueError("storage must be a YAML mapping.")
     return Settings(
         (path.resolve().parent / state_path).resolve(),
         min_space,
@@ -98,6 +110,7 @@ def load_settings(path: Path) -> Settings:
         normalization,
         analytics,
         quality,
+        storage,
     )
 
 
@@ -239,7 +252,12 @@ def main(
                 Stage.QUALITY_GATE_2: QualityGate2Handler(
                     store, config_dir, settings.analytics
                 ),
-                Stage.PUBLISH: PublishHandler(store, config_dir, settings.analytics),
+                Stage.PUBLISH: PublishHandler(
+                    store,
+                    config_dir,
+                    settings.analytics,
+                    storage_settings=settings.storage,
+                ),
             }
         )
         return (

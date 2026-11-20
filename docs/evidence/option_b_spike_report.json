@@ -1,0 +1,123 @@
+{
+  "generated_at": "2026-11-19T19:41:11.129470+00:00",
+  "python_version": "3.11.9",
+  "duckdb_version": "1.4.2",
+  "polars_version": "1.35.2",
+  "pyarrow_version": "22.0.0",
+  "filelock_version": "4.2.10",
+  "os_platform": "Windows-10-10.0.26300-SP0",
+  "ducklake_status": "PASS",
+  "extension_hashes": {
+    "ducklake": {
+      "loaded": true,
+      "installed": true,
+      "install_path": "~/.duckdb/extensions/v1.4.2/windows_amd64/ducklake.duckdb_extension",
+      "extension_version": "77f2512",
+      "sha256": "1ac737278390744c4643e93be628079b8e7cd21ace3e5172007e64ab37838ef1"
+    },
+    "sqlite_scanner": {
+      "loaded": true,
+      "installed": true,
+      "install_path": "~/.duckdb/extensions/v1.4.2/windows_amd64/sqlite_scanner.duckdb_extension",
+      "extension_version": "0c93d61",
+      "sha256": "0d820eee5433e90ed7dfce8f4de38b06d534dde9df73e87a84f515a3c2aa8c0e"
+    }
+  },
+  "ducklake_multiprocess_errors": 0,
+  "post_compaction_pushdown_verified": true,
+  "expire_versions_list_verified": true,
+  "rwlock_windows_subprocess_status": "PASS",
+  "rwlock_errors": 0,
+  "selected_storage_backend": "ducklake",
+  "pinned_platform_packages": {
+    "fastapi": "0.165.0",
+    "uvicorn": "0.54.0",
+    "pydantic": "2.14.4",
+    "httpx": "0.28.1",
+    "dagster": "1.13.30",
+    "dagster-webserver": "1.13.30",
+    "dagster-duckdb": "0.29.30"
+  },
+  "transitive_sqlalchemy_version": "2.1.9",
+  "explain_pushdown_before_compaction": "┌───────────────────────────┐\n│       DUCKLAKE_SCAN       │\n│    ────────────────────   │\n│       Table: t_facts      │\n│                           │\n│        Projections:       │\n│         issuer_id         │\n│      period_end_date      │\n│         metric_id         │\n│            val            │\n│                           │\n│          Filters:         │\n│      issuer_id='FPT'      │\n│                           │\n│          ~80 rows         │\n└───────────────────────────┘\n",
+  "explain_pushdown_after_compaction": "┌───────────────────────────┐\n│       DUCKLAKE_SCAN       │\n│    ────────────────────   │\n│       Table: t_facts      │\n│                           │\n│        Projections:       │\n│         issuer_id         │\n│      period_end_date      │\n│         metric_id         │\n│            val            │\n│                           │\n│          Filters:         │\n│      issuer_id='FPT'      │\n│                           │\n│          ~80 rows         │\n└───────────────────────────┘\n",
+  "ducklake_details": {
+    "is_wdac_block": false,
+    "network_error": false,
+    "sqlite_journal_mode": "wal",
+    "ducklake_format_version": "0.3",
+    "memory_read_only_exception": "CatalogException: Catalog Error: Cannot launch in-memory database in read-only mode!",
+    "atomic_multi_table_snapshot_verified": true,
+    "atomic_snapshot_id": 3,
+    "atomic_tables_inserted": [
+      "1",
+      "2"
+    ],
+    "set_sorted_by_supported": false,
+    "set_sorted_by_observation": "BinderException: Binder Error: Unsupported ALTER TABLE type in DuckLake",
+    "post_compaction_physical_sort_preserved": false,
+    "post_compaction_issuer_transitions": 11,
+    "expire_versions_expired": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "expire_versions_remaining": [
+      6,
+      7
+    ],
+    "remaining_snapshots_readable": true,
+    "cleanup_default_sqlite_observation": "BinderException: Binder Error: Failed to get files scheduled for deletion from DuckLake: Cannot compare values of type VARCHAR and type TIMESTAMP WITH TIME ZONE - an explicit cast is required\n\nLINE 4: WHERE schedule_start < NOW() - INTERVAL '2 days'\n                             ^",
+    "cleanup_all_deleted_count": 8,
+    "zero_copy_arrow_polars_verified": true,
+    "polars_row_count": 136,
+    "multiprocess": {
+      "reader_returncode": 0,
+      "writer_returncode": 0,
+      "reader_iterations": 30,
+      "reader_versions_seen": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "read_skew_count": 0,
+      "permission_errors": 0,
+      "io_errors": 0,
+      "file_not_found_errors": 0,
+      "writer_versions_written": 3,
+      "writer_expired_versions": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "writer_deleted_files_count": 8,
+      "reader_errors": [],
+      "writer_errors": [],
+      "total_errors": 0
+    },
+    "ci_extension_cache_note": "Extensions load cleanly on Windows without WDAC block. Offline CI runs without cached ~/.duckdb/extensions/ should either cache the verified extension binaries (SHA-256 recorded in extension_hashes) or run unit tests against the parquet+ReadWriteLock backend."
+  },
+  "rwlock_details": {
+    "concurrent_readers_verified": true,
+    "reader_count": 3,
+    "writer_immediate_timeout_verified": true,
+    "writer_acquired_after_release_seconds": 0.234,
+    "errors": []
+  },
+  "platform_dependency_details": {
+    "uv_lock_path": "uv.lock",
+    "pyproject_unpinned_entries": [],
+    "installed_vs_locked_match": true,
+    "installed_sqlalchemy_version": "2.1.9",
+    "forbidden_packages_absent": {
+      "sqlmesh": true,
+      "deltalake": true
+    }
+  }
+}

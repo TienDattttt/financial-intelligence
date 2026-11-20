@@ -346,7 +346,7 @@ def test_full_end_to_end_6_stage_pipeline_and_lineage_traceability(
     assert len(fig_ind.data) >= 2
 
     # Ensure ALL_RATIOS catalog is 100% consistent.
-    assert len(ALL_RATIOS) == 35
+    assert len(ALL_RATIOS) == 38
 
 
 def test_end_to_end_cli_circuit_breaker_preserves_prior_active_snapshot(

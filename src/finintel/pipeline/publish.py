@@ -1,4 +1,10 @@
-"""Layer 0 thin handler publishing validated curated tables as an atomic Layer 3 snapshot."""
+"""Layer 0 thin handler publishing validated curated tables as an atomic Layer 3 snapshot.
+
+Verified Sources:
+- DuckLake Official Documentation: https://ducklake.select/docs/stable/
+- Polars Parquet I/O (single-read in-memory reuse): https://docs.pola.rs/
+- Internal Layer 3 contract: docs/v2_specs/04_STREAM_B1_LAYER3_DUCKLAKE_STORAGE_AND_CURATED_GC.md
+"""
 
 from __future__ import annotations
 
@@ -8,10 +14,13 @@ from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
+import polars as pl
+
 from finintel.exceptions import ContractViolationError
 from finintel.pipeline.runner import StepContext, StepOutcome
 from finintel.pipeline.state_store import StateStore
 from finintel.quality.io import CLEAN_FACTS_TABLE
+from finintel.storage.ducklake_store import DuckLakeStore, StorageConfig
 from finintel.storage.manifest_export import (
     build_filings_manifest_snapshot,
     build_latest_facts_table,
@@ -43,11 +52,13 @@ class PublishHandler:
         config_dir: Path,
         analytics_settings: Mapping[str, object],
         *,
+        storage_settings: Mapping[str, object] | None = None,
         keep_snapshots: int = 2,
     ) -> None:
         self.state = state
         self.config_dir = config_dir
         self.analytics_settings = analytics_settings
+        self.storage_settings = dict(storage_settings) if storage_settings else {}
         self.keep_snapshots = keep_snapshots
 
     def __call__(self, context: StepContext) -> StepOutcome:
@@ -56,6 +67,17 @@ class PublishHandler:
         quality_dir = curated / "quality" / context.run_id
         analytics_dir = curated / "analytics" / context.run_id
         norm_dir = curated / "financial_facts" / context.run_id
+
+        storage_config = StorageConfig.from_mapping(
+            self.storage_settings,
+            config_dir=self.config_dir,
+            data_root=data_root,
+        )
+        effective_keep = (
+            storage_config.retention.keep_snapshots
+            if self.storage_settings
+            else self.keep_snapshots
+        )
 
         facts_path = quality_dir / CLEAN_FACTS_TABLE
         if not facts_path.is_file():
@@ -76,19 +98,28 @@ class PublishHandler:
                 "Publish requires issuers.parquet in curated storage."
             )
 
+        # Read clean_financial_facts.parquet exactly ONCE and share in memory (HI-09).
+        try:
+            facts_df = pl.read_parquet(facts_path)
+        except (OSError, pl.exceptions.PolarsError) as exc:
+            raise ContractViolationError(
+                "Unable to read clean financial_facts.parquet for publication."
+            ) from exc
+
         as_of = self._resolve_as_of(analytics_dir, context.run_id)
         tables: dict[str, TableInput] = {
             "issuers.parquet": issuers_path,
-            "financial_facts.parquet": facts_path,
-            "latest_facts.parquet": build_latest_facts_table(facts_path, as_of=as_of),
+            "financial_facts.parquet": facts_df,
+            "latest_facts.parquet": build_latest_facts_table(facts_df, as_of=as_of),
             FILINGS_MANIFEST_TABLE: build_filings_manifest_snapshot(
-                self.state, facts_path
+                self.state, facts_df
             ),
         }
 
-        unmapped_path = norm_dir / "unmapped_metrics.parquet"
-        if unmapped_path.is_file():
-            tables["unmapped_metrics.parquet"] = unmapped_path
+        if storage_config.publish_unmapped:
+            unmapped_path = norm_dir / "unmapped_metrics.parquet"
+            if unmapped_path.is_file():
+                tables["unmapped_metrics.parquet"] = unmapped_path
 
         for table_name in (
             RATIOS_TABLE,
@@ -106,21 +137,41 @@ class PublishHandler:
                 tables[table_name] = candidate
 
         snapshot_id = _snapshot_id_for_run(context.run_id)
-        publisher = SnapshotPublisher(
-            data_root / "published" / "snapshots",
-            state_store=self.state,
-            keep_snapshots=self.keep_snapshots,
-        )
-        publisher.publish(
-            snapshot_id,
-            tables,
-            run_id=context.run_id,
-            metadata={
-                "run_id": context.run_id,
-                "source": context.request.source,
-                "as_of": as_of.isoformat(),
-            },
-        )
+        publish_metadata = {
+            "run_id": context.run_id,
+            "source": context.request.source,
+            "as_of": as_of.isoformat(),
+        }
+        if storage_config.backend == "ducklake":
+            ducklake_store = DuckLakeStore(
+                catalog_path=storage_config.catalog.sqlite_path,
+                data_path=storage_config.data_path,
+                state_store=self.state,
+                catalog_alias=storage_config.catalog_alias,
+                catalog_driver=storage_config.catalog.driver,
+                postgres_dsn_env=storage_config.catalog.postgres_dsn_env,
+                keep_snapshots=effective_keep,
+                min_snapshot_age_seconds=storage_config.retention.min_snapshot_age_seconds,
+            )
+            ducklake_store.publish_snapshot(
+                snapshot_id,
+                tables,
+                run_id=context.run_id,
+                metadata=publish_metadata,
+            )
+        else:
+            publisher = SnapshotPublisher(
+                data_root / "published" / "snapshots",
+                state_store=self.state,
+                keep_snapshots=effective_keep,
+                min_snapshot_age_seconds=storage_config.retention.min_snapshot_age_seconds,
+            )
+            publisher.publish(
+                snapshot_id,
+                tables,
+                run_id=context.run_id,
+                metadata=publish_metadata,
+            )
         return StepOutcome(snapshot_id=snapshot_id)
 
     def _resolve_as_of(self, analytics_dir: Path, run_id: str) -> date:

@@ -6,16 +6,24 @@ Verified Sources:
     CSRankNorm ranks across each date. Qlib's robust scale uses MAD and its
     own clipping. Here fiscal slots and statement scope define each slice,
     Layer 4 specifies IQR * 0.7413011 and [-5, 5], and ICB controls fallback.
+    Rouen, E., So, E. C., & Wang, C. C. Y. (2021). "Core Earnings: New Data and Evidence."
+    Journal of Financial Economics, Vol. 142, Issue 3, pp. 1068-1091.
 """
 
 import polars as pl
 
 from finintel.exceptions import ContractViolationError
-from finintel.storage.schemas import BENCHMARK_KEY, CORE_RATIOS, EXTRA_RATIOS
+from finintel.storage.schemas import (
+    BENCHMARK_KEY,
+    CORE_RATIOS,
+    EXTRA_RATIOS,
+    FORENSIC_RATIOS,
+)
 
 
 def benchmark_ratios(
-    ratios: pl.DataFrame, metrics: tuple[str, ...] = (*CORE_RATIOS, *EXTRA_RATIOS)
+    ratios: pl.DataFrame,
+    metrics: tuple[str, ...] = (*CORE_RATIOS, *EXTRA_RATIOS, *FORENSIC_RATIOS),
 ) -> pl.DataFrame:
     """Compute peer counts, empirical percentile ranks, medians and quartiles.
 

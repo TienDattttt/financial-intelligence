@@ -3,10 +3,12 @@
 Verified Sources:
     https://shap.readthedocs.io/en/stable/generated/shap.TreeExplainer.html
     https://xgboost.readthedocs.io/en/stable/tutorials/monotonic.html
-    Raw-margin SHAP values are additive to XGBoost's log-odds output. Missingness
-    indicator contributions are folded into their corresponding original financial
-    feature so exact additivity holds over original feature names without leaking
-    synthetic *_missing columns into downstream UI payloads.
+    Lundberg, S. M. et al. (2020). "From local explanations to global understanding
+        with explainable AI for trees." Nature Machine Intelligence, Vol. 2, pp. 56-67.
+    Raw-margin SHAP values are additive to XGBoost's log-odds output within 1e-6.
+    Missingness indicator contributions are folded into their corresponding original
+    financial feature so exact additivity holds over original feature names without
+    leaking synthetic *_missing columns into downstream UI payloads.
 """
 
 from __future__ import annotations
@@ -20,10 +22,38 @@ from finintel.exceptions import ContractViolationError
 from finintel.ml.supervised.train import TrainingResult
 from finintel.storage.schemas import ML_SCORES_KEY
 
+_FEATURE_DISPLAY_NAME_VN: dict[str, str] = {
+    "accruals_to_assets": "Dồn tích trên tổng tài sản",
+    "altman_z_double_prime": "Điểm Altman Z''",
+    "asset_turnover": "Vòng quay tổng tài sản",
+    "cash_conversion_cycle": "Chu kỳ chuyển đổi tiền mặt (CCC)",
+    "cash_ratio": "Tỷ số thanh khoản tiền mặt",
+    "current_ratio": "Tỷ số thanh khoản hiện hành",
+    "debt_to_equity": "Nợ vay trên vốn chủ sở hữu (D/E)",
+    "ebit_margin": "Biên lợi nhuận EBIT",
+    "fcf_to_revenue": "Dòng tiền tự do trên doanh thu",
+    "financial_debt_to_assets": "Nợ vay trên tổng tài sản",
+    "interest_coverage": "Khả năng chi trả lãi vay",
+    "liabilities_to_assets": "Nợ phải trả trên tổng tài sản",
+    "net_debt_to_ebitda": "Nợ vay ròng trên EBITDA",
+    "ocf_to_current_liabilities": "Dòng tiền HĐKD trên nợ ngắn hạn",
+    "piotroski_f_score": "Điểm Piotroski F-Score",
+    "quick_ratio": "Tỷ số thanh khoản nhanh",
+    "revenue_growth_yoy": "Tăng trưởng doanh thu thuần YoY",
+    "roa": "Tỷ suất sinh lời trên tài sản (ROA)",
+    "roe_parent": "Tỷ suất sinh lời trên VCSH công ty mẹ (ROE)",
+    "roic": "Tỷ suất sinh lời trên vốn đầu tư (ROIC)",
+    "sector_z_asset_turnover": "Vòng quay tài sản chuẩn hóa ngành (Z-Score)",
+    "sector_z_cash_conversion_cycle": "Chu kỳ tiền mặt chuẩn hóa ngành (Z-Score)",
+    "sector_z_debt_to_equity": "Đòn bẩy D/E chuẩn hóa ngành (Z-Score)",
+    "sector_z_ebit_margin": "Biên EBIT chuẩn hóa ngành (Z-Score)",
+}
+
 _DRIVER_LIST_DTYPE = pl.List(
     pl.Struct(
         {
             "feature": pl.String,
+            "display_name_vn": pl.String,
             "value": pl.Float64,
             "peer_median": pl.Float64,
             "shap_delta": pl.Float64,
@@ -149,7 +179,7 @@ def explain_distress(
     *,
     peer_medians: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """Return vectorized JSON contributions whose base plus SHAP sum reproduces raw margin."""
+    """Return vectorized JSON contributions whose base + top drivers + other_features_delta reproduces raw margin."""
     present_keys = [name for name in ML_SCORES_KEY if name in frame.columns]
     if frame.is_empty():
         empty_json = pl.DataFrame(schema={"shap_top_drivers_json": pl.String})
@@ -199,8 +229,20 @@ def explain_distress(
         .select(
             "_row_id",
             "feature",
+            pl.col("feature")
+            .replace_strict(_FEATURE_DISPLAY_NAME_VN, default=pl.col("feature"))
+            .cast(pl.String)
+            .alias("display_name_vn"),
             pl.col("value").cast(pl.Float64),
-            pl.col("peer_median").cast(pl.Float64),
+            pl.when(pl.col("feature").str.starts_with("sector_z_"))
+            .then(
+                pl.coalesce(
+                    pl.col("peer_median").cast(pl.Float64),
+                    pl.lit(0.0, dtype=pl.Float64),
+                )
+            )
+            .otherwise(pl.col("peer_median").cast(pl.Float64))
+            .alias("peer_median"),
             pl.col("shap_delta").cast(pl.Float64),
         )
     )
@@ -209,9 +251,16 @@ def explain_distress(
         .sort(["_row_id", "shap_delta", "feature"], descending=[False, True, False])
         .group_by("_row_id", maintain_order=True)
         .agg(
-            pl.struct("feature", "value", "peer_median", "shap_delta")
+            pl.struct(
+                "feature",
+                "display_name_vn",
+                "value",
+                "peer_median",
+                "shap_delta",
+            )
             .head(5)
-            .alias("top_risk_increasing")
+            .alias("top_risk_increasing"),
+            pl.col("shap_delta").head(5).sum().alias("_inc_sum"),
         )
     )
     decreasing = (
@@ -219,9 +268,16 @@ def explain_distress(
         .sort(["_row_id", "shap_delta", "feature"], descending=[False, False, False])
         .group_by("_row_id", maintain_order=True)
         .agg(
-            pl.struct("feature", "value", "peer_median", "shap_delta")
+            pl.struct(
+                "feature",
+                "display_name_vn",
+                "value",
+                "peer_median",
+                "shap_delta",
+            )
             .head(5)
-            .alias("top_risk_decreasing")
+            .alias("top_risk_decreasing"),
+            pl.col("shap_delta").head(5).sum().alias("_dec_sum"),
         )
     )
 
@@ -242,12 +298,21 @@ def explain_distress(
             pl.col("top_risk_decreasing").fill_null(
                 pl.lit([], dtype=_DRIVER_LIST_DTYPE)
             ),
+            (
+                pl.col("prediction_score")
+                - pl.col("base_value")
+                - pl.col("_inc_sum").fill_null(0.0)
+                - pl.col("_dec_sum").fill_null(0.0)
+            )
+            .cast(pl.Float64)
+            .alias("other_features_delta"),
         )
         .sort("_row_id")
         .select(
             pl.struct(
                 "base_value",
                 "prediction_score",
+                "other_features_delta",
                 "top_risk_increasing",
                 "top_risk_decreasing",
             )

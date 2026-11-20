@@ -6,8 +6,16 @@ Verified Sources:
     pure formulas and averaging of balance sheet stocks. Use the local VAS
     formulas for EBT plus interest, cash-adjusted capital, 20% tax on
     nonpositive EBT, and CFO less the magnitude of CAPEX.
+    Rouen, E., So, E. C., & Wang, C. C. Y. (2021). "Core Earnings: New Data and Evidence."
+    Journal of Financial Economics, Vol. 142, Issue 3, pp. 1068-1091.
+    Schilit, H. M., Perler, J., & Engelhart, Y. (2018). Financial Shenanigans (4th Ed., McGraw-Hill).
+    Dechow, P. M., Ge, W., Larson, C. R., & Sloan, R. G. (2011). "Predicting Material Accounting
+    Misstatements." Contemporary Accounting Research, Vol. 28, Issue 1, pp. 17-82.
+    Chow, J. T. S. (2015). "Stress Testing Corporate Balance Sheets in Emerging Markets."
+    IMF Working Paper WP/15/216 (https://www.elibrary.imf.org).
     https://vanban.chinhphu.vn/?docid=178998&lang=vi&pageid=27160
     https://congbao.chinhphu.vn/van-ban/thong-tu-so-99-2025-tt-btc-46529/59658.htm
+    docs/layers/LAYER_2_NORMALIZATION.md (L138 SIGNED_EXPENSE convention).
     Gate 0 FHSC evidence and config/metric_definitions.yaml determine the fields.
     TT99 B02-DN line 24 is borrowing costs. Use it for TT99 and TT200 line
     23 for TT200 with separate identifiers and cross-taxonomy guards.
@@ -24,7 +32,7 @@ import polars as pl
 
 from finintel.exceptions import ContractViolationError
 from finintel.normalization.mapper import FACT_SCHEMA
-from finintel.normalization.periods import KNOWN_SCOPES, compute_ttm
+from finintel.normalization.periods import BRIDGED_TTM_NOTE, KNOWN_SCOPES, compute_ttm
 from finintel.storage.schemas import canonicalize_financial_facts
 
 ASSETS = "BS_TOTAL_ASSETS"
@@ -80,16 +88,20 @@ CAPEX = "CF_CAPITAL_EXPENDITURE"
 DEPRECIATION = "CF_DEPRECIATION_AMORTIZATION"
 RETAINED_EARNINGS = "BS_RETAINED_EARNINGS"
 TANGIBLE_ASSETS = "BS_TANGIBLE_FIXED_ASSETS"
+CIP_LONG_TERM = "BS_CIP_LONG_TERM"
 LT_INVESTMENTS = "BS_LT_FINANCIAL_INVESTMENTS"
 SELLING_EXPENSES = "IS_SELLING_EXPENSES"
 ADMIN_EXPENSES = "IS_ADMINISTRATIVE_EXPENSES"
+FINANCIAL_REVENUE = "IS_FINANCIAL_REVENUE"
+OTHER_INCOME = "IS_OTHER_INCOME"
+OTHER_EXPENSES = "IS_OTHER_EXPENSES"
+OTHER_PROFIT = "IS_OTHER_PROFIT"
+IP_DISPOSAL = "IS_INVESTMENT_PROPERTY_DISPOSAL_GAIN_LOSS"
 EQUITY_PROCEEDS = "CF_EQUITY_ISSUANCE_PROCEEDS"
 NONCASH_ISSUANCE = "IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE"
 CONTINUING_EARNINGS = "IS_CONTINUING_OPERATIONS_NET_INCOME"
-ML_STOCKS = (RETAINED_EARNINGS, TANGIBLE_ASSETS, LT_INVESTMENTS)
+ML_STOCKS = (RETAINED_EARNINGS, LT_INVESTMENTS)
 ML_FLOWS = (
-    SELLING_EXPENSES,
-    ADMIN_EXPENSES,
     EQUITY_PROCEEDS,
     NONCASH_ISSUANCE,
     CONTINUING_EARNINGS,
@@ -119,6 +131,8 @@ STOCKS = (
     LT_TRADE_ALLOWANCE,
     INVENTORY,
     PAYABLES,
+    TANGIBLE_ASSETS,
+    CIP_LONG_TERM,
 )
 FLOWS = (
     REVENUE,
@@ -135,7 +149,16 @@ FLOWS = (
     CFO,
     CAPEX,
     DEPRECIATION,
+    SELLING_EXPENSES,
+    ADMIN_EXPENSES,
+    FINANCIAL_REVENUE,
+    OTHER_INCOME,
+    OTHER_EXPENSES,
+    OTHER_PROFIT,
+    IP_DISPOSAL,
 )
+FILING_TRACKED_STOCKS = (*RF03_INPUTS, CIP_LONG_TERM, TANGIBLE_ASSETS)
+CORE_PROFIT_INPUTS = (GROSS_PROFIT, SELLING_EXPENSES, ADMIN_EXPENSES)
 ALIASES = {
     "BS_ST_FINANCIAL_INVESTMENTS": INVESTMENTS,
     "BS_ST_BORROWINGS": ST_DEBT,
@@ -260,9 +283,55 @@ def _visible_facts(
     )
 
 
+def _synthesize_missing_selling_expenses(facts: pl.DataFrame) -> pl.DataFrame:
+    """Synthesize IS_SELLING_EXPENSES = 0.0 per individual filing before TTM when GP, Admin, and OP (Code 30) exist."""
+    if facts.is_empty():
+        return facts
+    filing_key = [
+        "issuer_id",
+        "statement_scope",
+        "period_type",
+        "fiscal_year_start_date",
+        "period_start_date",
+        "period_end_date",
+        "filing_id",
+        "source_provider",
+        "derivation_method",
+    ]
+    has_gp = (
+        ((METRIC == GROSS_PROFIT) & pl.col("value").is_not_null())
+        .any()
+        .over(filing_key)
+    )
+    has_admin = (
+        ((METRIC == ADMIN_EXPENSES) & pl.col("value").is_not_null())
+        .any()
+        .over(filing_key)
+    )
+    has_selling_row = (METRIC == SELLING_EXPENSES).any().over(filing_key)
+    synthesized = (
+        facts.filter(
+            (METRIC == OPERATING_PROFIT)
+            & pl.col("value").is_not_null()
+            & has_gp
+            & has_admin
+            & ~has_selling_row
+        )
+        .unique(subset=filing_key, keep="last")
+        .with_columns(
+            pl.lit(SELLING_EXPENSES).alias("metric_id"),
+            pl.lit(0.0, dtype=pl.Float64).alias("value"),
+        )
+    )
+    if synthesized.is_empty():
+        return facts
+    return pl.concat([facts, synthesized], how="vertical_relaxed")
+
+
 def _period_amounts(
     facts: pl.DataFrame, stocks: tuple[str, ...], flows: tuple[str, ...]
 ) -> pl.DataFrame:
+    facts = _synthesize_missing_selling_expenses(facts)
     reports = facts.filter(
         (pl.col("revision_reason") != "RESTATED_REGIME_CHANGE")
         & pl.col("period_type").is_in(["QUARTER", "ANNUAL"])
@@ -274,21 +343,21 @@ def _period_amounts(
         for name, dtype in FACT_SCHEMA.items()
     )
     quarterly_series = ["issuer_id", "statement_scope", "source_provider", "metric_id"]
-    quarterly = (
-        compute_ttm(flow)
-        .sort([*quarterly_series, "period_end_date"])
-        .with_columns(
-            pl.all_horizontal(
-                *(
-                    (pl.col("published_at_basis") == "EXACT_FILING")
-                    .shift(lag)
-                    .over(quarterly_series)
-                    .fill_null(False)
-                    for lag in range(4)
-                )
-            ).alias("_ttm_exact")
+    ttm_flow = compute_ttm(flow).sort([*quarterly_series, "period_end_date"])
+    ttm_exact_expr = (
+        pl.col("ttm_exact_filing").fill_null(False)
+        if "ttm_exact_filing" in ttm_flow.columns
+        else pl.all_horizontal(
+            *(
+                (pl.col("published_at_basis") == "EXACT_FILING")
+                .shift(lag)
+                .over(quarterly_series)
+                .fill_null(False)
+                for lag in range(4)
+            )
         )
     )
+    quarterly = ttm_flow.with_columns(ttm_exact_expr.alias("_ttm_exact"))
     anchor_columns = [*PERIOD, *REVISION_ORDER, "taxonomy_version", "derivation_method"]
     derived_q4 = quarterly.filter(
         pl.col("derivation_method") == "DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX"
@@ -394,8 +463,14 @@ def _period_amounts(
         .alias("_period_exact_filing"),
         *(
             pl.col("filing_id").filter(METRIC == name).last().alias(f"_filing_{name}")
-            for name in RF03_INPUTS
+            for name in FILING_TRACKED_STOCKS
         ),
+        (
+            pl.col("computation_note").filter(METRIC == BORROWING_COSTS).last()
+            == BRIDGED_TTM_NOTE
+        )
+        .fill_null(False)
+        .alias("_bridged_debt_cost"),
         pl.col("source_filing_ids")
         .explode()
         .drop_nulls()
@@ -417,6 +492,7 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
     from CFO. Require explicit zero treasury stock to estimate shares from par.
     Parent equity is consolidated BS_TOTAL_EQUITY less BS_MINORITY_INTEREST,
     or BS_TOTAL_EQUITY directly when the statement is separate.
+    Preserve SIGNED_EXPENSE sign on IS_SELLING_EXPENSES and IS_ADMINISTRATIVE_EXPENSES.
     """
     c = pl.col
     debt = pl.when(
@@ -427,7 +503,16 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
     annual = c("period_type") == "ANNUAL"
     debt_cost = (
         pl.when(c("taxonomy_version") == "VAS_TT99_2025")
-        .then(c(BORROWING_COSTS))
+        .then(
+            pl.when(input_has("mixed", BORROWING_COSTS))
+            .then(None)
+            .otherwise(
+                pl.coalesce(
+                    c(BORROWING_COSTS),
+                    pl.when(~input_has("mixed", INTEREST)).then(c(INTEREST)),
+                )
+            )
+        )
         .otherwise(c(INTEREST))
         .abs()
     )
@@ -448,6 +533,22 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         .then(c(CURRENT_ASSETS) - c(CURRENT_LIABILITIES))
         .alias("working_capital"),
         debt_cost.alias("_borrowing_cost_ttm"),
+        pl.when(CORPORATE & ~input_has("mixed", INTEREST, BORROWING_COSTS))
+        .then(debt_cost)
+        .alias("borrowing_cost_ttm"),
+        pl.when(CORPORATE & ~input_has("mixed", REVENUE))
+        .then(c(REVENUE))
+        .alias("net_revenue_ttm"),
+        pl.when(CORPORATE & ~input_has("mixed", GROSS_PROFIT))
+        .then(c(GROSS_PROFIT))
+        .alias("gross_profit_ttm"),
+        pl.when(CORPORATE & ~input_has("mixed", COGS))
+        .then(c(COGS).abs())
+        .alias("cogs_ttm"),
+        pl.when(CORPORATE & ~input_has("mixed", CFO)).then(c(CFO)).alias("cfo_ttm"),
+        pl.when(CORPORATE & ~input_has("mixed", *CORE_PROFIT_INPUTS))
+        .then(c(GROSS_PROFIT) - c(SELLING_EXPENSES) - c(ADMIN_EXPENSES))
+        .alias("core_operating_profit_ttm"),
         pl.when(CORPORATE & ~input_has("mixed", *EBIT_INPUTS))
         .then(ebt + debt_cost)
         .alias("ebit_ttm"),
@@ -485,6 +586,9 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
             "effective_tax_rate_flag"
         ),
         _intermediate_flag("fcf_ttm", *FCF_INPUTS).alias("fcf_flag"),
+        _intermediate_flag("core_operating_profit_ttm", *CORE_PROFIT_INPUTS).alias(
+            "core_operating_profit_flag"
+        ),
     ).with_columns(
         pl.when(~CORPORATE)
         .then(pl.lit("NOT_APPLICABLE_FOR_REGIME"))
@@ -625,6 +729,7 @@ def prepare_periods(
         "parent_equity",
         "invested_capital",
         "ebit_ttm",
+        *(f"_filing_{name}" for name in (ASSETS, CIP_LONG_TERM, TANGIBLE_ASSETS)),
         *(
             f"_{prefix}_{name}"
             for prefix in ("comparable", "mixed", "derived")
@@ -642,7 +747,12 @@ def prepare_periods(
             (
                 pl.col("_period_exact_filing").fill_null(False)
                 & pl.when(pl.col("_prior_end").is_not_null())
-                .then(pl.col("_period_exact_filing_prior").fill_null(False))
+                .then(
+                    (
+                        pl.col("_period_available_at_prior")
+                        <= pl.col("_amounts_available_at")
+                    ).fill_null(False)
+                )
                 .otherwise(pl.lit(True))
             ).alias("_exact_filing_basis"),
             combine_filing_ids(
