@@ -348,7 +348,10 @@ def verify_analytics_quality_gate(
         if "source_filing_ids" in ratios.columns:
             referenced_frames.append(
                 ratios.select(
-                    pl.col("source_filing_ids").explode().cast(pl.String).alias("filing_id")
+                    pl.col("source_filing_ids")
+                    .explode()
+                    .cast(pl.String)
+                    .alias("filing_id")
                 ).drop_nulls()
             )
     if red_flags is not None and not red_flags.is_empty():
@@ -452,4 +455,6 @@ def verify_analytics_quality_gate(
             },
         },
     )
-    return updated.select(QUALITY_SUMMARY_SCHEMA.names()).sort(list(QUALITY_SUMMARY_KEY))
+    return updated.select(QUALITY_SUMMARY_SCHEMA.names()).sort(
+        list(QUALITY_SUMMARY_KEY)
+    )

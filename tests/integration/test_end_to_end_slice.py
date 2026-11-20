@@ -36,7 +36,9 @@ def _write_json_filing(path: Path, metrics: dict[str, float]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _build_offline_slice_config(workspace: Path) -> tuple[Path, list[dict[str, object]]]:
+def _build_offline_slice_config(
+    workspace: Path,
+) -> tuple[Path, list[dict[str, object]]]:
     """Create a complete 2-year quarterly + annual offline dataset for 2 peers (FPT, CMG)."""
     input_dir = workspace / "inputs"
     curated_dir = workspace / "data" / "curated"
@@ -217,7 +219,9 @@ def _build_offline_slice_config(workspace: Path) -> tuple[Path, list[dict[str, o
         },
         "quality": {"max_critical_issuer_ratio": 0.10},
     }
-    config_path.write_text(yaml.safe_dump(config_payload, sort_keys=False), encoding="utf-8")
+    config_path.write_text(
+        yaml.safe_dump(config_payload, sort_keys=False), encoding="utf-8"
+    )
     return config_path, files_cfg
 
 
@@ -342,7 +346,7 @@ def test_full_end_to_end_6_stage_pipeline_and_lineage_traceability(
     assert len(fig_ind.data) >= 2
 
     # Ensure ALL_RATIOS catalog is 100% consistent.
-    assert len(ALL_RATIOS) == 35
+    assert len(ALL_RATIOS) == 38
 
 
 def test_end_to_end_cli_circuit_breaker_preserves_prior_active_snapshot(
@@ -384,4 +388,3 @@ def test_end_to_end_cli_circuit_breaker_preserves_prior_active_snapshot(
     # Pipeline must halt with exit_code=1 and preserve the prior active snapshot untouched.
     assert main(["--config", str(config_path), "run", "--source", "file"]) == 1
     assert ParquetRepository(data_root=data_root).snapshot_id == prior_snapshot_id
-

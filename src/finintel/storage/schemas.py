@@ -1,4 +1,15 @@
-"""Stable Polars schemas used by the Layer 3 storage boundary."""
+"""Stable Polars schemas used by the Layer 3 storage boundary.
+
+Verified Sources:
+    Rouen, E., So, E. C., & Wang, C. C. Y. (2021). "Core Earnings: New Data and Evidence."
+    Journal of Financial Economics, Vol. 142, Issue 3, pp. 1068-1091.
+    Schilit, H. M., Perler, J., & Engelhart, Y. (2018). Financial Shenanigans (4th Ed., McGraw-Hill).
+    Dechow, P. M., Ge, W., Larson, C. R., & Sloan, R. G. (2011). "Predicting Material Accounting
+    Misstatements." Contemporary Accounting Research, Vol. 28, Issue 1, pp. 17-82.
+    Chow, J. T. S. (2015). "Stress Testing Corporate Balance Sheets in Emerging Markets."
+    IMF Working Paper WP/15/216 (https://www.elibrary.imf.org).
+    Circular 200/2014/TT-BTC & Circular 99/2025/TT-BTC (docs/layers/LAYER_2_NORMALIZATION.md:138).
+"""
 
 from __future__ import annotations
 
@@ -66,6 +77,11 @@ EXTRA_RATIOS = (
     "ebit_growth_yoy",
     "net_income_parent_growth_yoy",
 )
+FORENSIC_RATIOS = (
+    "core_operating_margin",
+    "non_core_distortion_to_assets",
+    "core_to_ebt_ratio",
+)
 RATIO_INTERMEDIATES = (
     "total_debt",
     "total_cash_and_st_investments",
@@ -81,6 +97,12 @@ RATIO_INTERMEDIATES = (
     "estimated_shares_outstanding",
     "implied_weighted_shares",
     "eps_basic_reported",
+    "core_operating_profit_ttm",
+    "net_revenue_ttm",
+    "gross_profit_ttm",
+    "cogs_ttm",
+    "cfo_ttm",
+    "borrowing_cost_ttm",
 )
 RATIO_INTERMEDIATE_FLAGS = (
     "ebitda_flag",
@@ -88,6 +110,7 @@ RATIO_INTERMEDIATE_FLAGS = (
     "effective_tax_rate_flag",
     "nopat_flag",
     "fcf_flag",
+    "core_operating_profit_flag",
 )
 RATIO_DUPONT_FACTORS = (
     "tax_burden",
@@ -109,7 +132,7 @@ FINANCIAL_RATIOS_SCHEMA = pl.Schema(
         **{name: pl.String for name in RATIO_INTERMEDIATE_FLAGS},
         **{
             column: dtype
-            for name in (*CORE_RATIOS, *EXTRA_RATIOS)
+            for name in (*CORE_RATIOS, *EXTRA_RATIOS, *FORENSIC_RATIOS)
             for column, dtype in ((name, pl.Float64), (f"{name}_flag", pl.String))
         },
         **{name: pl.Float64 for name in RATIO_DUPONT_FACTORS},

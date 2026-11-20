@@ -1,4 +1,15 @@
-"""SQLite persistence for runs, steps, the active snapshot and key metadata."""
+"""SQLite persistence for runs, steps, the active snapshot and key metadata.
+
+Verified Sources:
+    - SQLite Official Documentation — Write-Ahead Logging (WAL):
+      https://www.sqlite.org/wal.html
+    - SQLite Official Documentation — PRAGMA synchronous:
+      https://www.sqlite.org/pragma.html#pragma_synchronous
+      In WAL mode, ``PRAGMA synchronous = NORMAL`` is corruption-safe across
+      process and OS crashes while avoiding an ``fsync()`` on every commit
+      (syncing on WAL checkpoints instead; only the very latest committed
+      transactions before an abrupt power loss could roll back).
+"""
 
 from __future__ import annotations
 
@@ -12,6 +23,18 @@ from pathlib import Path
 
 FHSC_CONNECTOR_VERSION = "0.1.2"
 FHSC_KEY_LIFETIME = timedelta(days=30)
+
+_FHSC_WATERMARK_TABLE_DDL = """
+    CREATE TABLE IF NOT EXISTS fhsc_pagination_watermarks (
+        ticker TEXT NOT NULL,
+        statement_type TEXT NOT NULL,
+        period_type TEXT NOT NULL,
+        last_status TEXT NOT NULL,
+        completed_at TEXT,
+        last_run_id TEXT,
+        PRIMARY KEY (ticker, statement_type, period_type)
+    )
+    """
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -64,6 +87,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         published_at TEXT NOT NULL
     )
     """,
+    _FHSC_WATERMARK_TABLE_DDL,
 )
 SCHEMA = ";\n".join(statement.strip() for statement in SCHEMA_STATEMENTS) + ";\n"
 
@@ -89,6 +113,7 @@ class StateStore:
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
             with conn:
                 yield conn
 
@@ -364,6 +389,64 @@ class StateStore:
 
     def active_snapshot(self) -> dict[str, object] | None:
         return self._one("SELECT * FROM active_snapshot WHERE singleton = 1", ())
+
+    def record_fhsc_watermark(
+        self,
+        ticker: str,
+        statement_type: str,
+        period_type: str,
+        status: str,
+        *,
+        run_id: str | None = None,
+    ) -> None:
+        """Persist the latest full-history FHSC pagination status for early-stop gating."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        now = _now()
+        completed_at = now if status == "COMPLETE" else None
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_FHSC_WATERMARK_TABLE_DDL)
+            conn.execute(
+                """INSERT INTO fhsc_pagination_watermarks
+                   (ticker, statement_type, period_type, last_status, completed_at, last_run_id)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(ticker, statement_type, period_type) DO UPDATE SET
+                       last_status = excluded.last_status,
+                       completed_at = CASE
+                           WHEN excluded.last_status = 'COMPLETE' THEN excluded.completed_at
+                           WHEN excluded.last_status = 'EARLY_STOPPED' THEN fhsc_pagination_watermarks.completed_at
+                           ELSE NULL
+                       END,
+                       last_run_id = excluded.last_run_id""",
+                (ticker, statement_type, period_type, status, completed_at, run_id),
+            )
+
+    def has_complete_fhsc_watermark(
+        self,
+        ticker: str,
+        statement_type: str,
+        period_type: str,
+    ) -> bool:
+        """Return True only when full-history FHSC pagination completed cleanly."""
+        if not self.path.exists():
+            return False
+        try:
+            row = self._one(
+                """SELECT last_status, completed_at
+                   FROM fhsc_pagination_watermarks
+                   WHERE ticker = ? AND statement_type = ? AND period_type = ?""",
+                (ticker, statement_type, period_type),
+            )
+        except sqlite3.OperationalError as error:
+            if "no such table" in str(error).lower():
+                return False
+            raise
+        if row is None:
+            return False
+        return row.get("completed_at") is not None and row.get("last_status") in {
+            "COMPLETE",
+            "EARLY_STOPPED",
+        }
 
     def _one(
         self, query: str, parameters: tuple[object, ...]

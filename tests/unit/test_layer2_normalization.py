@@ -143,7 +143,12 @@ def test_layer4_fhsc_fields_verified_in_both_taxonomies(mapper: TaxonomyMapper) 
                 == values["IS_NET_INCOME"]
             )
         else:
-            assert values.keys() == bs_ids
+            expected_bs_ids = (
+                bs_ids | {"BS_TOTAL_ASSETS", "BS_SHORT_TERM_RECEIVABLES"}
+                if entry["year"] == 2025
+                else bs_ids
+            )
+            assert values.keys() == expected_bs_ids
             assert (
                 values["BS_TRADE_RECEIVABLES_ST"]
                 == entry["raw_metrics"]["phaithukhachhang"]
@@ -557,7 +562,7 @@ def test_cross_taxonomy_ttm_uses_compatible_quarters(mapper: TaxonomyMapper) -> 
     ]
     entries = [(q3, 3), (q4, 4), (q1, 5), (q2, 6)]
     assert compute_ttm(facts(mapper, entries)).tail(1)["ttm_value"].item() == 18
-    table = facts(mapper, entries, "30")
+    table = facts(mapper, entries, "01")
     assert compute_ttm(table).tail(1).select("ttm_value", "computation_note").row(
         0
     ) == (
@@ -566,7 +571,7 @@ def test_cross_taxonomy_ttm_uses_compatible_quarters(mapper: TaxonomyMapper) -> 
     )
     comparative, _ = map_restatement(
         mapper,
-        {"30": 100},
+        {"01": 100},
         filing(2026),
         filing(2025),
         filing_id="annual-2026",
@@ -578,7 +583,7 @@ def test_cross_taxonomy_ttm_uses_compatible_quarters(mapper: TaxonomyMapper) -> 
     restated = [
         map_restatement(
             mapper,
-            {"30": value},
+            {"01": value},
             filing(2026, meta.fiscal_quarter),
             meta,
             filing_id=f"restated-{meta.fiscal_quarter}",

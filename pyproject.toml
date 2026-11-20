@@ -31,6 +31,15 @@ ml = [
 spike = [
     "httpx==0.28.1",
 ]
+platform = [
+    "fastapi==0.165.0",
+    "uvicorn==0.54.0",
+    "pydantic==2.14.4",
+    "httpx==0.28.1",
+    "dagster==1.13.30",
+    "dagster-webserver==1.13.30",
+    "dagster-duckdb==0.29.30",
+]
 
 [tool.uv]
 package = false

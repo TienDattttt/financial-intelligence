@@ -5,9 +5,13 @@ Verified Sources:
     https://scikit-learn.org/stable/modules/decomposition.html
     https://scikit-learn.org/stable/modules/outlier_detection.html
     https://github.com/yzhao062/pyod
+    docs/layers/LAYER_4_ANALYTICS_AND_ML.md, section 5.2.
     Reverse sklearn IsolationForest scores so larger values are more unusual.
-    Estimate percentiles against the training scores and keep PCA axes in [3, 5].
+    Estimate percentiles against the training scores, clip scaled unsupervised
+    features to [-5.0, 5.0] when configured, and guarantee unique cluster names.
 """
+
+from __future__ import annotations
 
 import numpy as np
 import polars as pl
@@ -36,6 +40,8 @@ UNSUPERVISED_FEATURE_SET = (
     "accruals_to_assets",
 )
 INDUSTRY = "icb_code_level2"
+_NEUTRAL_ARCHETYPE_LABEL = "Nhóm vận hành cân bằng / trung bình ngành"
+_NEUTRAL_CLUSTER_THRESHOLD = 0.35
 _FINANCIAL_SIGNAL = {
     "roa": "Sinh lời trên tài sản",
     "ebit_margin": "Biên EBIT",
@@ -56,11 +62,73 @@ class InsufficientModelData(ContractViolationError):
     """The eligible training records lack enough variation or outcomes."""
 
 
+def _build_unique_archetype_names(
+    relative_centers: NDArray[np.float64],
+    feature_names: tuple[str, ...] = UNSUPERVISED_FEATURE_SET,
+) -> tuple[str, ...]:
+    """Assign deterministic, 100% unique Vietnamese archetype labels to K-Means centers."""
+    used: set[str] = set()
+    names: list[str] = []
+    width = len(feature_names)
+
+    for cluster_idx, rel in enumerate(relative_centers):
+        order = np.argsort(-np.abs(rel), kind="mergesort")
+
+        def _fmt_signal(feat_idx: int, vector: NDArray[np.float64] = rel) -> str:
+            feat = feature_names[feat_idx]
+            direction = "cao" if float(vector[feat_idx]) >= 0.0 else "thấp"
+            return f"{_FINANCIAL_SIGNAL[feat]} {direction}"
+
+        is_neutral = float(np.max(np.abs(rel))) < _NEUTRAL_CLUSTER_THRESHOLD
+        if is_neutral:
+            candidate = _NEUTRAL_ARCHETYPE_LABEL
+        else:
+            candidate = " · ".join(_fmt_signal(int(i)) for i in order[:2])
+
+        if candidate in used:
+            resolved: str | None = None
+            if is_neutral:
+                if float(np.max(np.abs(rel))) > 1e-12:
+                    for extra_count in range(1, min(3, width) + 1):
+                        detail = " · ".join(
+                            _fmt_signal(int(i)) for i in order[:extra_count]
+                        )
+                        alt = f"{_NEUTRAL_ARCHETYPE_LABEL} ({detail})"
+                        if alt not in used:
+                            resolved = alt
+                            break
+            else:
+                for take in range(3, width + 1):
+                    alt = " · ".join(_fmt_signal(int(i)) for i in order[:take])
+                    if alt not in used:
+                        resolved = alt
+                        break
+            if resolved is None:
+                resolved = f"{candidate} (Nhóm {cluster_idx + 1})"
+            candidate = resolved
+
+        used.add(candidate)
+        names.append(candidate)
+    return tuple(names)
+
+
 class CrossSectionalPreprocessor:
     """Fit clipping, contextual imputation and robust scaling on training rows."""
 
-    def __init__(self, features: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        features: tuple[str, ...],
+        *,
+        clip_range: tuple[float, float] | None = None,
+    ) -> None:
+        if clip_range is not None:
+            low, high = clip_range
+            if not (np.isfinite(low) and np.isfinite(high) and low < high):
+                raise ContractViolationError(
+                    "clip_range must be a finite (low, high) pair with low < high."
+                )
         self.features = features
+        self.clip_range = clip_range
         self.indicators = tuple(f"{name}_missing" for name in features)
         self._scaler = RobustScaler()
         self._p95: float | None = None
@@ -195,6 +263,8 @@ class CrossSectionalPreprocessor:
         if imputed.is_empty():
             return imputed
         scaled = self._scaler.transform(imputed.select(self.features).to_numpy())
+        if self.clip_range is not None:
+            scaled = np.clip(scaled, self.clip_range[0], self.clip_range[1])
         return pl.DataFrame(scaled, schema=list(self.features), orient="row").hstack(
             imputed.select(self.indicators)
         )
@@ -204,7 +274,9 @@ class FinancialArchetypes:
     """Hold a fitted preprocessor, PCA, K-means, and Isolation Forest."""
 
     def __init__(self) -> None:
-        self.preprocessor = CrossSectionalPreprocessor(UNSUPERVISED_FEATURE_SET)
+        self.preprocessor = CrossSectionalPreprocessor(
+            UNSUPERVISED_FEATURE_SET, clip_range=(-5.0, 5.0)
+        )
         self._pca = PCA(n_components=0.80, svd_solver="full", random_state=42)
         self._forest = IsolationForest(
             n_estimators=200,
@@ -227,7 +299,9 @@ class FinancialArchetypes:
             raise ContractViolationError(
                 "Financial archetype feature names must be unique."
             )
-        preprocessor = CrossSectionalPreprocessor(UNSUPERVISED_FEATURE_SET)
+        preprocessor = CrossSectionalPreprocessor(
+            UNSUPERVISED_FEATURE_SET, clip_range=(-5.0, 5.0)
+        )
         matrix = (
             preprocessor.fit(train)
             .transform(train)
@@ -273,21 +347,22 @@ class FinancialArchetypes:
             )
         _, clusters = max(candidates, key=lambda candidate: candidate[0])
         width = len(UNSUPERVISED_FEATURE_SET)
-        top = np.argsort(-np.abs(pca.components_[:, :width]), axis=1)[:, :2]
+        top = np.argsort(-np.abs(pca.components_[:, :width]), axis=1, kind="mergesort")[
+            :, :2
+        ]
         component_names = tuple(
             " / ".join(
-                _FINANCIAL_SIGNAL[UNSUPERVISED_FEATURE_SET[index]] for index in pair
+                _FINANCIAL_SIGNAL[UNSUPERVISED_FEATURE_SET[int(index)]]
+                for index in pair
             )
             for pair in top
         )
-        centers = pca.inverse_transform(clusters.cluster_centers_)[:, :width]
-        archetypes = tuple(
-            " · ".join(
-                f"{_FINANCIAL_SIGNAL[UNSUPERVISED_FEATURE_SET[i]]} {'cao' if center[i] >= 0 else 'thấp'}"
-                for i in np.argsort(-np.abs(center))[:2]
-            )
-            for center in centers
+        centers = np.asarray(
+            pca.inverse_transform(clusters.cluster_centers_)[:, :width],
+            dtype=np.float64,
         )
+        relative_centers = centers - centers.mean(axis=0, keepdims=True)
+        archetypes = _build_unique_archetype_names(relative_centers)
         forest = IsolationForest(
             n_estimators=200, max_samples="auto", contamination="auto", random_state=42
         )
