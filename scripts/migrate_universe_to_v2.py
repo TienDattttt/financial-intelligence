@@ -132,6 +132,8 @@ from finintel.quality.gate import evaluate_quality_gate  # noqa: E402
 from finintel.serving.queries import DashboardQueryService  # noqa: E402
 from finintel.serving.schemas import parse_shap_top_drivers  # noqa: E402
 from finintel.storage.ducklake_store import (  # noqa: E402
+    DEFAULT_CATALOG_ALIAS,
+    SNAPSHOT_AUDIT_TABLE,
     DuckLakeStore,
     ensure_ducklake_attached,
 )
@@ -449,6 +451,37 @@ def _ducklake_extensions_available() -> bool:
         con.close()
 
 
+def _ducklake_has_snapshot_ro(
+    catalog_path: Path,
+    data_path: Path,
+    snapshot_id: str,
+    *,
+    catalog_alias: str = DEFAULT_CATALOG_ALIAS,
+) -> bool:
+    """Return True iff ``catalog_path`` contains ``snapshot_id`` in ``_snapshot_audit`` (READ_ONLY)."""
+    if not catalog_path.is_file():
+        return False
+    con = duckdb.connect(":memory:")
+    try:
+        ensure_ducklake_attached(
+            con,
+            catalog_path=catalog_path,
+            data_path=data_path,
+            catalog_alias=catalog_alias,
+            read_only=True,
+        )
+        row = con.execute(
+            f'SELECT 1 FROM "{catalog_alias}"."{SNAPSHOT_AUDIT_TABLE}" '
+            "WHERE snapshot_id = ? LIMIT 1",
+            [snapshot_id],
+        ).fetchone()
+        return row is not None
+    except (duckdb.Error, ContractViolationError, OSError):
+        return False
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Public API #1: WAL-safe SQLite online backup
 # ---------------------------------------------------------------------------
@@ -755,13 +788,15 @@ def verify_source_integrity(
     raw_sha256_files_checked = 0
     if sha256_dir.is_dir():
         for entry in sorted(sha256_dir.rglob("*")):
+            if entry.is_symlink():
+                rel_posix = entry.relative_to(raw_root).as_posix()
+                raw_sha256_files_checked += 1
+                payload_sha_mismatches.append(f"{rel_posix}:symlink_disallowed")
+                continue
             if not entry.is_file():
                 continue
             raw_sha256_files_checked += 1
             rel_posix = entry.relative_to(raw_root).as_posix()
-            if entry.is_symlink():
-                payload_sha_mismatches.append(f"{rel_posix}:symlink_disallowed")
-                continue
             try:
                 actual_sha = payload_file_sha256(entry.read_bytes())
             except OSError as exc:
@@ -783,6 +818,11 @@ def verify_source_integrity(
     raw_provenance_files_checked = 0
     if provenance_dir.is_dir():
         for receipt_path in sorted(provenance_dir.glob("*.json")):
+            if receipt_path.is_symlink():
+                rel_receipt = receipt_path.relative_to(raw_root).as_posix()
+                raw_provenance_files_checked += 1
+                provenance_mismatches.append(f"{rel_receipt}:symlink_disallowed")
+                continue
             if not receipt_path.is_file():
                 continue
             raw_provenance_files_checked += 1
@@ -1134,18 +1174,44 @@ def migrate_universe_read_only(
     target_state.recover_interrupted_runs()
 
     dangling_snapshot_cleared: str | None = None
+    surviving_active_sid: str | None = None
     active_row = target_state.active_snapshot()
     if active_row is not None and active_row.get("snapshot_id") is not None:
         active_sid = str(active_row["snapshot_id"])
         parquet_exists = (
             dst_resolved / "published" / "snapshots" / active_sid
         ).is_dir()
-        ducklake_exists = target_ducklake_path.is_file()
-        if not parquet_exists and not ducklake_exists:
+        ducklake_has_snapshot = _ducklake_has_snapshot_ro(
+            target_ducklake_path,
+            dst_resolved / "lakehouse" / "data",
+            active_sid,
+        )
+        if not parquet_exists and not ducklake_has_snapshot:
             with target_state.connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute("DELETE FROM active_snapshot WHERE singleton = 1")
             dangling_snapshot_cleared = active_sid
+        else:
+            surviving_active_sid = active_sid
+
+    stale_transform_state_cleared = False
+    transform_state_path = dst_resolved / "metadata" / "_transform_state.json"
+    if transform_state_path.is_file():
+        ts_matches = False
+        if surviving_active_sid is not None:
+            try:
+                ts_payload = json.loads(
+                    transform_state_path.read_text(encoding="utf-8")
+                )
+                ts_matches = (
+                    isinstance(ts_payload, dict)
+                    and ts_payload.get("snapshot_id") == surviving_active_sid
+                )
+            except (OSError, ValueError):
+                ts_matches = False
+        if not ts_matches:
+            transform_state_path.unlink(missing_ok=True)
+            stale_transform_state_cleared = True
 
     resolved_dagster_home = _ensure_dagster_home(
         dagster_home
@@ -1179,6 +1245,7 @@ def migrate_universe_read_only(
         },
         "target_hygiene": {
             "dangling_active_snapshot_cleared": dangling_snapshot_cleared,
+            "stale_transform_state_cleared": stale_transform_state_cleared,
             "dagster_home": resolved_dagster_home.as_posix(),
             "synced_corporate_partitions_count": len(synced_tickers),
             "dagster_pool_limits": pool_limits,
