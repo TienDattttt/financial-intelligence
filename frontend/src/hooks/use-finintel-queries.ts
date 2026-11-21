@@ -1,6 +1,11 @@
 "use client";
 
-import { useMutation, useQueries, useQuery } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQueries,
+  useQuery,
+} from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import type {
   IssuerItem,
@@ -261,6 +266,7 @@ export function useScreener(
   return useQuery({
     queryKey: ["screener", snapshotId ?? "latest", params],
     queryFn: () => apiClient.getScreener(params),
+    placeholderData: keepPreviousData,
     staleTime: SNAPSHOT_STALE_MS,
   });
 }

@@ -21,12 +21,15 @@ import { CommandSearch } from "@/components/layout/CommandSearch";
 import { SourceDrawer } from "@/components/layout/SourceDrawer";
 import { useAppState } from "@/components/providers/app-providers";
 import { Select } from "@/components/ui/primitives";
+import { useAllIssuers } from "@/hooks/use-finintel-queries";
 import {
   PERIOD_TYPE_LABELS,
   STATEMENT_SCOPE_LABELS,
 } from "@/lib/domain-labels";
 import { formatDateVi, formatPeriodLabel } from "@/lib/format";
 import {
+  getLastViewedTickerServerSnapshot,
+  getLastViewedTickerSnapshot,
   getWatchlistServerSnapshot,
   getWatchlistSnapshot,
   subscribePreferences,
@@ -45,6 +48,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setPeriodEndDate,
     availableDates,
     publishedAt,
+    snapshotId,
     setCommandOpen,
   } = useAppState();
 
@@ -56,13 +60,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     getWatchlistSnapshot,
     getWatchlistServerSnapshot,
   );
+  const lastViewedTicker = React.useSyncExternalStore(
+    subscribePreferences,
+    getLastViewedTickerSnapshot,
+    getLastViewedTickerServerSnapshot,
+  );
+  const issuersQuery = useAllIssuers(snapshotId);
+
+  const currentRouteTicker = React.useMemo(() => {
+    if (!pathname.startsWith("/companies/")) return null;
+    const raw = pathname.slice("/companies/".length).split("/")[0] ?? "";
+    const clean = decodeURIComponent(raw).trim().toUpperCase();
+    return /^[A-Z0-9]{1,10}$/.test(clean) ? clean : null;
+  }, [pathname]);
+
+  const companyProfileHref = React.useMemo(() => {
+    const preferred =
+      currentRouteTicker ??
+      lastViewedTicker ??
+      issuersQuery.data?.[0]?.ticker ??
+      null;
+    return preferred ? `/companies/${encodeURIComponent(preferred)}` : "/screener";
+  }, [currentRouteTicker, issuersQuery.data, lastViewedTicker]);
 
   const navItems = React.useMemo(
     () => [
       { href: "/", label: "Tổng quan", icon: LayoutDashboard },
       { href: "/screener", label: "Sàng lọc DN", icon: Filter },
       {
-        href: "/companies/HPG",
+        href: companyProfileHref,
         label: "Hồ sơ DN",
         icon: Building2,
         matchPrefix: "/companies/",
@@ -76,7 +102,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       { href: "/stress-test", label: "Kịch bản sốc", icon: Activity },
       { href: "/methodology", label: "Dữ liệu & Phương pháp", icon: BookOpen },
     ],
-    [watchlist.length],
+    [companyProfileHref, watchlist.length],
   );
 
   const isActive = (href: string, matchPrefix?: string) => {

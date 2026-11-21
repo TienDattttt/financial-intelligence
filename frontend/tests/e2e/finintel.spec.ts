@@ -6,6 +6,11 @@ const FORBIDDEN_TECHNICAL_LEAKS: readonly RegExp[] = [
   /\bsnapshot_id\b/,
   /\baudit_quarantine\b/,
   /\bquality_summary\b/,
+  /\bBS_TOTAL_EQUITY\b/,
+  /\bBS_TOTAL_ASSETS\b/,
+  /\bSCREENING_INDICATOR\b/,
+  /\bDERIVED_Q4_INPUT\b/,
+  /\bBS_IDENTITY_MISMATCH\b/,
   /\.parquet\b/i,
   /\.sqlite\b/i,
   /\bTraceback\b/,
@@ -132,5 +137,20 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     for (const pattern of FORBIDDEN_TECHNICAL_LEAKS) {
       expect(pattern.test(errText)).toBe(false);
     }
+
+    // 5. Mobile (375x812) collapsible filter drawer on /screener & /stress-test
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto("/screener", { waitUntil: "networkidle" });
+    const scrFilterBtn = page.getByRole("button", { name: /Bộ lọc doanh nghiệp/i });
+    await expect(scrFilterBtn).toBeVisible();
+    await scrFilterBtn.click();
+    await expect(page.getByRole("button", { name: /Đóng bộ lọc/i })).toBeVisible();
+    await page.getByRole("button", { name: /Đóng bộ lọc/i }).click();
+
+    await page.goto("/stress-test", { waitUntil: "networkidle" });
+    const stressFilterBtn = page.getByRole("button", { name: /Tham số cú sốc vĩ mô/i });
+    await expect(stressFilterBtn).toBeVisible();
+    await stressFilterBtn.click();
+    await expect(page.getByRole("button", { name: /Đóng bảng tham số sốc/i })).toBeVisible();
   });
 });

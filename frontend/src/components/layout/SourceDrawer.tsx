@@ -2,19 +2,27 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { BookOpen, CheckCircle2, FileText, X } from "lucide-react";
-import { useAppState } from "@/components/providers/app-providers";
+import { BookOpen, FileText, X } from "lucide-react";
+import { RiskBadge } from "@/components/financial/RiskBadge";
 import { ErrorState } from "@/components/layout/StateBlocks";
+import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
-import { Badge, Skeleton } from "@/components/ui/primitives";
-import { useRatioLineage } from "@/hooks/use-finintel-queries";
+import { Skeleton } from "@/components/ui/primitives";
+import { useMetaDictionary, useRatioLineage } from "@/hooks/use-finintel-queries";
 import {
+  DERIVATION_METHOD_LABELS,
+  formatFormulaVi,
+  formatSourceProviderLabel,
+  getRatioStatusFlagMeta,
+  getStatementMetricLabel,
+  PUBLISHED_AT_BASIS_LABELS,
   STATEMENT_SCOPE_LABELS,
   TAXONOMY_LABELS,
 } from "@/lib/domain-labels";
 import {
   formatDateVi,
   formatPeriodLabel,
+  formatRatioValue,
   formatVndBillions,
   formatVndPerShare,
 } from "@/lib/format";
@@ -49,16 +57,24 @@ function ComponentList({
             const formattedVal = isPerShare
               ? formatVndPerShare(comp.value)
               : formatVndBillions(comp.value, { accountingNegative: true });
+            const metricLabel = getStatementMetricLabel(comp.metric_id);
+            const derivationLabel =
+              DERIVATION_METHOD_LABELS[comp.derivation_method] ??
+              "Theo phương pháp chuẩn hóa VAS";
+            const providerLabel = formatSourceProviderLabel(comp.source_provider);
+            const basisLabel = comp.published_at_basis
+              ? (PUBLISHED_AT_BASIS_LABELS[comp.published_at_basis] ??
+                "Theo hồ sơ công bố")
+              : null;
+
             return (
               <li
                 key={`${comp.metric_id}-${comp.period_end_date}-${idx}`}
                 className="rounded border border-border bg-surface-muted/40 p-2.5 text-xs"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <span className="font-mono font-medium text-ink">
-                    {comp.metric_id}
-                  </span>
-                  <span className="num font-semibold text-ink">
+                  <span className="font-medium text-ink">{metricLabel}</span>
+                  <span className="num shrink-0 font-semibold text-ink">
                     {formattedVal} {isPerShare ? "đ/cp" : "tỷ"}
                   </span>
                 </div>
@@ -72,6 +88,14 @@ function ComponentList({
                   {comp.published_at ? (
                     <span>Công bố: {formatDateVi(comp.published_at)}</span>
                   ) : null}
+                  {comp.effective_available_at ? (
+                    <span>Hiệu lực PIT: {formatDateVi(comp.effective_available_at)}</span>
+                  ) : null}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-ink-muted">
+                  <span>Phương thức: {derivationLabel}</span>
+                  <span>Nguồn: {providerLabel}</span>
+                  {basisLabel ? <span>Căn cứ ngày: {basisLabel}</span> : null}
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[11px] text-ink-subtle">
                   <span className="truncate font-mono" title={comp.filing_id}>
@@ -98,6 +122,7 @@ function ComponentList({
 export function SourceDrawer() {
   const { sourceTarget, closeSourceDrawer, snapshotId } = useAppState();
   const lineageQuery = useRatioLineage(sourceTarget, snapshotId);
+  const dictQuery = useMetaDictionary(snapshotId);
 
   React.useEffect(() => {
     if (!sourceTarget) return;
@@ -113,6 +138,13 @@ export function SourceDrawer() {
   if (!sourceTarget) return null;
 
   const card = lineageQuery.data;
+  const ratioDictItem = dictQuery.data?.ratios.find(
+    (r) => r.ratio_name === (card?.ratio_name ?? sourceTarget.ratioName),
+  );
+  const statusMeta = getRatioStatusFlagMeta(card?.status_flag);
+  const formattedRatioValue = card
+    ? formatRatioValue(card.ratio_value, ratioDictItem?.format_type ?? "NUMBER")
+    : "N/A";
 
   return (
     <div
@@ -133,7 +165,9 @@ export function SourceDrawer() {
               <span>Nguồn dữ liệu chỉ số</span>
             </div>
             <h2 className="mt-0.5 truncate text-[15px] font-semibold text-ink">
-              {card?.display_name_vn ?? sourceTarget.ratioName}
+              {card?.display_name_vn ??
+                ratioDictItem?.display_name_vn ??
+                "Chi tiết chỉ số tài chính"}
             </h2>
             <p className="mt-0.5 text-xs text-ink-muted">
               {sourceTarget.ticker} ·{" "}
@@ -174,19 +208,22 @@ export function SourceDrawer() {
             <>
               <div className="rounded border border-border bg-canvas p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-ink-muted">Giá trị công bố</span>
-                  <Badge className="bg-risk-low-soft text-risk-low">
-                    <CheckCircle2 className="size-3" aria-hidden="true" />
-                    {card.status_flag ?? "Hợp lệ"}
-                  </Badge>
+                  <div>
+                    <span className="text-xs text-ink-muted">Giá trị công bố</span>
+                    <p className="num mt-0.5 text-xl font-semibold text-ink">
+                      {formattedRatioValue}
+                    </p>
+                  </div>
+                  <RiskBadge tone={statusMeta.tone} label={statusMeta.label} />
                 </div>
-                <p className="num mt-1 font-mono text-xs text-ink">
-                  Công thức: {card.formula}
+                <p className="mt-2 text-xs text-ink">
+                  <span className="font-medium text-ink-muted">Công thức: </span>
+                  {formatFormulaVi(card.formula)}
                 </p>
                 <p className="mt-1 text-[11px] text-ink-muted">
                   Phương thức mẫu số:{" "}
                   {DENOMINATOR_MODE_LABELS[card.denominator_mode] ??
-                    card.denominator_mode}
+                    "Chuẩn hóa theo kỳ"}
                 </p>
               </div>
 
@@ -200,7 +237,7 @@ export function SourceDrawer() {
               />
 
               <section className="space-y-1 rounded border border-border p-3 text-xs">
-                <p className="font-semibold text-ink-muted">Hồ sơ neo & kiểm chứng</p>
+                <p className="font-semibold text-ink-muted">Hồ sơ neo &amp; kiểm chứng</p>
                 <p className="font-mono text-[11px] text-ink">
                   Hồ sơ neo: {card.anchor_filing_id}
                 </p>

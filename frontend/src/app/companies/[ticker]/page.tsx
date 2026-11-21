@@ -42,8 +42,10 @@ import {
   AUDIT_OPINION_LABELS,
   AUDIT_STATUS_LABELS,
   BENEISH_FLAG_META,
+  formatFormulaVi,
   formatPeerGroupLabel,
   getDistressRiskBadge,
+  MODEL_ROLE_LABELS,
   PERIOD_TYPE_LABELS,
   RATIO_CATEGORY_LABELS,
   REVISION_REASON_LABELS,
@@ -68,6 +70,7 @@ import {
   getDensitySnapshot,
   getWatchlistServerSnapshot,
   getWatchlistSnapshot,
+  setLastViewedTicker,
   subscribePreferences,
   toggleWatchlistTicker,
 } from "@/lib/watchlist-store";
@@ -156,6 +159,13 @@ function CompanyProfileContent() {
   const dictQuery = useMetaDictionary(snapshotId);
   const issuersQuery = useAllIssuers(snapshotId);
   const filingsQuery = useCompanyFilings(ticker, { statementScope }, snapshotId);
+
+  const loadedTicker = profileQuery.data?.ticker;
+  React.useEffect(() => {
+    if (loadedTicker) {
+      setLastViewedTicker(loadedTicker);
+    }
+  }, [loadedTicker]);
 
   const allMetricNames = React.useMemo(
     () => (dictQuery.data?.ratios ?? []).map((r) => r.ratio_name),
@@ -448,7 +458,7 @@ function CompanyProfileContent() {
   return (
     <div className="space-y-4">
       {/* Sticky Company Header */}
-      <Card>
+      <Card className="md:sticky md:top-[52px] md:z-20 bg-surface shadow-xs">
         <CardContent className="flex flex-col justify-between gap-3 p-4 lg:flex-row lg:items-center">
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -682,7 +692,7 @@ function CompanyProfileContent() {
                           >
                             <div className="flex items-center justify-between gap-2">
                               <span className="font-semibold text-ink">
-                                {rf.flag_title_vn ?? rf.flag_code}
+                                {rf.flag_title_vn ?? "Dấu hiệu bất thường kế toán"}
                               </span>
                               <RiskBadge tone={sev.tone} label={sev.shortLabel} />
                             </div>
@@ -1005,15 +1015,22 @@ function CompanyProfileContent() {
               ))}
             </div>
 
-            <Select
-              aria-label="Số kỳ báo cáo hiển thị"
-              value={String(periodsLimit)}
-              onChange={(e) => setPeriodsLimit(Number(e.target.value) || 8)}
-              className="h-8 text-xs"
-            >
-              <option value="8">8 kỳ gần nhất</option>
-              <option value="12">12 kỳ gần nhất</option>
-            </Select>
+            <div className="flex flex-wrap items-center gap-2">
+              {periodType === "QUARTER" ? (
+                <span className="text-[11px] text-ink-muted">
+                  Hiển thị số liệu quý rời rạc (theo từng kỳ công bố)
+                </span>
+              ) : null}
+              <Select
+                aria-label="Số kỳ báo cáo hiển thị"
+                value={String(periodsLimit)}
+                onChange={(e) => setPeriodsLimit(Number(e.target.value) || 8)}
+                className="h-8 text-xs"
+              >
+                <option value="8">8 kỳ gần nhất</option>
+                <option value="12">12 kỳ gần nhất</option>
+              </Select>
+            </div>
           </div>
 
           {statementsQuery.isLoading ? (
@@ -1461,31 +1478,41 @@ function CompanyProfileContent() {
                         {[
                           ...latestMl.shap_top_drivers.top_risk_increasing,
                           ...latestMl.shap_top_drivers.top_risk_decreasing,
-                        ].map((drv) => (
-                          <tr
-                            key={drv.feature}
-                            className="border-b border-border/60 hover:bg-surface-muted/40"
-                          >
-                            <td className="px-3 py-2 font-medium text-ink">
-                              {drv.display_name_vn}
-                            </td>
+                        ].map((drv) => {
+                          const ratioFallback = ratioDictMap.get(
+                            drv.feature as RatioName,
+                          )?.display_name_vn;
+                          const driverLabel =
+                            drv.display_name_vn &&
+                            drv.display_name_vn !== drv.feature
+                              ? drv.display_name_vn
+                              : (ratioFallback ?? drv.display_name_vn);
+                          return (
+                            <tr
+                              key={drv.feature}
+                              className="border-b border-border/60 hover:bg-surface-muted/40"
+                            >
+                              <td className="px-3 py-2 font-medium text-ink">
+                                {driverLabel}
+                              </td>
                             <td className="num px-3 py-2 text-right">
                               {formatNumber(drv.value, 3)}
                             </td>
                             <td className="num px-3 py-2 text-right text-ink-muted">
                               {formatNumber(drv.peer_median, 3)}
                             </td>
-                            <td
-                              className={cn(
-                                "num px-3 py-2 text-right font-semibold",
-                                drv.shap_delta >= 0 ? "text-risk-high" : "text-risk-low",
-                              )}
-                            >
-                              {drv.shap_delta >= 0 ? "+" : MINUS_SIGN}
-                              {formatNumber(Math.abs(drv.shap_delta), 3)}
-                            </td>
-                          </tr>
-                        ))}
+                              <td
+                                className={cn(
+                                  "num px-3 py-2 text-right font-semibold",
+                                  drv.shap_delta >= 0 ? "text-risk-high" : "text-risk-low",
+                                )}
+                              >
+                                {drv.shap_delta >= 0 ? "+" : MINUS_SIGN}
+                                {formatNumber(Math.abs(drv.shap_delta), 3)}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -1525,7 +1552,9 @@ function CompanyProfileContent() {
                   <div className="flex justify-between gap-2 pb-1">
                     <dt className="text-ink-muted">Vai trò điểm số</dt>
                     <dd className="text-right text-ink">
-                      {latestMl?.model_role ?? "Đánh giá định lượng"}
+                      {(latestMl?.model_role &&
+                        MODEL_ROLE_LABELS[latestMl.model_role]) ??
+                        "Đánh giá định lượng"}
                     </dd>
                   </div>
                 </dl>
@@ -1593,8 +1622,8 @@ function CompanyProfileContent() {
                           <td className="px-3 py-2 text-ink-muted">
                             {RATIO_CATEGORY_LABELS[r.category] ?? r.category}
                           </td>
-                          <td className="px-3 py-2 font-mono text-[11px] text-ink-muted">
-                            {r.formula_display}
+                          <td className="px-3 py-2 text-xs text-ink-muted">
+                            {formatFormulaVi(r.formula_display)}
                           </td>
                           <td className="num px-3 py-2 text-right font-medium text-ink">
                             {formatRatioValue(val, r.format_type)}

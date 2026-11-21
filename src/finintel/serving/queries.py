@@ -4067,7 +4067,7 @@ class DashboardQueryService:
                     .sum()
                     .cast(pl.Int64)
                     .alias("beneish_flagged_count"),
-                    (pl.col("red_flag_count") >= 3)
+                    (pl.col("red_flag_count") >= 2)
                     .sum()
                     .cast(pl.Int64)
                     .alias("high_red_flag_count"),

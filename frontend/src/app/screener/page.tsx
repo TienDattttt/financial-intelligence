@@ -19,7 +19,9 @@ import {
   LayoutList,
   RotateCcw,
   ScatterChart as ScatterIcon,
+  SlidersHorizontal,
   Table2,
+  X,
 } from "lucide-react";
 import { ScreenerScatterChart } from "@/components/charts/ScreenerScatterChart";
 import { RiskBadge } from "@/components/financial/RiskBadge";
@@ -130,6 +132,16 @@ function ScreenerContent() {
 
   const [viewMode, setViewMode] = React.useState<"TABLE" | "SCATTER">("TABLE");
   const [selectedTickers, setSelectedTickers] = React.useState<string[]>([]);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!mobileFiltersOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileFiltersOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mobileFiltersOpen]);
 
   // Parse URL params safely
   const qParam = searchParams.get("q") ?? "";
@@ -570,6 +582,32 @@ function ScreenerContent() {
     return Number.isFinite(n) ? String(Math.round(n * 1000) / 10) : "";
   };
 
+  const activeFilterCount = React.useMemo(
+    () =>
+      [
+        qParam,
+        sectorParam,
+        altmanParam,
+        beneishParam,
+        minFParam,
+        minProbParam,
+        maxProbParam,
+        minRfParam,
+        maxRfParam,
+      ].filter(Boolean).length,
+    [
+      altmanParam,
+      beneishParam,
+      maxProbParam,
+      maxRfParam,
+      minFParam,
+      minProbParam,
+      minRfParam,
+      qParam,
+      sectorParam,
+    ],
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -655,10 +693,62 @@ function ScreenerContent() {
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center justify-between gap-2 lg:hidden">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-expanded={mobileFiltersOpen}
+          aria-controls="screener-filter-drawer"
+          onClick={() => setMobileFiltersOpen(true)}
+        >
+          <SlidersHorizontal className="size-3.5" />
+          <span>Bộ lọc doanh nghiệp</span>
+          {activeFilterCount > 0 ? (
+            <span className="num ml-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold text-accent-ink">
+              {activeFilterCount}
+            </span>
+          ) : null}
+        </Button>
+        {screenerQuery.isFetching && screenerQuery.isPlaceholderData ? (
+          <span className="text-xs text-accent-ink">Đang cập nhật...</span>
+        ) : null}
+      </div>
+
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-        {/* Left Filter Rail */}
-        <Card className="w-full shrink-0 lg:w-64">
-          <CardContent className="space-y-3 p-3.5 text-xs">
+        {/* Left Filter Rail (Desktop) / Collapsible Drawer (Mobile < lg) */}
+        <div
+          id="screener-filter-drawer"
+          role={mobileFiltersOpen ? "dialog" : undefined}
+          aria-modal={mobileFiltersOpen ? true : undefined}
+          aria-label={mobileFiltersOpen ? "Bộ lọc doanh nghiệp" : undefined}
+          className={cn(
+            "lg:block lg:w-64 lg:shrink-0",
+            mobileFiltersOpen
+              ? "fixed inset-0 z-40 flex bg-ink/30 lg:static lg:inset-auto lg:z-auto lg:bg-transparent"
+              : "hidden",
+          )}
+          onClick={() => setMobileFiltersOpen(false)}
+        >
+          <Card
+            className="flex h-full w-80 max-w-[85vw] flex-col overflow-y-auto rounded-none border-r border-border lg:h-auto lg:w-full lg:max-w-none lg:overflow-visible lg:rounded lg:border"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border px-3.5 py-2.5 lg:hidden">
+              <span className="text-sm font-semibold text-ink">
+                Bộ lọc doanh nghiệp
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Đóng bộ lọc"
+                onClick={() => setMobileFiltersOpen(false)}
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+            <CardContent className="space-y-3 p-3.5 text-xs">
             <div className="space-y-1">
               <label htmlFor="scr-q" className="font-semibold text-ink">
                 Tìm mã / tên doanh nghiệp
@@ -836,8 +926,19 @@ function ScreenerContent() {
                 />
               </div>
             </div>
+            <div className="pt-1 lg:hidden">
+              <Button
+                type="button"
+                size="sm"
+                className="w-full"
+                onClick={() => setMobileFiltersOpen(false)}
+              >
+                Xem kết quả ({total})
+              </Button>
+            </div>
           </CardContent>
         </Card>
+        </div>
 
         {/* Main Screener Workspace */}
         <div className="min-w-0 flex-1 space-y-3">
@@ -870,6 +971,11 @@ function ScreenerContent() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              {screenerQuery.isFetching && screenerQuery.isPlaceholderData ? (
+                <span className="hidden rounded border border-accent-ink/30 bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent-ink lg:inline-block">
+                  Đang cập nhật...
+                </span>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"

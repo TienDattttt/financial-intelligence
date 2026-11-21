@@ -1,23 +1,62 @@
 import { CheckCircle2, ShieldAlert } from "lucide-react";
 import { RiskBadge } from "@/components/financial/RiskBadge";
 import { Card, CardContent } from "@/components/ui/card";
-import { SEVERITY_META } from "@/lib/domain-labels";
-import { formatDateVi, formatNumber } from "@/lib/format";
+import {
+  AUDIT_OPINION_LABELS,
+  RED_FLAG_EVIDENCE_META,
+  SEVERITY_META,
+} from "@/lib/domain-labels";
+import {
+  formatDateVi,
+  formatDays,
+  formatMultiple,
+  formatNumber,
+  formatPercent,
+  formatVndBillions,
+} from "@/lib/format";
 import type { RedFlagDictionaryItem, RedFlagItem } from "@/types/api";
 
-function parseEvidence(rawJson: string | null | undefined): [string, string][] {
+export function formatRedFlagEvidence(
+  rawJson: string | null | undefined,
+): [string, string][] {
   if (!rawJson) return [];
   try {
     const parsed = JSON.parse(rawJson) as Record<string, unknown>;
-    return Object.entries(parsed)
-      .filter(([k]) => k !== "source_filing_ids")
-      .slice(0, 6)
-      .map(([k, v]) => {
-        if (typeof v === "number" && Number.isFinite(v)) {
-          return [k, formatNumber(v, Math.abs(v) < 2 ? 3 : 1)];
+    const entries: [string, string][] = [];
+    for (const [k, v] of Object.entries(parsed)) {
+      if (k === "source_filing_ids") continue;
+      const meta = RED_FLAG_EVIDENCE_META[k];
+      if (!meta) continue;
+
+      let formatted = "N/A";
+      if (meta.format === "AUDIT_OPINION") {
+        const key = typeof v === "string" ? v : "";
+        formatted = AUDIT_OPINION_LABELS[key] ?? "Ngoại lệ kiểm toán";
+      } else if (meta.format === "BOOLEAN") {
+        formatted = v === true ? "Có" : v === false ? "Không" : "N/A";
+      } else if (typeof v === "number" && Number.isFinite(v)) {
+        switch (meta.format) {
+          case "VND_BILLIONS":
+            formatted = `${formatVndBillions(v, { accountingNegative: true })} tỷ`;
+            break;
+          case "PERCENT":
+            formatted = formatPercent(v, { decimals: 1 });
+            break;
+          case "MULTIPLE":
+            formatted = formatMultiple(v, 2);
+            break;
+          case "DAYS":
+            formatted = formatDays(v, 0);
+            break;
+          default:
+            formatted = formatNumber(v, Math.abs(v) < 2 ? 3 : 1);
+            break;
         }
-        return [k, v === null || v === undefined ? "N/A" : String(v)];
-      });
+      }
+      entries.push([meta.label, formatted]);
+      if (entries.length >= 6) break;
+    }
+    return entries;
   } catch {
     return [];
   }
@@ -63,7 +102,11 @@ export function RedFlagChecklist({
           <div className="space-y-2.5">
             {activeForLatest.map((flag) => {
               const sev = SEVERITY_META[flag.severity] ?? SEVERITY_META.MEDIUM;
-              const evidence = parseEvidence(flag.evidence_json);
+              const evidence = formatRedFlagEvidence(flag.evidence_json);
+              const dictMatch = dictionary.find(
+                (rule) => rule.flag_code === flag.flag_code,
+              );
+              const shortCode = flag.flag_code.split("_").slice(0, 2).join("_");
               return (
                 <Card
                   key={`${flag.flag_code}-${flag.period_end_date}`}
@@ -73,10 +116,12 @@ export function RedFlagChecklist({
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <span className="rounded bg-surface-muted px-1.5 py-0.5 font-mono text-[11px] font-medium text-ink">
-                          {flag.flag_code.split("_").slice(0, 2).join("_")}
+                          {shortCode}
                         </span>
                         <span className="text-sm font-semibold text-ink">
-                          {flag.flag_title_vn ?? flag.flag_code}
+                          {flag.flag_title_vn ??
+                            dictMatch?.title_vn ??
+                            "Dấu hiệu bất thường kế toán"}
                         </span>
                       </div>
                       <RiskBadge tone={sev.tone} label={sev.label} />
@@ -88,21 +133,19 @@ export function RedFlagChecklist({
                     ) : null}
                     {evidence.length > 0 ? (
                       <div className="flex flex-wrap gap-2 pt-1">
-                        {evidence.map(([k, v]) => (
+                        {evidence.map(([label, val]) => (
                           <span
-                            key={k}
-                            className="rounded border border-border bg-canvas px-2 py-0.5 font-mono text-[11px] text-ink"
+                            key={label}
+                            className="rounded border border-border bg-canvas px-2 py-0.5 text-[11px] text-ink"
                           >
-                            {k}: <strong className="num">{v}</strong>
+                            {label}: <strong className="num">{val}</strong>
                           </span>
                         ))}
                       </div>
                     ) : null}
-                    {flag.filing_id ? (
-                      <p className="font-mono text-[11px] text-ink-subtle">
-                        Hồ sơ: {flag.filing_id} · Kỳ {formatDateVi(flag.period_end_date)}
-                      </p>
-                    ) : null}
+                    <p className="text-[11px] text-ink-subtle">
+                      Kỳ phát hiện: {formatDateVi(flag.period_end_date)}
+                    </p>
                   </CardContent>
                 </Card>
               );
