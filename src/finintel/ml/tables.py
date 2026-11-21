@@ -71,7 +71,7 @@ def build_ml_artifacts(
     issuers: pl.DataFrame,
     *,
     as_of: date,
-    validation_start: date,
+    validation_start: date | None = None,
     test_start: date,
     approved_target: bool = False,
     require_exact_filing: bool = True,
@@ -95,7 +95,9 @@ def build_ml_artifacts(
     Beneish M) are computed for both QUARTER and ANNUAL corporate records, whereas
     Unsupervised and Supervised ML models score strictly on QUARTER records across
     ``scored_taxonomies``. When ``target_mode`` is omitted, ``REGULATORY_DISTRESS``
-    activates automatically whenever ``regulatory_events`` is supplied.
+    activates automatically whenever ``regulatory_events`` is supplied. When
+    ``validation_start`` is ``None`` (B-02 2-way mode), inner Purged Temporal OOF
+    inside ``train`` handles early stopping and fair 3-model Platt calibration.
     """
     if not approved_target:
         raise ContractViolationError(
@@ -143,20 +145,21 @@ def build_ml_artifacts(
         regulatory_events=regulatory_events,
         precomputed_as_of_scored=classical_as_of,
     )
+    validation_fold = splits.get("validation")
     peer_standardization_mode = resolve_peer_standardization_mode(
-        splits["train"], splits["validation"]
+        splits["train"], validation_fold
     )
     archetypes = FinancialArchetypes().fit(splits["train"])
     training = train_distress_model(
         splits["train"],
-        splits["validation"],
+        validation_fold,
         features=selected_features,
         min_unique_positive_issuers=min_unique_positive_issuers,
     )
     evaluation_report = build_evaluation_report(
         training,
         train=splits["train"],
-        validation=splits["validation"],
+        validation=validation_fold,
         test=splits["test"],
     )
     evaluation_report.update(
@@ -166,6 +169,9 @@ def build_ml_artifacts(
             "feature_set": feature_set,
             "peer_standardization_mode": peer_standardization_mode,
             "target_mode": resolved_target_mode,
+            "split_mode": "TWO_WAY_PURGED_OOF"
+            if validation_fold is None
+            else "THREE_WAY_HOLD_OUT",
             "platt_slope": training.platt_slope,
             "platt_intercept": training.platt_intercept,
             "f2_thresholds": dict(training.f2_thresholds),
@@ -213,8 +219,16 @@ def build_ml_artifacts(
     run_manifest: dict[str, Any] = {
         "generated_at": datetime.now(UTC).isoformat(),
         "as_of": as_of.isoformat(),
-        "validation_start": validation_start.isoformat(),
+        "validation_start": validation_start.isoformat()
+        if validation_start is not None
+        else None,
         "test_start": test_start.isoformat(),
+        "split_mode": "TWO_WAY_PURGED_OOF"
+        if validation_fold is None
+        else "THREE_WAY_HOLD_OUT",
+        "oof_strategy": training.oof_strategy,
+        "best_n_estimators": training.best_n_estimators,
+        "train_prevalence": training.train_prevalence,
         "approved_target": approved_target,
         "require_exact_filing": require_exact_filing,
         "statement_scope": statement_scope,

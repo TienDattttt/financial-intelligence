@@ -986,8 +986,8 @@ def test_margin_platt_calibrator_oof_raw_margin_single_group_fallback_and_min_po
     assert np.all(np.diff(probs_deg) > 0.0)
     assert float(np.mean(probs_deg)) == pytest.approx(float(np.mean(y_deg)), abs=1e-4)
 
-    # 1b. Shifted raw_margin where LogisticRegression slope exceeds 10.0:
-    # _fit_platt_params clamps slope=10.0 and solves centered 1D MLE intercept (~ +40.0, not saturated at +30.0)
+    # 1b. Shifted raw_margin where LogisticRegression slope exceeds PLATT_MAX_SLOPE (5.0):
+    # _fit_platt_params clamps slope=5.0 (H-07 [0.15, 5.0]) and solves centered 1D MLE intercept.
     rng_shift = np.random.default_rng(0)
     shifted_margins = np.concatenate(
         [
@@ -999,8 +999,8 @@ def test_margin_platt_calibrator_oof_raw_margin_single_group_fallback_and_min_po
     cal_shift = MarginPlattCalibrator(classifier=None).fit_margins(
         shifted_margins, y_shift
     )
-    assert cal_shift.slope == pytest.approx(10.0)
-    assert cal_shift.intercept > 35.0
+    assert cal_shift.slope == pytest.approx(5.0)
+    assert cal_shift.intercept > 17.0
     probs_shift = cal_shift.predict_margin_proba(shifted_margins)[:, 1]
     assert float(np.mean(probs_shift)) == pytest.approx(0.5, abs=5e-3)
 
@@ -1043,7 +1043,7 @@ def test_margin_platt_calibrator_oof_raw_margin_single_group_fallback_and_min_po
     train_3pos = make_fold(40, 10, pos_issuers=["POS_A", "POS_B", "POS_C", "POS_A"])
     valid_1group = make_fold(24, 20, pos_issuers=["VAL_ONLY_ONE", "VAL_ONLY_ONE"])
     trained = train_distress_model(train_3pos, valid_1group)
-    assert 0.0 < trained.platt_slope <= 10.0
+    assert 0.15 <= trained.platt_slope <= 5.0
     assert len(trained.calibrated.oof_probabilities) == 24
 
     # 3. Fail-fast when unique positive issuers in train < min_unique_positive_issuers (3)
@@ -1765,3 +1765,212 @@ def test_ml04_gate_ml2_symmetric_censoring_continuous_state_first_onset_and_zero
     )
     with pytest.raises(ContractViolationError, match="resolution_date"):
         build_distress_targets(panel, regulatory_events=bad_interval)
+
+
+def test_ml06_two_way_purged_oof_fair_three_model_calibration_bss_unseen_bootstrap_and_psi() -> (
+    None
+):
+    """Prove ML-06 (B-02, H-07, M-05, GATE-ML-3..5) on 2-way Train_OOF -> Test."""
+    from datetime import timedelta
+
+    from finintel.ml.supervised.temporal_split import purged_two_way_split
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        LOGIT_CLIP_RANGE,
+        PLATT_MAX_SLOPE,
+        PLATT_MIN_SLOPE,
+        MarginPlattCalibrator,
+        _compute_xgb_regularization,
+        build_evaluation_report,
+        cluster_bootstrap_metrics,
+        compute_taxonomy_drift_psi,
+        evaluate_distress_models,
+        filter_true_unseen_issuers,
+        train_distress_model,
+    )
+
+    # 1. Anti-overfitting XGBoost invariant: single positive leaf is mathematically forbidden
+    for pos, neg in ((4, 36), (14, 1455), (50, 2500), (160, 7000)):
+        spw, mcw = _compute_xgb_regularization(pos, neg)
+        assert 0.25 * spw < mcw
+
+    # 2. Unpenalized MarginPlattCalibrator (H-07): preserves risk spread on ~2% prevalence
+    #    and clamps weak positive slope to PLATT_MIN_SLOPE = 0.15
+    rng = np.random.default_rng(77)
+    n_imbal = 2000
+    margins_imbal = rng.normal(0.0, 1.0, size=n_imbal)
+    true_p = 1.0 / (1.0 + np.exp(-(1.8 * margins_imbal - 4.5)))
+    y_imbal = (rng.uniform(0.0, 1.0, size=n_imbal) < true_p).astype(np.int8)
+    cal_unpen = MarginPlattCalibrator(None).fit_margins(margins_imbal, y_imbal)
+    assert PLATT_MIN_SLOPE <= cal_unpen.slope <= PLATT_MAX_SLOPE
+    p_pred = cal_unpen.predict_margin_proba(margins_imbal)[:, 1]
+    assert float(np.max(p_pred) - np.min(p_pred)) > 0.15
+    assert float(np.mean(p_pred)) == pytest.approx(float(np.mean(y_imbal)), abs=0.01)
+
+    weak_margins = np.linspace(-100.0, 100.0, 400)
+    y_weak = np.array([0] * 190 + [1] * 10 + [0] * 185 + [1] * 15, dtype=np.int8)
+    cal_weak = MarginPlattCalibrator(None).fit_margins(weak_margins, y_weak)
+    assert cal_weak.slope == pytest.approx(PLATT_MIN_SLOPE)
+
+    # 3. 2-way Purged Split + inner PURGED_TEMPORAL_OOF + Fair 3-model Platt calibration + BSS
+    quarter_ends = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+    rows = []
+    rng_panel = np.random.default_rng(123)
+    for year in range(2018, 2024):
+        for q in range(1, 5):
+            m, d = quarter_ends[q]
+            p_end = date(year, m, d)
+            avail = p_end + timedelta(days=30)
+            label_avail = avail + timedelta(days=365)
+            for iss_idx in range(18):
+                issuer = f"CO_{iss_idx:02d}"
+                risk_signal = -1.6 + 0.22 * iss_idx + float(rng_panel.normal(0.0, 0.35))
+                roa_v = -0.10 * risk_signal + 0.04
+                ic_v = -2.0 * risk_signal + 3.5
+                dte_v = 1.2 + 0.9 * max(0.0, risk_signal)
+                alt_v = 2.2 - 1.1 * risk_signal + float(rng_panel.normal(0.0, 0.2))
+                y_v = int(1 if risk_signal > 1.7 else 0)
+                row: dict[str, object] = {
+                    "issuer_id": issuer,
+                    "accounting_regime": "CORPORATE",
+                    "statement_scope": "CONSOLIDATED",
+                    "period_type": "QUARTER",
+                    "fiscal_year": year,
+                    "fiscal_quarter": q,
+                    "period_end_date": p_end,
+                    "filing_id": f"{issuer}_{year}_Q{q}",
+                    "taxonomy_version": "VAS_TT200_2014",
+                    "_period_available_at": avail,
+                    "label_available_at": label_avail,
+                    "_exact_filing_basis": True,
+                    "_label_exact_filing_basis": True,
+                    "already_distressed_at_t": False,
+                    "distress_target": y_v,
+                }
+                for feat in BASE_FEATURES:
+                    if feat == "roa":
+                        row[feat] = roa_v
+                    elif feat == "interest_coverage":
+                        row[feat] = ic_v
+                    elif feat == "debt_to_equity":
+                        row[feat] = dte_v
+                    elif feat == "altman_z_double_prime":
+                        row[feat] = alt_v
+                    else:
+                        row[feat] = float(rng_panel.normal(0.5, 0.3))
+                rows.append(row)
+    panel = pl.DataFrame(rows)
+
+    two_way = purged_two_way_split(
+        panel,
+        test_start=date(2023, 1, 1),
+        test_end=date(2024, 1, 1),
+        require_exact_filing=True,
+    )
+    assert two_way["train"]["label_available_at"].max() <= date(2023, 1, 1)  # type: ignore[operator]
+    assert two_way["test"]["period_end_date"].min() >= date(2023, 1, 1)  # type: ignore[operator]
+
+    trained = train_distress_model(
+        two_way["train"],
+        validation=None,
+        features=BASE_FEATURES,
+        min_unique_positive_issuers=2,
+    )
+    assert trained.oof_strategy == "PURGED_TEMPORAL_OOF"
+    assert trained.logit_preprocessor is not None
+    assert trained.logit_preprocessor.clip_range == LOGIT_CLIP_RANGE
+    assert trained.calibrated_altman is not None
+    assert trained.calibrated_logit is not None
+    assert PLATT_MIN_SLOPE <= trained.platt_slope <= PLATT_MAX_SLOPE
+    assert PLATT_MIN_SLOPE <= trained.altman_platt_slope <= PLATT_MAX_SLOPE
+    assert PLATT_MIN_SLOPE <= trained.logit_platt_slope <= PLATT_MAX_SLOPE
+    assert 15 <= trained.best_n_estimators <= 300
+    assert 0.25 * trained.scale_pos_weight < trained.min_child_weight
+
+    # Verify BSS strictly uses train_prevalence, NOT y_test.mean()
+    test_eval = evaluate_distress_models(trained, two_way["test"])
+    assert test_eval["reference_train_prevalence"] == pytest.approx(
+        trained.train_prevalence
+    )
+    assert test_eval["unique_positive_issuers"] > 0
+    for model_name in ("Baseline_1_AltmanZ", "Baseline_2_Logit", "XGBoost"):
+        m_dict = test_eval["models"][model_name]
+        assert m_dict["brier_skill_score"] is not None
+        assert m_dict["recall_at_top_5_percent"] is not None
+        assert m_dict["recall_at_top_10_percent"] is not None
+
+    # Exact numerical BSS verification against train_prevalence when test prevalence differs
+    from finintel.ml.supervised.train import _metrics
+
+    y_custom = np.array([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int8)  # test mean = 0.50
+    s_custom = np.array([0.05, 0.10, 0.15, 0.20, 0.60, 0.70, 0.80, 0.90])
+    train_prev_ref = 0.05
+    m_custom = _metrics(y_custom, s_custom, reference_prevalence=train_prev_ref)
+    expected_brier = float(np.mean((y_custom - s_custom) ** 2))
+    expected_clim = float(np.mean((y_custom - train_prev_ref) ** 2))
+    assert m_custom["brier_skill_score"] == pytest.approx(
+        1.0 - expected_brier / expected_clim
+    )
+
+    report = build_evaluation_report(
+        trained, train=two_way["train"], validation=None, test=two_way["test"]
+    )
+    assert report["validation"]["evaluation_role"] == "INNER_PURGED_OOF_CALIBRATION"
+    assert "in_sample_models" in report["train_summary"]
+
+    # 4. True Unseen Issuers removes BOTH y=0 and y=1 of prior-event issuers
+    prior_reg = pl.DataFrame(
+        {
+            "issuer_id": ["CO_17", "CO_00"],
+            "event_date": [date(2022, 6, 1), date(2023, 6, 1)],
+            "event_type": ["CONTROL", "CONTROL"],
+        }
+    )
+    unseen = filter_true_unseen_issuers(
+        two_way["test"], test_start=date(2023, 1, 1), regulatory_events=prior_reg
+    )
+    assert "CO_17" not in set(unseen["issuer_id"].to_list())
+    assert "CO_00" in set(unseen["issuer_id"].to_list())
+
+    # 5. Cluster Bootstrap 95% CI (clustered by issuer_id)
+    boot = cluster_bootstrap_metrics(
+        two_way["test"]["distress_target"].to_numpy().astype(np.int8),
+        np.where(two_way["test"]["distress_target"].to_numpy() == 1, 0.8, 0.1),
+        two_way["test"]["issuer_id"].to_numpy(),
+        reference_prevalence=trained.train_prevalence,
+        n_bootstrap=100,
+        seed=42,
+    )
+    assert boot["n_bootstrap_valid"] > 0
+    assert boot["ci95"]["roc_auc"] is not None
+    lo, hi = boot["ci95"]["roc_auc"]
+    assert 0.0 <= lo <= hi <= 1.0
+
+    # 6. Taxonomy Drift PSI (M-05): ~0 on identical slice, > 0.25 on shifted slice
+    same_psi = compute_taxonomy_drift_psi(
+        two_way["test"], two_way["test"], features=BASE_FEATURES, result=trained
+    )
+    assert same_psi["max_feature_psi"] == pytest.approx(0.0, abs=1e-6)
+    shifted_test = two_way["test"].with_columns((pl.col("roa") + 0.50).alias("roa"))
+    shift_psi = compute_taxonomy_drift_psi(
+        two_way["test"], shifted_test, features=BASE_FEATURES, result=trained
+    )
+    assert "roa" in shift_psi["features_psi_gt_0_25"]
+    assert shift_psi["score_drift"]["score_psi"] is not None
+
+    # 7. Regression guard: when earliest temporal inner block has an all-null feature
+    #    (e.g. 2016 YoY features), train_distress_model falls back cleanly to issuer-grouped OOF.
+    early_null_train = two_way["train"].with_columns(
+        pl.when(pl.col("fiscal_year") <= 2020)
+        .then(pl.lit(None, dtype=pl.Float64))
+        .otherwise(pl.col("revenue_growth_yoy"))
+        .alias("revenue_growth_yoy")
+    )
+    trained_fallback = train_distress_model(
+        early_null_train,
+        validation=None,
+        features=BASE_FEATURES,
+        min_unique_positive_issuers=2,
+    )
+    assert trained_fallback.oof_strategy == "STRATIFIED_GROUP_OOF"
+    assert trained_fallback.oof_sample_count > 0
