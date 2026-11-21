@@ -1,4 +1,4 @@
-"""Read-only analytical FastAPI service (10 HTTP routes under ``/api/v1``).
+"""Read-only analytical FastAPI service (``/api/v1`` and ``/api/v2`` routes).
 
 Verified Sources:
 - FastAPI Official Documentation (Lifespan, Sync Threadpool Concurrency, CORS):

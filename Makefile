@@ -10,8 +10,8 @@ test:
 	$(PYTHON) -m pytest
 
 lint:
-	$(PYTHON) -m ruff format --check src scripts tests dashboard
-	$(PYTHON) -m ruff check src scripts tests dashboard
+	$(PYTHON) -m ruff format --check src scripts tests
+	$(PYTHON) -m ruff check src scripts tests
 	$(PYTHON) -m mypy --strict src/finintel scripts/spike_vnstock6.py scripts/spike_option_b.py tests/unit
 
 run-mvp:

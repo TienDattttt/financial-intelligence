@@ -3,8 +3,7 @@
 Verified Sources:
 - structlog Official Documentation (``structlog==26.1.0``, JSONRenderer & contextvars):
   https://www.structlog.org/en/stable/
-- Prometheus Python Client & RED Metrics (``prometheus_client``, bundled with
-  ``prometheus-fastapi-instrumentator==8.1.0``):
+- Prometheus Python Client & RED Metrics (``prometheus-client==0.26.0``):
   https://prometheus.github.io/client_python/
 - OpenTelemetry Python SDK & FastAPI Instrumentation (``opentelemetry-sdk==1.45.2``,
   ``opentelemetry-instrumentation-fastapi==0.66b2``):

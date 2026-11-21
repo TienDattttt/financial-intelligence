@@ -134,7 +134,6 @@ _IN_MEMORY_CACHEABLE_TABLES: frozenset[str] = frozenset(
     {
         "issuers.parquet",
         "financial_ratios.parquet",
-        "industry_benchmarks.parquet",
         "accounting_red_flags.parquet",
         "ml_scores_and_explanations.parquet",
         "quality_summary.parquet",

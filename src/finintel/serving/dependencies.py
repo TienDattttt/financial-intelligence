@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import urlparse
 
-import anyio
 import duckdb
 from fastapi import FastAPI, Request
 
@@ -175,7 +174,6 @@ def build_lifespan(
             app.state.stress_semaphore = threading.Semaphore(stress_max_concurrency)
             app.state.stress_max_concurrency = int(stress_max_concurrency)
             app.state.stress_semaphore_timeout = float(stress_semaphore_timeout)
-            app.state.stress_limiter = anyio.CapacityLimiter(stress_max_concurrency)
             yield
         finally:
             response_cache.close()
@@ -226,8 +224,3 @@ def get_stress_semaphore(request: Request) -> tuple[threading.Semaphore, float]:
 def get_response_cache(request: Request) -> ValkeyResponseCache:
     """Return the app-scoped Valkey/Redis L2 response cache (fail-open no-op if disabled)."""
     return cast(ValkeyResponseCache, request.app.state.response_cache)
-
-
-def get_stress_limiter(request: Request) -> anyio.CapacityLimiter:
-    """Return the dedicated AnyIO CapacityLimiter isolating stress-test workers."""
-    return cast(anyio.CapacityLimiter, request.app.state.stress_limiter)
