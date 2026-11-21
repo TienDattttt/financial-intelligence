@@ -23,6 +23,7 @@ from finintel.analytics.ratios import calculate_ratios
 from finintel.exceptions import ContractViolationError
 from finintel.ml.classical_scores import add_classical_scores
 from finintel.ml.supervised.explain import explain_distress
+from finintel.ml.supervised.target import resolve_target_mode
 from finintel.ml.supervised.temporal_split import (
     attach_pit_sector_z_features,
     build_pit_ml_splits,
@@ -78,7 +79,7 @@ def build_ml_artifacts(
     taxonomy_version: str = "VAS_TT200_2014",
     scored_taxonomies: tuple[str, ...] = ("VAS_TT200_2014", "VAS_TT99_2025"),
     feature_set: Literal["sector_adjusted", "base"] = "sector_adjusted",
-    target_mode: str = "FUNDAMENTAL_DISTRESS",
+    target_mode: str | None = None,
     regulatory_events: pl.DataFrame | None = None,
     min_unique_positive_issuers: int = 3,
     peer_benchmarks: pl.DataFrame | None = None,
@@ -93,7 +94,8 @@ def build_ml_artifacts(
     when ``require_exact_filing=True``. Classical scores (Altman Z'', Piotroski F,
     Beneish M) are computed for both QUARTER and ANNUAL corporate records, whereas
     Unsupervised and Supervised ML models score strictly on QUARTER records across
-    ``scored_taxonomies``.
+    ``scored_taxonomies``. When ``target_mode`` is omitted, ``REGULATORY_DISTRESS``
+    activates automatically whenever ``regulatory_events`` is supplied.
     """
     if not approved_target:
         raise ContractViolationError(
@@ -109,6 +111,7 @@ def build_ml_artifacts(
         raise ContractViolationError(
             f"Unsupported feature_set {feature_set!r}; expected 'sector_adjusted' or 'base'."
         )
+    resolved_target_mode = resolve_target_mode(target_mode, regulatory_events)
     selected_features = (
         SECTOR_ADJUSTED_FEATURES if feature_set == "sector_adjusted" else BASE_FEATURES
     )
@@ -136,7 +139,7 @@ def build_ml_artifacts(
         require_exact_filing=require_exact_filing,
         statement_scope=statement_scope,
         taxonomy_version=taxonomy_version,
-        target_mode=target_mode,
+        target_mode=resolved_target_mode,
         regulatory_events=regulatory_events,
         precomputed_as_of_scored=classical_as_of,
     )
@@ -162,7 +165,7 @@ def build_ml_artifacts(
             "scored_period_types": ["QUARTER"],
             "feature_set": feature_set,
             "peer_standardization_mode": peer_standardization_mode,
-            "target_mode": target_mode,
+            "target_mode": resolved_target_mode,
             "platt_slope": training.platt_slope,
             "platt_intercept": training.platt_intercept,
             "f2_thresholds": dict(training.f2_thresholds),
@@ -220,7 +223,7 @@ def build_ml_artifacts(
         "scored_period_types": ["QUARTER"],
         "feature_set": feature_set,
         "peer_standardization_mode": peer_standardization_mode,
-        "target_mode": target_mode,
+        "target_mode": resolved_target_mode,
         "platt_slope": training.platt_slope,
         "platt_intercept": training.platt_intercept,
         "f2_thresholds": dict(training.f2_thresholds),

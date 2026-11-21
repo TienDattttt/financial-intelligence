@@ -24,7 +24,7 @@ from finintel.analytics.intermediates import prepare_periods
 from finintel.analytics.ratios import calculate_ratios
 from finintel.exceptions import ContractViolationError
 from finintel.ml.classical_scores import add_classical_scores
-from finintel.ml.supervised.target import build_distress_targets
+from finintel.ml.supervised.target import build_distress_targets, resolve_target_mode
 
 PeerStandardizationMode = Literal["PIT_ICB", "PIT_REGIME_SYMMETRIC"]
 _PIT_ICB_COVERAGE_THRESHOLD = 0.80
@@ -206,7 +206,7 @@ def build_pit_ml_splits(
     require_exact_filing: bool = True,
     statement_scope: str = "CONSOLIDATED",
     taxonomy_version: str | None = "VAS_TT200_2014",
-    target_mode: str = "FUNDAMENTAL_DISTRESS",
+    target_mode: str | None = None,
     regulatory_events: pl.DataFrame | None = None,
     precomputed_as_of_scored: pl.DataFrame | None = None,
 ) -> dict[str, pl.DataFrame]:
@@ -216,12 +216,15 @@ def build_pit_ml_splits(
     validation features and labels strictly as of ``test_start``; and test features
     and labels strictly as of ``as_of``. Peer standardization mode (``PIT_ICB`` vs
     ``PIT_REGIME_SYMMETRIC``) is resolved from PIT-visible ICB coverage on train
-    and validation and applied symmetrically across all folds.
+    and validation and applied symmetrically across all folds. When ``target_mode``
+    is omitted, ``REGULATORY_DISTRESS`` activates automatically if
+    ``regulatory_events`` is provided.
     """
     if validation_start >= test_start:
         raise ContractViolationError("Validation start must precede test start.")
     if test_start > as_of:
         raise ContractViolationError("Test start must not exceed the PIT as_of date.")
+    resolved_target_mode = resolve_target_mode(target_mode, regulatory_events)
 
     def _materialize_at(
         cutoff: date, *, precomputed_scored: pl.DataFrame | None = None
@@ -238,7 +241,7 @@ def build_pit_ml_splits(
             scoped = scoped.filter(pl.col("taxonomy_version") == taxonomy_version)
         return build_distress_targets(
             scoped,
-            mode=target_mode,
+            mode=resolved_target_mode,
             as_of=cutoff,
             regulatory_events=regulatory_events,
         )

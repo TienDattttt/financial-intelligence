@@ -755,7 +755,9 @@ def test_target_gap03_indirect_cf_trap_4q_persistence_not_7q_and_event3_all_quar
         is False
     )
 
-    # 3. Event 3 triggers at t+2 (not just t+4)
+    # 3. GATE-ML-2 (ML-04): Mode A evaluates TTM-based Event 3 strictly at t+4 (0% TTM overlap).
+    # Severe loss ONLY at 2021-Q2 must NOT trigger 2020-Q4 (t+2 has 50% TTM overlap),
+    # while triggering cleanly at 2020-Q2 (where t+4 == 2021-Q2 has 0% TTM overlap).
     ev3_df = _periods().with_columns(
         pl.lit(100.0).alias("BS_TOTAL_EQUITY"),
         pl.when((pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 2))
@@ -771,6 +773,12 @@ def test_target_gap03_indirect_cf_trap_4q_persistence_not_7q_and_event3_all_quar
     assert (
         ev3_targets.filter(
             (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+        )["distress_target"].item()
+        == 0
+    )
+    assert (
+        ev3_targets.filter(
+            (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 2)
         )["distress_target"].item()
         == 1
     )
@@ -1070,7 +1078,8 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
         )
 
     # (b) FORCED_DELISTING at a_t + 180d produces distress_target == 1 even when post-delisting
-    # quarters t+3 and t+4 are absent, and (c) multiple events in 1 year do not duplicate rows.
+    # quarters t+3 and t+4 are absent, (c) multiple events in 1 year do not duplicate rows,
+    # and (B-01) label_available_at is symmetrically locked to a_t + 365d for y=1 as well as y=0.
     delisted_periods = base.filter(
         (pl.col("fiscal_year") == 2020)
         | ((pl.col("fiscal_year") == 2021) & pl.col("fiscal_quarter").is_in([1, 2]))
@@ -1093,11 +1102,12 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
         (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
     ).row(0, named=True)
     assert q4_2020["distress_target"] == 1
-    assert q4_2020["label_available_at"] == date(2021, 4, 15)
+    assert q4_2020["label_available_at"] == date(2021, 12, 31)
 
-    # (d) Right-censoring lock on negative labels y=0:
-    # For healthy issuer, 2020-Q4 has a_t = 2020-12-31, so a_t + 365d = 2021-12-31.
-    # If as_of = 2021-10-01 (even if future filings had early dates), y=0 is blocked if a_t + 365d > as_of.
+    # (d) Symmetric right-censoring lock (B-01) on BOTH y=1 and y=0:
+    # For 2020-Q4 (a_t = 2020-12-31), horizon_end = a_t + 365d = 2021-12-31.
+    # If as_of = 2021-10-01, BOTH negative AND positive rows (even with event on 2021-04-15)
+    # stay censored (distress_target is None) because a_t + 365d > as_of.
     early_filings = base.with_columns(
         pl.when(pl.col("fiscal_year") == 2021)
         .then(pl.lit(date(2021, 9, 1)))
@@ -1111,16 +1121,29 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
     empty_events = pl.DataFrame(
         schema={"issuer_id": pl.String, "event_date": pl.Date, "event_type": pl.String}
     )
-    censored = build_distress_targets(
+    censored_neg = build_distress_targets(
         early_filings,
         mode="REGULATORY_DISTRESS",
         as_of=date(2021, 10, 1),
         regulatory_events=empty_events,
     )
-    q4_censored = censored.filter(
+    q4_censored = censored_neg.filter(
         (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
     ).row(0, named=True)
     assert q4_censored["distress_target"] is None
+    assert q4_censored["label_available_at"] is None
+
+    censored_pos = build_distress_targets(
+        delisted_periods,
+        mode="REGULATORY_DISTRESS",
+        as_of=date(2021, 10, 1),
+        regulatory_events=multi_events,
+    )
+    q4_censored_pos = censored_pos.filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert q4_censored_pos["distress_target"] is None
+    assert q4_censored_pos["label_available_at"] is None
 
     uncensored = build_distress_targets(
         early_filings,
@@ -1134,7 +1157,8 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
     assert q4_uncensored["distress_target"] == 0
     assert q4_uncensored["label_available_at"] == date(2021, 12, 31)
 
-    # (d2) Mode B exact-filing guard when Mode A is STATUTORY_LAG earlier than regulatory event
+    # (d2) Pure exogenous Mode B decouples label provenance from future BCTC STATUTORY_LAG
+    # and enforces symmetric label_available_at = a_t + 365d regardless of Mode A future filings.
     stat_lag_periods = _periods().with_columns(
         pl.when((pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 4))
         .then(pl.lit(date(2021, 10, 1)))
@@ -1163,8 +1187,10 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
         (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
     ).row(0, named=True)
     assert q4_late_reg["distress_target"] == 1
-    assert q4_late_reg["label_available_at"] == date(2021, 10, 1)
-    assert q4_late_reg["_label_exact_filing_basis"] is False
+    assert q4_late_reg["label_available_at"] == date(2021, 12, 31)
+    assert q4_late_reg["_label_exact_filing_basis"] is True
+    # Because label_available_at = 2021-12-31 > validation_start = 2021-11-01, B-01 purges it
+    # from train symmetrically (no 100% prevalence cliff before cutoff).
     split_strict_reg = purged_walk_forward_split(
         late_reg_out,
         validation_start=date(2021, 11, 1),
@@ -1195,7 +1221,7 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
         (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
     ).row(0, named=True)
     assert q4_early_reg["distress_target"] == 1
-    assert q4_early_reg["label_available_at"] == date(2021, 8, 1)
+    assert q4_early_reg["label_available_at"] == date(2021, 12, 31)
     assert q4_early_reg["_label_exact_filing_basis"] is True
 
     # (e) Path-confinement and end-to-end AnalyticsHandler forwarding for ml.* options
@@ -1510,3 +1536,232 @@ def test_synthesize_issuers_from_candidates_uses_real_collection_date_not_2016(
         candidates_with_meta, ["HPG"]
     )
     assert df_from_meta["industry_snapshot_date"].to_list() == [date(2026, 10, 15)]
+
+
+def test_ml04_gate_ml2_symmetric_censoring_continuous_state_first_onset_and_zero_ttm_overlap() -> (
+    None
+):
+    """Prove GATE-ML-2 (B-01 + H-05 + Mode A 0% TTM overlap + Mode B auto-activation)."""
+    quarter_ends = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+    rows = []
+    for issuer in ("HBC_SIM", "HNG_SIM", "HEALTHY_GAP"):
+        for year in range(2020, 2026):
+            for quarter in range(1, 5):
+                # HEALTHY_GAP is missing future quarters in 2024 and has null roa in 2023-Q2
+                if issuer == "HEALTHY_GAP" and year == 2024:
+                    continue
+                month, day = quarter_ends[quarter]
+                p_end = date(year, month, day)
+                avail = date(
+                    year + (1 if month == 12 else 0),
+                    1 if month == 12 else month + 1,
+                    25,
+                )
+                rows.append(
+                    {
+                        "issuer_id": issuer,
+                        "statement_scope": "CONSOLIDATED",
+                        "period_type": "QUARTER",
+                        "fiscal_year": year,
+                        "fiscal_quarter": quarter,
+                        "period_end_date": p_end,
+                        "accounting_regime": "CORPORATE",
+                        "BS_TOTAL_EQUITY": 500.0,
+                        "parent_equity": 500.0,
+                        "interest_coverage": 0.2 if issuer == "HBC_SIM" else 4.0,
+                        "CF_OPERATING_CASH_FLOW": -10.0
+                        if issuer == "HBC_SIM"
+                        else 50.0,
+                        "current_ratio": 0.7 if issuer == "HBC_SIM" else 2.0,
+                        "roa": None
+                        if (issuer == "HEALTHY_GAP" and year == 2023 and quarter == 2)
+                        else (-0.15 if issuer == "HBC_SIM" else 0.08),
+                        "_period_available_at": avail,
+                    }
+                )
+    panel = pl.DataFrame(rows)
+
+    # HBC_SIM: CONTROL starts 2022-04-10 (FIRST_ENTRY), persists > 2 years until FORCED_DELISTING
+    # on 2024-07-26 (ESCALATION, resolution_date=None).
+    # HNG_SIM: CONTROL 2021-04-10..2022-04-10 (resolved), then relapse FIRST_ENTRY on 2024-04-10.
+    events = pl.DataFrame(
+        {
+            "issuer_id": ["HBC_SIM", "HBC_SIM", "HNG_SIM", "HNG_SIM"],
+            "event_date": [
+                date(2022, 4, 10),
+                date(2024, 7, 26),
+                date(2021, 4, 10),
+                date(2024, 4, 10),
+            ],
+            "effective_from": [
+                date(2022, 4, 10),
+                date(2024, 7, 26),
+                date(2021, 4, 10),
+                date(2024, 4, 10),
+            ],
+            "resolution_date": [
+                date(2024, 7, 26),
+                None,
+                date(2022, 4, 10),
+                None,
+            ],
+            "event_type": [
+                "CONTROL",
+                "FORCED_DELISTING",
+                "CONTROL",
+                "CONTROL",
+            ],
+            "event_stage": [
+                "FIRST_ENTRY",
+                "ESCALATION",
+                "FIRST_ENTRY",
+                "FIRST_ENTRY",
+            ],
+        }
+    )
+
+    # 1. Auto-activation of Mode B as Primary Target when regulatory_events is supplied (mode omitted)
+    out = build_distress_targets(
+        panel, as_of=date(2025, 12, 31), regulatory_events=events
+    )
+
+    # 2. H-05 Continuous distress state: HBC_SIM stays already_distressed_at_t == True in Year 2 & Year 3
+    # (2023-Q2..2025-Q1), even > 365d after initial 2022-04-10 CONTROL, and NEVER triggers false onset for ESCALATION.
+    hbc_2021_q4 = out.filter(
+        (pl.col("issuer_id") == "HBC_SIM")
+        & (pl.col("fiscal_year") == 2021)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    # Even though HBC_SIM has weak financial ratios at 2021-Q4, pure Mode B keeps it eligible for onset!
+    assert hbc_2021_q4["already_distressed_at_t"] is False
+    assert hbc_2021_q4["distress_target"] == 1
+    assert hbc_2021_q4["label_available_at"] == date(2023, 1, 25)
+
+    hbc_year2 = out.filter(
+        (pl.col("issuer_id") == "HBC_SIM")
+        & (pl.col("fiscal_year") == 2023)
+        & (pl.col("fiscal_quarter") == 3)
+    ).row(0, named=True)
+    # 2023-Q3 available 2023-10-25 is > 365d after 2022-04-10, yet inside [2022-04-10, 2024-07-26)
+    assert hbc_year2["already_distressed_at_t"] is True
+    # FORCED_DELISTING on 2024-07-26 is ESCALATION, NOT FIRST_ENTRY -> distress_target == 0
+    assert hbc_year2["distress_target"] == 0
+
+    hbc_after_delist = out.filter(
+        (pl.col("issuer_id") == "HBC_SIM")
+        & (pl.col("fiscal_year") == 2024)
+        & (pl.col("fiscal_quarter") == 3)
+    ).row(0, named=True)
+    # resolution_date is None on FORCED_DELISTING -> stays continuously distressed forever
+    assert hbc_after_delist["already_distressed_at_t"] is True
+
+    # 3. H-05 Recovery & Relapse: HNG_SIM exits distress on resolution_date=2022-04-10,
+    # becomes eligible again in 2022-Q2..2023-Q4, and predicts the 2024-04-10 relapse FIRST_ENTRY.
+    hng_active = out.filter(
+        (pl.col("issuer_id") == "HNG_SIM")
+        & (pl.col("fiscal_year") == 2021)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert hng_active["already_distressed_at_t"] is True
+
+    hng_recovered = out.filter(
+        (pl.col("issuer_id") == "HNG_SIM")
+        & (pl.col("fiscal_year") == 2022)
+        & (pl.col("fiscal_quarter") == 2)
+    ).row(0, named=True)
+    assert hng_recovered["already_distressed_at_t"] is False
+    assert hng_recovered["distress_target"] == 0
+
+    hng_relapse_lead = out.filter(
+        (pl.col("issuer_id") == "HNG_SIM")
+        & (pl.col("fiscal_year") == 2023)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert hng_relapse_lead["already_distressed_at_t"] is False
+    assert hng_relapse_lead["distress_target"] == 1
+
+    # 4. H-05 Decoupled pure exogenous negative_verified: HEALTHY_GAP is missing all of 2024
+    # and has null roa in 2023-Q2, yet still gets verified y=0 when a_t + 365d <= as_of.
+    healthy_2023_q3 = out.filter(
+        (pl.col("issuer_id") == "HEALTHY_GAP")
+        & (pl.col("fiscal_year") == 2023)
+        & (pl.col("fiscal_quarter") == 3)
+    ).row(0, named=True)
+    assert healthy_2023_q3["distress_target"] == 0
+    assert healthy_2023_q3["label_available_at"] == date(2024, 10, 24)
+
+    # 5. B-01 Symmetric Horizon Completeness at historical cutoff as_of = 2022-07-01:
+    # At 2021-Q4 (a_t = 2022-01-25), a_t + 365d = 2023-01-25 > 2022-07-01.
+    # Even though HBC_SIM already entered CONTROL on 2022-04-10 (<= 2022-07-01),
+    # BOTH HBC_SIM (y=1 candidate) and HEALTHY_GAP (y=0 candidate) MUST be censored to None!
+    pit_2022 = build_distress_targets(
+        panel, as_of=date(2022, 7, 1), regulatory_events=events
+    )
+    for iss in ("HBC_SIM", "HEALTHY_GAP"):
+        r = pit_2022.filter(
+            (pl.col("issuer_id") == iss)
+            & (pl.col("fiscal_year") == 2021)
+            & (pl.col("fiscal_quarter") == 4)
+        ).row(0, named=True)
+        assert r["distress_target"] is None
+        assert r["label_available_at"] is None
+
+    # 6. PIT masking of future resolution_date: at as_of = 2022-03-01 (before HNG resolution 2022-04-10),
+    # HNG_SIM has no known resolution_date yet.
+    pit_before_res = build_distress_targets(
+        panel, as_of=date(2022, 3, 1), regulatory_events=events
+    )
+    hng_2021_q4_pit = pit_before_res.filter(
+        (pl.col("issuer_id") == "HNG_SIM")
+        & (pl.col("fiscal_year") == 2021)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert hng_2021_q4_pit["already_distressed_at_t"] is True
+
+    # 7. Mode A 0% TTM overlap for liquidity distress:
+    # Liquidity bad ONLY at t+1..t+3 (2021-Q1..Q3), healthy at t+4 (2021-Q4) -> 2020-Q4 MUST be y=0!
+    liq_overlap = _periods().with_columns(
+        pl.lit(100.0).alias("BS_TOTAL_EQUITY"),
+        pl.when(
+            (pl.col("fiscal_year") == 2021) & pl.col("fiscal_quarter").is_in([1, 2, 3])
+        )
+        .then(pl.lit(0.4))
+        .otherwise(pl.lit(3.0))
+        .alias("interest_coverage"),
+        pl.when(
+            (pl.col("fiscal_year") == 2021) & pl.col("fiscal_quarter").is_in([1, 2, 3])
+        )
+        .then(pl.lit(-10.0))
+        .otherwise(pl.lit(15.0))
+        .alias("CF_OPERATING_CASH_FLOW"),
+        pl.when(
+            (pl.col("fiscal_year") == 2021) & pl.col("fiscal_quarter").is_in([1, 2, 3])
+        )
+        .then(pl.lit(0.6))
+        .otherwise(pl.lit(2.0))
+        .alias("current_ratio"),
+    )
+    mode_a_out = build_distress_targets(liq_overlap, mode="FUNDAMENTAL_DISTRESS")
+    assert (
+        mode_a_out.filter(
+            (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+        )["distress_target"].item()
+        == 0
+    )
+    # At 2020-Q3, t+4 is 2021-Q3 (0% TTM overlap with 2020-Q3) -> MUST be y=1!
+    assert (
+        mode_a_out.filter(
+            (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 3)
+        )["distress_target"].item()
+        == 1
+    )
+
+    # 8. Contract validation rejects inverted resolution_date < effective_from and invalid event_stage
+    bad_stage = events.with_columns(pl.lit("INVALID_STAGE").alias("event_stage"))
+    with pytest.raises(ContractViolationError, match="event_stage"):
+        build_distress_targets(panel, regulatory_events=bad_stage)
+    bad_interval = events.with_columns(
+        pl.lit(date(2019, 1, 1)).alias("resolution_date")
+    )
+    with pytest.raises(ContractViolationError, match="resolution_date"):
+        build_distress_targets(panel, regulatory_events=bad_interval)

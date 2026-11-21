@@ -2,15 +2,22 @@
 
 Verified Sources:
     docs/layers/LAYER_4_ANALYTICS_AND_ML.md, sections 5.3 and 7.2.
+    docs/refactor/02_ML_DATASET_AND_LABELING_PLAN.md (ML-04, GATE-ML-2, B-01, H-05).
     Shumway, T. (2001). "Forecasting Bankruptcy More Accurately: A Simple Hazard Model."
         The Journal of Business, Vol. 74, No. 1, pp. 101-124.
     Falkenstein, E., Boral, A., & Carty, L. V. (2000). "RiskCalc For Private Companies:
         Moody's Default Model." Moody's Investors Service Global Credit Research.
     Decree 155/2020/ND-CP (Article 120 - Mandatory Delisting) and VNX Decision 22/QD-HDTV
         (18/04/2025 - Supervision, Control, Trading Restriction and Suspension Rules).
-    Labels use the four following fiscal quarters and each source period's
-    PIT availability timestamp; incomplete horizons stay unlabeled except when a
-    verified regulatory distress event occurs within (a_t, a_t + 365d] in Mode B.
+    Mode B (REGULATORY_DISTRESS) is the primary exogenous ground truth:
+    - Symmetric Horizon Completeness (B-01): both y=1 and y=0 require a_t + 365d <= cutoff
+      with label_available_at = a_t + 365d, eliminating differential right-censoring.
+    - Continuous Distress Interval & First-Onset (H-05): active distress spans
+      [min(event_date, effective_from), resolution_date), and only FIRST_ENTRY events in
+      (a_t, a_t + 365d] define onset positives; negatives are decoupled from Mode A.
+    Mode A (FUNDAMENTAL_DISTRESS) is the zero-TTM-overlap ablation arm: balance-sheet
+    negative equity is checked across {t+1..t+4}, while TTM-based liquidity and severe-loss
+    conditions are evaluated strictly at t+4 (0% shared TTM quarters with X_t).
 """
 
 from __future__ import annotations
@@ -48,6 +55,25 @@ _ALLOWED_REGULATORY_EVENT_TYPES = frozenset(
         "ADVERSE_OR_DISCLAIMER_AUDIT",
     }
 )
+_ALLOWED_REGULATORY_EVENT_STAGES = frozenset({"FIRST_ENTRY", "ESCALATION"})
+
+
+def resolve_target_mode(
+    mode: str | None,
+    regulatory_events: pl.DataFrame | None,
+) -> str:
+    """Resolve explicit or default target mode, activating Mode B when regulatory_events is supplied."""
+    if mode is None:
+        return (
+            "REGULATORY_DISTRESS"
+            if regulatory_events is not None
+            else "FUNDAMENTAL_DISTRESS"
+        )
+    if mode not in _ALLOWED_MODES:
+        raise ContractViolationError(
+            f"Unsupported distress target mode {mode!r}; expected one of {sorted(_ALLOWED_MODES)}."
+        )
+    return mode
 
 
 def _prepare_regulatory_events(
@@ -55,7 +81,7 @@ def _prepare_regulatory_events(
     *,
     as_of: date | None,
 ) -> pl.DataFrame:
-    """Validate the offline regulatory_events contract and filter strictly by as_of."""
+    """Validate the regulatory_events Port 1 contract and enforce strict PIT as_of filtering."""
     if regulatory_events is None:
         raise ContractViolationError(
             "REGULATORY_DISTRESS mode requires a regulatory_events DataFrame."
@@ -65,10 +91,15 @@ def _prepare_regulatory_events(
         raise ContractViolationError(
             f"regulatory_events is missing required columns: {sorted(missing)}"
         )
-    expected_dtypes = {
+    expected_dtypes: dict[str, tuple[type[pl.DataType], ...]] = {
         "issuer_id": (pl.String, pl.Null),
         "event_date": (pl.Date, pl.Null),
         "event_type": (pl.String, pl.Null),
+    }
+    optional_dtypes: dict[str, tuple[type[pl.DataType], ...]] = {
+        "effective_from": (pl.Date, pl.Null),
+        "resolution_date": (pl.Date, pl.Null),
+        "event_stage": (pl.String, pl.Null),
     }
     for col_name, allowed_dtypes in expected_dtypes.items():
         if regulatory_events.schema.get(col_name) not in allowed_dtypes:
@@ -76,10 +107,39 @@ def _prepare_regulatory_events(
                 f"regulatory_events column {col_name!r} has invalid dtype "
                 f"{regulatory_events.schema.get(col_name)!r}."
             )
+    for col_name, allowed_dtypes in optional_dtypes.items():
+        if (
+            col_name in regulatory_events.columns
+            and regulatory_events.schema.get(col_name) not in allowed_dtypes
+        ):
+            raise ContractViolationError(
+                f"regulatory_events column {col_name!r} has invalid dtype "
+                f"{regulatory_events.schema.get(col_name)!r}."
+            )
+
+    has_effective_from = "effective_from" in regulatory_events.columns
+    has_resolution_date = "resolution_date" in regulatory_events.columns
+    has_event_stage = "event_stage" in regulatory_events.columns
+
     selected = regulatory_events.select(
         pl.col("issuer_id").cast(pl.String),
         pl.col("event_date").cast(pl.Date),
+        (
+            pl.col("effective_from").cast(pl.Date)
+            if has_effective_from
+            else pl.col("event_date").cast(pl.Date).alias("effective_from")
+        ),
+        (
+            pl.col("resolution_date").cast(pl.Date)
+            if has_resolution_date
+            else pl.lit(None, dtype=pl.Date).alias("resolution_date")
+        ),
         pl.col("event_type").cast(pl.String),
+        (
+            pl.col("event_stage").cast(pl.String)
+            if has_event_stage
+            else pl.lit("FIRST_ENTRY", dtype=pl.String).alias("event_stage")
+        ),
     )
     if not selected.is_empty():
         has_invalid_nulls = selected.select(
@@ -87,12 +147,15 @@ def _prepare_regulatory_events(
                 pl.col("issuer_id").is_null()
                 | (pl.col("issuer_id").str.strip_chars() == "")
                 | pl.col("event_date").is_null()
+                | pl.col("effective_from").is_null()
                 | pl.col("event_type").is_null()
+                | pl.col("event_stage").is_null()
             ).any()
         ).item()
         if has_invalid_nulls:
             raise ContractViolationError(
-                "regulatory_events contains null or empty issuer_id, event_date, or event_type."
+                "regulatory_events contains null or empty issuer_id, event_date, "
+                "effective_from, event_type, or event_stage."
             )
         invalid_types = (
             set(selected.get_column("event_type").unique().to_list())
@@ -102,41 +165,75 @@ def _prepare_regulatory_events(
             raise ContractViolationError(
                 f"regulatory_events contains unsupported event_type values: {sorted(invalid_types)}"
             )
+        invalid_stages = (
+            set(selected.get_column("event_stage").unique().to_list())
+            - _ALLOWED_REGULATORY_EVENT_STAGES
+        )
+        if invalid_stages:
+            raise ContractViolationError(
+                f"regulatory_events contains unsupported event_stage values: {sorted(invalid_stages)}"
+            )
+        inverted_intervals = selected.select(
+            (
+                pl.col("resolution_date").is_not_null()
+                & (pl.col("resolution_date") < pl.col("effective_from"))
+            ).any()
+        ).item()
+        if inverted_intervals:
+            raise ContractViolationError(
+                "regulatory_events contains resolution_date earlier than effective_from."
+            )
     if as_of is not None:
-        selected = selected.filter(pl.col("event_date") <= as_of)
+        selected = selected.filter(pl.col("event_date") <= as_of).with_columns(
+            pl.when(
+                pl.col("resolution_date").is_not_null()
+                & (pl.col("resolution_date") <= as_of)
+            )
+            .then(pl.col("resolution_date"))
+            .otherwise(pl.lit(None, dtype=pl.Date))
+            .alias("resolution_date")
+        )
     return selected
 
 
 def build_distress_targets(
     periods: pl.DataFrame,
     *,
-    mode: str = "FUNDAMENTAL_DISTRESS",
+    mode: str | None = None,
     as_of: date | None = None,
     regulatory_events: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """Return one four-quarter-ahead label per eligible quarter.
+    """Return one forward-horizon distress label per eligible corporate quarter.
 
-    Fundamental distress is the union of:
-    1. Nonpositive total or parent equity in {t+1..t+4}.
-    2. At least two quarters in {t+1..t+4} with liquidity distress:
-       (interest_coverage < 1.0 & CF_OPERATING_CASH_FLOW < 0 & current_ratio < 1.0)
-       or (when total_debt is present: interest_coverage < 0.0 & current_ratio < 0.80 & total_debt > 0).
-    3. Severe loss in any quarter of {t+1..t+4}:
-       roa < -0.10 combined with either CF_OPERATING_CASH_FLOW < 0 or
-       (interest_coverage < 1.0 & current_ratio < 1.0).
+    When ``mode`` is omitted, ``REGULATORY_DISTRESS`` (Mode B — Primary Ground Truth)
+    activates automatically whenever ``regulatory_events`` is provided; otherwise
+    ``FUNDAMENTAL_DISTRESS`` (Mode A — Zero-TTM-Overlap Ablation) is used.
 
-    In REGULATORY_DISTRESS mode (offline library contract), fundamental distress is
-    combined with verified exchange/audit events within (a_t, a_t + 365d], without
-    requiring 4 post-event financial quarters on positive regulatory events and
-    enforcing a right-censoring lock (a_t + 365d <= as_of) on negative labels.
+    Mode B (``REGULATORY_DISTRESS``, pure exogenous):
+    - Positive onset: ``event_stage == "FIRST_ENTRY"`` with ``event_date`` in
+      ``(a_t, a_t + 365d]``.
+    - Symmetric Horizon Completeness (B-01): BOTH ``y = 1`` and ``y = 0`` require
+      ``a_t + 365d <= as_of`` (when ``as_of`` is supplied) and carry identical
+      ``label_available_at = a_t + 365d``.
+    - Continuous active distress state (H-05): ``already_distressed_at_t = True``
+      whenever any event satisfies ``min(event_date, effective_from) <= a_t`` and
+      ``(resolution_date IS NULL | a_t < resolution_date)``.
+    - Negatives are purely exogenous (``~reg_positive & horizon_complete``),
+      decoupled from Mode A future financial-statement completeness.
+
+    Mode A (``FUNDAMENTAL_DISTRESS``, zero-TTM-overlap ablation):
+    1. Balance-sheet insolvency: nonpositive total or parent equity in ``{t+1..t+4}``.
+    2. Non-overlapping 4Q liquidity distress evaluated strictly at ``t+4``:
+       ``(interest_coverage < 1.0 & CF_OPERATING_CASH_FLOW < 0 & current_ratio < 1.0)``
+       or ``(interest_coverage < 0.0 & current_ratio < 0.80 & total_debt > 0)``.
+    3. Non-overlapping 4Q severe loss evaluated strictly at ``t+4``:
+       ``roa < -0.10`` with ``CF_OPERATING_CASH_FLOW < 0`` or
+       ``(interest_coverage < 1.0 & current_ratio < 1.0)``.
     """
-    if mode not in _ALLOWED_MODES:
-        raise ContractViolationError(
-            f"Unsupported distress target mode {mode!r}; expected one of {sorted(_ALLOWED_MODES)}."
-        )
+    resolved_mode = resolve_target_mode(mode, regulatory_events)
     reg_df = (
         _prepare_regulatory_events(regulatory_events, as_of=as_of)
-        if mode == "REGULATORY_DISTRESS"
+        if resolved_mode == "REGULATORY_DISTRESS"
         else None
     )
     missing = set(_REQUIRED) - set(periods.columns)
@@ -187,6 +284,105 @@ def build_distress_targets(
             "Target construction requires unique issuer/scope/fiscal-quarter rows."
         )
 
+    if resolved_mode == "REGULATORY_DISTRESS":
+        assert reg_df is not None
+        result = base.with_columns(
+            (
+                pl.col("fiscal_year").cast(pl.Int32) * 4
+                + pl.col("fiscal_quarter").cast(pl.Int32)
+            ).alias("_quarter_index")
+        ).sort(["issuer_id", "statement_scope", "_quarter_index"])
+
+        reg_agg = (
+            result.select(
+                "issuer_id",
+                "statement_scope",
+                "_quarter_index",
+                "_period_available_at",
+            )
+            .join(reg_df, on="issuer_id", how="inner")
+            .with_columns(
+                (
+                    (pl.col("event_stage") == "FIRST_ENTRY")
+                    & (pl.col("event_date") > pl.col("_period_available_at"))
+                    & (
+                        pl.col("event_date")
+                        <= (pl.col("_period_available_at") + pl.duration(days=365))
+                    )
+                ).alias("_is_future_first_entry"),
+                (
+                    (
+                        pl.min_horizontal("event_date", "effective_from")
+                        <= pl.col("_period_available_at")
+                    )
+                    & (
+                        pl.col("resolution_date").is_null()
+                        | (pl.col("_period_available_at") < pl.col("resolution_date"))
+                    )
+                ).alias("_is_active_reg_state"),
+            )
+            .group_by(["issuer_id", "statement_scope", "_quarter_index"])
+            .agg(
+                pl.col("event_date")
+                .filter(pl.col("_is_future_first_entry"))
+                .min()
+                .alias("_earliest_future_first_entry_date"),
+                pl.col("_is_active_reg_state")
+                .any()
+                .fill_null(False)
+                .alias("_active_reg_distress"),
+            )
+        )
+        result = result.join(
+            reg_agg,
+            on=["issuer_id", "statement_scope", "_quarter_index"],
+            how="left",
+            validate="1:1",
+        )
+
+        reg_positive = pl.col("_earliest_future_first_entry_date").is_not_null()
+        horizon_end = pl.col("_period_available_at") + pl.duration(days=365)
+        horizon_complete = (horizon_end <= as_of) if as_of is not None else pl.lit(True)
+        # B-01 Symmetric Horizon Completeness: BOTH y=1 and y=0 require a_t + 365d <= cutoff.
+        positive_verified = reg_positive & horizon_complete
+        negative_verified = ~reg_positive & horizon_complete
+        labeled = positive_verified | negative_verified
+
+        output_exprs: list[pl.Expr] = [
+            pl.col("_active_reg_distress")
+            .fill_null(False)
+            .alias("already_distressed_at_t"),
+            pl.when(positive_verified)
+            .then(pl.lit(1, dtype=pl.Int8))
+            .when(negative_verified)
+            .then(pl.lit(0, dtype=pl.Int8))
+            .otherwise(pl.lit(None, dtype=pl.Int8))
+            .alias("distress_target"),
+            pl.when(labeled)
+            .then(horizon_end)
+            .otherwise(pl.lit(None, dtype=pl.Date))
+            .alias("label_available_at"),
+        ]
+        if has_exact_basis:
+            # Exchange/audit regulatory events have verified announcement dates independent of
+            # future BCTC filing lags; observation-time _exact_filing_basis still guards X_t.
+            output_exprs.append(
+                pl.when(labeled)
+                .then(pl.lit(True, dtype=pl.Boolean))
+                .otherwise(pl.lit(None, dtype=pl.Boolean))
+                .alias("_label_exact_filing_basis")
+            )
+        return (
+            result.with_columns(*output_exprs)
+            .drop(
+                "_quarter_index",
+                "_earliest_future_first_entry_date",
+                "_active_reg_distress",
+            )
+            .sort(["issuer_id", "statement_scope", "period_end_date"])
+        )
+
+    # Mode A (FUNDAMENTAL_DISTRESS): zero-TTM-overlap ablation arm.
     no_interest = (
         (pl.col("interest_coverage_flag") == "NO_INTEREST_EXPENSE").fill_null(False)
         if "interest_coverage_flag" in base.columns
@@ -309,56 +505,6 @@ def build_distress_targets(
         ),
     )
     distressed_now = any_eq_or_loss_4q | (trailing_liquidity_4q >= 2)
-
-    reg_temp_cols: list[str] = []
-    if reg_df is not None:
-        reg_agg = (
-            result.select(
-                "issuer_id",
-                "statement_scope",
-                "_quarter_index",
-                "_period_available_at",
-            )
-            .join(reg_df, on="issuer_id", how="inner")
-            .with_columns(
-                (
-                    (pl.col("event_date") > pl.col("_period_available_at"))
-                    & (
-                        pl.col("event_date")
-                        <= (pl.col("_period_available_at") + pl.duration(days=365))
-                    )
-                ).alias("_is_future_reg"),
-                (
-                    (
-                        pl.col("event_date")
-                        >= (pl.col("_period_available_at") - pl.duration(days=365))
-                    )
-                    & (pl.col("event_date") <= pl.col("_period_available_at"))
-                ).alias("_is_prior_reg"),
-            )
-            .group_by(["issuer_id", "statement_scope", "_quarter_index"])
-            .agg(
-                pl.col("event_date")
-                .filter(pl.col("_is_future_reg"))
-                .min()
-                .alias("_earliest_future_event_date"),
-                pl.col("_is_prior_reg")
-                .any()
-                .fill_null(False)
-                .alias("_had_prior_reg_event"),
-            )
-        )
-        result = result.join(
-            reg_agg,
-            on=["issuer_id", "statement_scope", "_quarter_index"],
-            how="left",
-            validate="1:1",
-        )
-        reg_temp_cols.extend(["_earliest_future_event_date", "_had_prior_reg_event"])
-        distressed_now = distressed_now | pl.col("_had_prior_reg_event").fill_null(
-            False
-        )
-
     current_known = (
         pl.col("_equity_known") & pl.col("_liquidity_known") & pl.col("_loss_known")
     )
@@ -381,24 +527,35 @@ def build_distress_targets(
             pl.col("statement_scope"),
             (pl.col("_quarter_index") - offset).alias("_quarter_index"),
             pl.col("_equity_bad").alias(f"_equity_{offset}"),
-            pl.col("_liquidity_bad").alias(f"_liquidity_{offset}"),
-            pl.col("_severe_loss").alias(f"_loss_{offset}"),
-            (pl.col("_equity_known") & pl.col("_liquidity_known")).alias(
-                f"_eq_liq_known_{offset}"
-            ),
-            pl.col("_loss_known").alias(f"_loss_known_{offset}"),
+            pl.col("_equity_known").alias(f"_equity_known_{offset}"),
             pl.col("period_end_date").alias(date_name),
             pl.col("_period_available_at").alias(available_name),
         ]
         temp_names = [
             f"_equity_{offset}",
-            f"_liquidity_{offset}",
-            f"_loss_{offset}",
-            f"_eq_liq_known_{offset}",
-            f"_loss_known_{offset}",
+            f"_equity_known_{offset}",
             date_name,
             available_name,
         ]
+        if offset == 4:
+            # TTM-based liquidity and severe-loss indicators are evaluated solely at t+4
+            # (window {t+1..t+4}) so Mode A has 0% TTM quarter overlap with features X_t.
+            select_exprs.extend(
+                [
+                    pl.col("_liquidity_bad").alias("_liquidity_4"),
+                    pl.col("_liquidity_known").alias("_liquidity_known_4"),
+                    pl.col("_severe_loss").alias("_loss_4"),
+                    pl.col("_loss_known").alias("_loss_known_4"),
+                ]
+            )
+            temp_names.extend(
+                [
+                    "_liquidity_4",
+                    "_liquidity_known_4",
+                    "_loss_4",
+                    "_loss_known_4",
+                ]
+            )
         if exact_source_col is not None:
             exact_name = f"_future_exact_{offset}"
             select_exprs.append(pl.col(exact_source_col).alias(exact_name))
@@ -416,21 +573,13 @@ def build_distress_targets(
     quarters_present = pl.all_horizontal(
         *(pl.col(f"_future_end_{offset}").is_not_null() for offset in range(1, 5))
     )
-    count_liquidity = pl.sum_horizontal(
-        *(
-            pl.col(f"_liquidity_{offset}").fill_null(False).cast(pl.Int8)
-            for offset in range(1, 5)
-        )
-    )
-    event_3 = pl.any_horizontal(
-        *(pl.col(f"_loss_{offset}").fill_null(False) for offset in range(1, 5))
+    event_equity = pl.any_horizontal(
+        *(pl.col(f"_equity_{offset}").fill_null(False) for offset in range(1, 5))
     )
     event = (
-        pl.any_horizontal(
-            *(pl.col(f"_equity_{offset}").fill_null(False) for offset in range(1, 5))
-        )
-        | (count_liquidity >= 2)
-        | event_3
+        event_equity
+        | pl.col("_liquidity_4").fill_null(False)
+        | pl.col("_loss_4").fill_null(False)
     )
     mode_a_positive = quarters_present & event
     mode_a_negative = (
@@ -438,57 +587,27 @@ def build_distress_targets(
         & ~event
         & pl.all_horizontal(
             *(
-                pl.col(f"_eq_liq_known_{offset}").fill_null(False)
+                pl.col(f"_equity_known_{offset}").fill_null(False)
                 for offset in range(1, 5)
             ),
-            *(
-                pl.col(f"_loss_known_{offset}").fill_null(False)
-                for offset in range(1, 5)
-            ),
+            pl.col("_liquidity_known_4").fill_null(False),
+            pl.col("_loss_known_4").fill_null(False),
         )
     )
     mode_a_avail = pl.max_horizontal(*(pl.col(name) for name in future_available))
+    labeled_a = mode_a_positive | mode_a_negative
+    label_available_a = (
+        pl.when(labeled_a).then(mode_a_avail).otherwise(pl.lit(None, dtype=pl.Date))
+    )
 
-    if mode == "REGULATORY_DISTRESS":
-        reg_positive = pl.col("_earliest_future_event_date").is_not_null()
-        positive_verified = mode_a_positive | reg_positive
-        horizon_end = pl.col("_period_available_at") + pl.duration(days=365)
-        horizon_complete = (horizon_end <= as_of) if as_of is not None else pl.lit(True)
-        negative_verified = mode_a_negative & ~reg_positive & horizon_complete
-        labeled = positive_verified | negative_verified
-        pos_avail = (
-            pl.when(mode_a_positive & reg_positive)
-            .then(
-                pl.min_horizontal(mode_a_avail, pl.col("_earliest_future_event_date"))
-            )
-            .when(reg_positive)
-            .then(pl.col("_earliest_future_event_date"))
-            .otherwise(mode_a_avail)
-        )
-        neg_avail = pl.max_horizontal(mode_a_avail, horizon_end)
-        label_available = (
-            pl.when(positive_verified)
-            .then(pos_avail)
-            .when(negative_verified)
-            .then(neg_avail)
-            .otherwise(pl.lit(None, dtype=pl.Date))
-        )
-    else:
-        positive_verified = mode_a_positive
-        negative_verified = mode_a_negative
-        labeled = positive_verified | negative_verified
-        label_available = (
-            pl.when(labeled).then(mode_a_avail).otherwise(pl.lit(None, dtype=pl.Date))
-        )
-
-    output_exprs = [
-        pl.when(positive_verified)
+    mode_a_output_exprs: list[pl.Expr] = [
+        pl.when(mode_a_positive)
         .then(pl.lit(1, dtype=pl.Int8))
-        .when(negative_verified)
+        .when(mode_a_negative)
         .then(pl.lit(0, dtype=pl.Int8))
         .otherwise(pl.lit(None, dtype=pl.Int8))
         .alias("distress_target"),
-        label_available.alias("label_available_at"),
+        label_available_a.alias("label_available_at"),
     ]
     if has_exact_basis:
         all_future_exact = pl.all_horizontal(
@@ -497,31 +616,15 @@ def build_distress_targets(
                 for offset in range(1, 5)
             )
         )
-        exact_expr = (
-            (
-                all_future_exact
-                | (
-                    reg_positive
-                    & (
-                        ~mode_a_positive
-                        | (
-                            pl.col("_earliest_future_event_date") <= mode_a_avail
-                        ).fill_null(False)
-                    )
-                )
-            )
-            if mode == "REGULATORY_DISTRESS"
-            else all_future_exact
-        )
-        output_exprs.append(
-            pl.when(labeled)
-            .then(exact_expr)
+        mode_a_output_exprs.append(
+            pl.when(labeled_a)
+            .then(all_future_exact)
             .otherwise(None)
             .alias("_label_exact_filing_basis")
         )
 
     return (
-        result.with_columns(*output_exprs)
+        result.with_columns(*mode_a_output_exprs)
         .drop(
             "_quarter_index",
             "_equity_bad",
@@ -531,7 +634,6 @@ def build_distress_targets(
             "_severe_loss",
             "_loss_known",
             *past_cols,
-            *reg_temp_cols,
             *future_temp_cols,
         )
         .sort(["issuer_id", "statement_scope", "period_end_date"])
