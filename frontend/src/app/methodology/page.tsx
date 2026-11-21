@@ -9,12 +9,20 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/primitives";
 import {
+  useAllIssuers,
   useMetaDictionary,
   useQualityQuarantine,
   useQualitySummary,
   useSnapshotOverview,
 } from "@/hooks/use-finintel-queries";
-import { RATIO_CATEGORY_LABELS, SEVERITY_META } from "@/lib/domain-labels";
+import {
+  formatFormulaVi,
+  QUALITY_RULE_LABELS,
+  QUALITY_STATUS_META,
+  RATIO_CATEGORY_LABELS,
+  SEVERITY_META,
+  STATEMENT_SCOPE_LABELS,
+} from "@/lib/domain-labels";
 import {
   formatDateVi,
   formatNumber,
@@ -49,6 +57,15 @@ function MethodologyContent() {
   const overviewQuery = useSnapshotOverview(snapshotId);
   const summaryQuery = useQualitySummary(25, qOffset, snapshotId);
   const quarantineQuery = useQualityQuarantine(25, quarOffset, snapshotId);
+  const issuersQuery = useAllIssuers(snapshotId);
+
+  const issuerTickerMap = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const iss of issuersQuery.data ?? []) {
+      map.set(iss.issuer_id, iss.ticker);
+    }
+    return map;
+  }, [issuersQuery.data]);
 
   const setTab = (tab: MethodTab) => {
     router.replace(tab === "dictionary" ? "/methodology" : `/methodology?tab=${tab}`, {
@@ -171,15 +188,12 @@ function MethodologyContent() {
                         >
                           <td className="px-3 py-2">
                             <div className="font-medium text-ink">{r.display_name_vn}</div>
-                            <div className="font-mono text-[11px] text-ink-subtle">
-                              {r.ratio_name}
-                            </div>
                           </td>
                           <td className="px-3 py-2 text-ink-muted">
                             {RATIO_CATEGORY_LABELS[r.category] ?? r.category}
                           </td>
-                          <td className="px-3 py-2 font-mono text-[11px] text-ink">
-                            {r.formula_display}
+                          <td className="px-3 py-2 text-xs text-ink">
+                            {formatFormulaVi(r.formula_display)}
                           </td>
                           <td className="px-3 py-2 text-ink-muted">
                             {DIRECTION_LABELS[r.direction] ?? r.direction}
@@ -392,30 +406,43 @@ function MethodologyContent() {
                         </tr>
                       </thead>
                       <tbody>
-                        {summaryQuery.data?.items.map((row, idx) => (
-                          <tr
-                            key={`${row.issuer_id}-${row.period_end_date}-${idx}`}
-                            className="border-b border-border/60"
-                          >
-                            <td className="px-3 py-2 font-mono text-ink">{row.issuer_id}</td>
-                            <td className="px-3 py-2">
-                              {formatPeriodLabel(row.period_end_date, row.period_type)}
-                            </td>
-                            <td className="px-3 py-2 text-ink-muted">{row.statement_scope}</td>
-                            <td className="px-3 py-2">
-                              <RiskBadge
-                                tone={row.quality_status === "PASS" ? "low" : "mid"}
-                                label={row.quality_status}
-                              />
-                            </td>
-                            <td className="px-3 py-2 text-ink-muted">
-                              {row.warning_codes.join(", ") || "—"}
-                            </td>
-                            <td className="num px-3 py-2 text-right text-ink-muted">
-                              {formatDateVi(row.checked_at)}
-                            </td>
-                          </tr>
-                        ))}
+                        {summaryQuery.data?.items.map((row, idx) => {
+                          const ticker = issuerTickerMap.get(row.issuer_id) ?? row.issuer_id;
+                          const statusMeta = QUALITY_STATUS_META[row.quality_status] ?? {
+                            label: "Có cảnh báo",
+                            tone: "mid" as const,
+                          };
+                          const warningText =
+                            row.warning_codes.length > 0
+                              ? row.warning_codes
+                                  .map((c) => QUALITY_RULE_LABELS[c] ?? "Lưu ý kiểm định")
+                                  .join(" · ")
+                              : "—";
+                          return (
+                            <tr
+                              key={`${row.issuer_id}-${row.period_end_date}-${idx}`}
+                              className="border-b border-border/60"
+                            >
+                              <td className="px-3 py-2 font-mono font-semibold text-ink">
+                                {ticker}
+                              </td>
+                              <td className="px-3 py-2">
+                                {formatPeriodLabel(row.period_end_date, row.period_type)}
+                              </td>
+                              <td className="px-3 py-2 text-ink-muted">
+                                {STATEMENT_SCOPE_LABELS[row.statement_scope] ??
+                                  "Báo cáo tài chính"}
+                              </td>
+                              <td className="px-3 py-2">
+                                <RiskBadge tone={statusMeta.tone} label={statusMeta.label} />
+                              </td>
+                              <td className="px-3 py-2 text-ink-muted">{warningText}</td>
+                              <td className="num px-3 py-2 text-right text-ink-muted">
+                                {formatDateVi(row.checked_at)}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -477,22 +504,33 @@ function MethodologyContent() {
                         </tr>
                       </thead>
                       <tbody>
-                        {quarantineQuery.data?.items.map((row, idx) => (
-                          <tr
-                            key={`${row.filing_id}-${idx}`}
-                            className="border-b border-border/60"
-                          >
-                            <td className="px-3 py-2 font-mono">{row.issuer_id}</td>
-                            <td className="px-3 py-2 font-mono text-ink-muted">{row.filing_id}</td>
-                            <td className="px-3 py-2">
-                              {formatPeriodLabel(row.period_end_date, row.period_type)}
-                            </td>
-                            <td className="px-3 py-2 font-mono">{row.rule_code}</td>
-                            <td className="px-3 py-2">
-                              <RiskBadge tone="mid" label={row.severity} />
-                            </td>
-                          </tr>
-                        ))}
+                        {quarantineQuery.data?.items.map((row, idx) => {
+                          const ticker = issuerTickerMap.get(row.issuer_id) ?? row.issuer_id;
+                          const sevMeta = SEVERITY_META[row.severity] ?? SEVERITY_META.CRITICAL;
+                          return (
+                            <tr
+                              key={`${row.filing_id}-${idx}`}
+                              className="border-b border-border/60"
+                            >
+                              <td className="px-3 py-2 font-mono font-semibold text-ink">
+                                {ticker}
+                              </td>
+                              <td className="px-3 py-2 font-mono text-ink-muted">
+                                {row.filing_id}
+                              </td>
+                              <td className="px-3 py-2">
+                                {formatPeriodLabel(row.period_end_date, row.period_type)}
+                              </td>
+                              <td className="px-3 py-2 text-ink">
+                                {QUALITY_RULE_LABELS[row.rule_code] ??
+                                  "Vi phạm quy tắc kiểm định đầu vào"}
+                              </td>
+                              <td className="px-3 py-2">
+                                <RiskBadge tone={sevMeta.tone} label={sevMeta.label} />
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>

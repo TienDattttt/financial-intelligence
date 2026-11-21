@@ -2,7 +2,15 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { AlertTriangle, Download, Pin, PinOff, RotateCcw } from "lucide-react";
+import {
+  AlertTriangle,
+  Download,
+  Pin,
+  PinOff,
+  RotateCcw,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
 import { StressSectorBarChart } from "@/components/charts/StressSectorBarChart";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
@@ -149,6 +157,16 @@ export default function StressTestPage() {
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const [selectedSectorCode, setSelectedSectorCode] = React.useState<string | null>(null);
   const [activeTab, setActiveTab] = React.useState<"NEWLY" | "TOP">("NEWLY");
+  const [mobileControlsOpen, setMobileControlsOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!mobileControlsOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileControlsOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mobileControlsOpen]);
 
   const payload = React.useMemo<StressScenarioRequest>(
     () => ({
@@ -292,22 +310,64 @@ export default function StressTestPage() {
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center justify-between gap-2 lg:hidden">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-expanded={mobileControlsOpen}
+          aria-controls="stress-controls-drawer"
+          onClick={() => setMobileControlsOpen(true)}
+        >
+          <SlidersHorizontal className="size-3.5" />
+          <span>Tham số cú sốc vĩ mô</span>
+        </Button>
+      </div>
+
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-        {/* Left Shock Controls */}
-        <Card className="w-full shrink-0 lg:w-72">
-          <CardHeader className="py-2.5">
-            <CardTitle className="text-[14px]">Tham số cú sốc vĩ mô</CardTitle>
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              onClick={() => setShocks(DEFAULT_SHOCKS)}
-            >
-              <RotateCcw className="size-3" />
-              Về 0
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-3 p-3.5">
+        {/* Left Shock Controls (Desktop) / Collapsible Drawer (Mobile < lg) */}
+        <div
+          id="stress-controls-drawer"
+          role={mobileControlsOpen ? "dialog" : undefined}
+          aria-modal={mobileControlsOpen ? true : undefined}
+          aria-label={mobileControlsOpen ? "Tham số cú sốc vĩ mô" : undefined}
+          className={cn(
+            "lg:block lg:w-72 lg:shrink-0",
+            mobileControlsOpen
+              ? "fixed inset-0 z-40 flex bg-ink/30 lg:static lg:inset-auto lg:z-auto lg:bg-transparent"
+              : "hidden",
+          )}
+          onClick={() => setMobileControlsOpen(false)}
+        >
+          <Card
+            className="flex h-full w-80 max-w-[85vw] flex-col overflow-y-auto rounded-none border-r border-border lg:h-auto lg:w-full lg:max-w-none lg:overflow-visible lg:rounded lg:border"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <CardHeader className="py-2.5">
+              <CardTitle className="text-[14px]">Tham số cú sốc vĩ mô</CardTitle>
+              <div className="flex items-center gap-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setShocks(DEFAULT_SHOCKS)}
+                >
+                  <RotateCcw className="size-3" />
+                  Về 0
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="lg:hidden"
+                  aria-label="Đóng bảng tham số sốc"
+                  onClick={() => setMobileControlsOpen(false)}
+                >
+                  <X className="size-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3 p-3.5">
             <DualShockControl
               id="shock-rev"
               label="Biến động doanh thu"
@@ -402,8 +462,19 @@ export default function StressTestPage() {
                 </Button>
               ) : null}
             </div>
+            <div className="pt-1 lg:hidden">
+              <Button
+                type="button"
+                size="sm"
+                className="w-full"
+                onClick={() => setMobileControlsOpen(false)}
+              >
+                Xem kết quả mô phỏng
+              </Button>
+            </div>
           </CardContent>
         </Card>
+        </div>
 
         {/* Results Panel */}
         <div className="min-w-0 flex-1 space-y-4">

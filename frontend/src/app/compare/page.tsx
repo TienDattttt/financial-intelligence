@@ -11,7 +11,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/primitives";
 import { useAllIssuers, useCompareCompanies } from "@/hooks/use-finintel-queries";
-import { PERIOD_TYPE_LABELS, STATEMENT_SCOPE_LABELS } from "@/lib/domain-labels";
+import {
+  PERIOD_TYPE_LABELS,
+  selectMlScoreForPeriod,
+  STATEMENT_SCOPE_LABELS,
+} from "@/lib/domain-labels";
 import {
   buildCsvContent,
   formatNumber,
@@ -178,9 +182,12 @@ function CompareContent() {
       perTickerMap.set(ticker, map);
     });
 
-    const dates = Array.from(dateSet).sort().slice(-12);
+    const dates = Array.from(dateSet)
+      .filter((d) => !periodEndDate || d <= periodEndDate)
+      .sort()
+      .slice(-12);
     return { dates, perTickerMap };
-  }, [metricConfig, profiles, tickers]);
+  }, [metricConfig, periodEndDate, profiles, tickers]);
 
   const chartOption = React.useMemo<EChartsOption>(() => {
     const xLabels = chartData.dates.map((d) => formatPeriodLabel(d, periodType));
@@ -246,24 +253,21 @@ function CompareContent() {
       }
     });
 
-    const latestMl = tickers.map((_, idx) => {
-      const scores = [...(profiles[idx]?.data?.ml_scores ?? [])].sort((a, b) =>
-        a.period_end_date.localeCompare(b.period_end_date),
-      );
-      return scores[scores.length - 1] ?? null;
-    });
+    const latestMl = tickers.map((_, idx) =>
+      selectMlScoreForPeriod(profiles[idx]?.data?.ml_scores, periodEndDate),
+    );
 
     const latestFlagsCount = tickers.map((_, idx) => {
       const p = profiles[idx]?.data;
       if (!p) return 0;
-      const latestDate = latestMl[idx]?.period_end_date;
-      return latestDate
-        ? p.red_flags.filter((f) => f.period_end_date === latestDate).length
+      const targetDate = latestMl[idx]?.period_end_date ?? periodEndDate;
+      return targetDate
+        ? p.red_flags.filter((f) => f.period_end_date === targetDate).length
         : p.red_flags.length;
     });
 
     return { ratioList, latestMl, latestFlagsCount };
-  }, [profiles, summaries, tickers]);
+  }, [periodEndDate, profiles, summaries, tickers]);
 
   const handleExportCsv = () => {
     const headers = ["Chỉ tiêu", ...tickers];
@@ -337,6 +341,7 @@ function CompareContent() {
           <p className="mt-0.5 text-xs text-ink-muted">
             Phạm vi {STATEMENT_SCOPE_LABELS[statementScope] ?? statementScope} ·{" "}
             {PERIOD_TYPE_LABELS[periodType] ?? periodType}
+            {periodEndDate ? ` · ${formatPeriodLabel(periodEndDate, periodType)}` : ""}
           </p>
         </div>
         {tickers.length > 0 ? (
@@ -471,7 +476,10 @@ function CompareContent() {
           <Card>
             <CardHeader className="py-2.5">
               <CardTitle className="text-[14px]">
-                Ma trận chỉ số sức khỏe tài chính &amp; định lượng kỳ mới nhất
+                Ma trận chỉ số sức khỏe tài chính &amp; định lượng
+                {periodEndDate
+                  ? ` (${formatPeriodLabel(periodEndDate, periodType)})`
+                  : " kỳ mới nhất"}
               </CardTitle>
               <div className="inline-flex rounded border border-border bg-canvas p-0.5 text-xs">
                 <button

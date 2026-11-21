@@ -1304,6 +1304,94 @@ def test_snapshot_without_ml_table_serves_profile_and_screener_200(
         assert all(item["calibrated_distress_prob"] is None for item in body["items"])
 
 
+def test_sector_risk_summary_high_red_flag_count_matches_screener_min_2(
+    tmp_path: Path, synthetic_tables: dict[str, pl.DataFrame]
+) -> None:
+    data_root = tmp_path / "data_rf_threshold"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    run_id = "run_test_rf2_001"
+    snapshot_id = "snap_test_rf2_001"
+    state.start_run(run_id, "MANUAL", {"source": "test"}, None)
+
+    red_flags_df = pl.DataFrame(
+        [
+            {
+                "issuer_id": "HPG",
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": date(2025, 12, 31),
+                "flag_code": "RF_05_DEBT_SERVICE_DISTRESS",
+                "severity": "CRITICAL",
+                "flag_title_vn": "Áp lực trả nợ",
+                "explanation_text_vn": "Test RF 1",
+                "evidence_json": "{}",
+                "filing_id": "FIL_HPG_2025_Q4",
+            },
+            {
+                "issuer_id": "HPG",
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": date(2025, 12, 31),
+                "flag_code": "RF_08_NON_CORE_EARNINGS_DEPENDENCE",
+                "severity": "HIGH",
+                "flag_title_vn": "Phụ thuộc lợi nhuận phi cốt lõi",
+                "explanation_text_vn": "Test RF 2",
+                "evidence_json": "{}",
+                "filing_id": "FIL_HPG_2025_Q4",
+            },
+            {
+                "issuer_id": "CMG",
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": date(2025, 12, 31),
+                "flag_code": "RF_02_RECEIVABLES_SURGE",
+                "severity": "MEDIUM",
+                "flag_title_vn": "Phải thu tăng nhanh",
+                "explanation_text_vn": "Test RF 3",
+                "evidence_json": "{}",
+                "filing_id": "FIL_CMG_2025_Q4",
+            },
+        ],
+        schema=synthetic_tables[RED_FLAGS_TABLE].schema,
+    )
+    tables = {**synthetic_tables, RED_FLAGS_TABLE: red_flags_df}
+    publisher = SnapshotPublisher(
+        data_root / "published" / "snapshots", state_store=state
+    )
+    publisher.publish(snapshot_id, tables, run_id=run_id)
+    state.finish_run(run_id, "SUCCEEDED", snapshot_id)
+
+    app = create_app(data_root=data_root)
+    with TestClient(app) as client:
+        r_sum = client.get(
+            "/api/v2/sectors/risk-summary",
+            params={
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": "2025-12-31",
+            },
+        )
+        assert r_sum.status_code == 200
+        summary = r_sum.json()
+
+        r_scr = client.get(
+            "/api/v1/screener",
+            params={
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": "2025-12-31",
+                "min_red_flags": 2,
+            },
+        )
+        assert r_scr.status_code == 200
+        screener = r_scr.json()
+
+        assert summary["high_red_flag_count"] == 1
+        assert screener["total"] == 1
+        assert summary["high_red_flag_count"] == screener["total"]
+
+
 # ==============================================================================
 # 5. Opt-In Real Empirical Snapshot Verification (FININTEL_EMPIRICAL_SNAPSHOT_DIR)
 # ==============================================================================
