@@ -16,6 +16,16 @@ storage:
   publish_unmapped: false
 ingestion: {}
 serving: {}
+orchestration:
+  data_root_env: FININTEL_DATA_ROOT
+  universe_tickers_path: universe_tickers.yaml
+  max_partitions_per_run: 4
+  timezone: Asia/Ho_Chi_Minh
+  ml_artifact_dir: ../data/metadata/ml_models
+  ml_retrain_cron: "0 2 1 1,4,7,10 *"
+  # Runbook (shared FININTEL_DATA_ROOT between Dagster & FastAPI):
+  #   set FININTEL_DATA_ROOT=data
+  #   DAGSTER_HOME=config uv run dagster dev -h 127.0.0.1 -p 3000 -m finintel.orchestration.definitions
 # Supply the reviewed issuer reference table at data/curated/issuers.parquet
 # or configure issuers_path below. The default facts input is the latest
 # successful full-history normalization for the requested source, with
