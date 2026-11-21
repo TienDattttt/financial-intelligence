@@ -101,10 +101,19 @@ from finintel.transform import (
     run_incremental_analytics_transform,
     write_transform_state,
 )
+from finintel.transform.incremental import write_ml_artifact_bundle
 
 VN_TZ = timezone(timedelta(hours=7))
 FHSC_BACKFILL_POLICY = dg.BackfillPolicy.multi_run(max_partitions_per_run=10)
+DEFAULT_MAX_PARTITIONS_PER_RUN = 4
 _NOTHING_DAGSTER_TYPE: dg.DagsterType = resolve_dagster_type(dg.Nothing)
+_INFLIGHT_RUN_STATUSES = (
+    dg.DagsterRunStatus.QUEUED,
+    dg.DagsterRunStatus.NOT_STARTED,
+    dg.DagsterRunStatus.STARTING,
+    dg.DagsterRunStatus.STARTED,
+)
+_COOLDOWN_PROVIDER_KEYS = ("fhsc", "fhsc_oapi", "vietcap_iq", "cafef")
 
 
 class FhscIngestConfig(dg.Config):
@@ -133,6 +142,8 @@ class PublishMartsConfig(dg.Config):
     facts_path: str | None = None
     source: str = "fhsc"
     ml_enabled: bool = False
+    ml_mode: str = "incremental_score"
+    ml_model_dir: str | None = None
     ml_validation_start: str | None = None
     ml_test_start: str | None = None
     ml_approved_target: bool = False
@@ -430,6 +441,28 @@ def _resolve_confined_regulatory_events_path(
     )
 
 
+def _resolve_model_artifact_dir(
+    config: PublishMartsConfig, *, paths: FinIntelPathsResource | None
+) -> Path | None:
+    if config.ml_model_dir is not None:
+        raw = config.ml_model_dir.strip()
+        if not raw:
+            raise ContractViolationError(
+                "PublishMartsConfig.ml_model_dir must be non-empty when specified."
+            )
+        candidate = Path(raw)
+        if paths is None:
+            return candidate.resolve()
+        return (
+            candidate
+            if candidate.is_absolute()
+            else paths.resolved_project_root() / candidate
+        ).resolve()
+    if paths is not None:
+        return (paths.resolved_metadata_dir() / "ml_models").resolve()
+    return None
+
+
 def _resolve_ml_config(
     config: PublishMartsConfig, *, paths: FinIntelPathsResource | None = None
 ) -> MLTransformConfig:
@@ -437,13 +470,31 @@ def _resolve_ml_config(
         raise ContractViolationError(
             "PublishMartsConfig.target_mode must be 'FUNDAMENTAL_DISTRESS' or 'REGULATORY_DISTRESS'."
         )
+    if config.ml_mode not in ("disabled", "incremental_score", "retrain"):
+        raise ContractViolationError(
+            "PublishMartsConfig.ml_mode must be 'disabled', 'incremental_score', or 'retrain'."
+        )
     effective_target_mode: Literal["FUNDAMENTAL_DISTRESS", "REGULATORY_DISTRESS"] = (
         "REGULATORY_DISTRESS"
         if config.target_mode == "REGULATORY_DISTRESS"
         else "FUNDAMENTAL_DISTRESS"
     )
-    if not config.ml_enabled:
-        return MLTransformConfig(enabled=False, target_mode=effective_target_mode)
+    effective_mode: Literal["disabled", "incremental_score", "retrain"]
+    if config.ml_enabled or config.ml_mode == "retrain":
+        effective_mode = "retrain"
+    elif config.ml_mode == "disabled":
+        effective_mode = "disabled"
+    else:
+        effective_mode = "incremental_score"
+    artifact_dir = _resolve_model_artifact_dir(config, paths=paths)
+
+    if effective_mode != "retrain":
+        return MLTransformConfig(
+            enabled=False,
+            mode=effective_mode,
+            model_artifact_dir=artifact_dir,
+            target_mode=effective_target_mode,
+        )
     val_start: date | None = None
     test_start: date | None = None
     if config.ml_validation_start is not None:
@@ -481,6 +532,8 @@ def _resolve_ml_config(
 
     return MLTransformConfig(
         enabled=True,
+        mode="retrain",
+        model_artifact_dir=artifact_dir,
         validation_start=val_start,
         test_start=test_start,
         approved_target=config.ml_approved_target,
@@ -978,6 +1031,7 @@ def published_financial_marts(
             previous_ratios: pl.DataFrame | None = None
             previous_benchmarks: pl.DataFrame | None = None
             previous_red_flags: pl.DataFrame | None = None
+            previous_ml_scores: pl.DataFrame | None = None
             if (
                 previous_state is not None
                 and previous_snapshot_id is not None
@@ -995,10 +1049,14 @@ def published_financial_marts(
                         previous_red_flags = _read_optional_snapshot_table(
                             pinned, RED_FLAGS_TABLE
                         )
+                        previous_ml_scores = _read_optional_snapshot_table(
+                            pinned, ML_SCORES_TABLE
+                        )
                 except (FileNotFoundError, ContractViolationError):
                     previous_ratios = None
                     previous_benchmarks = None
                     previous_red_flags = None
+                    previous_ml_scores = None
 
             bundle = run_incremental_analytics_transform(
                 facts_df,
@@ -1008,6 +1066,7 @@ def published_financial_marts(
                 previous_ratios=previous_ratios,
                 previous_benchmarks=previous_benchmarks,
                 previous_red_flags=previous_red_flags,
+                previous_ml_scores=previous_ml_scores,
                 previous_state=previous_state,
                 previous_snapshot_id=previous_snapshot_id,
                 state_path=transform_state_path,
@@ -1067,6 +1126,13 @@ def published_financial_marts(
                 bundle.next_transform_state,
                 snapshot_id=snapshot_id,
             )
+            if (
+                bundle.ml_artifact_payload is not None
+                and ml_cfg.model_artifact_dir is not None
+            ):
+                write_ml_artifact_bundle(
+                    ml_cfg.model_artifact_dir, bundle.ml_artifact_payload
+                )
 
             if (
                 bundle.evaluation_report is not None
@@ -1162,3 +1228,313 @@ lakehouse_maintenance_schedule = dg.ScheduleDefinition(
     execution_timezone="Asia/Ho_Chi_Minh",
     description="Weekly Sunday 03:00 Asia/Ho_Chi_Minh lakehouse maintenance and curated GC.",
 )
+
+
+def is_tt96_peak_window(target_date: date) -> tuple[bool, str]:
+    """Classify a calendar date against Vietnam Circular 96/2020/TT-BTC BCTC windows."""
+    month, day = target_date.month, target_date.day
+    if month == 1 and 1 <= day <= 30:
+        return True, "TT96_Q4_FILING_WINDOW"
+    if month == 3 or (month == 4 and day <= 14):
+        return True, "TT96_ANNUAL_AUDITED_WINDOW"
+    if (month == 4 and day >= 15) or (month == 5 and day <= 5):
+        return True, "TT96_Q1_FILING_WINDOW"
+    if (month == 7 and day >= 15) or month == 8:
+        return True, "TT96_Q2_SEMIANNUAL_WINDOW"
+    if (month == 10 and day >= 15) or (month == 11 and day <= 5):
+        return True, "TT96_Q3_FILING_WINDOW"
+    return False, "OFF_SEASON"
+
+
+def _resolve_max_partitions_per_run(settings: Mapping[str, object]) -> int:
+    orch_cfg = settings.get("orchestration")
+    if isinstance(orch_cfg, Mapping):
+        raw = orch_cfg.get("max_partitions_per_run")
+        if type(raw) is int and 1 <= raw <= 10:
+            return raw
+    return DEFAULT_MAX_PARTITIONS_PER_RUN
+
+
+def select_seasonal_ingestion_batch(
+    instance: dg.DagsterInstance,
+    *,
+    target_date: date,
+    max_partitions_per_run: int = DEFAULT_MAX_PARTITIONS_PER_RUN,
+) -> tuple[str, ...]:
+    """Select bounded rotating ticker batch prioritizing unmaterialized partitions."""
+    if max_partitions_per_run < 1:
+        return ()
+    all_tickers = sorted(
+        instance.get_dynamic_partitions(CORPORATE_TICKERS.name or "corporate_tickers")
+    )
+    if not all_tickers:
+        return ()
+    materialized = instance.get_materialized_partitions(raw_fhsc_filings.key)
+    unmaterialized = [ticker for ticker in all_tickers if ticker not in materialized]
+    if len(unmaterialized) >= max_partitions_per_run:
+        return tuple(unmaterialized[:max_partitions_per_run])
+
+    selected: list[str] = list(unmaterialized)
+    remaining_needed = max_partitions_per_run - len(selected)
+    pool = [ticker for ticker in all_tickers if ticker in materialized]
+    if pool and remaining_needed > 0:
+        offset = (target_date.toordinal() * max_partitions_per_run) % len(pool)
+        rotated = pool[offset:] + pool[:offset]
+        selected.extend(rotated[:remaining_needed])
+    return tuple(selected)
+
+
+fhsc_ingestion_job = dg.define_asset_job(
+    name="fhsc_ingestion_job",
+    selection=dg.AssetSelection.assets(raw_fhsc_filings, raw_public_disclosures),
+    description=(
+        "Partitioned FHSC + Vietcap/CafeF disclosure ingestion bounded by "
+        "fhsc_api_pool (limit=1) and public_disclosure_pool (limit=3)."
+    ),
+)
+
+downstream_publish_job = dg.define_asset_job(
+    name="downstream_publish_job",
+    selection=dg.AssetSelection.assets(
+        normalized_financial_facts, published_financial_marts
+    ),
+    description=(
+        "Incremental normalization, DBSP analytics transform, incremental ML scoring, "
+        "and atomic snapshot publication."
+    ),
+)
+
+quarterly_ml_retrain_job = dg.define_asset_job(
+    name="quarterly_ml_retrain_job",
+    selection=dg.AssetSelection.assets(published_financial_marts),
+    description=(
+        "Quarterly Walk-Forward ML model retraining and versioned artifact persistence "
+        "(decoupled from daily/seasonal incremental scoring)."
+    ),
+)
+
+
+@dg.schedule(
+    name="seasonal_ingestion_schedule",
+    job=fhsc_ingestion_job,
+    cron_schedule="0 1 * * *",
+    execution_timezone="Asia/Ho_Chi_Minh",
+    default_status=dg.DefaultScheduleStatus.STOPPED,
+    description=(
+        "TT96-aware ingestion schedule (daily rotating 3-5 ticker batch during peak filing "
+        "windows, Sunday-only off-season) honoring SQLite cooldowns and 0.6 req/s pacing."
+    ),
+)
+def seasonal_ingestion_schedule(
+    context: dg.ScheduleEvaluationContext,
+    paths: FinIntelPathsResource,
+    state: StateStoreResource,
+) -> dg.SkipReason | list[dg.RunRequest]:
+    """Emit bounded ingestion RunRequests respecting TT96 windows and SQLite cooldowns."""
+    scheduled = context.scheduled_execution_time
+    vn_dt = (
+        scheduled.replace(tzinfo=VN_TZ)
+        if scheduled.utcoffset() is None
+        else scheduled.astimezone(VN_TZ)
+    )
+    vn_date = vn_dt.date()
+    now_utc = vn_dt.astimezone(UTC)
+
+    state_store = state.get_store()
+    if state_store.path.is_file():
+        for provider_key in _COOLDOWN_PROVIDER_KEYS:
+            cooldown_until = state_store.active_disclosure_cooldown_until(
+                provider_key, now=now_utc
+            )
+            if cooldown_until is not None:
+                return dg.SkipReason(
+                    f"Skipping seasonal ingestion: SQLite cooldown active for "
+                    f"{provider_key!r} until {cooldown_until.isoformat()}."
+                )
+
+    in_peak, window_name = is_tt96_peak_window(vn_date)
+    if not in_peak and vn_dt.weekday() != 6:
+        return dg.SkipReason(
+            f"Outside TT96 disclosure peak window ({vn_date.isoformat()}); "
+            "off-season sweeps run Sundays only."
+        )
+
+    settings = paths.load_settings_dict()
+    max_per_run = _resolve_max_partitions_per_run(settings)
+    batch_tickers = select_seasonal_ingestion_batch(
+        context.instance,
+        target_date=vn_date,
+        max_partitions_per_run=max_per_run,
+    )
+    if not batch_tickers:
+        return dg.SkipReason(
+            "No corporate_tickers dynamic partitions registered; run "
+            "sync_corporate_ticker_partitions() first."
+        )
+
+    return [
+        dg.RunRequest(
+            run_key=f"seasonal:{vn_date.isoformat()}:{window_name}:{ticker}",
+            partition_key=ticker,
+            run_config=dg.RunConfig(
+                ops={"raw_fhsc_filings": FhscIngestConfig(mode="sync")}
+            ),
+            tags={
+                "finintel/trigger": "seasonal_ingestion_schedule",
+                "finintel/tt96_window": window_name,
+            },
+        )
+        for ticker in batch_tickers
+    ]
+
+
+@dg.sensor(
+    name="downstream_publish_sensor",
+    job=downstream_publish_job,
+    minimum_interval_seconds=60,
+    default_status=dg.DefaultSensorStatus.STOPPED,
+    description=(
+        "Automatically triggers incremental normalization and snapshot publication "
+        "after completed raw ingestion batches without retraining ML."
+    ),
+)
+def downstream_publish_sensor(
+    context: dg.SensorEvaluationContext,
+) -> dg.SkipReason | dg.RunRequest:
+    """Trigger ``downstream_publish_job`` in incremental ML scoring mode on new ingestion."""
+    after_cursor: int | None = None
+    if context.cursor is not None and context.cursor.strip():
+        try:
+            after_cursor = int(context.cursor.strip())
+        except ValueError:
+            after_cursor = None
+
+    records: list[dg.EventLogRecord] = []
+    for asset_def in (raw_public_disclosures, raw_fhsc_filings):
+        result = context.instance.fetch_materializations(
+            dg.AssetRecordsFilter(
+                asset_key=asset_def.key,
+                after_storage_id=after_cursor,
+            ),
+            limit=100,
+        )
+        records.extend(result.records)
+
+    if not records:
+        return dg.SkipReason(
+            "No new raw ingestion materializations since last publish."
+        )
+
+    active_ingest = context.instance.get_runs(
+        filters=dg.RunsFilter(
+            job_name="fhsc_ingestion_job",
+            statuses=list(_INFLIGHT_RUN_STATUSES),
+        ),
+        limit=1,
+    )
+    if active_ingest:
+        return dg.SkipReason(
+            "Deferring downstream publish while fhsc_ingestion_job run is in flight."
+        )
+
+    active_publish = context.instance.get_runs(
+        filters=dg.RunsFilter(
+            job_name="downstream_publish_job",
+            statuses=list(_INFLIGHT_RUN_STATUSES),
+        ),
+        limit=1,
+    )
+    if active_publish:
+        return dg.SkipReason(
+            "Deferring downstream publish while downstream_publish_job is already running."
+        )
+
+    max_storage_id = max(int(rec.storage_id) for rec in records)
+    tickers = sorted(
+        {
+            str(rec.partition_key)
+            for rec in records
+            if getattr(rec, "partition_key", None)
+        }
+    )
+    context.update_cursor(str(max_storage_id))
+    return dg.RunRequest(
+        run_key=f"downstream-publish:{max_storage_id}",
+        run_config=dg.RunConfig(
+            ops={
+                "published_financial_marts": PublishMartsConfig(
+                    ml_mode="incremental_score"
+                )
+            }
+        ),
+        tags={
+            "finintel/trigger": "downstream_publish_sensor",
+            "finintel/source_event_cursor": str(max_storage_id),
+            "finintel/materialized_tickers": ",".join(tickers[:10]),
+        },
+    )
+
+
+@dg.schedule(
+    name="quarterly_ml_retrain_schedule",
+    job=quarterly_ml_retrain_job,
+    cron_schedule="0 2 1 1,4,7,10 *",
+    execution_timezone="Asia/Ho_Chi_Minh",
+    default_status=dg.DefaultScheduleStatus.STOPPED,
+    description=(
+        "Quarterly full Walk-Forward ML retrain schedule persisting versioned "
+        "model artifacts for incremental scoring."
+    ),
+)
+def quarterly_ml_retrain_schedule(
+    context: dg.ScheduleEvaluationContext,
+    paths: FinIntelPathsResource,
+) -> dg.RunRequest:
+    """Emit quarterly ML retrain RunRequest reading split boundaries from settings if configured."""
+    scheduled = context.scheduled_execution_time
+    vn_dt = (
+        scheduled.replace(tzinfo=VN_TZ)
+        if scheduled.utcoffset() is None
+        else scheduled.astimezone(VN_TZ)
+    )
+    vn_date = vn_dt.date()
+
+    settings = paths.load_settings_dict()
+    orch_cfg = settings.get("orchestration")
+    raw_retrain = orch_cfg.get("ml_retrain") if isinstance(orch_cfg, Mapping) else None
+    retrain_cfg: Mapping[str, object] = (
+        raw_retrain if isinstance(raw_retrain, Mapping) else {}
+    )
+    val_start = str(
+        retrain_cfg.get("validation_start")
+        or date(max(2019, vn_date.year - 3), 1, 1).isoformat()
+    )
+    test_start = str(
+        retrain_cfg.get("test_start")
+        or date(max(2020, vn_date.year - 1), 1, 1).isoformat()
+    )
+    target_mode = str(retrain_cfg.get("target_mode") or "FUNDAMENTAL_DISTRESS")
+    reg_path_raw = retrain_cfg.get("regulatory_events_path")
+    reg_path = str(reg_path_raw) if isinstance(reg_path_raw, str) else None
+
+    return dg.RunRequest(
+        run_key=f"quarterly-ml-retrain:{vn_date.isoformat()}",
+        run_config=dg.RunConfig(
+            ops={
+                "published_financial_marts": PublishMartsConfig(
+                    as_of=vn_date.isoformat(),
+                    ml_enabled=True,
+                    ml_mode="retrain",
+                    ml_approved_target=True,
+                    ml_validation_start=val_start,
+                    ml_test_start=test_start,
+                    target_mode=target_mode,
+                    regulatory_events_path=reg_path,
+                )
+            }
+        ),
+        tags={
+            "finintel/trigger": "quarterly_ml_retrain_schedule",
+            "finintel/ml_cadence": "retrain",
+        },
+    )

@@ -21,6 +21,7 @@ from pathlib import Path
 
 import dagster as dg
 import polars as pl
+import yaml  # type: ignore[import-untyped]
 
 from finintel.exceptions import ContractViolationError
 
@@ -78,19 +79,84 @@ def load_corporate_tickers(issuers_path: Path) -> tuple[str, ...]:
     return tuple(sorted(set(cleaned)))
 
 
+DEFAULT_UNIVERSE_TICKERS_PATH = Path("config/universe_tickers.yaml")
+
+
+def load_universe_tickers_yaml(yaml_path: Path) -> tuple[str, ...]:
+    """Load sorted, validated corporate tickers from a YAML universe manifest."""
+    resolved = yaml_path.resolve()
+    if not resolved.is_file():
+        raise ContractViolationError(
+            f"Universe tickers YAML file does not exist: {resolved}"
+        )
+    try:
+        loaded = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ContractViolationError(
+            f"Unable to read universe tickers YAML at {resolved}."
+        ) from exc
+
+    if not isinstance(loaded, Mapping):
+        raise ContractViolationError(
+            f"Universe tickers YAML root must be a mapping: {resolved}"
+        )
+    regime = loaded.get("accounting_regime")
+    if regime is not None and str(regime).strip().upper() != "CORPORATE":
+        raise ContractViolationError(
+            f"Universe tickers YAML must target CORPORATE regime, got {regime!r}."
+        )
+    raw_tickers = loaded.get("tickers")
+    if not isinstance(raw_tickers, list):
+        raise ContractViolationError(
+            f"Universe tickers YAML 'tickers' must be a list: {resolved}"
+        )
+
+    cleaned: list[str] = []
+    for raw in raw_tickers:
+        if not isinstance(raw, str):
+            raise ContractViolationError(
+                f"Invalid non-string ticker in universe YAML: {raw!r}"
+            )
+        ticker = raw.strip().upper()
+        if not _TICKER_RE.fullmatch(ticker):
+            raise ContractViolationError(
+                f"Invalid corporate ticker in universe YAML: {raw!r}"
+            )
+        cleaned.append(ticker)
+    return tuple(sorted(set(cleaned)))
+
+
 def sync_corporate_ticker_partitions(
     instance: dg.DagsterInstance,
-    issuers_path: Path,
+    issuers_path: Path | None = None,
     *,
+    universe_tickers_path: Path | None = None,
     prune_removed: bool = False,
 ) -> tuple[str, ...]:
-    """Synchronize ``CORPORATE_TICKERS`` dynamic partitions from ``issuers.parquet``.
+    """Synchronize ``CORPORATE_TICKERS`` dynamic partitions from ``issuers.parquet`` or YAML.
 
     Idempotently registers any corporate ticker not yet present in the Dagster
-    instance. When ``prune_removed=True``, removes partition keys no longer in
-    the corporate issuer set.
+    instance. Supports ``issuers.parquet`` (primary when present), a ``.yaml``/``.yml``
+    universe manifest, or fallback to ``universe_tickers_path`` (defaulting to
+    ``config/universe_tickers.yaml`` when ``issuers_path`` is omitted). When
+    ``prune_removed=True``, removes partition keys no longer in the corporate issuer set.
     """
-    desired = load_corporate_tickers(issuers_path)
+    if issuers_path is not None:
+        if issuers_path.suffix.lower() in (".yaml", ".yml"):
+            desired = load_universe_tickers_yaml(issuers_path)
+        elif issuers_path.is_file():
+            desired = load_corporate_tickers(issuers_path)
+        elif universe_tickers_path is not None and universe_tickers_path.is_file():
+            desired = load_universe_tickers_yaml(universe_tickers_path)
+        else:
+            desired = load_corporate_tickers(issuers_path)
+    else:
+        target_yaml = (
+            universe_tickers_path
+            if universe_tickers_path is not None
+            else DEFAULT_UNIVERSE_TICKERS_PATH
+        )
+        desired = load_universe_tickers_yaml(target_yaml)
     existing = set(instance.get_dynamic_partitions(CORPORATE_TICKERS_PARTITION_NAME))
     missing = [ticker for ticker in desired if ticker not in existing]
     if missing:

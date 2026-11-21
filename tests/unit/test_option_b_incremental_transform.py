@@ -548,8 +548,8 @@ def test_noop_incremental_and_snapshot_or_config_mismatch_triggers_full_rebuild(
     )
     assert b_snap_mismatch.diff.full_rebuild is True
 
-    # Config change (as_of) forces full rebuild
-    b_cfg_change = run_incremental_analytics_transform(
+    # Advancing as_of with no newly visible facts does NOT force full rebuild (ARCH-06).
+    b_next_day = run_incremental_analytics_transform(
         facts,
         issuers,
         as_of=date(2025, 7, 1),
@@ -559,6 +559,25 @@ def test_noop_incremental_and_snapshot_or_config_mismatch_triggers_full_rebuild(
         previous_red_flags=b1.accounting_red_flags,
         previous_snapshot_id="snap_001",
         state_path=state_path,
+    )
+    assert b_next_day.diff.transform_config_changed is False
+    assert b_next_day.diff.full_rebuild is False
+    assert b_next_day.diff.dirty_issuers == ()
+
+    # Algorithm/quality config change forces full rebuild.
+    from finintel.quality.rules import QualityGateConfig
+
+    b_cfg_change = run_incremental_analytics_transform(
+        facts,
+        issuers,
+        as_of=date(2025, 7, 1),
+        run_id="r5",
+        previous_ratios=b1.financial_ratios,
+        previous_benchmarks=b1.industry_benchmarks,
+        previous_red_flags=b1.accounting_red_flags,
+        previous_snapshot_id="snap_001",
+        state_path=state_path,
+        quality_config=QualityGateConfig(max_critical_issuer_ratio=0.05),
     )
     assert b_cfg_change.diff.transform_config_changed is True
     assert b_cfg_change.diff.full_rebuild is True
