@@ -40,6 +40,23 @@ UNSUPERVISED_FEATURE_SET = (
     "accruals_to_assets",
 )
 INDUSTRY = "icb_code_level2"
+_POSITIVE_UNSUPERVISED_DIRECTIONS: tuple[float, ...] = (
+    1.0,  # roa
+    1.0,  # ebit_margin
+    1.0,  # roic
+    1.0,  # current_ratio
+    1.0,  # cash_ratio
+    -1.0,  # liabilities_to_assets
+    -1.0,  # financial_debt_to_assets
+    1.0,  # interest_coverage
+    1.0,  # asset_turnover
+    -1.0,  # cash_conversion_cycle
+    1.0,  # fcf_to_revenue
+    -1.0,  # accruals_to_assets
+)
+_ATYPICAL_POSITIVE_LABEL = "Hồ sơ tài chính đặc thù (Ngoại lai đa biến — Tích cực)"
+_ATYPICAL_NEUTRAL_LABEL = "Hồ sơ tài chính đặc thù (Ngoại lai đa biến)"
+_ATYPICAL_NEGATIVE_LABEL = "Hồ sơ tài chính đặc thù (Ngoại lai đa biến — Tiêu cực)"
 _NEUTRAL_ARCHETYPE_LABEL = "Nhóm vận hành cân bằng / trung bình ngành"
 _NEUTRAL_CLUSTER_THRESHOLD = 0.35
 _FINANCIAL_SIGNAL = {
@@ -419,6 +436,39 @@ class FinancialArchetypes:
             * np.searchsorted(self._training_scores, anomaly, side="right")
             / len(self._training_scores)
         )
+        direction_weights = np.asarray(
+            _POSITIVE_UNSUPERVISED_DIRECTIONS, dtype=np.float64
+        )
+        directional_health = matrix @ direction_weights
+        altman_zones: list[str | None] = (
+            [
+                str(z) if z is not None else None
+                for z in frame.get_column("altman_zone").to_list()
+            ]
+            if "altman_zone" in frame.columns
+            else [None] * frame.height
+        )
+        is_outliers = ranks >= 95
+        anomaly_labels: list[str | None] = []
+        for is_outlier, zone, health in zip(
+            is_outliers, altman_zones, directional_health, strict=True
+        ):
+            if not is_outlier:
+                anomaly_labels.append(None)
+            elif zone == "SAFE_ZONE":
+                anomaly_labels.append(
+                    _ATYPICAL_POSITIVE_LABEL
+                    if health >= 0.0
+                    else _ATYPICAL_NEUTRAL_LABEL
+                )
+            elif zone == "DISTRESS_ZONE":
+                anomaly_labels.append(_ATYPICAL_NEGATIVE_LABEL)
+            elif health > 1e-9:
+                anomaly_labels.append(_ATYPICAL_POSITIVE_LABEL)
+            elif health < -1e-9:
+                anomaly_labels.append(_ATYPICAL_NEGATIVE_LABEL)
+            else:
+                anomaly_labels.append(_ATYPICAL_NEUTRAL_LABEL)
         output = pl.DataFrame(
             {
                 "pca_pc1": pca[:, 0],
@@ -430,11 +480,10 @@ class FinancialArchetypes:
                 ],
                 "anomaly_score_raw": anomaly,
                 "anomaly_percentile_rank": ranks,
-                "statistical_outlier_flag": ranks >= 95,
+                "statistical_outlier_flag": is_outliers,
+                "anomaly_flag": pl.Series(
+                    "anomaly_flag", anomaly_labels, dtype=pl.String
+                ),
             }
-        ).with_columns(
-            pl.when(pl.col("statistical_outlier_flag"))
-            .then(pl.lit("STATISTICAL_MULTIVARIATE_OUTLIER"))
-            .alias("anomaly_flag")
         )
         return frame.select(present_keys).hstack(output) if present_keys else output

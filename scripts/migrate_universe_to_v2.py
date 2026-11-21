@@ -1090,9 +1090,48 @@ def verify_source_integrity(
 # ---------------------------------------------------------------------------
 
 
+def _parse_snapshot_date_value(raw: object) -> date | None:
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, str):
+        text = raw.strip()
+        if len(text) >= 10:
+            try:
+                return date.fromisoformat(text[:10])
+            except ValueError:
+                return None
+    return None
+
+
+def _resolve_candidates_snapshot_date(
+    raw_obj: Mapping[str, object],
+    candidates_path: Path,
+    *,
+    snapshot_date: date | None = None,
+) -> date:
+    """Resolve the true collection date of the sector snapshot without backdating."""
+    if snapshot_date is not None:
+        return snapshot_date
+    for key in (
+        "industry_snapshot_date",
+        "snapshot_date",
+        "collected_at",
+        "generated_at",
+        "as_of",
+    ):
+        parsed = _parse_snapshot_date_value(raw_obj.get(key))
+        if parsed is not None:
+            return parsed
+    return datetime.fromtimestamp(candidates_path.stat().st_mtime, tz=UTC).date()
+
+
 def _synthesize_issuers_from_candidates(
     candidates_path: Path,
     done_tickers: Sequence[str],
+    *,
+    snapshot_date: date | None = None,
 ) -> pl.DataFrame:
     """Synthesize ``ISSUERS_SCHEMA`` DataFrame from ``universe_candidates.json`` filtered to ``done_tickers``."""
     raw_obj = json.loads(candidates_path.read_text(encoding="utf-8"))
@@ -1100,6 +1139,9 @@ def _synthesize_issuers_from_candidates(
         raise ContractViolationError(
             f"universe_candidates.json must contain a 'candidates' list: {candidates_path}"
         )
+    resolved_snapshot_date = _resolve_candidates_snapshot_date(
+        raw_obj, candidates_path, snapshot_date=snapshot_date
+    )
     done_set = {str(t).strip().upper() for t in done_tickers if str(t).strip()}
     rows: list[dict[str, object]] = []
     seen_issuers: set[str] = set()
@@ -1113,6 +1155,10 @@ def _synthesize_issuers_from_candidates(
         if issuer_id in seen_issuers:
             continue
         seen_issuers.add(issuer_id)
+        item_snapshot_date = (
+            _parse_snapshot_date_value(item.get("industry_snapshot_date"))
+            or resolved_snapshot_date
+        )
         rows.append(
             {
                 "issuer_id": issuer_id,
@@ -1142,7 +1188,7 @@ def _synthesize_issuers_from_candidates(
                     if item.get("icb_name_level3") is not None
                     else None
                 ),
-                "industry_snapshot_date": date(2016, 1, 1),
+                "industry_snapshot_date": item_snapshot_date,
                 "delisted_date": None,
             }
         )

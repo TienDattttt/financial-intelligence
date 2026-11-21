@@ -208,12 +208,59 @@ def test_unsupervised_exports_names_and_scales_anomaly_by_training_rank() -> Non
     assert 3 <= scored["cluster_id"].n_unique() <= 6
     assert scored["anomaly_percentile_rank"].max() == 100.0
     assert scored["statistical_outlier_flag"].sum() >= 1
-    assert (
-        scored.filter(pl.col("statistical_outlier_flag"))["anomaly_flag"]
-        .unique()
-        .item()
-        == "STATISTICAL_MULTIVARIATE_OUTLIER"
+    outlier_flags = scored.filter(pl.col("statistical_outlier_flag"))[
+        "anomaly_flag"
+    ].to_list()
+    assert all(
+        isinstance(flag, str) and flag.startswith("Hồ sơ tài chính đặc thù")
+        for flag in outlier_flags
     )
+    assert (
+        scored.filter(~pl.col("statistical_outlier_flag"))["anomaly_flag"].null_count()
+        == scored.filter(~pl.col("statistical_outlier_flag")).height
+    )
+
+    safe_and_distressed = pl.concat(
+        [
+            source.head(1).with_columns(
+                pl.lit("SAFE_ZONE").alias("altman_zone"),
+                pl.lit(500.0).alias("roa"),
+                pl.lit(500.0).alias("ebit_margin"),
+                pl.lit(500.0).alias("roic"),
+                pl.lit(500.0).alias("current_ratio"),
+                pl.lit(-500.0).alias("liabilities_to_assets"),
+                pl.lit(-500.0).alias("financial_debt_to_assets"),
+            ),
+            source.head(1).with_columns(
+                pl.lit("SAFE_ZONE").alias("altman_zone"),
+                pl.lit(-500.0).alias("roa"),
+                pl.lit(-500.0).alias("ebit_margin"),
+                pl.lit(0.1).alias("current_ratio"),
+                pl.lit(500.0).alias("liabilities_to_assets"),
+            ),
+            source.head(1).with_columns(
+                pl.lit("DISTRESS_ZONE").alias("altman_zone"),
+                pl.lit(-500.0).alias("roa"),
+                pl.lit(-500.0).alias("ebit_margin"),
+                pl.lit(0.1).alias("current_ratio"),
+                pl.lit(500.0).alias("liabilities_to_assets"),
+                pl.lit(500.0).alias("financial_debt_to_assets"),
+            ),
+        ]
+    )
+    directional_scored = model.transform(safe_and_distressed)
+    assert directional_scored["statistical_outlier_flag"].to_list() == [
+        True,
+        True,
+        True,
+    ]
+    safe_pos_flag, safe_neutral_flag, distress_flag = directional_scored[
+        "anomaly_flag"
+    ].to_list()
+    assert safe_pos_flag == "Hồ sơ tài chính đặc thù (Ngoại lai đa biến — Tích cực)"
+    assert safe_neutral_flag == "Hồ sơ tài chính đặc thù (Ngoại lai đa biến)"
+    assert "Tiêu cực" not in safe_pos_flag and "Tiêu cực" not in safe_neutral_flag
+    assert distress_flag == "Hồ sơ tài chính đặc thù (Ngoại lai đa biến — Tiêu cực)"
     keyed = source.with_columns(
         pl.Series("issuer_id", [f"ISS_{i:02d}" for i in range(30)]),
         pl.lit("CONSOLIDATED").alias("statement_scope"),
@@ -430,6 +477,21 @@ def test_build_ml_artifacts_scores_tt200_and_tt99_quarters_while_keeping_annual_
     assert annual_rows["shap_top_drivers_json"].null_count() == annual_rows.height
 
     assert artifacts.run_manifest["peer_standardization_mode"] == "PIT_REGIME_SYMMETRIC"
+    import json
+
+    sector_z_labels = [
+        drv["display_name_vn"]
+        for raw_json in tt99_q["shap_top_drivers_json"].drop_nulls().to_list()
+        for drv in (
+            json.loads(raw_json)["top_risk_increasing"]
+            + json.loads(raw_json)["top_risk_decreasing"]
+        )
+        if drv["feature"].startswith("sector_z_")
+    ]
+    assert all(
+        "chuẩn hóa toàn thị trường (Z-Score)" in lbl and "chuẩn hóa ngành" not in lbl
+        for lbl in sector_z_labels
+    )
     assert artifacts.run_manifest["scored_taxonomies"] == [
         "VAS_TT200_2014",
         "VAS_TT99_2025",

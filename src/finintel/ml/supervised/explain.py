@@ -19,6 +19,7 @@ import shap  # type: ignore[import-untyped]
 from numpy.typing import NDArray
 
 from finintel.exceptions import ContractViolationError
+from finintel.ml.supervised.temporal_split import PeerStandardizationMode
 from finintel.ml.supervised.train import TrainingResult
 from finintel.storage.schemas import ML_SCORES_KEY
 
@@ -48,6 +49,27 @@ _FEATURE_DISPLAY_NAME_VN: dict[str, str] = {
     "sector_z_debt_to_equity": "Đòn bẩy D/E chuẩn hóa ngành (Z-Score)",
     "sector_z_ebit_margin": "Biên EBIT chuẩn hóa ngành (Z-Score)",
 }
+
+_SECTOR_Z_MARKET_DISPLAY_NAME_VN: dict[str, str] = {
+    "sector_z_asset_turnover": "Vòng quay tài sản chuẩn hóa toàn thị trường (Z-Score)",
+    "sector_z_cash_conversion_cycle": "Chu kỳ tiền mặt chuẩn hóa toàn thị trường (Z-Score)",
+    "sector_z_debt_to_equity": "Đòn bẩy D/E chuẩn hóa toàn thị trường (Z-Score)",
+    "sector_z_ebit_margin": "Biên EBIT chuẩn hóa toàn thị trường (Z-Score)",
+}
+
+
+def get_feature_display_names(
+    peer_standardization_mode: PeerStandardizationMode = "PIT_REGIME_SYMMETRIC",
+) -> dict[str, str]:
+    """Return Vietnamese SHAP feature labels tailored to the active standardization mode."""
+    if peer_standardization_mode == "PIT_ICB":
+        return dict(_FEATURE_DISPLAY_NAME_VN)
+    if peer_standardization_mode == "PIT_REGIME_SYMMETRIC":
+        return {**_FEATURE_DISPLAY_NAME_VN, **_SECTOR_Z_MARKET_DISPLAY_NAME_VN}
+    raise ContractViolationError(
+        f"Unsupported peer_standardization_mode {peer_standardization_mode!r}."
+    )
+
 
 _DRIVER_LIST_DTYPE = pl.List(
     pl.Struct(
@@ -178,8 +200,10 @@ def explain_distress(
     frame: pl.DataFrame,
     *,
     peer_medians: pl.DataFrame | None = None,
+    peer_standardization_mode: PeerStandardizationMode = "PIT_REGIME_SYMMETRIC",
 ) -> pl.DataFrame:
     """Return vectorized JSON contributions whose base + top drivers + other_features_delta reproduces raw margin."""
+    display_names = get_feature_display_names(peer_standardization_mode)
     present_keys = [name for name in ML_SCORES_KEY if name in frame.columns]
     if frame.is_empty():
         empty_json = pl.DataFrame(schema={"shap_top_drivers_json": pl.String})
@@ -230,7 +254,7 @@ def explain_distress(
             "_row_id",
             "feature",
             pl.col("feature")
-            .replace_strict(_FEATURE_DISPLAY_NAME_VN, default=pl.col("feature"))
+            .replace_strict(display_names, default=pl.col("feature"))
             .cast(pl.String)
             .alias("display_name_vn"),
             pl.col("value").cast(pl.Float64),
