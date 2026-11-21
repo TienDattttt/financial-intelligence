@@ -26,7 +26,8 @@ import sqlite3
 import subprocess
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Literal
 
 import dagster as dg
 import polars as pl
@@ -74,6 +75,7 @@ from finintel.pipeline.runner import (
     TriggerMode,
 )
 from finintel.pipeline.state_store import StateStore
+from finintel.ports.regulatory import validate_regulatory_events
 from finintel.quality.rules import QualityGateConfig
 from finintel.storage.manifest_export import (
     build_filings_manifest_snapshot,
@@ -134,6 +136,8 @@ class PublishMartsConfig(dg.Config):
     ml_validation_start: str | None = None
     ml_test_start: str | None = None
     ml_approved_target: bool = False
+    target_mode: str = "FUNDAMENTAL_DISTRESS"
+    regulatory_events_path: str | None = None
     max_critical_issuer_ratio: float | None = None
 
 
@@ -377,9 +381,69 @@ def _resolve_quality_config(
     return QualityGateConfig()
 
 
-def _resolve_ml_config(config: PublishMartsConfig) -> MLTransformConfig:
+def _resolve_confined_regulatory_events_path(
+    raw_path: str, paths: FinIntelPathsResource | None
+) -> Path:
+    if not raw_path.strip():
+        raise ContractViolationError(
+            "PublishMartsConfig.regulatory_events_path must be a nonempty relative path."
+        )
+    candidate = Path(raw_path)
+    posix_candidate = PurePosixPath(raw_path)
+    win_candidate = PureWindowsPath(raw_path)
+    if (
+        candidate.is_absolute()
+        or candidate.drive
+        or candidate.root
+        or posix_candidate.is_absolute()
+        or win_candidate.is_absolute()
+        or bool(win_candidate.drive)
+        or bool(win_candidate.root)
+    ):
+        raise ContractViolationError(
+            "PublishMartsConfig.regulatory_events_path must be a relative path confined to the workspace."
+        )
+    if paths is None:
+        raise ContractViolationError(
+            "FinIntelPathsResource is required to resolve PublishMartsConfig.regulatory_events_path."
+        )
+    project_root = paths.resolved_project_root()
+    data_root = paths.resolved_data_root()
+    config_dir = paths.resolved_config_dir()
+    allowed_roots = (project_root, data_root, config_dir)
+
+    for base in (project_root, data_root, config_dir):
+        raw_target = base / candidate
+        if raw_target.is_symlink():
+            raise ContractViolationError(
+                "PublishMartsConfig.regulatory_events_path cannot be a symbolic link."
+            )
+        resolved = raw_target.resolve()
+        if not any(resolved.is_relative_to(root) for root in allowed_roots):
+            raise ContractViolationError(
+                "PublishMartsConfig.regulatory_events_path escapes the confined workspace directory."
+            )
+        if resolved.is_file():
+            return resolved
+    raise ContractViolationError(
+        "PublishMartsConfig.regulatory_events_path does not point to a readable Parquet file."
+    )
+
+
+def _resolve_ml_config(
+    config: PublishMartsConfig, *, paths: FinIntelPathsResource | None = None
+) -> MLTransformConfig:
+    if config.target_mode not in ("FUNDAMENTAL_DISTRESS", "REGULATORY_DISTRESS"):
+        raise ContractViolationError(
+            "PublishMartsConfig.target_mode must be 'FUNDAMENTAL_DISTRESS' or 'REGULATORY_DISTRESS'."
+        )
+    effective_target_mode: Literal["FUNDAMENTAL_DISTRESS", "REGULATORY_DISTRESS"] = (
+        "REGULATORY_DISTRESS"
+        if config.target_mode == "REGULATORY_DISTRESS"
+        else "FUNDAMENTAL_DISTRESS"
+    )
     if not config.ml_enabled:
-        return MLTransformConfig(enabled=False)
+        return MLTransformConfig(enabled=False, target_mode=effective_target_mode)
     val_start: date | None = None
     test_start: date | None = None
     if config.ml_validation_start is not None:
@@ -396,12 +460,33 @@ def _resolve_ml_config(config: PublishMartsConfig) -> MLTransformConfig:
             raise ContractViolationError(
                 "PublishMartsConfig.ml_test_start must be YYYY-MM-DD."
             ) from exc
+
+    regulatory_events_df: pl.DataFrame | None = None
+    if config.regulatory_events_path is not None:
+        reg_path = _resolve_confined_regulatory_events_path(
+            config.regulatory_events_path, paths
+        )
+        try:
+            raw_reg = pl.read_parquet(reg_path)
+        except (OSError, pl.exceptions.PolarsError) as exc:
+            raise ContractViolationError(
+                "PublishMartsConfig.regulatory_events_path must point to a readable Parquet file."
+            ) from exc
+        regulatory_events_df = validate_regulatory_events(raw_reg)
+
+    if effective_target_mode == "REGULATORY_DISTRESS" and regulatory_events_df is None:
+        raise ContractViolationError(
+            "PublishMartsConfig.regulatory_events_path is required when target_mode='REGULATORY_DISTRESS'."
+        )
+
     return MLTransformConfig(
         enabled=True,
         validation_start=val_start,
         test_start=test_start,
         approved_target=config.ml_approved_target,
         require_exact_filing=True,
+        target_mode=effective_target_mode,
+        regulatory_events=regulatory_events_df,
     )
 
 
@@ -840,7 +925,7 @@ def published_financial_marts(
     settings = paths.load_settings_dict()
     as_of = _resolve_as_of_date(config, settings)
     quality_cfg = _resolve_quality_config(config, settings)
-    ml_cfg = _resolve_ml_config(config)
+    ml_cfg = _resolve_ml_config(config, paths=paths)
     storage_cfg = storage.resolve_storage_config(paths)
     lock_timeout = storage.resolve_lock_timeout()
     lock_path = state.pipeline_lock_path()
