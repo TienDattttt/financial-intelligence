@@ -185,7 +185,12 @@ def build_ml_artifacts(
 
     unsupervised_out = archetypes.transform(eligible)
     supervised_out = score_distress_model(training, eligible).drop("model_role")
-    shap_out = explain_distress(training, eligible, peer_medians=benchmarks)
+    shap_out = explain_distress(
+        training,
+        eligible,
+        peer_medians=benchmarks,
+        peer_standardization_mode=peer_standardization_mode,
+    )
 
     join_keys = list(ML_SCORES_KEY)
     assembled = (

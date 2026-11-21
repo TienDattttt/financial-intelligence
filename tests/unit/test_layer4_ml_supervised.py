@@ -1418,3 +1418,95 @@ def test_treeshap_waterfall_other_features_delta_and_vietnamese_display_names() 
             )
             if driver["feature"].startswith("sector_z_"):
                 assert driver["peer_median"] == pytest.approx(0.0)
+                assert (
+                    "chuẩn hóa toàn thị trường (Z-Score)" in driver["display_name_vn"]
+                )
+                assert "chuẩn hóa ngành" not in driver["display_name_vn"]
+
+    explained_icb = explain_distress(
+        trained, eval_df, peer_standardization_mode="PIT_ICB"
+    )
+    sector_z_icb_names = [
+        drv["display_name_vn"]
+        for payload_str in explained_icb["shap_top_drivers_json"].to_list()
+        for drv in (
+            json.loads(payload_str)["top_risk_increasing"]
+            + json.loads(payload_str)["top_risk_decreasing"]
+        )
+        if drv["feature"].startswith("sector_z_")
+    ]
+    assert sector_z_icb_names
+    assert all("chuẩn hóa ngành (Z-Score)" in name for name in sector_z_icb_names)
+
+
+def test_synthesize_issuers_from_candidates_uses_real_collection_date_not_2016(
+    tmp_path: Path,
+) -> None:
+    import importlib.util
+    import json
+    import os
+    import sys
+    from datetime import UTC, datetime
+
+    script_path = (
+        Path(__file__).resolve().parents[2] / "scripts" / "migrate_universe_to_v2.py"
+    )
+    module_name = "migrate_universe_to_v2_test"
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+
+    candidates_path = tmp_path / "universe_candidates.json"
+    candidates_path.write_text(
+        json.dumps(
+            {
+                "candidates": [
+                    {
+                        "issuer_id": "FPT",
+                        "ticker": "FPT",
+                        "exchange": "HOSE",
+                        "company_name_vn": "CTCP FPT",
+                        "accounting_regime": "CORPORATE",
+                        "icb_code_level2": "technology",
+                        "icb_code_level3": "software",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    mtime_ts = datetime(2026, 11, 19, 13, 57, 35, tzinfo=UTC).timestamp()
+    os.utime(candidates_path, (mtime_ts, mtime_ts))
+
+    df_from_mtime = mod._synthesize_issuers_from_candidates(candidates_path, ["FPT"])
+    assert df_from_mtime["industry_snapshot_date"].to_list() == [date(2026, 11, 19)]
+    assert df_from_mtime["industry_snapshot_date"].item() != date(2016, 1, 1)
+
+    candidates_with_meta = tmp_path / "universe_candidates_meta.json"
+    candidates_with_meta.write_text(
+        json.dumps(
+            {
+                "collected_at": "2026-10-15T08:30:00Z",
+                "candidates": [
+                    {
+                        "issuer_id": "HPG",
+                        "ticker": "HPG",
+                        "exchange": "HOSE",
+                        "company_name_vn": "CTCP Tập đoàn Hòa Phát",
+                        "accounting_regime": "CORPORATE",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    df_from_meta = mod._synthesize_issuers_from_candidates(
+        candidates_with_meta, ["HPG"]
+    )
+    assert df_from_meta["industry_snapshot_date"].to_list() == [date(2026, 10, 15)]

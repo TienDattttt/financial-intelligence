@@ -477,6 +477,21 @@ def test_build_ml_artifacts_scores_tt200_and_tt99_quarters_while_keeping_annual_
     assert annual_rows["shap_top_drivers_json"].null_count() == annual_rows.height
 
     assert artifacts.run_manifest["peer_standardization_mode"] == "PIT_REGIME_SYMMETRIC"
+    import json
+
+    sector_z_labels = [
+        drv["display_name_vn"]
+        for raw_json in tt99_q["shap_top_drivers_json"].drop_nulls().to_list()
+        for drv in (
+            json.loads(raw_json)["top_risk_increasing"]
+            + json.loads(raw_json)["top_risk_decreasing"]
+        )
+        if drv["feature"].startswith("sector_z_")
+    ]
+    assert all(
+        "chuẩn hóa toàn thị trường (Z-Score)" in lbl and "chuẩn hóa ngành" not in lbl
+        for lbl in sector_z_labels
+    )
     assert artifacts.run_manifest["scored_taxonomies"] == [
         "VAS_TT200_2014",
         "VAS_TT99_2025",

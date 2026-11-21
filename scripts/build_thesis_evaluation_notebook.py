@@ -109,8 +109,8 @@ from finintel.ml.supervised.train import (
     train_distress_model,
 )
 from finintel.ml.supervised.explain import (
-    _FEATURE_DISPLAY_NAME_VN,
     compute_shap_contributions,
+    get_feature_display_names,
 )
 
 DATA_ROOT = ROOT / "data/go_live_nfr_run"
@@ -129,6 +129,8 @@ AS_OF = date.fromisoformat(RUN_MANIFEST["as_of"])
 VALIDATION_START = date.fromisoformat(RUN_MANIFEST["validation_start"])
 TEST_START = date.fromisoformat(RUN_MANIFEST["test_start"])
 SCOPE = RUN_MANIFEST["statement_scope"]
+PEER_MODE = RUN_MANIFEST.get("peer_standardization_mode", "PIT_REGIME_SYMMETRIC")
+DISPLAY_NAME_VN = get_feature_display_names(PEER_MODE)
 FEATURES = SECTOR_ADJUSTED_FEATURES if RUN_MANIFEST["feature_set"] == "sector_adjusted" else BASE_FEATURES
 SOURCE_NOTE = f"Nguồn: bản sao thực nghiệm FinIntel, mốc thông tin {AS_OF:%d/%m/%Y}."
 COLORS = ["#245A81", "#168B83", "#E4A33A", "#C05252", "#7C65A9"]
@@ -228,6 +230,8 @@ setup_rows = [
     {"Tham số / Thành phần": "Mốc thời gian (PIT)", "Giá trị cấu hình": f"validation_start={VALIDATION_START}, test_start={TEST_START}, as_of={AS_OF}"},
     {"Tham số / Thành phần": "Nhãn mục tiêu", "Giá trị cấu hình": f"{RUN_MANIFEST['target_mode']} (chân trời 4 quý t+1..t+4, chỉ giữ EXACT_FILING)"},
     {"Tham số / Thành phần": "Bộ đặc trưng có giám sát", "Giá trị cấu hình": f"{RUN_MANIFEST['feature_set']} ({len(FEATURES)} đặc trưng gốc + {len(FEATURES)} chỉ báo thiếu)"},
+    {"Tham số / Thành phần": "Chế độ chuẩn hóa Z-Score (PIT)", "Giá trị cấu hình": f"{PEER_MODE} (chuẩn hóa toàn thị trường khi thiếu lịch sử ICB trước 2026)"},
+    {"Tham số / Thành phần": "Giới hạn phiên bản dữ liệu nguồn", "Giá trị cấu hình": "100% dữ liệu FHSC hiện ở revision_no = 1 (chưa có lịch sử tái lập lại kiểm toán trước 2026)"},
     {"Tham số / Thành phần": "Bộ đặc trưng không giám sát", "Giá trị cấu hình": f"UNSUPERVISED_FEATURE_SET ({len(UNSUPERVISED_FEATURE_SET)} chỉ số cốt lõi)"},
     {"Tham số / Thành phần": "Hạt giống ngẫu nhiên", "Giá trị cấu hình": str(RUN_MANIFEST["random_seed"])},
 ]
@@ -678,7 +682,7 @@ show_table("Bảng 3.6.5a. Kiểm chứng tính cộng tính TreeSHAP trên Trai
 base_test, orig_feats, shap_test, margin_test = shap_outputs["test"]
 mean_abs_shap = np.mean(np.abs(shap_test), axis=0)
 top_idx = np.argsort(-mean_abs_shap)[:15]
-top_names_vn = [_FEATURE_DISPLAY_NAME_VN.get(orig_feats[i], orig_feats[i]) for i in top_idx]
+top_names_vn = [DISPLAY_NAME_VN.get(orig_feats[i], orig_feats[i]) for i in top_idx]
 top_vals = [float(mean_abs_shap[i]) for i in top_idx]
 
 # 1. Global SHAP Importance Bar Chart
@@ -717,7 +721,7 @@ for rank_pos, feat_i in enumerate(top12_idx):
 fig.add_vline(x=0.0, line_color="#64748b", line_width=1.5)
 fig.update_yaxes(
     tickvals=list(range(len(top12_idx) - 1, -1, -1)),
-    ticktext=[_FEATURE_DISPLAY_NAME_VN.get(orig_feats[i], orig_feats[i]) for i in top12_idx],
+    ticktext=[DISPLAY_NAME_VN.get(orig_feats[i], orig_feats[i]) for i in top12_idx],
 )
 fig.update_xaxes(title="Giá trị SHAP (tác động lên log-odds kiệt quệ)")
 show_figure("Hình 3.6.5b. Biểu đồ phân bố tác động SHAP (Beeswarm) của Top 12 đặc trưng (Test OOS)", fig,
@@ -739,7 +743,7 @@ top_k = 10
 top_local = order_local[:top_k]
 other_sum = float(np.sum(row_shap[order_local[top_k:]]))
 
-wf_labels = ["Giá trị nền (Base)"] + [_FEATURE_DISPLAY_NAME_VN.get(orig_feats[i], orig_feats[i]) for i in top_local] + ["Các đặc trưng còn lại", "Dự báo cuối (Log-odds)"]
+wf_labels = ["Giá trị nền (Base)"] + [DISPLAY_NAME_VN.get(orig_feats[i], orig_feats[i]) for i in top_local] + ["Các đặc trưng còn lại", "Dự báo cuối (Log-odds)"]
 wf_measures = ["absolute"] + ["relative"] * (top_k + 1) + ["total"]
 wf_values = [base_test] + [float(row_shap[i]) for i in top_local] + [other_sum, 0.0]
 
@@ -771,7 +775,9 @@ md("""
 ## 3.6.6. Thảo luận kết quả và hạn chế
 
 Phân tích ma trận nhầm lẫn và đánh đổi Precision–Recall tại ngưỡng F2 đóng băng từ Validation trên tập **Test (OOS)**,
-làm rõ các hạn chế thực tế của dữ liệu mất cân bằng (tỷ lệ dương ~1,74%) và độ nhạy ngưỡng vận hành.
+làm rõ các hạn chế thực tế của dữ liệu mất cân bằng (tỷ lệ dương ~1,74%), độ nhạy ngưỡng vận hành,
+và giới hạn nguồn dữ liệu FHSC (`revision_no = 1`, chưa lưu lịch sử điều chỉnh hồi tố trước năm 2026;
+chế độ chuẩn hóa `PIT_REGIME_SYMMETRIC` chuẩn hóa toàn thị trường khi thiếu lịch sử đổi ngành ICB).
 """)
 
 code(r"""

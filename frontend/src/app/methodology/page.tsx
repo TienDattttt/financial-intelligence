@@ -327,6 +327,9 @@ function MethodologyContent() {
               <p className="text-xs text-ink">
                 <strong>Giới hạn phạm vi:</strong> Hệ thống áp dụng thống nhất chuỗi tỷ số và chấm điểm Altman/Piotroski/Beneish cho nhóm <strong>doanh nghiệp phi tài chính niêm yết</strong>; các tổ chức tín dụng, bảo hiểm và chứng khoán sử dụng chuẩn BCTC đặc thù nên không chấm điểm ngang hàng. Toàn bộ dữ liệu tuân thủ kỷ luật thời điểm công bố (Point-in-Time), không dùng thông tin tương lai.
               </p>
+              <p className="text-xs text-ink-muted">
+                <strong>Minh bạch giới hạn dữ liệu nguồn &amp; chuẩn hóa Z-Score:</strong> Dữ liệu BCTC lịch sử thu thập từ nguồn FHSC hiện chỉ ghi nhận một phiên bản duy nhất cho mỗi kỳ báo cáo (phiên bản gốc hợp nhất tại thời điểm thu thập, chưa lưu lịch sử điều chỉnh hồi tố qua nhiều lần công bố trước năm 2026). Khi chưa có lịch sử phân ngành ICB qua từng năm trước 2026, các biến Z-Score của mô hình được chuẩn hóa trên toàn thị trường phi tài chính cùng kỳ để bảo toàn tuyệt đối kỷ luật không nhìn trước tương lai.
+              </p>
             </CardContent>
           </Card>
         </div>
