@@ -29,7 +29,6 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-import dashboard.queries as legacy_queries
 from finintel.analytics.stress_test import (
     StressScenario,
     simulate_financial_stress,
@@ -46,6 +45,10 @@ from finintel.serving.queries import (
     RATIO_LINEAGE_CATALOG,
     SCREENER_SCHEMA,
     DashboardQueryService,
+    pagination_offset,
+    pagination_total_pages,
+    pagination_window,
+    percent_to_decimal,
 )
 from finintel.storage.ducklake_store import DuckLakeStore
 from finintel.storage.repository import ParquetRepository
@@ -1148,28 +1151,26 @@ def test_pushdown_and_overview_efficiency_spy(
             assert flt.get("issuer_id") == "FPT", f"Missing issuer_id pushdown on {tbl}"
 
 
-def test_dashboard_queries_shim_and_zero_anti_patterns() -> None:
-    # Backwards-compatible shim exports identical canonical objects and UI helpers.
-    assert legacy_queries.DashboardQueryService is DashboardQueryService
-    assert legacy_queries.ALL_RATIOS is ALL_RATIOS
-    assert legacy_queries.RATIO_LINEAGE_CATALOG is RATIO_LINEAGE_CATALOG
-    assert len(legacy_queries.ALL_RATIOS) == 38
-    assert legacy_queries.StressScenario is StressScenario
-    assert legacy_queries.simulate_financial_stress is simulate_financial_stress
-    assert legacy_queries.summarize_stress_by_sector is summarize_stress_by_sector
+def test_serving_queries_helpers_and_zero_anti_patterns() -> None:
+    # Canonical catalog and UI conversion/pagination helpers exposed via serving.queries.
+    assert len(ALL_RATIOS) == 38
+    assert len(RATIO_LINEAGE_CATALOG) == 38
+    assert DashboardQueryService is not None
+    assert StressScenario is not None
+    assert simulate_financial_stress is not None
+    assert summarize_stress_by_sector is not None
 
-    # Verify UI conversion & pagination helpers exposed via serving facade.
-    assert legacy_queries.percent_to_decimal(-25.0) == pytest.approx(-0.25)
-    assert legacy_queries.percent_to_decimal(0.0) == pytest.approx(0.0)
+    assert percent_to_decimal(-25.0) == pytest.approx(-0.25)
+    assert percent_to_decimal(0.0) == pytest.approx(0.0)
     with pytest.raises(ValueError):
-        legacy_queries.percent_to_decimal(float("nan"))
-    assert legacy_queries.pagination_offset(1, 50) == 0
-    assert legacy_queries.pagination_offset(3, 50) == 100
-    assert legacy_queries.pagination_total_pages(0, 50) == 1
-    assert legacy_queries.pagination_total_pages(101, 50) == 3
-    assert legacy_queries.pagination_window(0, 50, 120) == (1, 1, 50)
-    assert legacy_queries.pagination_window(100, 50, 120) == (3, 101, 120)
-    assert legacy_queries.pagination_window(0, 50, 0) == (1, 0, 0)
+        percent_to_decimal(float("nan"))
+    assert pagination_offset(1, 50) == 0
+    assert pagination_offset(3, 50) == 100
+    assert pagination_total_pages(0, 50) == 1
+    assert pagination_total_pages(101, 50) == 3
+    assert pagination_window(0, 50, 120) == (1, 1, 50)
+    assert pagination_window(100, 50, 120) == (3, 101, 120)
+    assert pagination_window(0, 50, 0) == (1, 0, 0)
 
     # Verify zero iter_rows(), zero blind .fill_null(0), zero streamlit/dashboard imports in serving/.
     serving_dir = Path(__file__).resolve().parents[2] / "src" / "finintel" / "serving"

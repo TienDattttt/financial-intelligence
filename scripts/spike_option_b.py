@@ -65,7 +65,6 @@ REQUIRED_PLATFORM_PACKAGES = (
     "httpx",
     "dagster",
     "dagster-webserver",
-    "dagster-duckdb",
 )
 FORBIDDEN_PACKAGES = ("sqlmesh", "deltalake")
 EXACT_PIN_RE = re.compile(r"^([A-Za-z0-9_.-]+)==([^;,\s]+)$")

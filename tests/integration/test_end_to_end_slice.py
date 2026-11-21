@@ -9,14 +9,9 @@ from pathlib import Path
 import polars as pl
 import yaml  # type: ignore[import-untyped]
 
-from dashboard.components.charts import (
-    build_capital_structure_chart,
-    build_growth_chart,
-    build_industry_comparison_chart,
-)
-from dashboard.queries import ALL_RATIOS, DashboardQueryService
 from finintel.pipeline.cli import main
 from finintel.pipeline.state_store import StateStore
+from finintel.serving.queries import ALL_RATIOS, DashboardQueryService
 from finintel.storage.repository import ParquetRepository
 from finintel.storage.schemas import (
     AUDIT_QUARANTINE_TABLE,
@@ -319,18 +314,16 @@ def test_full_end_to_end_6_stage_pipeline_and_lineage_traceability(
     assert roe_q4.status_flag == "VALID"
     assert roe_q4.orphan_filing_ids == ()
 
-    # Verify Page 1 (Company Profile) & Page 2 (Industry Comparison) queries + Plotly figures.
+    # Verify Page 1 (Company Profile) & Page 2 (Industry Comparison) serving data directly.
     for view in ("TTM", "Quarterly", "Annual"):
         profile = service.get_company_profile("FPT", period_view=view)
         assert profile.latest_taxonomy_version == "VAS_TT200_2014"
         assert profile.latest_quality_status == "PASS"
         assert not profile.growth_series.is_empty()
+        assert "IS_NET_REVENUE" in profile.growth_series.columns
         assert not profile.capital_structure_series.is_empty()
+        assert "total_debt" in profile.capital_structure_series.columns
         assert not profile.dupont_series.is_empty()
-        fig_growth = build_growth_chart(profile.growth_series, period_view=view)
-        fig_cap = build_capital_structure_chart(profile.capital_structure_series)
-        assert len(fig_growth.data) >= 1
-        assert len(fig_cap.data) >= 1
 
     comparison = service.get_industry_comparison(
         "FPT",
@@ -342,8 +335,8 @@ def test_full_end_to_end_6_stage_pipeline_and_lineage_traceability(
     assert comparison.peer_count == 2
     assert comparison.industry_snapshot_date == date(2025, 1, 1)
     assert comparison.peer_median is not None
-    fig_ind = build_industry_comparison_chart(comparison)
-    assert len(fig_ind.data) >= 2
+    assert comparison.company_value is not None
+    assert comparison.peer_ranking.height == 2
 
     # Ensure ALL_RATIOS catalog is 100% consistent.
     assert len(ALL_RATIOS) == 38

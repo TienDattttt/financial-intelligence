@@ -449,42 +449,52 @@ def test_quality_gate_config_validation() -> None:
         QualityGateConfig(max_critical_issuer_ratio=1.5)
 
 
-def test_dashboard_contains_zero_accounting_calculations_and_no_raw_or_curated_reads() -> (
-    None
-):
-    """Architectural guard: dashboard/ must never compute financial formulas or read raw/curated."""
-    dashboard_dir = REPO_ROOT / "dashboard"
-    py_files = sorted(dashboard_dir.rglob("*.py"))
-    assert len(py_files) >= 6
+def test_serving_and_frontend_boundary_zero_raw_or_curated_reads() -> None:
+    """Architectural guard: legacy dashboard/ is removed and serving/frontend respect layer boundaries."""
+    assert not (REPO_ROOT / "dashboard").exists(), (
+        "Legacy Streamlit dashboard/ must be removed"
+    )
 
-    forbidden_modules = {
-        "finintel.analytics",
+    serving_dir = REPO_ROOT / "src" / "finintel" / "serving"
+    serving_py_files = sorted(serving_dir.rglob("*.py"))
+    assert len(serving_py_files) >= 5
+
+    forbidden_serving_modules = {
         "finintel.normalization",
         "finintel.ingestion",
+        "streamlit",
+        "dashboard",
     }
-    for py_file in py_files:
+    for py_file in serving_py_files:
         source = py_file.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(py_file))
         for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    for forbidden in forbidden_serving_modules:
+                        assert not alias.name.startswith(forbidden), (
+                            f"Serving file {py_file.name} illegally imports {alias.name}"
+                        )
             if isinstance(node, ast.ImportFrom) and node.module:
-                for forbidden in forbidden_modules:
+                for forbidden in forbidden_serving_modules:
                     assert not node.module.startswith(forbidden), (
-                        f"Dashboard file {py_file.name} illegally imports {node.module}"
-                    )
-            if isinstance(node, ast.BinOp) and isinstance(
-                node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)
-            ):
-                # Allow Path / "segment" joins and string formatting only; forbid numeric formulas.
-                if isinstance(node.left, ast.Constant) and isinstance(
-                    node.left.value, (int, float)
-                ):
-                    pytest.fail(
-                        f"Numeric arithmetic found in UI file {py_file.name}: line {node.lineno}"
-                    )
-                if isinstance(node.right, ast.Constant) and isinstance(
-                    node.right.value, (int, float)
-                ):
-                    pytest.fail(
-                        f"Numeric arithmetic found in UI file {py_file.name}: line {node.lineno}"
+                        f"Serving file {py_file.name} illegally imports {node.module}"
                     )
         assert "data/raw" not in source and "data/curated" not in source
+
+    frontend_src_dir = REPO_ROOT / "frontend" / "src"
+    frontend_files = sorted(
+        list(frontend_src_dir.rglob("*.ts")) + list(frontend_src_dir.rglob("*.tsx"))
+    )
+    assert len(frontend_files) >= 10
+    for ts_file in frontend_files:
+        source = ts_file.read_text(encoding="utf-8")
+        assert "data/raw" not in source and "data/curated" not in source, (
+            f"Frontend file {ts_file.name} references raw/curated storage path"
+        )
+        assert "finintel." not in source, (
+            f"Frontend file {ts_file.name} imports Python backend module"
+        )
+        assert "financial_facts.parquet" not in source, (
+            f"Frontend file {ts_file.name} references raw Parquet dataset table"
+        )
