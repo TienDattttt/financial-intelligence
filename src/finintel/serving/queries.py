@@ -36,7 +36,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 import duckdb
 import polars as pl
@@ -829,6 +829,75 @@ _SCREENER_CACHE: OrderedDict[tuple[object, ...], tuple[pl.DataFrame, int]] = (
 _COHORT_PEER_RANKING_CACHE: OrderedDict[tuple[object, ...], pl.DataFrame] = (
     OrderedDict()
 )
+_ALL_L1B_CACHES: tuple[OrderedDict[tuple[object, ...], Any], ...] = (
+    _SNAPSHOT_OVERVIEW_CACHE,
+    _LATEST_RATIO_PERIOD_CACHE,
+    _STRESS_INPUTS_CACHE,
+    _COMPANY_PROFILE_CACHE,
+    _INDUSTRY_COMPARISON_CACHE,
+    _PEER_BAND_HISTORY_CACHE,
+    _RATIO_PERIODS_CACHE,
+    _RATIO_LINEAGE_CACHE,
+    _SCREENER_CACHE,
+    _COHORT_PEER_RANKING_CACHE,
+)
+_ACTIVE_L1B_SNAPSHOT_BY_ROOT: dict[tuple[object, ...], object] = {}
+
+
+def _l1b_root_and_snapshot(
+    cache_key: tuple[object, ...],
+) -> tuple[tuple[object, ...], object] | None:
+    """Extract ``(root_identity, snapshot_token)`` from an L1B cache key."""
+    if not cache_key:
+        return None
+    kind = cache_key[0]
+    if kind == "ducklake" and len(cache_key) >= 9:
+        # ("ducklake", cat_path, cat_id, lake_data, alias, driver, dsn_env, snap_id, ver, ...)
+        root = (
+            "ducklake",
+            cache_key[1],
+            cache_key[3],
+            cache_key[4],
+            cache_key[5],
+            cache_key[6],
+        )
+        return (root, (cache_key[2], cache_key[7], cache_key[8]))
+    if kind == "parquet_dir" and len(cache_key) >= 3 and isinstance(cache_key[1], str):
+        return (("parquet_dir", str(Path(cache_key[1]).parent)), cache_key[2])
+    if kind == "parquet_snap" and len(cache_key) >= 3:
+        return (("parquet_snap", cache_key[1]), cache_key[2])
+    return None
+
+
+def _evict_stale_l1b_caches_locked(snap_key: tuple[object, ...] | None) -> None:
+    """Evict prior-snapshot L1B entries for the same data root (caller holds ``_QUERY_CACHE_LOCK``)."""
+    if snap_key is None:
+        return
+    parsed = _l1b_root_and_snapshot(snap_key)
+    if parsed is None:
+        return
+    target_root, target_snap = parsed
+    if _ACTIVE_L1B_SNAPSHOT_BY_ROOT.get(target_root) == target_snap:
+        return
+    _ACTIVE_L1B_SNAPSHOT_BY_ROOT[target_root] = target_snap
+    for cache in _ALL_L1B_CACHES:
+        stale_keys = [
+            existing
+            for existing in cache
+            if (ep := _l1b_root_and_snapshot(existing)) is not None
+            and ep[0] == target_root
+            and ep[1] != target_snap
+        ]
+        for stale_key in stale_keys:
+            cache.pop(stale_key, None)
+
+
+def clear_query_caches() -> None:
+    """Clear all L1B query result caches and tracked active snapshot tokens."""
+    with _QUERY_CACHE_LOCK:
+        for cache in _ALL_L1B_CACHES:
+            cache.clear()
+        _ACTIVE_L1B_SNAPSHOT_BY_ROOT.clear()
 
 
 def _can_use_query_result_cache(repo: ParquetRepository) -> bool:
@@ -1229,6 +1298,7 @@ class DashboardQueryService:
             snap_key = pinned._snapshot_cache_key()
             if snap_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_overview = _SNAPSHOT_OVERVIEW_CACHE.get(snap_key)
                     if cached_overview is not None:
                         _SNAPSHOT_OVERVIEW_CACHE.move_to_end(snap_key)
@@ -1258,6 +1328,7 @@ class DashboardQueryService:
             )
             if snap_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _SNAPSHOT_OVERVIEW_CACHE[snap_key] = overview
                     while len(_SNAPSHOT_OVERVIEW_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _SNAPSHOT_OVERVIEW_CACHE.popitem(last=False)
@@ -1383,6 +1454,7 @@ class DashboardQueryService:
             )
             if profile_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_profile = _COMPANY_PROFILE_CACHE.get(profile_cache_key)
                     if cached_profile is not None:
                         _COMPANY_PROFILE_CACHE.move_to_end(profile_cache_key)
@@ -1622,6 +1694,7 @@ class DashboardQueryService:
             )
             if profile_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _COMPANY_PROFILE_CACHE[profile_cache_key] = profile_result
                     while len(_COMPANY_PROFILE_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _COMPANY_PROFILE_CACHE.popitem(last=False)
@@ -1659,6 +1732,7 @@ class DashboardQueryService:
             )
             if comp_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_comp = _INDUSTRY_COMPARISON_CACHE.get(comp_cache_key)
                     if cached_comp is not None:
                         _INDUSTRY_COMPARISON_CACHE.move_to_end(comp_cache_key)
@@ -1786,6 +1860,7 @@ class DashboardQueryService:
             peer_ranking: pl.DataFrame | None = None
             if cohort_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     peer_ranking = _COHORT_PEER_RANKING_CACHE.get(cohort_cache_key)
                     if peer_ranking is not None:
                         _COHORT_PEER_RANKING_CACHE.move_to_end(cohort_cache_key)
@@ -1848,6 +1923,7 @@ class DashboardQueryService:
                 )
                 if cohort_cache_key is not None:
                     with _QUERY_CACHE_LOCK:
+                        _evict_stale_l1b_caches_locked(snap_key)
                         _COHORT_PEER_RANKING_CACHE[cohort_cache_key] = peer_ranking
                         while len(_COHORT_PEER_RANKING_CACHE) > _MAX_QUERY_CACHE_SIZE:
                             _COHORT_PEER_RANKING_CACHE.popitem(last=False)
@@ -1874,6 +1950,7 @@ class DashboardQueryService:
             )
             if comp_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _INDUSTRY_COMPARISON_CACHE[comp_cache_key] = comp_result
                     while len(_INDUSTRY_COMPARISON_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _INDUSTRY_COMPARISON_CACHE.popitem(last=False)
@@ -1903,6 +1980,7 @@ class DashboardQueryService:
             )
             if hist_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_hist = _PEER_BAND_HISTORY_CACHE.get(hist_cache_key)
                     if cached_hist is not None:
                         _PEER_BAND_HISTORY_CACHE.move_to_end(hist_cache_key)
@@ -1944,6 +2022,7 @@ class DashboardQueryService:
             )
             if hist_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _PEER_BAND_HISTORY_CACHE[hist_cache_key] = hist_res
                     while len(_PEER_BAND_HISTORY_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _PEER_BAND_HISTORY_CACHE.popitem(last=False)
@@ -2046,6 +2125,7 @@ class DashboardQueryService:
             )
             if rp_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_rp = _RATIO_PERIODS_CACHE.get(rp_cache_key)
                     if cached_rp is not None:
                         _RATIO_PERIODS_CACHE.move_to_end(rp_cache_key)
@@ -2075,6 +2155,7 @@ class DashboardQueryService:
             )
             if rp_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _RATIO_PERIODS_CACHE[rp_cache_key] = rp_result
                     while len(_RATIO_PERIODS_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _RATIO_PERIODS_CACHE.popitem(last=False)
@@ -2152,6 +2233,7 @@ class DashboardQueryService:
             )
             if lineage_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_lineage = _RATIO_LINEAGE_CACHE.get(lineage_cache_key)
                     if cached_lineage is not None:
                         _RATIO_LINEAGE_CACHE.move_to_end(lineage_cache_key)
@@ -2470,6 +2552,7 @@ class DashboardQueryService:
             )
             if lineage_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _RATIO_LINEAGE_CACHE[lineage_cache_key] = lineage_result
                     while len(_RATIO_LINEAGE_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _RATIO_LINEAGE_CACHE.popitem(last=False)
@@ -2560,6 +2643,7 @@ class DashboardQueryService:
                 )
                 if period_cache_key is not None:
                     with _QUERY_CACHE_LOCK:
+                        _evict_stale_l1b_caches_locked(snap_key)
                         resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
                         if resolved_date is not None:
                             _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
@@ -2581,6 +2665,7 @@ class DashboardQueryService:
                     resolved_date = raw_max
                     if period_cache_key is not None:
                         with _QUERY_CACHE_LOCK:
+                            _evict_stale_l1b_caches_locked(snap_key)
                             _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
                             while (
                                 len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE
@@ -2612,6 +2697,7 @@ class DashboardQueryService:
             )
             if screener_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_screener = _SCREENER_CACHE.get(screener_cache_key)
                     if cached_screener is not None:
                         _SCREENER_CACHE.move_to_end(screener_cache_key)
@@ -2847,6 +2933,7 @@ class DashboardQueryService:
             sliced = _wrap_cached_dicts_df(projected.slice(offset, limit))
             if screener_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _SCREENER_CACHE[screener_cache_key] = (sliced, total_count)
                     while len(_SCREENER_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _SCREENER_CACHE.popitem(last=False)
@@ -2894,6 +2981,7 @@ class DashboardQueryService:
                 )
                 if period_cache_key is not None:
                     with _QUERY_CACHE_LOCK:
+                        _evict_stale_l1b_caches_locked(snap_key)
                         resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
                         if resolved_date is not None:
                             _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
@@ -2929,6 +3017,7 @@ class DashboardQueryService:
                     resolved_date = raw_max
                     if period_cache_key is not None:
                         with _QUERY_CACHE_LOCK:
+                            _evict_stale_l1b_caches_locked(snap_key)
                             _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
                             while (
                                 len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE
@@ -2942,6 +3031,7 @@ class DashboardQueryService:
             )
             if stress_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_inputs = _STRESS_INPUTS_CACHE.get(stress_cache_key)
                     if cached_inputs is not None:
                         _STRESS_INPUTS_CACHE.move_to_end(stress_cache_key)
@@ -2981,6 +3071,7 @@ class DashboardQueryService:
             result = ratios.join(issuers, on="issuer_id", how="left").sort("ticker")
             if stress_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _STRESS_INPUTS_CACHE[stress_cache_key] = result
                     while len(_STRESS_INPUTS_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _STRESS_INPUTS_CACHE.popitem(last=False)
