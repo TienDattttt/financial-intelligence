@@ -74,6 +74,7 @@ from finintel.serving.queries import (
     DashboardQueryService,
     PeriodType,
     PeriodView,
+    RiskTier,
     StatementScope,
 )
 from finintel.serving.schemas import (
@@ -1056,6 +1057,7 @@ def create_app(
         icb_code_level2: str | None = Query(None, pattern=_ICB_CODE_PATTERN),
         min_f_score: int | None = Query(None, ge=0, le=9),
         altman_zone: AltmanZone | None = Query(None),
+        risk_tier: RiskTier | None = Query(None),
         beneish_flag: BeneishFlag | None = Query(None),
         max_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
         min_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
@@ -1094,6 +1096,7 @@ def create_app(
                     "icb_code_level2": icb_code_level2,
                     "min_f_score": min_f_score,
                     "altman_zone": altman_zone,
+                    "risk_tier": risk_tier,
                     "beneish_flag": beneish_flag,
                     "max_distress_prob": max_distress_prob,
                     "min_distress_prob": min_distress_prob,
@@ -1117,6 +1120,7 @@ def create_app(
                 icb_code_level2=icb_code_level2,
                 min_f_score=min_f_score,
                 altman_zone=altman_zone,
+                risk_tier=risk_tier,
                 beneish_flag=beneish_flag,
                 max_distress_prob=max_distress_prob,
                 min_distress_prob=min_distress_prob,

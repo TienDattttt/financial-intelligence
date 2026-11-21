@@ -167,6 +167,7 @@ ML_SCORES_KEY = (
     "period_end_date",
     "filing_id",
 )
+RISK_TIERS: frozenset[str] = frozenset({"R1", "R2", "R3", "R4", "R5"})
 ML_SCORES_SCHEMA = pl.Schema(
     {
         "issuer_id": pl.String,
@@ -193,6 +194,10 @@ ML_SCORES_SCHEMA = pl.Schema(
         "anomaly_flag": pl.String,
         "distress_risk_score": pl.Float64,
         "calibrated_distress_prob": pl.Float64,
+        "risk_tier": pl.String,
+        "risk_market_percentile": pl.Float64,
+        "market_base_rate": pl.Float64,
+        "relative_risk_lift": pl.Float64,
         "model_version": pl.String,
         "shap_top_drivers_json": pl.String,
     }

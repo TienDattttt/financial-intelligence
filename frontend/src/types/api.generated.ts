@@ -886,6 +886,14 @@ export interface components {
             distress_risk_score?: number | null;
             /** Calibrated Distress Prob */
             calibrated_distress_prob?: number | null;
+            /** Risk Tier */
+            risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** Risk Market Percentile */
+            risk_market_percentile?: number | null;
+            /** Market Base Rate */
+            market_base_rate?: number | null;
+            /** Relative Risk Lift */
+            relative_risk_lift?: number | null;
             /** Model Version */
             model_version?: string | null;
             /** Shap Top Drivers Json */
@@ -922,6 +930,14 @@ export interface components {
             distress_prob_curr?: number | null;
             /** Distress Prob Delta */
             distress_prob_delta?: number | null;
+            /** Risk Tier Prev */
+            risk_tier_prev?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** Risk Tier Curr */
+            risk_tier_curr?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** Risk Market Percentile Curr */
+            risk_market_percentile_curr?: number | null;
+            /** Relative Risk Lift Curr */
+            relative_risk_lift_curr?: number | null;
             /** Red Flag Count Prev */
             red_flag_count_prev: number;
             /** Red Flag Count Curr */
@@ -1298,6 +1314,14 @@ export interface components {
             distress_risk_score?: number | null;
             /** Calibrated Distress Prob */
             calibrated_distress_prob?: number | null;
+            /** Risk Tier */
+            risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** Risk Market Percentile */
+            risk_market_percentile?: number | null;
+            /** Market Base Rate */
+            market_base_rate?: number | null;
+            /** Relative Risk Lift */
+            relative_risk_lift?: number | null;
             /** Model Role */
             model_role?: string | null;
             /** Model Version */
@@ -1904,6 +1928,7 @@ export interface operations {
                 icb_code_level2?: string | null;
                 min_f_score?: number | null;
                 altman_zone?: ("SAFE_ZONE" | "GREY_ZONE" | "DISTRESS_ZONE") | null;
+                risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
                 beneish_flag?: ("VALID" | "HIGH_MANIPULATION_RISK_SCREEN" | "MIXED_TAXONOMY" | "MISSING_PRIOR_YEAR_BASE" | "MISSING_DEPRECIATION_DIRECT_CF" | "MISSING_OR_INVALID_INPUT") | null;
                 max_distress_prob?: number | null;
                 min_distress_prob?: number | null;

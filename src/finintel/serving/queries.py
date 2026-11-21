@@ -81,6 +81,7 @@ PeriodView = Literal["TTM", "Quarterly", "Annual"]
 StatementScope = Literal["CONSOLIDATED", "SEPARATE"]
 PeriodType = Literal["QUARTER", "ANNUAL"]
 AltmanZone = Literal["SAFE_ZONE", "GREY_ZONE", "DISTRESS_ZONE"]
+RiskTier = Literal["R1", "R2", "R3", "R4", "R5"]
 BeneishFlag = Literal[
     "VALID",
     "HIGH_MANIPULATION_RISK_SCREEN",
@@ -95,6 +96,7 @@ STATEMENT_SCOPES: tuple[str, ...] = ("CONSOLIDATED", "SEPARATE")
 PERIOD_TYPES: tuple[str, ...] = ("QUARTER", "ANNUAL")
 PERIOD_VIEWS: tuple[str, ...] = ("TTM", "Quarterly", "Annual")
 ALTMAN_ZONES: tuple[str, ...] = ("SAFE_ZONE", "GREY_ZONE", "DISTRESS_ZONE")
+RISK_TIERS_ORDERED: tuple[str, ...] = ("R1", "R2", "R3", "R4", "R5")
 BENEISH_FLAGS: tuple[str, ...] = (
     "VALID",
     "HIGH_MANIPULATION_RISK_SCREEN",
@@ -162,6 +164,13 @@ _ALTMAN_SEVERITY_RANK: dict[str, int] = {
     "GREY_ZONE": 1,
     "DISTRESS_ZONE": 2,
 }
+_RISK_TIER_SEVERITY_RANK: dict[str, int] = {
+    "R1": 0,
+    "R2": 1,
+    "R3": 2,
+    "R4": 3,
+    "R5": 4,
+}
 
 PEER_BAND_HISTORY_SCHEMA = pl.Schema(
     {
@@ -214,6 +223,10 @@ SCREENER_SCHEMA = pl.Schema(
         "anomaly_flag": pl.String,
         "distress_risk_score": pl.Float64,
         "calibrated_distress_prob": pl.Float64,
+        "risk_tier": pl.String,
+        "risk_market_percentile": pl.Float64,
+        "market_base_rate": pl.Float64,
+        "relative_risk_lift": pl.Float64,
         "model_role": pl.String,
         "model_version": pl.String,
     }
@@ -2567,6 +2580,7 @@ class DashboardQueryService:
         icb_code_level2: str | None = None,
         min_f_score: int | None = None,
         altman_zone: str | None = None,
+        risk_tier: str | None = None,
         beneish_flag: str | None = None,
         max_distress_prob: float | None = None,
         min_distress_prob: float | None = None,
@@ -2597,6 +2611,8 @@ class DashboardQueryService:
             raise ValueError("min_f_score must be an integer between 0 and 9.")
         if altman_zone is not None and altman_zone not in ALTMAN_ZONES:
             raise ValueError(f"Unsupported altman_zone: {altman_zone!r}")
+        if risk_tier is not None and risk_tier not in RISK_TIERS_ORDERED:
+            raise ValueError(f"Unsupported risk_tier: {risk_tier!r}")
         if beneish_flag is not None and beneish_flag not in BENEISH_FLAGS:
             raise ValueError(f"Unsupported beneish_flag: {beneish_flag!r}")
         for label, prob in (
@@ -2681,6 +2697,7 @@ class DashboardQueryService:
                     icb_code_level2,
                     min_f_score,
                     altman_zone,
+                    risk_tier,
                     beneish_flag,
                     float(max_distress_prob) if max_distress_prob is not None else None,
                     float(min_distress_prob) if min_distress_prob is not None else None,
@@ -2824,6 +2841,10 @@ class DashboardQueryService:
                 "anomaly_flag",
                 "distress_risk_score",
                 "calibrated_distress_prob",
+                "risk_tier",
+                "risk_market_percentile",
+                "market_base_rate",
+                "relative_risk_lift",
                 "model_role",
                 "model_version",
             )
@@ -2886,6 +2907,8 @@ class DashboardQueryService:
                 )
             if altman_zone is not None:
                 joined = joined.filter(pl.col("altman_zone") == altman_zone)
+            if risk_tier is not None:
+                joined = joined.filter(pl.col("risk_tier") == risk_tier)
             if beneish_flag is not None:
                 joined = joined.filter(pl.col("beneish_flag") == beneish_flag)
             if max_distress_prob is not None:
@@ -3707,6 +3730,10 @@ class DashboardQueryService:
                     "period_end_date",
                     "altman_zone",
                     "calibrated_distress_prob",
+                    "risk_tier",
+                    "risk_market_percentile",
+                    "market_base_rate",
+                    "relative_risk_lift",
                     "filing_id",
                 ),
                 avail_ml_cols,
@@ -3763,10 +3790,12 @@ class DashboardQueryService:
                         str(rec["flag_code"])
                     )
 
-        def _prob(rec: dict[str, object] | None) -> float | None:
+        def _finite_field(
+            rec: dict[str, object] | None, field_name: str
+        ) -> float | None:
             if not rec:
                 return None
-            raw = rec.get("calibrated_distress_prob")
+            raw = rec.get(field_name)
             if isinstance(raw, (int, float)) and not isinstance(raw, bool):
                 val = float(raw)
                 return val if math.isfinite(val) else None
@@ -3788,13 +3817,25 @@ class DashboardQueryService:
                 if prev_ml and prev_ml.get("altman_zone") is not None
                 else None
             )
-            prob_curr = _prob(curr_ml)
-            prob_prev = _prob(prev_ml)
+            tier_curr = (
+                str(curr_ml["risk_tier"])
+                if curr_ml and curr_ml.get("risk_tier") is not None
+                else None
+            )
+            tier_prev = (
+                str(prev_ml["risk_tier"])
+                if prev_ml and prev_ml.get("risk_tier") is not None
+                else None
+            )
+            prob_curr = _finite_field(curr_ml, "calibrated_distress_prob")
+            prob_prev = _finite_field(prev_ml, "calibrated_distress_prob")
             prob_delta = (
                 prob_curr - prob_prev
                 if prob_curr is not None and prob_prev is not None
                 else None
             )
+            pct_curr = _finite_field(curr_ml, "risk_market_percentile")
+            lift_curr = _finite_field(curr_ml, "relative_risk_lift")
 
             curr_flags = rf_lookup.get((iid, curr_d), set())
             prev_flags = (
@@ -3811,8 +3852,15 @@ class DashboardQueryService:
                 and _ALTMAN_SEVERITY_RANK.get(zone_curr, -1)
                 > _ALTMAN_SEVERITY_RANK.get(zone_prev, -1)
             )
+            tier_worsened = (
+                tier_curr is not None
+                and tier_prev is not None
+                and _RISK_TIER_SEVERITY_RANK.get(tier_curr, -1)
+                > _RISK_TIER_SEVERITY_RANK.get(tier_prev, -1)
+            )
             deteriorated = bool(
                 zone_worsened
+                or tier_worsened
                 or (prob_delta is not None and prob_delta >= 0.003)
                 or len(new_flags) > 0
             )
@@ -3829,6 +3877,10 @@ class DashboardQueryService:
                     "distress_prob_prev": prob_prev,
                     "distress_prob_curr": prob_curr,
                     "distress_prob_delta": prob_delta,
+                    "risk_tier_prev": tier_prev,
+                    "risk_tier_curr": tier_curr,
+                    "risk_market_percentile_curr": pct_curr,
+                    "relative_risk_lift_curr": lift_curr,
                     "red_flag_count_prev": len(prev_flags),
                     "red_flag_count_curr": len(curr_flags),
                     "new_red_flag_codes": new_flags,
@@ -3982,6 +4034,7 @@ class DashboardQueryService:
                     "altman_zone": pl.String,
                     "beneish_flag": pl.String,
                     "calibrated_distress_prob": pl.Float64,
+                    "risk_tier": pl.String,
                 }
             )
             avail_ml = _available_table_columns(
@@ -3995,6 +4048,7 @@ class DashboardQueryService:
                         "altman_zone",
                         "beneish_flag",
                         "calibrated_distress_prob",
+                        "risk_tier",
                     ),
                     avail_ml,
                 )

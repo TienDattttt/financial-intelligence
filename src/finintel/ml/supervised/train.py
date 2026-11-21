@@ -81,6 +81,14 @@ XGB_MAX_ESTIMATORS = 400
 XGB_EARLY_STOPPING_ROUNDS = 25
 XGB_MIN_ESTIMATORS = 15
 XGB_MAX_REFIT_ESTIMATORS = 300
+RISK_TIER_LABELS: tuple[str, ...] = ("R1", "R2", "R3", "R4", "R5")
+RISK_TIER_QUANTILES: tuple[float, float, float, float] = (0.50, 0.75, 0.90, 0.95)
+DEFAULT_RISK_TIER_CUTOFFS: tuple[float, float, float, float] = (
+    0.010,
+    0.025,
+    0.060,
+    0.150,
+)
 
 
 def _sigmoid(z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
@@ -295,6 +303,143 @@ class TrainingResult:
     altman_platt_intercept: float = 0.0
     logit_platt_slope: float = 1.0
     logit_platt_intercept: float = 0.0
+    risk_tier_cutoffs: tuple[float, float, float, float] = DEFAULT_RISK_TIER_CUTOFFS
+
+
+def compute_ttc_risk_tier_cutoffs(
+    oof_probs: NDArray[np.floating[Any]],
+    *,
+    base_rate: float,
+) -> tuple[float, float, float, float]:
+    """Freeze 4 strictly increasing Through-the-Cycle PD cutoffs (R1..R5) from OOF probabilities (H-07)."""
+    arr = np.asarray(oof_probs, dtype=np.float64).reshape(-1)
+    fin = arr[np.isfinite(arr)]
+    safe_base = float(
+        np.clip(
+            base_rate if np.isfinite(base_rate) and base_rate > 0 else 0.02, 1e-4, 0.5
+        )
+    )
+    fallback = (
+        float(np.clip(0.5 * safe_base, 1e-4, 0.95)),
+        float(np.clip(1.0 * safe_base, 2e-4, 0.96)),
+        float(np.clip(2.5 * safe_base, 3e-4, 0.97)),
+        float(np.clip(5.0 * safe_base, 4e-4, 0.98)),
+    )
+    if fin.size < 5:
+        return fallback
+    raw_q = [float(np.quantile(fin, q)) for q in RISK_TIER_QUANTILES]
+    resolved: list[float] = []
+    for idx, val in enumerate(raw_q):
+        c = float(np.clip(val, 1e-6, 1.0 - 1e-6))
+        if idx > 0 and c <= resolved[-1]:
+            # Break flat quantile ties deterministically while staying inside (prev, 1.0)
+            alt = max(fallback[idx], resolved[-1] * 1.25 + 1e-4)
+            c = float(np.clip(alt, resolved[-1] + 1e-6, 1.0 - 1e-6 * (4 - idx)))
+        resolved.append(c)
+    return (resolved[0], resolved[1], resolved[2], resolved[3])
+
+
+def assign_risk_tiers(
+    probs: NDArray[np.floating[Any]],
+    cutoffs: tuple[float, float, float, float],
+) -> list[str | None]:
+    """Assign Through-the-Cycle absolute credit tiers R1..R5 using frozen PD cutoffs (H-07)."""
+    c1, c2, c3, c4 = cutoffs
+    values = np.asarray(probs, dtype=np.float64).reshape(-1)
+    tiers: list[str | None] = []
+    for raw in values:
+        val = float(raw)
+        if not np.isfinite(val):
+            tiers.append(None)
+        elif val < c1:
+            tiers.append("R1")
+        elif val < c2:
+            tiers.append("R2")
+        elif val < c3:
+            tiers.append("R3")
+        elif val < c4:
+            tiers.append("R4")
+        else:
+            tiers.append("R5")
+    return tiers
+
+
+def compute_cross_sectional_risk_percentile(frame: pl.DataFrame) -> pl.DataFrame:
+    """Compute PIT cross-sectional risk_market_percentile (0..100) within each reporting period."""
+    if frame.is_empty() or "calibrated_distress_prob" not in frame.columns:
+        return frame
+    group_cols = [
+        col
+        for col in ("statement_scope", "period_type", "period_end_date")
+        if col in frame.columns
+    ]
+    finite_prob = (
+        pl.when(pl.col("calibrated_distress_prob").is_finite())
+        .then(pl.col("calibrated_distress_prob").cast(pl.Float64))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+    )
+    if group_cols:
+        rank_expr = finite_prob.rank(method="average").over(group_cols)
+        count_expr = finite_prob.count().over(group_cols)
+    else:
+        rank_expr = finite_prob.rank(method="average")
+        count_expr = finite_prob.count()
+    pct_expr = (
+        pl.when(finite_prob.is_not_null() & (count_expr > 0))
+        .then((100.0 * rank_expr / count_expr.cast(pl.Float64)).clip(0.0, 100.0))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+        .alias("risk_market_percentile")
+    )
+    return frame.with_columns(pct_expr)
+
+
+def evaluate_risk_tier_reliability(
+    y: NDArray[np.int8],
+    probs: NDArray[np.floating[Any]],
+    cutoffs: tuple[float, float, float, float],
+) -> dict[str, Any]:
+    """Summarize empirical event rate and mean predicted PD across R1..R5 tiers."""
+    y_arr = np.asarray(y, dtype=np.int8).reshape(-1)
+    p_arr = np.asarray(probs, dtype=np.float64).reshape(-1)
+    finite = np.isfinite(p_arr)
+    y_fin = y_arr[finite]
+    p_fin = p_arr[finite]
+    tiers = assign_risk_tiers(p_fin, cutoffs)
+    n_total = max(1, len(y_fin))
+    rows: list[dict[str, Any]] = []
+    observed_rates: list[float] = []
+    for label in RISK_TIER_LABELS:
+        mask = np.array([t == label for t in tiers], dtype=bool)
+        cnt = int(mask.sum())
+        pos = int((y_fin[mask] == 1).sum()) if cnt > 0 else 0
+        emp_rate = float(pos / cnt) if cnt > 0 else None
+        mean_pd = float(np.mean(p_fin[mask])) if cnt > 0 else None
+        if emp_rate is not None:
+            observed_rates.append(emp_rate)
+        rows.append(
+            {
+                "risk_tier": label,
+                "count": cnt,
+                "share": float(cnt / n_total) if len(y_fin) > 0 else 0.0,
+                "positive_count": pos,
+                "empirical_event_rate": emp_rate,
+                "mean_predicted_pd": mean_pd,
+            }
+        )
+    monotone_non_decreasing = all(
+        observed_rates[i] <= observed_rates[i + 1] + 1e-12
+        for i in range(len(observed_rates) - 1)
+    )
+    return {
+        "cutoffs": {
+            "R2_min_pd": cutoffs[0],
+            "R3_min_pd": cutoffs[1],
+            "R4_min_pd": cutoffs[2],
+            "R5_min_pd": cutoffs[3],
+        },
+        "tiers": rows,
+        "is_monotone_non_decreasing": monotone_non_decreasing,
+    }
 
 
 def _model_features(
@@ -963,6 +1108,9 @@ def train_distress_model(
                 reference_prevalence=train_prevalence,
             ),
         }
+        tier_cutoffs = compute_ttc_risk_tier_cutoffs(
+            oof_xgb_prob, base_rate=train_prevalence
+        )
         return TrainingResult(
             model_features,
             prep,
@@ -994,6 +1142,7 @@ def train_distress_model(
             else 0.0,
             logit_platt_slope=calibrated_logit.slope,
             logit_platt_intercept=calibrated_logit.intercept,
+            risk_tier_cutoffs=tier_cutoffs,
         )
 
     # Legacy 3-Way path (validation hold-out explicitly supplied): fair 3-model Platt calibration
@@ -1089,6 +1238,9 @@ def train_distress_model(
             reference_prevalence=train_prevalence,
         ),
     }
+    tier_cutoffs = compute_ttc_risk_tier_cutoffs(
+        oof_xgb_prob, base_rate=train_prevalence
+    )
     return TrainingResult(
         model_features,
         prep,
@@ -1120,6 +1272,7 @@ def train_distress_model(
         else 0.0,
         logit_platt_slope=calibrated_logit.slope,
         logit_platt_intercept=calibrated_logit.intercept,
+        risk_tier_cutoffs=tier_cutoffs,
     )
 
 
@@ -1258,6 +1411,9 @@ def evaluate_distress_models(
                 reference_prevalence=ref_prev,
             ),
         },
+        "risk_tier_reliability": evaluate_risk_tier_reliability(
+            y, xgb_prob, result.risk_tier_cutoffs
+        ),
         "by_fiscal_year": by_year,
     }
 
@@ -1310,6 +1466,12 @@ def build_evaluation_report(
         "altman_platt_intercept": result.altman_platt_intercept,
         "logit_platt_slope": result.logit_platt_slope,
         "logit_platt_intercept": result.logit_platt_intercept,
+        "risk_tier_cutoffs": {
+            "R2_min_pd": result.risk_tier_cutoffs[0],
+            "R3_min_pd": result.risk_tier_cutoffs[1],
+            "R4_min_pd": result.risk_tier_cutoffs[2],
+            "R5_min_pd": result.risk_tier_cutoffs[3],
+        },
         "f2_thresholds": dict(result.f2_thresholds),
         "train_summary": {
             "sample_count": int(len(y_train)),
@@ -1769,13 +1931,17 @@ def compute_taxonomy_drift_psi(
 
 
 def score_distress_model(result: TrainingResult, frame: pl.DataFrame) -> pl.DataFrame:
-    """Return calibrated screening probabilities while preserving row order and keys."""
+    """Return calibrated PD, TTC R1..R5 tier, PIT market percentile, base rate & lift."""
     present_keys = [name for name in ML_SCORES_KEY if name in frame.columns]
     if frame.is_empty():
         empty_scores = pl.DataFrame(
             schema={
                 "distress_risk_score": pl.Float64,
                 "calibrated_distress_prob": pl.Float64,
+                "risk_tier": pl.String,
+                "risk_market_percentile": pl.Float64,
+                "market_base_rate": pl.Float64,
+                "relative_risk_lift": pl.Float64,
                 "model_version": pl.String,
                 "model_role": pl.String,
             }
@@ -1797,15 +1963,45 @@ def score_distress_model(result: TrainingResult, frame: pl.DataFrame) -> pl.Data
         probability = np.asarray(
             result.calibrated.predict_proba(matrix)[:, 1], dtype=np.float64
         )
+    tiers = assign_risk_tiers(probability, result.risk_tier_cutoffs)
+    base_rate_val: float | None = (
+        float(result.train_prevalence)
+        if np.isfinite(result.train_prevalence) and result.train_prevalence > 0.0
+        else None
+    )
+    if base_rate_val is not None:
+        base_rate_col = np.full(frame.height, base_rate_val, dtype=np.float64)
+        lift_col = np.where(
+            np.isfinite(probability), probability / base_rate_val, np.nan
+        )
+    else:
+        base_rate_col = np.full(frame.height, np.nan, dtype=np.float64)
+        lift_col = np.full(frame.height, np.nan, dtype=np.float64)
+
     output = pl.DataFrame(
         {
             "distress_risk_score": raw_margin,
             "calibrated_distress_prob": probability,
+            "risk_tier": pl.Series("risk_tier", tiers, dtype=pl.String),
+            "risk_market_percentile": pl.Series(
+                "risk_market_percentile", [None] * frame.height, dtype=pl.Float64
+            ),
+            "market_base_rate": pl.Series(
+                "market_base_rate",
+                [float(v) if np.isfinite(v) else None for v in base_rate_col],
+                dtype=pl.Float64,
+            ),
+            "relative_risk_lift": pl.Series(
+                "relative_risk_lift",
+                [float(v) if np.isfinite(v) else None for v in lift_col],
+                dtype=pl.Float64,
+            ),
             "model_version": [MODEL_VERSION] * frame.height,
             "model_role": ["SCREENING_INDICATOR"] * frame.height,
         }
     )
-    return frame.select(present_keys).hstack(output) if present_keys else output
+    combined = frame.select(present_keys).hstack(output) if present_keys else output
+    return compute_cross_sectional_risk_percentile(combined)
 
 
 def format_walk_forward_summary_table(

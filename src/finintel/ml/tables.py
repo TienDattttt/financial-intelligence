@@ -174,6 +174,12 @@ def build_ml_artifacts(
             else "THREE_WAY_HOLD_OUT",
             "platt_slope": training.platt_slope,
             "platt_intercept": training.platt_intercept,
+            "risk_tier_cutoffs": {
+                "R2_min_pd": training.risk_tier_cutoffs[0],
+                "R3_min_pd": training.risk_tier_cutoffs[1],
+                "R4_min_pd": training.risk_tier_cutoffs[2],
+                "R5_min_pd": training.risk_tier_cutoffs[3],
+            },
             "f2_thresholds": dict(training.f2_thresholds),
         }
     )
@@ -240,6 +246,12 @@ def build_ml_artifacts(
         "target_mode": resolved_target_mode,
         "platt_slope": training.platt_slope,
         "platt_intercept": training.platt_intercept,
+        "risk_tier_cutoffs": {
+            "R2_min_pd": training.risk_tier_cutoffs[0],
+            "R3_min_pd": training.risk_tier_cutoffs[1],
+            "R4_min_pd": training.risk_tier_cutoffs[2],
+            "R5_min_pd": training.risk_tier_cutoffs[3],
+        },
         "f2_thresholds": dict(training.f2_thresholds),
         "random_seed": 42,
         "facts_sha256": facts_sha256,

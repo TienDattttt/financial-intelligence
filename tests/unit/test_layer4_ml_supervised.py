@@ -1974,3 +1974,113 @@ def test_ml06_two_way_purged_oof_fair_three_model_calibration_bss_unseen_bootstr
     )
     assert trained_fallback.oof_strategy == "STRATIFIED_GROUP_OOF"
     assert trained_fallback.oof_sample_count > 0
+
+
+def test_ml07a_credit_risk_triad_ttc_tiers_pit_percentile_lift_and_reliability() -> (
+    None
+):
+    """Prove ML-07a (H-07 / ADR-ML-04): TTC R1..R5 decoupled from PIT quarter percentile + lift."""
+    from datetime import timedelta
+
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        RISK_TIER_LABELS,
+        assign_risk_tiers,
+        compute_cross_sectional_risk_percentile,
+        compute_ttc_risk_tier_cutoffs,
+        evaluate_risk_tier_reliability,
+        score_distress_model,
+        train_distress_model,
+    )
+
+    # 1. TTC cutoffs are strictly increasing and assign R1..R5 without embedding "[Top 5%]"
+    oof_p = np.linspace(0.002, 0.35, 200)
+    cutoffs = compute_ttc_risk_tier_cutoffs(oof_p, base_rate=0.025)
+    assert cutoffs[0] < cutoffs[1] < cutoffs[2] < cutoffs[3]
+    tiers_check = assign_risk_tiers(
+        np.array([0.001, cutoffs[0], cutoffs[1], cutoffs[2], cutoffs[3], np.nan]),
+        cutoffs,
+    )
+    assert tiers_check == ["R1", "R2", "R3", "R4", "R5", None]
+    assert all("Top" not in label for label in RISK_TIER_LABELS)
+
+    # 2. Prove TTC vs PIT decoupling:
+    #    In a crisis quarter where ALL companies have high PD >= cutoffs[3],
+    #    ALL companies receive TTC risk_tier == "R5", while PIT risk_market_percentile still spans (0, 100]!
+    crisis_df = pl.DataFrame(
+        {
+            "issuer_id": ["A", "B", "C", "D"],
+            "statement_scope": ["CONSOLIDATED"] * 4,
+            "period_type": ["QUARTER"] * 4,
+            "period_end_date": [date(2023, 6, 30)] * 4,
+            "calibrated_distress_prob": [0.40, 0.50, 0.60, 0.80],
+        }
+    )
+    crisis_tiers = assign_risk_tiers(
+        crisis_df["calibrated_distress_prob"].to_numpy(), cutoffs
+    )
+    assert crisis_tiers == ["R5", "R5", "R5", "R5"]
+    crisis_ranked = compute_cross_sectional_risk_percentile(crisis_df)
+    assert crisis_ranked["risk_market_percentile"].to_list() == pytest.approx(
+        [25.0, 50.0, 75.0, 100.0]
+    )
+
+    # 3. End-to-end score_distress_model emits all 4 additive fields + exact lift = pd / base_rate
+    rng = np.random.default_rng(314)
+    rows = []
+    for idx in range(120):
+        risk = -1.5 + 0.03 * idx + float(rng.normal(0.0, 0.2))
+        q_date = date(2022, 6, 30) if idx % 2 == 0 else date(2022, 9, 30)
+        row: dict[str, object] = {
+            "issuer_id": f"TRIAD_{idx:03d}",
+            "accounting_regime": "CORPORATE",
+            "statement_scope": "CONSOLIDATED",
+            "period_type": "QUARTER",
+            "period_end_date": q_date,
+            "filing_id": f"FIL_T_{idx:03d}",
+            "taxonomy_version": "VAS_TT200_2014",
+            "_period_available_at": q_date + timedelta(days=30),
+            "label_available_at": q_date + timedelta(days=395),
+            "distress_target": int(1 if risk > 1.2 else 0),
+        }
+        for feat in BASE_FEATURES:
+            if feat == "roa":
+                row[feat] = -0.10 * risk + 0.05
+            elif feat == "interest_coverage":
+                row[feat] = -1.8 * risk + 4.0
+            elif feat == "debt_to_equity":
+                row[feat] = 1.0 + 0.8 * max(0.0, risk)
+            elif feat == "altman_z_double_prime":
+                row[feat] = 2.5 - 1.0 * risk
+            else:
+                row[feat] = float(rng.normal(0.4, 0.25))
+        rows.append(row)
+    df_all = pl.DataFrame(rows)
+    trained = train_distress_model(
+        df_all, validation=None, features=BASE_FEATURES, min_unique_positive_issuers=3
+    )
+    scored = score_distress_model(trained, df_all)
+    assert {
+        "risk_tier",
+        "risk_market_percentile",
+        "market_base_rate",
+        "relative_risk_lift",
+    } <= set(scored.columns)
+    assert set(scored["risk_tier"].drop_nulls().unique().to_list()) <= set(
+        RISK_TIER_LABELS
+    )
+    pcts = scored["risk_market_percentile"].to_numpy()
+    assert np.all((pcts > 0.0) & (pcts <= 100.0))
+    base_rates = scored["market_base_rate"].to_numpy()
+    probs = scored["calibrated_distress_prob"].to_numpy()
+    lifts = scored["relative_risk_lift"].to_numpy()
+    assert np.allclose(base_rates, trained.train_prevalence, rtol=1e-9)
+    assert np.allclose(lifts, probs / trained.train_prevalence, rtol=1e-9)
+
+    rel = evaluate_risk_tier_reliability(
+        df_all["distress_target"].to_numpy().astype(np.int8),
+        probs,
+        trained.risk_tier_cutoffs,
+    )
+    assert len(rel["tiers"]) == 5
+    assert rel["is_monotone_non_decreasing"] is True

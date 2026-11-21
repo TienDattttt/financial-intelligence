@@ -432,6 +432,20 @@ def _build_synthetic_v2_tables() -> dict[str, pl.DataFrame]:
                 if (is_q and iid == "FPT")
                 else (0.85 if is_q else None),
                 "calibrated_distress_prob": prob,
+                "risk_tier": (
+                    "R1" if iid == "FPT" else ("R3" if iid == "CMG" else "R5")
+                )
+                if is_q
+                else None,
+                "risk_market_percentile": (
+                    33.33 if iid == "FPT" else (66.67 if iid == "CMG" else 100.0)
+                )
+                if is_q
+                else None,
+                "market_base_rate": 0.025 if is_q else None,
+                "relative_risk_lift": (prob / 0.025)
+                if (is_q and prob is not None)
+                else None,
                 "model_version": "xgboost-layer4b-v2" if is_q else None,
                 "shap_top_drivers_json": shap_str,
             }
@@ -1733,3 +1747,88 @@ class TestEmpiricalRealSnapshotServing:
                 codes = list(pool.map(_run, range(200)))
             assert len(codes) == 200
             assert all(code == 200 for code in codes)
+
+
+def test_ml07a_serving_exposes_credit_risk_triad_and_supports_legacy_snapshots(
+    published_parquet_root: tuple[Path, str],
+    synthetic_tables: dict[str, pl.DataFrame],
+    tmp_path: Path,
+) -> None:
+    """Verify ML-07a additive fields across /profile, /screener, /market/changes + legacy fallback."""
+    data_root, _ = published_parquet_root
+    app = create_app(data_root=data_root)
+    with TestClient(app) as client:
+        # 1. /api/v1/companies/HPG/profile exposes risk_tier, risk_market_percentile, market_base_rate, relative_risk_lift
+        prof = client.get("/api/v1/companies/HPG/profile")
+        assert prof.status_code == 200
+        ml_rows = prof.json()["ml_scores"]
+        q_ml = [r for r in ml_rows if r["period_type"] == "QUARTER"]
+        assert q_ml
+        latest_q = q_ml[-1]
+        assert latest_q["risk_tier"] == "R5"
+        assert latest_q["risk_market_percentile"] == pytest.approx(100.0)
+        assert latest_q["market_base_rate"] == pytest.approx(0.025)
+        assert latest_q["relative_risk_lift"] == pytest.approx(
+            latest_q["calibrated_distress_prob"] / 0.025
+        )
+
+        # 2. /api/v1/screener returns triad fields and supports optional risk_tier filter
+        scr_all = client.get("/api/v1/screener", params={"period_type": "QUARTER"})
+        assert scr_all.status_code == 200
+        items_all = scr_all.json()["items"]
+        assert any(it["risk_tier"] == "R5" for it in items_all)
+        assert any(it["risk_tier"] == "R1" for it in items_all)
+
+        scr_r5 = client.get(
+            "/api/v1/screener", params={"period_type": "QUARTER", "risk_tier": "R5"}
+        )
+        assert scr_r5.status_code == 200
+        items_r5 = scr_r5.json()["items"]
+        assert len(items_r5) >= 1
+        assert all(it["risk_tier"] == "R5" for it in items_r5)
+
+        # 3. /api/v2/market/changes exposes risk_tier_prev/curr, risk_market_percentile_curr, relative_risk_lift_curr
+        chg = client.get("/api/v2/market/changes", params={"period_type": "QUARTER"})
+        assert chg.status_code == 200
+        chg_items = chg.json()["items"]
+        hpg_chg = [it for it in chg_items if it["ticker"] == "HPG"]
+        assert hpg_chg
+        assert hpg_chg[0]["risk_tier_curr"] == "R5"
+        assert hpg_chg[0]["risk_market_percentile_curr"] == pytest.approx(100.0)
+        assert hpg_chg[0]["relative_risk_lift_curr"] is not None
+
+    # 4. Backward compatibility: legacy snapshot parquet WITHOUT the 4 ML-07a columns still serves 200 OK
+    legacy_root = tmp_path / "legacy_data"
+    state = StateStore(legacy_root / "metadata" / "state.sqlite")
+    state.initialize()
+    state.start_run("run_legacy", "MANUAL", {"source": "test"}, None)
+    publisher = SnapshotPublisher(
+        legacy_root / "published" / "snapshots", state_store=state
+    )
+    snap_dir = publisher.publish(
+        "snap_legacy_pre_ml07a", synthetic_tables, run_id="run_legacy"
+    )
+    state.finish_run("run_legacy", "SUCCEEDED", "snap_legacy_pre_ml07a")
+    legacy_ml = synthetic_tables[ML_SCORES_TABLE].drop(
+        [
+            "risk_tier",
+            "risk_market_percentile",
+            "market_base_rate",
+            "relative_risk_lift",
+        ]
+    )
+    legacy_ml.write_parquet(snap_dir / ML_SCORES_TABLE)
+
+    legacy_app = create_app(data_root=legacy_root)
+    with TestClient(legacy_app) as legacy_client:
+        r_prof = legacy_client.get("/api/v1/companies/HPG/profile")
+        assert r_prof.status_code == 200
+        assert r_prof.json()["ml_scores"][-1]["risk_tier"] is None
+        r_scr = legacy_client.get("/api/v1/screener", params={"period_type": "QUARTER"})
+        assert r_scr.status_code == 200
+        assert all(it["risk_tier"] is None for it in r_scr.json()["items"])
+        r_chg = legacy_client.get(
+            "/api/v2/market/changes", params={"period_type": "QUARTER"}
+        )
+        assert r_chg.status_code == 200
+        assert all(it["risk_tier_curr"] is None for it in r_chg.json()["items"])

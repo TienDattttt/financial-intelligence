@@ -35,6 +35,7 @@ from finintel.serving.queries import (
     PeerGroupLevel,
     PeriodType,
     PeriodView,
+    RiskTier,
     StatementScope,
 )
 
@@ -283,6 +284,10 @@ class MLScoreItem(BaseModel):
     anomaly_flag: str | None = None
     distress_risk_score: float | None = None
     calibrated_distress_prob: float | None = None
+    risk_tier: RiskTier | str | None = None
+    risk_market_percentile: float | None = None
+    market_base_rate: float | None = None
+    relative_risk_lift: float | None = None
     model_version: str | None = None
     shap_top_drivers_json: str | None = None
     shap_top_drivers: ShapExplanationItem | None = None
@@ -515,6 +520,10 @@ class ScreenerItem(BaseModel):
     anomaly_flag: str | None = None
     distress_risk_score: float | None = None
     calibrated_distress_prob: float | None = None
+    risk_tier: RiskTier | str | None = None
+    risk_market_percentile: float | None = None
+    market_base_rate: float | None = None
+    relative_risk_lift: float | None = None
     model_role: str | None = None
     model_version: str | None = None
 
@@ -843,6 +852,10 @@ class MarketChangeItem(BaseModel):
     distress_prob_prev: float | None = None
     distress_prob_curr: float | None = None
     distress_prob_delta: float | None = None
+    risk_tier_prev: RiskTier | str | None = None
+    risk_tier_curr: RiskTier | str | None = None
+    risk_market_percentile_curr: float | None = None
+    relative_risk_lift_curr: float | None = None
     red_flag_count_prev: int
     red_flag_count_curr: int
     new_red_flag_codes: list[str]

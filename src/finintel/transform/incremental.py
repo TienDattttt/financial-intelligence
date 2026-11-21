@@ -1420,9 +1420,13 @@ def run_incremental_analytics_transform(
                 else:
                     new_ml = pl.DataFrame(schema=ML_SCORES_SCHEMA)
                 scored_issuers = issuers_to_score
-                ml_scores = pl.concat([kept_ml, new_ml], how="vertical").sort(
-                    list(ML_SCORES_KEY)
+                from finintel.ml.supervised.train import (
+                    compute_cross_sectional_risk_percentile,
                 )
+
+                ml_scores = compute_cross_sectional_risk_percentile(
+                    pl.concat([kept_ml, new_ml], how="vertical")
+                ).sort(list(ML_SCORES_KEY))
             else:
                 issuers_to_score = sorted(curr_ids)
                 scored_issuers = issuers_to_score
