@@ -48,9 +48,18 @@ import polars as pl
 
 from finintel.exceptions import ContractViolationError
 from finintel.pipeline.state_store import StateStore
+from finintel.storage.schemas import (
+    AUDIT_QUARANTINE_TABLE,
+    BENCHMARKS_TABLE,
+    EXTENSION_PORT_TABLES,
+    FILINGS_MANIFEST_TABLE,
+    ML_SCORES_TABLE,
+    QUALITY_SUMMARY_TABLE,
+    RATIOS_TABLE,
+    RED_FLAGS_TABLE,
+)
 from finintel.storage.snapshot_publisher import (
     _ALLOW_EMPTY_TABLES,
-    KNOWN_CATALOG_TABLES,
     KNOWN_TABLES,
     TABLE_PHYSICAL_LAYOUT,
     TableInput,
@@ -65,6 +74,32 @@ SNAPSHOT_AUDIT_TABLE = "_snapshot_audit"
 DEFAULT_CATALOG_ALIAS = "finintel_lake"
 DEFAULT_POSTGRES_DSN_ENV = "FININTEL_DUCKLAKE_PG_DSN"
 DEFAULT_OVERRIDE_DATA_PATH_ENV = "FININTEL_DUCKLAKE_OVERRIDE_DATA_PATH"
+
+# Core 10 financial marts managed by published_financial_marts (B-03).
+# Extension Port tables (regulatory_events, market_prices, etc.) MUST remain
+# outside this set so publish_snapshot() never issues DROP TABLE against them.
+MANAGED_MART_TABLES: frozenset[str] = frozenset(
+    {
+        "issuers.parquet",
+        "financial_facts.parquet",
+        "latest_facts.parquet",
+        FILINGS_MANIFEST_TABLE,
+        RATIOS_TABLE,
+        BENCHMARKS_TABLE,
+        RED_FLAGS_TABLE,
+        ML_SCORES_TABLE,
+        QUALITY_SUMMARY_TABLE,
+        AUDIT_QUARANTINE_TABLE,
+    }
+)
+OPTIONAL_MANAGED_MART_TABLES: frozenset[str] = frozenset({"unmapped_metrics.parquet"})
+MANAGED_MART_CATALOG_TABLES: frozenset[str] = frozenset(
+    name.removesuffix(".parquet")
+    for name in (MANAGED_MART_TABLES | OPTIONAL_MANAGED_MART_TABLES)
+)
+EXTENSION_PORT_CATALOG_TABLES: frozenset[str] = frozenset(
+    name.removesuffix(".parquet") for name in EXTENSION_PORT_TABLES
+)
 
 StorageBackend = Literal["parquet", "ducklake"]
 CatalogDriver = Literal["sqlite", "postgres"]
@@ -551,7 +586,8 @@ class DuckLakeStore:
             str(row[0])
             for row in rows
             if str(row[0]) != SNAPSHOT_AUDIT_TABLE
-            and str(row[0]) in KNOWN_CATALOG_TABLES
+            and str(row[0]) in MANAGED_MART_CATALOG_TABLES
+            and str(row[0]) not in EXTENSION_PORT_CATALOG_TABLES
         }
 
     def _apply_set_sorted_by_best_effort(
@@ -753,7 +789,11 @@ class DuckLakeStore:
                                 f'AS SELECT * FROM "{view_name}"{order_sql};'
                             )
 
-                    stale_tables = sorted(existing_tables - new_catalog_tables)
+                    stale_tables = sorted(
+                        (existing_tables & MANAGED_MART_CATALOG_TABLES)
+                        - new_catalog_tables
+                        - EXTENSION_PORT_CATALOG_TABLES
+                    )
                     for stale_tbl in stale_tables:
                         con.execute(
                             f'DROP TABLE IF EXISTS "{self.catalog_alias}"."{stale_tbl}";'
