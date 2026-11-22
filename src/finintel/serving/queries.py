@@ -42,6 +42,11 @@ from typing import Any, Literal, TypedDict, cast
 import duckdb
 import polars as pl
 
+from finintel.analytics.intermediates import prepare_periods
+from finintel.analytics.market_valuation import (
+    build_price_risk_overlay,
+    compute_pit_valuation_series,
+)
 from finintel.analytics.stress_test import (
     REQUIRED_STRESS_COLUMNS,
     StressScenario as StressScenario,
@@ -2573,38 +2578,27 @@ class DashboardQueryService:
                         _RATIO_LINEAGE_CACHE.popitem(last=False)
             return lineage_result
 
-    def screen_market(
-        self,
+    @staticmethod
+    def _validate_screener_filters(
         *,
-        period_type: str = "QUARTER",
-        period_end_date: date | None = None,
-        statement_scope: str = "CONSOLIDATED",
-        icb_code_level2: str | None = None,
-        min_f_score: int | None = None,
-        altman_zone: str | None = None,
-        risk_tier: str | None = None,
-        beneish_flag: str | None = None,
-        max_distress_prob: float | None = None,
-        min_distress_prob: float | None = None,
-        max_red_flags: int | None = None,
-        min_red_flags: int | None = None,
-        q: str | None = None,
-        sort_by: str = "calibrated_distress_prob",
-        sort_dir: Literal["asc", "desc"] = "desc",
-        limit: int = 50,
-        offset: int = 0,
-        connection: duckdb.DuckDBPyConnection | None = None,
-    ) -> tuple[pl.DataFrame, int]:
-        """Historical cross-sectional market screener over the latest published snapshot.
-
-        Uses ``LEFT JOIN`` onto ``ml_scores_and_explanations`` and ``accounting_red_flags``
-        so screening degrades cleanly when a snapshot has no ML or red-flag tables.
-        """
+        period_type: str,
+        statement_scope: str,
+        min_f_score: int | None,
+        altman_zone: str | None,
+        risk_tier: str | None,
+        beneish_flag: str | None,
+        max_distress_prob: float | None,
+        min_distress_prob: float | None,
+        max_red_flags: int | None,
+        min_red_flags: int | None,
+        q: str | None,
+        sort_by: str,
+        sort_dir: Literal["asc", "desc"],
+    ) -> str | None:
         if statement_scope not in STATEMENT_SCOPES:
             raise ValueError(f"Unsupported statement_scope: {statement_scope!r}")
         if period_type not in PERIOD_TYPES:
             raise ValueError(f"Unsupported period_type: {period_type!r}")
-        _validate_pagination(limit, offset, max_limit=200)
         if min_f_score is not None and (
             isinstance(min_f_score, bool)
             or not isinstance(min_f_score, int)
@@ -2642,7 +2636,346 @@ class DashboardQueryService:
             raise ValueError(f"Unsupported sort_by: {sort_by!r}")
         if sort_dir not in ("asc", "desc"):
             raise ValueError(f"Unsupported sort_dir: {sort_dir!r}")
-        clean_q = q.strip().lower() if q and q.strip() else None
+        return q.strip().lower() if q and q.strip() else None
+
+    @staticmethod
+    def _resolve_screener_period_date(
+        pinned: ParquetRepository,
+        *,
+        period_end_date: date | None,
+        statement_scope: str,
+        period_type: str,
+        snap_key: tuple[object, ...] | None,
+        connection: duckdb.DuckDBPyConnection | None,
+    ) -> date | None:
+        resolved_date = period_end_date
+        if resolved_date is not None:
+            return resolved_date
+        period_cache_key = (
+            (*snap_key, statement_scope, period_type) if snap_key is not None else None
+        )
+        if period_cache_key is not None:
+            with _QUERY_CACHE_LOCK:
+                _evict_stale_l1b_caches_locked(snap_key)
+                resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
+                if resolved_date is not None:
+                    _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
+        if resolved_date is None:
+            dates_df = pinned.read_table(
+                RATIOS_TABLE,
+                columns=["period_end_date"],
+                filters={
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                },
+                connection=connection,
+            )
+            if dates_df.is_empty():
+                return None
+            raw_max = dates_df.get_column("period_end_date").max()
+            if not isinstance(raw_max, date):
+                return None
+            resolved_date = raw_max
+            if period_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
+                    _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
+                    while len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                        _LATEST_RATIO_PERIOD_CACHE.popitem(last=False)
+        return resolved_date
+
+    @staticmethod
+    def _build_screener_frame(
+        pinned: ParquetRepository,
+        *,
+        avail_ratio_cols: set[str],
+        resolved_date: date,
+        period_type: str,
+        statement_scope: str,
+        icb_code_level2: str | None,
+        min_f_score: int | None,
+        altman_zone: str | None,
+        risk_tier: str | None,
+        beneish_flag: str | None,
+        max_distress_prob: float | None,
+        min_distress_prob: float | None,
+        max_red_flags: int | None,
+        min_red_flags: int | None,
+        clean_q: str | None,
+        sort_by: str,
+        sort_dir: Literal["asc", "desc"],
+        connection: duckdb.DuckDBPyConnection | None,
+    ) -> pl.DataFrame:
+        issuer_cols = [
+            "issuer_id",
+            "ticker",
+            "company_name_vn",
+            "exchange",
+            "accounting_regime",
+            "icb_code_level2",
+            "icb_name_level2",
+            "icb_code_level3",
+            "icb_name_level3",
+        ]
+        issuer_filters: dict[str, object] | None = (
+            {"icb_code_level2": icb_code_level2}
+            if icb_code_level2 is not None
+            else None
+        )
+        issuers = pinned.read_table(
+            "issuers.parquet",
+            columns=issuer_cols,
+            filters=issuer_filters,
+            connection=connection,
+        )
+        if issuers.is_empty():
+            return pl.DataFrame(schema=SCREENER_SCHEMA)
+
+        ratio_desired = (
+            "issuer_id",
+            "statement_scope",
+            "period_type",
+            "period_end_date",
+            "taxonomy_version",
+            "roe_total",
+            "roa",
+            "ebit_margin",
+            "debt_to_equity",
+            "interest_coverage",
+            "accruals_to_assets",
+            "core_operating_margin",
+            "non_core_distortion_to_assets",
+            "core_to_ebt_ratio",
+        )
+        ratio_cols = _select_existing_columns(ratio_desired, avail_ratio_cols)
+        ratio_filters: dict[str, object] = {
+            "statement_scope": statement_scope,
+            "period_type": period_type,
+            "period_end_date": resolved_date,
+        }
+        if icb_code_level2 is not None:
+            ratio_filters["issuer_id"] = issuers["issuer_id"].unique().to_list()
+        ratios = pinned.read_table(
+            RATIOS_TABLE,
+            columns=ratio_cols,
+            filters=ratio_filters,
+            connection=connection,
+        )
+        if ratios.is_empty():
+            return pl.DataFrame(schema=SCREENER_SCHEMA)
+
+        for forensic_col in (
+            "core_operating_margin",
+            "non_core_distortion_to_assets",
+            "core_to_ebt_ratio",
+        ):
+            if forensic_col not in ratios.columns:
+                ratios = ratios.with_columns(
+                    pl.lit(None, dtype=pl.Float64).alias(forensic_col)
+                )
+
+        avail_rf_cols = _available_table_columns(
+            pinned, RED_FLAGS_TABLE, connection=connection
+        )
+        if avail_rf_cols:
+            rf_slice = pinned.read_table(
+                RED_FLAGS_TABLE,
+                columns=["issuer_id", "severity"],
+                filters={
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                    "period_end_date": resolved_date,
+                },
+                connection=connection,
+            )
+            if rf_slice.is_empty():
+                rf_counts = pl.DataFrame(
+                    schema={
+                        "issuer_id": pl.String,
+                        "red_flag_count": pl.Int64,
+                        "critical_red_flag_count": pl.Int64,
+                    }
+                )
+            else:
+                rf_counts = rf_slice.group_by("issuer_id").agg(
+                    pl.len().cast(pl.Int64).alias("red_flag_count"),
+                    (pl.col("severity") == "CRITICAL")
+                    .sum()
+                    .cast(pl.Int64)
+                    .alias("critical_red_flag_count"),
+                )
+        else:
+            rf_counts = pl.DataFrame(
+                schema={
+                    "issuer_id": pl.String,
+                    "red_flag_count": pl.Int64,
+                    "critical_red_flag_count": pl.Int64,
+                }
+            )
+
+        ml_desired = (
+            "issuer_id",
+            "filing_id",
+            "altman_z_double_prime",
+            "altman_em_score",
+            "altman_zone",
+            "piotroski_f_score",
+            "beneish_m8_score",
+            "beneish_flag",
+            "cluster_id",
+            "cluster_archetype_name",
+            "anomaly_flag",
+            "distress_risk_score",
+            "calibrated_distress_prob",
+            "risk_tier",
+            "risk_market_percentile",
+            "market_base_rate",
+            "relative_risk_lift",
+            "model_role",
+            "model_version",
+        )
+        ml_join_schema = pl.Schema(
+            {name: ML_SCORES_SCHEMA[name] for name in ml_desired if name != "filing_id"}
+        )
+        avail_ml_cols = _available_table_columns(
+            pinned, ML_SCORES_TABLE, connection=connection
+        )
+        if avail_ml_cols:
+            ml_cols = _select_existing_columns(ml_desired, avail_ml_cols)
+            ml_raw = pinned.read_table(
+                ML_SCORES_TABLE,
+                columns=ml_cols,
+                filters={
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                    "period_end_date": resolved_date,
+                },
+                connection=connection,
+            )
+            if ml_raw.is_empty():
+                ml_slice = pl.DataFrame(schema=ml_join_schema)
+            else:
+                sort_ml = (
+                    ["issuer_id", "filing_id"]
+                    if "filing_id" in ml_raw.columns
+                    else ["issuer_id"]
+                )
+                ml_dedup = ml_raw.sort(sort_ml).unique(
+                    subset=["issuer_id"], keep="last"
+                )
+                ml_slice = _pad_schema_columns(ml_dedup, ml_join_schema)
+        else:
+            ml_slice = pl.DataFrame(schema=ml_join_schema)
+
+        joined = (
+            ratios.join(issuers, on="issuer_id", how="inner")
+            .join(rf_counts, on="issuer_id", how="left")
+            .join(ml_slice, on="issuer_id", how="left")
+            .with_columns(
+                # Triggered alert counts from LEFT JOIN (0 alerts triggered, not a financial metric).
+                pl.coalesce(pl.col("red_flag_count"), pl.lit(0, dtype=pl.Int64)).alias(
+                    "red_flag_count"
+                ),
+                pl.coalesce(
+                    pl.col("critical_red_flag_count"), pl.lit(0, dtype=pl.Int64)
+                ).alias("critical_red_flag_count"),
+            )
+        )
+
+        if min_f_score is not None:
+            joined = joined.filter(
+                pl.col("piotroski_f_score").is_not_null()
+                & (pl.col("piotroski_f_score") >= min_f_score)
+            )
+        if altman_zone is not None:
+            joined = joined.filter(pl.col("altman_zone") == altman_zone)
+        if risk_tier is not None:
+            joined = joined.filter(pl.col("risk_tier") == risk_tier)
+        if beneish_flag is not None:
+            joined = joined.filter(pl.col("beneish_flag") == beneish_flag)
+        if max_distress_prob is not None:
+            joined = joined.filter(
+                pl.col("calibrated_distress_prob").is_not_null()
+                & (pl.col("calibrated_distress_prob") <= float(max_distress_prob))
+            )
+        if min_distress_prob is not None:
+            joined = joined.filter(
+                pl.col("calibrated_distress_prob").is_not_null()
+                & (pl.col("calibrated_distress_prob") >= float(min_distress_prob))
+            )
+        if max_red_flags is not None:
+            joined = joined.filter(pl.col("red_flag_count") <= max_red_flags)
+        if min_red_flags is not None:
+            joined = joined.filter(pl.col("red_flag_count") >= min_red_flags)
+        if clean_q is not None:
+            joined = joined.filter(
+                pl.col("ticker").str.to_lowercase().str.contains(clean_q, literal=True)
+                | pl.col("company_name_vn")
+                .fill_null("")
+                .str.to_lowercase()
+                .str.contains(clean_q, literal=True)
+            )
+
+        desc_flag = sort_dir == "desc"
+        if sort_by == "calibrated_distress_prob" and desc_flag:
+            sort_cols = ["calibrated_distress_prob", "red_flag_count", "ticker"]
+            sort_desc = [True, True, False]
+        elif sort_by == "ticker":
+            sort_cols = ["ticker"]
+            sort_desc = [desc_flag]
+        else:
+            sort_cols = [sort_by, "ticker"]
+            sort_desc = [desc_flag, False]
+
+        return _pad_schema_columns(joined, SCREENER_SCHEMA).sort(
+            sort_cols,
+            descending=sort_desc,
+            nulls_last=True,
+        )
+
+    def screen_market(
+        self,
+        *,
+        period_type: str = "QUARTER",
+        period_end_date: date | None = None,
+        statement_scope: str = "CONSOLIDATED",
+        icb_code_level2: str | None = None,
+        min_f_score: int | None = None,
+        altman_zone: str | None = None,
+        risk_tier: str | None = None,
+        beneish_flag: str | None = None,
+        max_distress_prob: float | None = None,
+        min_distress_prob: float | None = None,
+        max_red_flags: int | None = None,
+        min_red_flags: int | None = None,
+        q: str | None = None,
+        sort_by: str = "calibrated_distress_prob",
+        sort_dir: Literal["asc", "desc"] = "desc",
+        limit: int = 50,
+        offset: int = 0,
+        connection: duckdb.DuckDBPyConnection | None = None,
+    ) -> tuple[pl.DataFrame, int]:
+        """Historical cross-sectional market screener over the latest published snapshot.
+
+        Uses ``LEFT JOIN`` onto ``ml_scores_and_explanations`` and ``accounting_red_flags``
+        so screening degrades cleanly when a snapshot has no ML or red-flag tables.
+        """
+        _validate_pagination(limit, offset, max_limit=200)
+        clean_q = self._validate_screener_filters(
+            period_type=period_type,
+            statement_scope=statement_scope,
+            min_f_score=min_f_score,
+            altman_zone=altman_zone,
+            risk_tier=risk_tier,
+            beneish_flag=beneish_flag,
+            max_distress_prob=max_distress_prob,
+            min_distress_prob=min_distress_prob,
+            max_red_flags=max_red_flags,
+            min_red_flags=min_red_flags,
+            q=q,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
 
         with self.repository.snapshot_session(connection=connection) as pinned:
             avail_ratio_cols = _available_table_columns(
@@ -2652,43 +2985,16 @@ class DashboardQueryService:
                 return pl.DataFrame(schema=SCREENER_SCHEMA), 0
 
             snap_key = pinned._snapshot_cache_key()
-            resolved_date = period_end_date
+            resolved_date = self._resolve_screener_period_date(
+                pinned,
+                period_end_date=period_end_date,
+                statement_scope=statement_scope,
+                period_type=period_type,
+                snap_key=snap_key,
+                connection=connection,
+            )
             if resolved_date is None:
-                period_cache_key = (
-                    (*snap_key, statement_scope, period_type)
-                    if snap_key is not None
-                    else None
-                )
-                if period_cache_key is not None:
-                    with _QUERY_CACHE_LOCK:
-                        _evict_stale_l1b_caches_locked(snap_key)
-                        resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
-                        if resolved_date is not None:
-                            _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
-                if resolved_date is None:
-                    dates_df = pinned.read_table(
-                        RATIOS_TABLE,
-                        columns=["period_end_date"],
-                        filters={
-                            "statement_scope": statement_scope,
-                            "period_type": period_type,
-                        },
-                        connection=connection,
-                    )
-                    if dates_df.is_empty():
-                        return pl.DataFrame(schema=SCREENER_SCHEMA), 0
-                    raw_max = dates_df.get_column("period_end_date").max()
-                    if not isinstance(raw_max, date):
-                        return pl.DataFrame(schema=SCREENER_SCHEMA), 0
-                    resolved_date = raw_max
-                    if period_cache_key is not None:
-                        with _QUERY_CACHE_LOCK:
-                            _evict_stale_l1b_caches_locked(snap_key)
-                            _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
-                            while (
-                                len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE
-                            ):
-                                _LATEST_RATIO_PERIOD_CACHE.popitem(last=False)
+                return pl.DataFrame(schema=SCREENER_SCHEMA), 0
 
             screener_cache_key = (
                 (
@@ -2722,237 +3028,25 @@ class DashboardQueryService:
                         _SCREENER_CACHE.move_to_end(screener_cache_key)
                         return cached_screener[0], cached_screener[1]
 
-            issuer_cols = [
-                "issuer_id",
-                "ticker",
-                "company_name_vn",
-                "exchange",
-                "accounting_regime",
-                "icb_code_level2",
-                "icb_name_level2",
-                "icb_code_level3",
-                "icb_name_level3",
-            ]
-            issuer_filters: dict[str, object] | None = (
-                {"icb_code_level2": icb_code_level2}
-                if icb_code_level2 is not None
-                else None
-            )
-            issuers = pinned.read_table(
-                "issuers.parquet",
-                columns=issuer_cols,
-                filters=issuer_filters,
+            projected = self._build_screener_frame(
+                pinned,
+                avail_ratio_cols=avail_ratio_cols,
+                resolved_date=resolved_date,
+                period_type=period_type,
+                statement_scope=statement_scope,
+                icb_code_level2=icb_code_level2,
+                min_f_score=min_f_score,
+                altman_zone=altman_zone,
+                risk_tier=risk_tier,
+                beneish_flag=beneish_flag,
+                max_distress_prob=max_distress_prob,
+                min_distress_prob=min_distress_prob,
+                max_red_flags=max_red_flags,
+                min_red_flags=min_red_flags,
+                clean_q=clean_q,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
                 connection=connection,
-            )
-            if issuers.is_empty():
-                return pl.DataFrame(schema=SCREENER_SCHEMA), 0
-
-            ratio_desired = (
-                "issuer_id",
-                "statement_scope",
-                "period_type",
-                "period_end_date",
-                "taxonomy_version",
-                "roe_total",
-                "roa",
-                "ebit_margin",
-                "debt_to_equity",
-                "interest_coverage",
-                "accruals_to_assets",
-                "core_operating_margin",
-                "non_core_distortion_to_assets",
-                "core_to_ebt_ratio",
-            )
-            ratio_cols = _select_existing_columns(ratio_desired, avail_ratio_cols)
-            ratio_filters: dict[str, object] = {
-                "statement_scope": statement_scope,
-                "period_type": period_type,
-                "period_end_date": resolved_date,
-            }
-            if icb_code_level2 is not None:
-                ratio_filters["issuer_id"] = issuers["issuer_id"].unique().to_list()
-            ratios = pinned.read_table(
-                RATIOS_TABLE,
-                columns=ratio_cols,
-                filters=ratio_filters,
-                connection=connection,
-            )
-            if ratios.is_empty():
-                return pl.DataFrame(schema=SCREENER_SCHEMA), 0
-
-            for forensic_col in (
-                "core_operating_margin",
-                "non_core_distortion_to_assets",
-                "core_to_ebt_ratio",
-            ):
-                if forensic_col not in ratios.columns:
-                    ratios = ratios.with_columns(
-                        pl.lit(None, dtype=pl.Float64).alias(forensic_col)
-                    )
-
-            avail_rf_cols = _available_table_columns(
-                pinned, RED_FLAGS_TABLE, connection=connection
-            )
-            if avail_rf_cols:
-                rf_slice = pinned.read_table(
-                    RED_FLAGS_TABLE,
-                    columns=["issuer_id", "severity"],
-                    filters={
-                        "statement_scope": statement_scope,
-                        "period_type": period_type,
-                        "period_end_date": resolved_date,
-                    },
-                    connection=connection,
-                )
-                if rf_slice.is_empty():
-                    rf_counts = pl.DataFrame(
-                        schema={
-                            "issuer_id": pl.String,
-                            "red_flag_count": pl.Int64,
-                            "critical_red_flag_count": pl.Int64,
-                        }
-                    )
-                else:
-                    rf_counts = rf_slice.group_by("issuer_id").agg(
-                        pl.len().cast(pl.Int64).alias("red_flag_count"),
-                        (pl.col("severity") == "CRITICAL")
-                        .sum()
-                        .cast(pl.Int64)
-                        .alias("critical_red_flag_count"),
-                    )
-            else:
-                rf_counts = pl.DataFrame(
-                    schema={
-                        "issuer_id": pl.String,
-                        "red_flag_count": pl.Int64,
-                        "critical_red_flag_count": pl.Int64,
-                    }
-                )
-
-            ml_desired = (
-                "issuer_id",
-                "filing_id",
-                "altman_z_double_prime",
-                "altman_em_score",
-                "altman_zone",
-                "piotroski_f_score",
-                "beneish_m8_score",
-                "beneish_flag",
-                "cluster_id",
-                "cluster_archetype_name",
-                "anomaly_flag",
-                "distress_risk_score",
-                "calibrated_distress_prob",
-                "risk_tier",
-                "risk_market_percentile",
-                "market_base_rate",
-                "relative_risk_lift",
-                "model_role",
-                "model_version",
-            )
-            ml_join_schema = pl.Schema(
-                {
-                    name: ML_SCORES_SCHEMA[name]
-                    for name in ml_desired
-                    if name != "filing_id"
-                }
-            )
-            avail_ml_cols = _available_table_columns(
-                pinned, ML_SCORES_TABLE, connection=connection
-            )
-            if avail_ml_cols:
-                ml_cols = _select_existing_columns(ml_desired, avail_ml_cols)
-                ml_raw = pinned.read_table(
-                    ML_SCORES_TABLE,
-                    columns=ml_cols,
-                    filters={
-                        "statement_scope": statement_scope,
-                        "period_type": period_type,
-                        "period_end_date": resolved_date,
-                    },
-                    connection=connection,
-                )
-                if ml_raw.is_empty():
-                    ml_slice = pl.DataFrame(schema=ml_join_schema)
-                else:
-                    sort_ml = (
-                        ["issuer_id", "filing_id"]
-                        if "filing_id" in ml_raw.columns
-                        else ["issuer_id"]
-                    )
-                    ml_dedup = ml_raw.sort(sort_ml).unique(
-                        subset=["issuer_id"], keep="last"
-                    )
-                    ml_slice = _pad_schema_columns(ml_dedup, ml_join_schema)
-            else:
-                ml_slice = pl.DataFrame(schema=ml_join_schema)
-
-            joined = (
-                ratios.join(issuers, on="issuer_id", how="inner")
-                .join(rf_counts, on="issuer_id", how="left")
-                .join(ml_slice, on="issuer_id", how="left")
-                .with_columns(
-                    # Triggered alert counts from LEFT JOIN (0 alerts triggered, not a financial metric).
-                    pl.coalesce(
-                        pl.col("red_flag_count"), pl.lit(0, dtype=pl.Int64)
-                    ).alias("red_flag_count"),
-                    pl.coalesce(
-                        pl.col("critical_red_flag_count"), pl.lit(0, dtype=pl.Int64)
-                    ).alias("critical_red_flag_count"),
-                )
-            )
-
-            if min_f_score is not None:
-                joined = joined.filter(
-                    pl.col("piotroski_f_score").is_not_null()
-                    & (pl.col("piotroski_f_score") >= min_f_score)
-                )
-            if altman_zone is not None:
-                joined = joined.filter(pl.col("altman_zone") == altman_zone)
-            if risk_tier is not None:
-                joined = joined.filter(pl.col("risk_tier") == risk_tier)
-            if beneish_flag is not None:
-                joined = joined.filter(pl.col("beneish_flag") == beneish_flag)
-            if max_distress_prob is not None:
-                joined = joined.filter(
-                    pl.col("calibrated_distress_prob").is_not_null()
-                    & (pl.col("calibrated_distress_prob") <= float(max_distress_prob))
-                )
-            if min_distress_prob is not None:
-                joined = joined.filter(
-                    pl.col("calibrated_distress_prob").is_not_null()
-                    & (pl.col("calibrated_distress_prob") >= float(min_distress_prob))
-                )
-            if max_red_flags is not None:
-                joined = joined.filter(pl.col("red_flag_count") <= max_red_flags)
-            if min_red_flags is not None:
-                joined = joined.filter(pl.col("red_flag_count") >= min_red_flags)
-            if clean_q is not None:
-                joined = joined.filter(
-                    pl.col("ticker")
-                    .str.to_lowercase()
-                    .str.contains(clean_q, literal=True)
-                    | pl.col("company_name_vn")
-                    .fill_null("")
-                    .str.to_lowercase()
-                    .str.contains(clean_q, literal=True)
-                )
-
-            desc_flag = sort_dir == "desc"
-            if sort_by == "calibrated_distress_prob" and desc_flag:
-                sort_cols = ["calibrated_distress_prob", "red_flag_count", "ticker"]
-                sort_desc = [True, True, False]
-            elif sort_by == "ticker":
-                sort_cols = ["ticker"]
-                sort_desc = [desc_flag]
-            else:
-                sort_cols = [sort_by, "ticker"]
-                sort_desc = [desc_flag, False]
-
-            projected = _pad_schema_columns(joined, SCREENER_SCHEMA).sort(
-                sort_cols,
-                descending=sort_desc,
-                nulls_last=True,
             )
             total_count = projected.height
             sliced = _wrap_cached_dicts_df(projected.slice(offset, limit))
@@ -2963,6 +3057,83 @@ class DashboardQueryService:
                     while len(_SCREENER_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _SCREENER_CACHE.popitem(last=False)
             return sliced, total_count
+
+    def export_screener(
+        self,
+        *,
+        period_type: str = "QUARTER",
+        period_end_date: date | None = None,
+        statement_scope: str = "CONSOLIDATED",
+        icb_code_level2: str | None = None,
+        min_f_score: int | None = None,
+        altman_zone: str | None = None,
+        risk_tier: str | None = None,
+        beneish_flag: str | None = None,
+        max_distress_prob: float | None = None,
+        min_distress_prob: float | None = None,
+        max_red_flags: int | None = None,
+        min_red_flags: int | None = None,
+        q: str | None = None,
+        sort_by: str = "calibrated_distress_prob",
+        sort_dir: Literal["asc", "desc"] = "desc",
+        connection: duckdb.DuckDBPyConnection | None = None,
+    ) -> pl.DataFrame:
+        """Return 100% of filtered & sorted screener rows without pagination cap (UI-05a)."""
+        clean_q = self._validate_screener_filters(
+            period_type=period_type,
+            statement_scope=statement_scope,
+            min_f_score=min_f_score,
+            altman_zone=altman_zone,
+            risk_tier=risk_tier,
+            beneish_flag=beneish_flag,
+            max_distress_prob=max_distress_prob,
+            min_distress_prob=min_distress_prob,
+            max_red_flags=max_red_flags,
+            min_red_flags=min_red_flags,
+            q=q,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
+
+        with self.repository.snapshot_session(connection=connection) as pinned:
+            avail_ratio_cols = _available_table_columns(
+                pinned, RATIOS_TABLE, connection=connection
+            )
+            if not avail_ratio_cols:
+                return pl.DataFrame(schema=SCREENER_SCHEMA)
+
+            snap_key = pinned._snapshot_cache_key()
+            resolved_date = self._resolve_screener_period_date(
+                pinned,
+                period_end_date=period_end_date,
+                statement_scope=statement_scope,
+                period_type=period_type,
+                snap_key=snap_key,
+                connection=connection,
+            )
+            if resolved_date is None:
+                return pl.DataFrame(schema=SCREENER_SCHEMA)
+
+            return self._build_screener_frame(
+                pinned,
+                avail_ratio_cols=avail_ratio_cols,
+                resolved_date=resolved_date,
+                period_type=period_type,
+                statement_scope=statement_scope,
+                icb_code_level2=icb_code_level2,
+                min_f_score=min_f_score,
+                altman_zone=altman_zone,
+                risk_tier=risk_tier,
+                beneish_flag=beneish_flag,
+                max_distress_prob=max_distress_prob,
+                min_distress_prob=min_distress_prob,
+                max_red_flags=max_red_flags,
+                min_red_flags=min_red_flags,
+                clean_q=clean_q,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                connection=connection,
+            )
 
     def get_stress_test_snapshot_inputs(
         self,
@@ -4483,3 +4654,577 @@ class DashboardQueryService:
                     "Model card metadata payload must be a JSON object."
                 )
             return parsed
+
+    @staticmethod
+    def _build_port_candidate_roots(
+        repo_source: Path,
+        pinned_source: Path,
+        *,
+        port_data_root: Path | None = None,
+    ) -> list[Path]:
+        raw_candidates: list[Path] = []
+        if port_data_root is not None:
+            raw_candidates.extend([port_data_root, port_data_root.parent])
+        raw_candidates.extend([repo_source, pinned_source, repo_source.parent])
+        for src in (repo_source, pinned_source):
+            if (
+                src.name.startswith("snap_")
+                and src.parent.name == "snapshots"
+                and src.parent.parent.name == "published"
+                and len(src.parents) >= 3
+            ):
+                snap_root = src.parents[2]
+                raw_candidates.extend([snap_root, snap_root.parent])
+        env_root = os.getenv("FININTEL_DATA_ROOT")
+        if env_root:
+            env_path = Path(env_root).resolve()
+            raw_candidates.extend([env_path, env_path.parent])
+        else:
+            default_resolved = DEFAULT_DATA_ROOT.resolve()
+            for maybe_src in (port_data_root, repo_source, pinned_source):
+                if maybe_src is not None:
+                    src_resolved = maybe_src.resolve()
+                    if (
+                        src_resolved == default_resolved
+                        or default_resolved in src_resolved.parents
+                    ):
+                        raw_candidates.append(default_resolved)
+                        break
+        deduped: list[Path] = []
+        seen: set[Path] = set()
+        for candidate in raw_candidates:
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                deduped.append(resolved)
+        return deduped
+
+    @staticmethod
+    def _load_port_parquet_for_issuer(
+        *,
+        rel_parquet_path: Path,
+        issuer_id: str,
+        candidate_roots: Sequence[Path],
+    ) -> pl.DataFrame | None:
+        for root in candidate_roots:
+            parquet_path = root / rel_parquet_path
+            if parquet_path.is_file():
+                return (
+                    pl.scan_parquet(parquet_path)
+                    .filter(pl.col("issuer_id") == issuer_id)
+                    .collect()
+                )
+        return None
+
+    @staticmethod
+    def _build_overlay_financial_periods(
+        pinned: ParquetRepository,
+        *,
+        issuer_id: str,
+        ticker: str,
+        accounting_regime: str,
+        statement_scope: str,
+        prices: pl.DataFrame,
+        as_of: date | None,
+        connection: duckdb.DuckDBPyConnection | None,
+    ) -> pl.DataFrame | None:
+        avail_ratio_cols = _available_table_columns(
+            pinned, RATIOS_TABLE, connection=connection
+        )
+        ratios = pl.DataFrame()
+        if avail_ratio_cols:
+            ratio_cols = _select_existing_columns(
+                (
+                    "issuer_id",
+                    "statement_scope",
+                    "period_type",
+                    "period_end_date",
+                    "fiscal_year",
+                    "fiscal_quarter",
+                    "filing_id",
+                    "parent_equity",
+                    "estimated_shares_outstanding",
+                ),
+                avail_ratio_cols,
+            )
+            ratios = pinned.read_table(
+                RATIOS_TABLE,
+                columns=ratio_cols,
+                filters={
+                    "issuer_id": issuer_id,
+                    "statement_scope": statement_scope,
+                    "period_type": "QUARTER",
+                },
+                connection=connection,
+            )
+            if not ratios.is_empty():
+                sort_ratio = [
+                    col
+                    for col in ("period_end_date", "filing_id")
+                    if col in ratios.columns
+                ]
+                ratios = ratios.sort(sort_ratio).unique(
+                    subset=["issuer_id", "period_end_date"], keep="last"
+                )
+
+        facts_table = "latest_facts.parquet"
+        avail_fact_cols = _available_table_columns(
+            pinned, facts_table, connection=connection
+        )
+        if not avail_fact_cols:
+            facts_table = "financial_facts.parquet"
+            avail_fact_cols = _available_table_columns(
+                pinned, facts_table, connection=connection
+            )
+
+        facts = pl.DataFrame()
+        if avail_fact_cols:
+            fact_desired = (
+                "issuer_id",
+                "statement_scope",
+                "period_type",
+                "fiscal_year_start_date",
+                "period_start_date",
+                "period_end_date",
+                "fiscal_year",
+                "fiscal_quarter",
+                "metric_id",
+                "taxonomy_version",
+                "revision_no",
+                "revision_reason",
+                "filing_id",
+                "published_at",
+                "published_at_basis",
+                "effective_available_at",
+                "derivation_method",
+                "audit_status",
+                "audit_opinion",
+                "value",
+                "ttm_value",
+                "comparable_across_taxonomy",
+                "is_filed_late",
+                "source_provider",
+                "source_filing_ids",
+            )
+            fact_cols = _select_existing_columns(fact_desired, avail_fact_cols)
+            facts = pinned.read_table(
+                facts_table,
+                columns=fact_cols,
+                filters={
+                    "issuer_id": issuer_id,
+                    "statement_scope": statement_scope,
+                    "period_type": "QUARTER",
+                },
+                connection=connection,
+            )
+
+        ni_ttm_df = pl.DataFrame()
+        period_dates_df = pl.DataFrame()
+        pp_df: pl.DataFrame | None = None
+
+        if not facts.is_empty():
+            sort_fact = [
+                col
+                for col in (
+                    "period_end_date",
+                    "effective_available_at",
+                    "revision_no",
+                    "filing_id",
+                )
+                if col in facts.columns
+            ]
+            sorted_facts = facts.sort(sort_fact) if sort_fact else facts
+
+            date_cols = [
+                col
+                for col in (
+                    "issuer_id",
+                    "period_end_date",
+                    "published_at",
+                    "effective_available_at",
+                )
+                if col in sorted_facts.columns
+            ]
+            if (
+                "published_at" in date_cols or "effective_available_at" in date_cols
+            ) and "period_end_date" in date_cols:
+                period_dates_df = sorted_facts.select(date_cols).unique(
+                    subset=["issuer_id", "period_end_date"], keep="last"
+                )
+
+            ni_rows = sorted_facts.filter(pl.col("metric_id") == "IS_NET_INCOME_PARENT")
+            if not ni_rows.is_empty():
+                ni_dedup = ni_rows.unique(
+                    subset=["issuer_id", "period_end_date"], keep="last"
+                )
+                has_direct_ttm = (
+                    "ttm_value" in ni_dedup.columns
+                    and ni_dedup["ttm_value"].drop_nulls().len() > 0
+                )
+                if has_direct_ttm:
+                    ni_select = [
+                        pl.col("issuer_id").cast(pl.String),
+                        pl.col("period_end_date").cast(pl.Date),
+                        pl.col("ttm_value")
+                        .cast(pl.Float64)
+                        .alias("IS_NET_INCOME_PARENT_TTM"),
+                    ]
+                    if "published_at" in ni_dedup.columns:
+                        ni_select.append(
+                            pl.col("published_at")
+                            .cast(pl.Date)
+                            .alias("_ni_published_at")
+                        )
+                    if "effective_available_at" in ni_dedup.columns:
+                        ni_select.append(
+                            pl.col("effective_available_at")
+                            .cast(pl.Date)
+                            .alias("_ni_effective_available_at")
+                        )
+                    ni_ttm_df = ni_dedup.select(ni_select)
+
+            if ni_ttm_df.is_empty():
+                required_pp_cols = {
+                    "issuer_id",
+                    "statement_scope",
+                    "period_type",
+                    "fiscal_year_start_date",
+                    "period_start_date",
+                    "period_end_date",
+                    "fiscal_year",
+                    "fiscal_quarter",
+                    "metric_id",
+                    "taxonomy_version",
+                    "revision_no",
+                    "revision_reason",
+                    "filing_id",
+                    "published_at",
+                    "published_at_basis",
+                    "effective_available_at",
+                    "derivation_method",
+                    "audit_status",
+                    "audit_opinion",
+                    "value",
+                }
+                if required_pp_cols <= set(facts.columns):
+                    issuer_frame = pl.DataFrame(
+                        {
+                            "issuer_id": [issuer_id],
+                            "ticker": [ticker],
+                            "accounting_regime": [accounting_regime],
+                        }
+                    )
+                    pp_raw = prepare_periods(
+                        facts,
+                        issuer_frame,
+                        as_of=as_of or date(2099, 12, 31),
+                        market_prices=prices,
+                    ).filter(
+                        (pl.col("statement_scope") == statement_scope)
+                        & (pl.col("period_type") == "QUARTER")
+                    )
+                    if not pp_raw.is_empty():
+                        pp_select = [
+                            pl.col("issuer_id").cast(pl.String),
+                            pl.col("period_end_date").cast(pl.Date),
+                        ]
+                        if "IS_NET_INCOME_PARENT" in pp_raw.columns:
+                            pp_select.append(
+                                pl.col("IS_NET_INCOME_PARENT")
+                                .cast(pl.Float64)
+                                .alias("IS_NET_INCOME_PARENT_TTM")
+                            )
+                        if "parent_equity" in pp_raw.columns:
+                            pp_select.append(
+                                pl.col("parent_equity")
+                                .cast(pl.Float64)
+                                .alias("_pp_parent_equity")
+                            )
+                        if "estimated_shares_outstanding" in pp_raw.columns:
+                            pp_select.append(
+                                pl.col("estimated_shares_outstanding")
+                                .cast(pl.Float64)
+                                .alias("_pp_estimated_shares")
+                            )
+                        if "shares_source" in pp_raw.columns:
+                            pp_select.append(pl.col("shares_source").cast(pl.String))
+                        if "_period_available_at" in pp_raw.columns:
+                            pp_select.append(
+                                pl.col("_period_available_at").cast(pl.Date)
+                            )
+                        pp_df = pp_raw.select(pp_select).unique(
+                            subset=["issuer_id", "period_end_date"], keep="last"
+                        )
+
+        if not ratios.is_empty():
+            combined = ratios
+        elif pp_df is not None and not pp_df.is_empty():
+            combined = pp_df.with_columns(
+                pl.lit(statement_scope).alias("statement_scope"),
+                pl.lit("QUARTER").alias("period_type"),
+            )
+            if "_pp_parent_equity" in combined.columns:
+                combined = combined.rename({"_pp_parent_equity": "parent_equity"})
+            if "_pp_estimated_shares" in combined.columns:
+                combined = combined.rename(
+                    {"_pp_estimated_shares": "estimated_shares_outstanding"}
+                )
+        elif not period_dates_df.is_empty():
+            combined = period_dates_df.with_columns(
+                pl.lit(statement_scope).alias("statement_scope"),
+                pl.lit("QUARTER").alias("period_type"),
+            )
+        else:
+            return None
+
+        if not period_dates_df.is_empty() and "published_at" not in combined.columns:
+            combined = combined.join(
+                period_dates_df, on=["issuer_id", "period_end_date"], how="left"
+            )
+
+        if not ni_ttm_df.is_empty():
+            combined = combined.join(
+                ni_ttm_df, on=["issuer_id", "period_end_date"], how="left"
+            )
+            if "_ni_published_at" in combined.columns:
+                pub_expr = (
+                    pl.coalesce("_ni_published_at", "published_at")
+                    if "published_at" in combined.columns
+                    else pl.col("_ni_published_at")
+                )
+                combined = combined.with_columns(pub_expr.alias("published_at")).drop(
+                    "_ni_published_at"
+                )
+            if "_ni_effective_available_at" in combined.columns:
+                eff_expr = (
+                    pl.coalesce("_ni_effective_available_at", "effective_available_at")
+                    if "effective_available_at" in combined.columns
+                    else pl.col("_ni_effective_available_at")
+                )
+                combined = combined.with_columns(
+                    eff_expr.alias("effective_available_at")
+                ).drop("_ni_effective_available_at")
+        elif pp_df is not None and not pp_df.is_empty() and not ratios.is_empty():
+            combined = combined.join(
+                pp_df, on=["issuer_id", "period_end_date"], how="left"
+            )
+            if "_pp_parent_equity" in combined.columns:
+                eq_expr = (
+                    pl.coalesce("parent_equity", "_pp_parent_equity")
+                    if "parent_equity" in combined.columns
+                    else pl.col("_pp_parent_equity")
+                )
+                combined = combined.with_columns(eq_expr.alias("parent_equity")).drop(
+                    "_pp_parent_equity"
+                )
+            if "_pp_estimated_shares" in combined.columns:
+                sh_expr = (
+                    pl.coalesce("_pp_estimated_shares", "estimated_shares_outstanding")
+                    if "estimated_shares_outstanding" in combined.columns
+                    else pl.col("_pp_estimated_shares")
+                )
+                combined = combined.with_columns(
+                    sh_expr.alias("estimated_shares_outstanding")
+                ).drop("_pp_estimated_shares")
+
+        if (
+            "published_at" not in combined.columns
+            and "effective_available_at" not in combined.columns
+            and "filing_id" in combined.columns
+        ):
+            avail_manifest_cols = _available_table_columns(
+                pinned, FILINGS_MANIFEST_TABLE, connection=connection
+            )
+            if avail_manifest_cols:
+                m_cols = _select_existing_columns(
+                    ("filing_id", "published_at", "effective_available_at"),
+                    avail_manifest_cols,
+                )
+                if "filing_id" in m_cols and (
+                    "published_at" in m_cols or "effective_available_at" in m_cols
+                ):
+                    manifest_df = pinned.read_table(
+                        FILINGS_MANIFEST_TABLE,
+                        columns=m_cols,
+                        filters={"issuer_id": issuer_id},
+                        connection=connection,
+                    ).unique(subset=["filing_id"], keep="last")
+                    if not manifest_df.is_empty():
+                        combined = combined.join(
+                            manifest_df, on="filing_id", how="left"
+                        )
+
+        date_casts = [
+            pl.col(col).cast(pl.Date).alias(col)
+            for col in (
+                "published_at",
+                "effective_available_at",
+                "_period_available_at",
+                "period_end_date",
+            )
+            if col in combined.columns
+        ]
+        if date_casts:
+            combined = combined.with_columns(date_casts)
+
+        has_any_disclosure_col = any(
+            col in combined.columns
+            for col in (
+                "available_at",
+                "published_at",
+                "effective_available_at",
+                "_period_available_at",
+                "_amounts_available_at",
+            )
+        )
+        return combined if has_any_disclosure_col else None
+
+    def get_company_market_overlay(
+        self,
+        ticker: str,
+        *,
+        statement_scope: str = "CONSOLIDATED",
+        as_of: date | None = None,
+        port_data_root: Path | None = None,
+        connection: duckdb.DuckDBPyConnection | None = None,
+    ) -> dict[str, Any]:
+        """Return PIT valuation series and Price & Risk Event Overlay for one company (UI-09b)."""
+        if statement_scope not in STATEMENT_SCOPES:
+            raise ValueError(f"Unsupported statement_scope: {statement_scope!r}")
+        clean_ticker = ticker.strip().upper()
+        if not clean_ticker:
+            raise ValueError("Ticker must not be empty.")
+
+        with self.repository.snapshot_session(connection=connection) as pinned:
+            issuer_row = _resolve_issuer_row(
+                pinned,
+                clean_ticker,
+                columns=("issuer_id", "ticker", "accounting_regime"),
+                connection=connection,
+            )
+            issuer_id = str(issuer_row["issuer_id"])
+            resolved_ticker = str(issuer_row["ticker"])
+            accounting_regime = str(issuer_row["accounting_regime"])
+
+            candidate_roots = self._build_port_candidate_roots(
+                self.repository._source,
+                pinned._source,
+                port_data_root=port_data_root,
+            )
+
+            prices = self._load_port_parquet_for_issuer(
+                rel_parquet_path=Path("market_prices") / "market_prices.parquet",
+                issuer_id=issuer_id,
+                candidate_roots=candidate_roots,
+            )
+            if prices is None:
+                prices = pl.DataFrame()
+            if not prices.is_empty() and as_of is not None:
+                prices = prices.filter(pl.col("trade_date") <= as_of)
+
+            if prices.is_empty():
+                return {
+                    "issuer_id": issuer_id,
+                    "ticker": resolved_ticker,
+                    "as_of": as_of,
+                    "latest_valuation": None,
+                    "price_series": [],
+                    "model_markers": [],
+                    "regulatory_markers": [],
+                    "earliest_warning_summary": None,
+                }
+
+            reg_events = self._load_port_parquet_for_issuer(
+                rel_parquet_path=Path("regulatory_ledger")
+                / "regulatory_events.parquet",
+                issuer_id=issuer_id,
+                candidate_roots=candidate_roots,
+            )
+            if reg_events is not None and reg_events.is_empty():
+                reg_events = None
+
+            ml_scores: pl.DataFrame | None = None
+            avail_ml_cols = _available_table_columns(
+                pinned, ML_SCORES_TABLE, connection=connection
+            )
+            if avail_ml_cols:
+                ml_cols = _select_existing_columns(
+                    (
+                        "issuer_id",
+                        "statement_scope",
+                        "period_type",
+                        "period_end_date",
+                        "filing_id",
+                        "risk_tier",
+                        "calibrated_distress_prob",
+                        "risk_market_percentile",
+                        "relative_risk_lift",
+                        "available_at",
+                        "published_at",
+                        "effective_available_at",
+                    ),
+                    avail_ml_cols,
+                )
+                if {"issuer_id", "period_end_date", "risk_tier"} <= set(ml_cols):
+                    ml_raw = pinned.read_table(
+                        ML_SCORES_TABLE,
+                        columns=ml_cols,
+                        filters={
+                            "issuer_id": issuer_id,
+                            "statement_scope": statement_scope,
+                        },
+                        connection=connection,
+                    )
+                    if not ml_raw.is_empty():
+                        sort_ml = [
+                            col
+                            for col in ("period_type", "period_end_date", "filing_id")
+                            if col in ml_raw.columns
+                        ]
+                        dedup_ml = [
+                            col
+                            for col in ("issuer_id", "period_type", "period_end_date")
+                            if col in ml_raw.columns
+                        ]
+                        ml_scores = ml_raw.sort(sort_ml).unique(
+                            subset=dedup_ml, keep="last"
+                        )
+
+            financial_periods = self._build_overlay_financial_periods(
+                pinned,
+                issuer_id=issuer_id,
+                ticker=resolved_ticker,
+                accounting_regime=accounting_regime,
+                statement_scope=statement_scope,
+                prices=prices,
+                as_of=as_of,
+                connection=connection,
+            )
+
+            valuation_series = (
+                compute_pit_valuation_series(
+                    prices,
+                    financial_periods,
+                    issuer_id=issuer_id,
+                    statement_scope=statement_scope,
+                )
+                if financial_periods is not None and not financial_periods.is_empty()
+                else None
+            )
+
+            payload = build_price_risk_overlay(
+                prices,
+                issuer_id=issuer_id,
+                ml_scores=ml_scores,
+                regulatory_events=reg_events,
+                financial_periods=financial_periods,
+                valuation_series=valuation_series,
+                statement_scope=statement_scope,
+                as_of=as_of,
+            )
+            price_series = payload["price_series"]
+            latest_valuation = price_series[-1] if price_series else None
+            return {
+                **payload,
+                "latest_valuation": latest_valuation,
+            }
