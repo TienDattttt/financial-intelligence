@@ -93,7 +93,12 @@ def _attach_ducklake_read_only_if_applicable(
     conn: duckdb.DuckDBPyConnection,
     repository: ParquetRepository,
 ) -> None:
-    """Attach the configured DuckLake catalog in ``READ_ONLY`` mode when present."""
+    """Attach the configured DuckLake catalog in ``READ_ONLY`` mode when present.
+
+    In PostgreSQL catalog mode (``ARCH-08``), attaching does not require local
+    ``state.sqlite`` or ``data/metadata/`` because the active snapshot pointer is
+    served from ``public.finintel_active_snapshot`` on PostgreSQL.
+    """
     if repository._backend == "parquet":
         return
     located = repository._find_ducklake_catalog()

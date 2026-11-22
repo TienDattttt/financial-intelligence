@@ -31,6 +31,7 @@ Runtime API Verification (Python 3.11.9, duckdb==1.4.2, DuckLake format 0.3):
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -41,7 +42,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
 import duckdb
@@ -73,6 +74,7 @@ from finintel.storage.snapshot_publisher import (
 logger = logging.getLogger("finintel.storage.ducklake")
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 SNAPSHOT_AUDIT_TABLE = "_snapshot_audit"
+POSTGRES_ACTIVE_SNAPSHOT_TABLE = "public.finintel_active_snapshot"
 DEFAULT_CATALOG_ALIAS = "finintel_lake"
 DEFAULT_POSTGRES_DSN_ENV = "FININTEL_DUCKLAKE_PG_DSN"
 DEFAULT_OVERRIDE_DATA_PATH_ENV = "FININTEL_DUCKLAKE_OVERRIDE_DATA_PATH"
@@ -523,6 +525,149 @@ def ensure_ducklake_attached(
     connection.execute(f"ATTACH 'ducklake:sqlite:{cat_sql}' AS \"{alias}\" ({opts});")
 
 
+@dataclass(frozen=True)
+class PostgresActiveSnapshotPointer:
+    """Active snapshot pointer stored outside the DuckLake catalog on PostgreSQL (H-04)."""
+
+    snapshot_id: str
+    ducklake_version: int
+    run_id: str
+    published_at: str | None
+
+
+def _import_psycopg() -> Any:
+    """Lazy-import ``psycopg`` so core CI ``mvp-checks`` never requires ``platform`` deps (M-03)."""
+    try:
+        return importlib.import_module("psycopg")
+    except ImportError as exc:
+        raise ContractViolationError(
+            "psycopg is required for PostgreSQL active snapshot pointer; "
+            "install the 'platform' dependency group."
+        ) from exc
+
+
+def _resolve_postgres_dsn(postgres_dsn_env: str) -> str:
+    raw_dsn = os.environ.get(postgres_dsn_env, "").strip()
+    if not raw_dsn:
+        raise ContractViolationError(
+            f"Environment variable {postgres_dsn_env} is not set for PostgreSQL active snapshot pointer."
+        )
+    # Validate syntax via _parse_postgres_dsn without leaking credentials.
+    _parse_postgres_dsn(raw_dsn, env_name=postgres_dsn_env)
+    return raw_dsn
+
+
+def upsert_postgres_active_snapshot(
+    *,
+    postgres_dsn_env: str,
+    catalog_alias: str,
+    snapshot_id: str,
+    ducklake_version: int,
+    run_id: str,
+    published_at: str,
+) -> None:
+    """Atomically upsert ``public.finintel_active_snapshot`` outside DuckLake catalog (H-04)."""
+    alias = validate_sql_identifier(catalog_alias, label="catalog_alias")
+    if (
+        not snapshot_id.startswith("snap_")
+        or Path(snapshot_id).name != snapshot_id
+        or ":" in snapshot_id
+    ):
+        raise ValueError(
+            "snapshot_id must be a path-safe value beginning with 'snap_'."
+        )
+    raw_dsn = _resolve_postgres_dsn(postgres_dsn_env)
+    psycopg = _import_psycopg()
+    try:
+        with psycopg.connect(raw_dsn, connect_timeout=5) as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {POSTGRES_ACTIVE_SNAPSHOT_TABLE} (
+                        catalog_alias TEXT PRIMARY KEY,
+                        snapshot_id TEXT NOT NULL,
+                        ducklake_version BIGINT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        published_at TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    f"""
+                    INSERT INTO {POSTGRES_ACTIVE_SNAPSHOT_TABLE} (
+                        catalog_alias, snapshot_id, ducklake_version, run_id, published_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (catalog_alias) DO UPDATE SET
+                        snapshot_id = EXCLUDED.snapshot_id,
+                        ducklake_version = EXCLUDED.ducklake_version,
+                        run_id = EXCLUDED.run_id,
+                        published_at = EXCLUDED.published_at,
+                        updated_at = NOW()
+                    """,
+                    (alias, snapshot_id, int(ducklake_version), run_id, published_at),
+                )
+            pg_conn.commit()
+    except ContractViolationError:
+        raise
+    except Exception:
+        # Never leak raw PostgreSQL DSN/credentials in tracebacks.
+        raise ContractViolationError(
+            f"Failed to update {POSTGRES_ACTIVE_SNAPSHOT_TABLE} via {postgres_dsn_env}."
+        ) from None
+
+
+def read_postgres_active_snapshot(
+    *,
+    postgres_dsn_env: str,
+    catalog_alias: str,
+) -> PostgresActiveSnapshotPointer | None:
+    """Read the active snapshot pointer from ``public.finintel_active_snapshot`` (H-04)."""
+    alias = validate_sql_identifier(catalog_alias, label="catalog_alias")
+    raw_dsn = _resolve_postgres_dsn(postgres_dsn_env)
+    psycopg = _import_psycopg()
+    try:
+        with psycopg.connect(raw_dsn, connect_timeout=5) as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT snapshot_id, ducklake_version, run_id, published_at
+                    FROM {POSTGRES_ACTIVE_SNAPSHOT_TABLE}
+                    WHERE catalog_alias = %s
+                    LIMIT 1
+                    """,
+                    (alias,),
+                )
+                row = cur.fetchone()
+    except ContractViolationError:
+        raise
+    except Exception as exc:
+        if getattr(exc, "sqlstate", None) == "42P01":
+            return None
+        raise ContractViolationError(
+            f"Failed to read {POSTGRES_ACTIVE_SNAPSHOT_TABLE} via {postgres_dsn_env}."
+        ) from None
+
+    if row is None:
+        return None
+    snapshot_id = str(row[0])
+    if (
+        not snapshot_id.startswith("snap_")
+        or Path(snapshot_id).name != snapshot_id
+        or ":" in snapshot_id
+    ):
+        raise ContractViolationError(
+            f"Invalid active snapshot ID in {POSTGRES_ACTIVE_SNAPSHOT_TABLE}."
+        )
+    return PostgresActiveSnapshotPointer(
+        snapshot_id=snapshot_id,
+        ducklake_version=int(row[1]),
+        run_id=str(row[2]),
+        published_at=str(row[3]) if row[3] is not None else None,
+    )
+
+
 class DuckLakeStore:
     """ACID multi-table DuckLake publisher with cross-DB consistency, rollback, and maintenance."""
 
@@ -964,8 +1109,17 @@ class DuckLakeStore:
                         pass
                 con.close()
 
-            # Phase 2: Promote active snapshot pointer in state.sqlite.
+            # Phase 2: Promote active snapshot pointer in state.sqlite (and Postgres pointer if configured).
             self.state_store.publish_snapshot(run_id, snapshot_id)
+            if self.catalog_driver == "postgres":
+                upsert_postgres_active_snapshot(
+                    postgres_dsn_env=self.postgres_dsn_env,
+                    catalog_alias=self.catalog_alias,
+                    snapshot_id=snapshot_id,
+                    ducklake_version=expected_version,
+                    run_id=run_id,
+                    published_at=published_at,
+                )
             return expected_version
 
     publish = publish_snapshot
@@ -1107,6 +1261,15 @@ class DuckLakeStore:
                     """,
                     (target_snapshot_id, target_run_id, now),
                 )
+            if self.catalog_driver == "postgres":
+                upsert_postgres_active_snapshot(
+                    postgres_dsn_env=self.postgres_dsn_env,
+                    catalog_alias=self.catalog_alias,
+                    snapshot_id=target_snapshot_id,
+                    ducklake_version=target_version,
+                    run_id=target_run_id,
+                    published_at=now,
+                )
             return target_version
 
     def maintain(
@@ -1170,6 +1333,32 @@ class DuckLakeStore:
                     active_sid = str(active["snapshot_id"])
                     if active_sid in audit_by_snap_id:
                         protected_versions.add(audit_by_snap_id[active_sid])
+
+                if self.catalog_driver == "postgres":
+                    pg_pointer = read_postgres_active_snapshot(
+                        postgres_dsn_env=self.postgres_dsn_env,
+                        catalog_alias=self.catalog_alias,
+                    )
+                    if pg_pointer is not None:
+                        protected_versions.add(int(pg_pointer.ducklake_version))
+                        if pg_pointer.snapshot_id in audit_by_snap_id:
+                            protected_versions.add(
+                                audit_by_snap_id[pg_pointer.snapshot_id]
+                            )
+                    elif active is not None and active.get("snapshot_id") is not None:
+                        active_sid = str(active["snapshot_id"])
+                        if active_sid in audit_by_snap_id:
+                            upsert_postgres_active_snapshot(
+                                postgres_dsn_env=self.postgres_dsn_env,
+                                catalog_alias=self.catalog_alias,
+                                snapshot_id=active_sid,
+                                ducklake_version=audit_by_snap_id[active_sid],
+                                run_id=str(active.get("run_id") or "maintain_sync"),
+                                published_at=str(
+                                    active.get("published_at")
+                                    or datetime.now(UTC).isoformat()
+                                ),
+                            )
 
                 promoted_audit_versions = [
                     int(row[1]) for row in audit_rows if str(row[0]) in promoted_set
