@@ -1766,6 +1766,67 @@ def test_ml04_gate_ml2_symmetric_censoring_continuous_state_first_onset_and_zero
     with pytest.raises(ContractViolationError, match="resolution_date"):
         build_distress_targets(panel, regulatory_events=bad_interval)
 
+    # 9. Retroactive effective_from < event_date MUST NOT leak before event_date announcement,
+    #    and boundary a_t == resolution_date is resolved while a_t == event_date is active.
+    retro_panel = pl.DataFrame(
+        {
+            "issuer_id": ["RETRO"] * 4,
+            "statement_scope": ["CONSOLIDATED"] * 4,
+            "period_type": ["QUARTER"] * 4,
+            "fiscal_year": [2022, 2022, 2022, 2022],
+            "fiscal_quarter": [1, 2, 3, 4],
+            "period_end_date": [
+                date(2022, 3, 31),
+                date(2022, 6, 30),
+                date(2022, 9, 30),
+                date(2022, 12, 31),
+            ],
+            "accounting_regime": ["CORPORATE"] * 4,
+            "BS_TOTAL_EQUITY": [100.0] * 4,
+            "parent_equity": [100.0] * 4,
+            "interest_coverage": [5.0] * 4,
+            "CF_OPERATING_CASH_FLOW": [10.0] * 4,
+            "current_ratio": [2.0] * 4,
+            "roa": [0.05] * 4,
+            "_period_available_at": [
+                date(
+                    2022, 7, 30
+                ),  # effective_from < a_t < event_date -> MUST be eligible y=1
+                date(2022, 9, 15),  # a_t == event_date -> active, not future
+                date(2022, 12, 1),  # a_t == resolution_date -> resolved
+                date(2023, 1, 30),  # post-resolution
+            ],
+        }
+    )
+    retro_events = pl.DataFrame(
+        {
+            "issuer_id": ["RETRO"],
+            "event_date": [date(2022, 9, 15)],
+            "effective_from": [date(2022, 6, 1)],
+            "resolution_date": [date(2022, 12, 1)],
+            "event_type": ["CONTROL"],
+            "event_stage": ["FIRST_ENTRY"],
+        },
+        schema={
+            "issuer_id": pl.String,
+            "event_date": pl.Date,
+            "effective_from": pl.Date,
+            "resolution_date": pl.Date,
+            "event_type": pl.String,
+            "event_stage": pl.String,
+        },
+    )
+    retro_out = build_distress_targets(
+        retro_panel, as_of=date(2024, 6, 1), regulatory_events=retro_events
+    )
+    retro_by_q = {int(r["fiscal_quarter"]): r for r in retro_out.to_dicts()}
+    assert retro_by_q[1]["already_distressed_at_t"] is False
+    assert retro_by_q[1]["distress_target"] == 1
+    assert retro_by_q[2]["already_distressed_at_t"] is True
+    assert retro_by_q[2]["distress_target"] == 0
+    assert retro_by_q[3]["already_distressed_at_t"] is False
+    assert retro_by_q[3]["distress_target"] == 0
+
 
 def test_ml06_two_way_purged_oof_fair_three_model_calibration_bss_unseen_bootstrap_and_psi() -> (
     None
@@ -1779,7 +1840,9 @@ def test_ml06_two_way_purged_oof_fair_three_model_calibration_bss_unseen_bootstr
         LOGIT_CLIP_RANGE,
         PLATT_MAX_SLOPE,
         PLATT_MIN_SLOPE,
+        XGB_EQUILIBRIUM_BASE_SCORE,
         MarginPlattCalibrator,
+        _compute_xgb_base_score,
         _compute_xgb_regularization,
         build_evaluation_report,
         cluster_bootstrap_metrics,
@@ -1789,10 +1852,14 @@ def test_ml06_two_way_purged_oof_fair_three_model_calibration_bss_unseen_bootstr
         train_distress_model,
     )
 
-    # 1. Anti-overfitting XGBoost invariant: single positive leaf is mathematically forbidden
+    # 1. Anti-overfitting & fold-invariant equilibrium prior: single positive leaf forbidden
+    #    and imbalanced distress folds share an identical weighted-equilibrium base_score.
     for pos, neg in ((4, 36), (14, 1455), (50, 2500), (160, 7000)):
         spw, mcw = _compute_xgb_regularization(pos, neg)
         assert 0.25 * spw < mcw
+        assert _compute_xgb_base_score(pos, neg, spw) == pytest.approx(
+            XGB_EQUILIBRIUM_BASE_SCORE
+        )
 
     # 2. Unpenalized MarginPlattCalibrator (H-07): preserves risk spread on ~2% prevalence
     #    and clamps weak positive slope to PLATT_MIN_SLOPE = 0.15
@@ -1886,6 +1953,14 @@ def test_ml06_two_way_purged_oof_fair_three_model_calibration_bss_unseen_bootstr
     assert PLATT_MIN_SLOPE <= trained.logit_platt_slope <= PLATT_MAX_SLOPE
     assert 15 <= trained.best_n_estimators <= 300
     assert 0.25 * trained.scale_pos_weight < trained.min_child_weight
+    y_tr_arr = two_way["train"]["distress_target"].to_numpy()
+    assert trained.classifier.get_params()["base_score"] == pytest.approx(
+        _compute_xgb_base_score(
+            int((y_tr_arr == 1).sum()),
+            int((y_tr_arr == 0).sum()),
+            trained.scale_pos_weight,
+        )
+    )
 
     # Verify BSS strictly uses train_prevalence, NOT y_test.mean()
     test_eval = evaluate_distress_models(trained, two_way["test"])
@@ -1910,6 +1985,24 @@ def test_ml06_two_way_purged_oof_fair_three_model_calibration_bss_unseen_bootstr
     expected_clim = float(np.mean((y_custom - train_prev_ref) ** 2))
     assert m_custom["brier_skill_score"] == pytest.approx(
         1.0 - expected_brier / expected_clim
+    )
+    # Row-wise PIT climatology vector (each pooled OOS year uses its own prior train_prevalence)
+    ref_vec = np.array([0.01, 0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.05])
+    m_vec = _metrics(y_custom, s_custom, reference_prevalence=ref_vec)
+    expected_clim_vec = float(np.mean((y_custom - ref_vec) ** 2))
+    assert m_vec["brier_skill_score"] == pytest.approx(
+        1.0 - expected_brier / expected_clim_vec
+    )
+    boot_vec = cluster_bootstrap_metrics(
+        y_custom,
+        s_custom,
+        np.array(["I0", "I1", "I2", "I3", "I4", "I5", "I6", "I7"]),
+        reference_prevalence=ref_vec,
+        n_bootstrap=40,
+        seed=42,
+    )
+    assert boot_vec["point"]["brier_skill_score"] == pytest.approx(
+        1.0 - expected_brier / expected_clim_vec
     )
 
     report = build_evaluation_report(
@@ -1957,6 +2050,8 @@ def test_ml06_two_way_purged_oof_fair_three_model_calibration_bss_unseen_bootstr
     )
     assert "roa" in shift_psi["features_psi_gt_0_25"]
     assert shift_psi["score_drift"]["score_psi"] is not None
+    assert "ref_r4_r5_share" in shift_psi["score_drift"]
+    assert "tgt_r4_r5_share" in shift_psi["score_drift"]
 
     # 7. Regression guard: when earliest temporal inner block has an all-null feature
     #    (e.g. 2016 YoY features), train_distress_model falls back cleanly to issuer-grouped OOF.
@@ -2084,3 +2179,27 @@ def test_ml07a_credit_risk_triad_ttc_tiers_pit_percentile_lift_and_reliability()
     )
     assert len(rel["tiers"]) == 5
     assert rel["is_monotone_non_decreasing"] is True
+
+    # 4. Backward compatibility: unpickled pre-ML-07a TrainingResult lacking risk_tier_cutoffs/train_prevalence
+    from finintel.ml.supervised.train import TrainingResult
+
+    legacy_res = object.__new__(TrainingResult)
+    legacy_res.__dict__.update(
+        {
+            "features": trained.features,
+            "preprocessor": trained.preprocessor,
+            "classifier": trained.classifier,
+            "calibrated": trained.calibrated,
+            "baseline_logit": trained.baseline_logit,
+            "validation_metrics": trained.validation_metrics,
+            "f2_thresholds": trained.f2_thresholds,
+            "platt_slope": trained.platt_slope,
+            "platt_intercept": trained.platt_intercept,
+            "oof_validation_metrics": trained.oof_validation_metrics,
+        }
+    )
+    legacy_scored = score_distress_model(legacy_res, df_all.head(10))
+    assert legacy_scored.height == 10
+    assert legacy_scored["risk_tier"].null_count() == 0
+    assert legacy_scored["market_base_rate"].null_count() == 10
+    assert legacy_scored["relative_risk_lift"].null_count() == 10

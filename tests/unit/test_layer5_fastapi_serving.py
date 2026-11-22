@@ -1787,7 +1787,13 @@ def test_ml07a_serving_exposes_credit_risk_triad_and_supports_legacy_snapshots(
         assert len(items_r5) >= 1
         assert all(it["risk_tier"] == "R5" for it in items_r5)
 
-        # 3. /api/v2/market/changes exposes risk_tier_prev/curr, risk_market_percentile_curr, relative_risk_lift_curr
+        scr_bad_tier = client.get(
+            "/api/v1/screener",
+            params={"period_type": "QUARTER", "risk_tier": "INVALID"},
+        )
+        assert scr_bad_tier.status_code == 422
+
+        # 3. /api/v2/market/changes exposes risk_tier_prev/curr, risk_market_percentile_curr, market_base_rate_curr, relative_risk_lift_curr
         chg = client.get("/api/v2/market/changes", params={"period_type": "QUARTER"})
         assert chg.status_code == 200
         chg_items = chg.json()["items"]
@@ -1795,6 +1801,7 @@ def test_ml07a_serving_exposes_credit_risk_triad_and_supports_legacy_snapshots(
         assert hpg_chg
         assert hpg_chg[0]["risk_tier_curr"] == "R5"
         assert hpg_chg[0]["risk_market_percentile_curr"] == pytest.approx(100.0)
+        assert hpg_chg[0]["market_base_rate_curr"] == pytest.approx(0.025)
         assert hpg_chg[0]["relative_risk_lift_curr"] is not None
 
     # 4. Backward compatibility: legacy snapshot parquet WITHOUT the 4 ML-07a columns still serves 200 OK
@@ -1827,8 +1834,15 @@ def test_ml07a_serving_exposes_credit_risk_triad_and_supports_legacy_snapshots(
         r_scr = legacy_client.get("/api/v1/screener", params={"period_type": "QUARTER"})
         assert r_scr.status_code == 200
         assert all(it["risk_tier"] is None for it in r_scr.json()["items"])
+        r_scr_r5 = legacy_client.get(
+            "/api/v1/screener", params={"period_type": "QUARTER", "risk_tier": "R5"}
+        )
+        assert r_scr_r5.status_code == 200
+        assert r_scr_r5.json()["total"] == 0
+        assert r_scr_r5.json()["items"] == []
         r_chg = legacy_client.get(
             "/api/v2/market/changes", params={"period_type": "QUARTER"}
         )
         assert r_chg.status_code == 200
         assert all(it["risk_tier_curr"] is None for it in r_chg.json()["items"])
+        assert all(it["market_base_rate_curr"] is None for it in r_chg.json()["items"])

@@ -13,8 +13,10 @@ Verified Sources:
     - Symmetric Horizon Completeness (B-01): both y=1 and y=0 require a_t + 365d <= cutoff
       with label_available_at = a_t + 365d, eliminating differential right-censoring.
     - Continuous Distress Interval & First-Onset (H-05): active distress spans
-      [min(event_date, effective_from), resolution_date), and only FIRST_ENTRY events in
-      (a_t, a_t + 365d] define onset positives; negatives are decoupled from Mode A.
+      [event_date, resolution_date) (strictly PIT-causal: an event never marks an issuer
+      as already distressed prior to its public announcement event_date, even if
+      effective_from is retroactive), and only FIRST_ENTRY events in (a_t, a_t + 365d]
+      define onset positives; negatives are decoupled from Mode A.
     Mode A (FUNDAMENTAL_DISTRESS) is the zero-TTM-overlap ablation arm: balance-sheet
     negative equity is checked across {t+1..t+4}, while TTM-based liquidity and severe-loss
     conditions are evaluated strictly at t+4 (0% shared TTM quarters with X_t).
@@ -216,8 +218,9 @@ def build_distress_targets(
       ``a_t + 365d <= as_of`` (when ``as_of`` is supplied) and carry identical
       ``label_available_at = a_t + 365d``.
     - Continuous active distress state (H-05): ``already_distressed_at_t = True``
-      whenever any event satisfies ``min(event_date, effective_from) <= a_t`` and
-      ``(resolution_date IS NULL | a_t < resolution_date)``.
+      whenever any publicly announced event satisfies ``event_date <= a_t`` and
+      ``(resolution_date IS NULL | a_t < resolution_date)`` (strictly PIT-causal so
+      retroactive ``effective_from < event_date`` cannot leak before announcement).
     - Negatives are purely exogenous (``~reg_positive & horizon_complete``),
       decoupled from Mode A future financial-statement completeness.
 
@@ -311,10 +314,11 @@ def build_distress_targets(
                     )
                 ).alias("_is_future_first_entry"),
                 (
-                    (
-                        pl.min_horizontal("event_date", "effective_from")
-                        <= pl.col("_period_available_at")
-                    )
+                    # Strictly PIT-causal: an event cannot mark an issuer as already distressed
+                    # prior to its public announcement event_date (blocks retroactive lookahead
+                    # when effective_from < event_date, while still treating forward-effective
+                    # notices like forced delisting announcements as active from event_date).
+                    (pl.col("event_date") <= pl.col("_period_available_at"))
                     & (
                         pl.col("resolution_date").is_null()
                         | (pl.col("_period_available_at") < pl.col("resolution_date"))

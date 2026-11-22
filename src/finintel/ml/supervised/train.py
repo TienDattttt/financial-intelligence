@@ -81,6 +81,15 @@ XGB_MAX_ESTIMATORS = 400
 XGB_EARLY_STOPPING_ROUNDS = 25
 XGB_MIN_ESTIMATORS = 15
 XGB_MAX_REFIT_ESTIMATORS = 300
+# Constant target weighted odds ratio r = (pos * spw) / neg across inner OOF folds & full train.
+# Anchoring base_score = r / (1 + r) keeps the initial log-odds origin invariant across expanding
+# folds (preventing XGBoost 2.x base_score=y_tr.mean() drift from distorting Platt calibration)
+# while starting at weighted equilibrium from Tree #1 (avoiding max_delta_step floor clipping).
+XGB_TARGET_EFFECTIVE_ODDS = 0.15
+XGB_EQUILIBRIUM_BASE_SCORE: float = XGB_TARGET_EFFECTIVE_ODDS / (
+    1.0 + XGB_TARGET_EFFECTIVE_ODDS
+)
+XGB_MAX_SCALE_POS_WEIGHT = 20.0
 RISK_TIER_LABELS: tuple[str, ...] = ("R1", "R2", "R3", "R4", "R5")
 RISK_TIER_QUANTILES: tuple[float, float, float, float] = (0.50, 0.75, 0.90, 0.95)
 DEFAULT_RISK_TIER_CUTOFFS: tuple[float, float, float, float] = (
@@ -461,12 +470,24 @@ def _constraints(features: tuple[str, ...]) -> tuple[int, ...]:
 
 
 def _compute_xgb_regularization(pos_count: int, neg_count: int) -> tuple[float, float]:
-    """Scale min_child_weight proportionally to moderated scale_pos_weight (forbids 1-positive leaves)."""
+    """Compute fold-invariant equilibrium scale_pos_weight and leaf-floor min_child_weight.
+
+    Sets ``scale_pos_weight = clamp(r * neg / pos, 1.0, XGB_MAX_SCALE_POS_WEIGHT)`` with
+    constant target weighted odds ``r = XGB_TARGET_EFFECTIVE_ODDS`` so every expanding inner OOF
+    fold and full-train refit share the same weighted prior ``XGB_EQUILIBRIUM_BASE_SCORE``.
+    Scales ``min_child_weight`` proportionally to ``0.25 * scale_pos_weight`` so single-positive
+    leaves remain mathematically forbidden.
+    """
     total = max(1, pos_count + neg_count)
     raw_imbalance = (
         float(neg_count / max(1, pos_count)) if neg_count > pos_count else 1.0
     )
-    scale_pos_weight = float(np.sqrt(raw_imbalance)) if raw_imbalance > 1.0 else 1.0
+    scale_pos_weight = float(
+        min(
+            XGB_MAX_SCALE_POS_WEIGHT,
+            max(1.0, XGB_TARGET_EFFECTIVE_ODDS * raw_imbalance),
+        )
+    )
     # Single positive max Hessian is 0.25 * scale_pos_weight. Require >= k_pos_per_leaf
     # positive-equivalent samples per leaf (>= 2.0 on tiny fixtures, up to 5.0 on real data).
     k_pos_per_leaf = min(5.0, max(2.0, 0.20 * float(pos_count)))
@@ -477,18 +498,38 @@ def _compute_xgb_regularization(pos_count: int, neg_count: int) -> tuple[float, 
     return scale_pos_weight, min_child_weight
 
 
+def _compute_xgb_base_score(
+    pos_count: int, neg_count: int, scale_pos_weight: float
+) -> float:
+    """Return the exact weighted-class equilibrium prior for XGBoost's initial margin.
+
+    For imbalanced distress folds (``neg / pos`` in ``[1/r, 20/r]``), this equals the
+    constant ``XGB_EQUILIBRIUM_BASE_SCORE = r / (1 + r)`` across every expanding inner OOF
+    fold and full-train refit. For balanced datasets (``scale_pos_weight == 1.0``), it equals
+    the true class proportion so Tree #1 always starts at weighted equilibrium.
+    """
+    weighted_pos = float(max(1, pos_count)) * float(scale_pos_weight)
+    denom = weighted_pos + float(max(1, neg_count))
+    return float(np.clip(weighted_pos / denom, 0.05, 0.95))
+
+
 def _make_xgb_classifier(
     *,
     model_features: tuple[str, ...],
     scale_pos_weight: float,
     min_child_weight: float,
     n_estimators: int,
+    base_score: float = XGB_EQUILIBRIUM_BASE_SCORE,
     early_stopping_rounds: int | None = None,
 ) -> Any:
     from xgboost import XGBClassifier
 
     kwargs: dict[str, Any] = {
         "objective": "binary:logistic",
+        # Anchor initial margin at exact weighted equilibrium across all expanding inner OOF
+        # folds and full-train refit (zero fold-prevalence origin shift into Platt calibration,
+        # zero Hessian starvation at low prevalence, and zero max_delta_step floor clipping).
+        "base_score": float(base_score),
         "max_depth": 3,
         "min_child_weight": min_child_weight,
         "subsample": 0.75,
@@ -649,7 +690,7 @@ def _metrics(
     score: NDArray[np.float64],
     *,
     f2_threshold: float = 0.5,
-    reference_prevalence: float | None = None,
+    reference_prevalence: float | NDArray[np.floating[Any]] | None = None,
 ) -> dict[str, float | None]:
     finite = np.isfinite(score)
     y = y[finite]
@@ -669,13 +710,32 @@ def _metrics(
     cutoff_10 = max(1, int(np.ceil(len(score) * 0.10)))
     total_pos = max(1, int(y.sum()))
     brier = float(brier_score_loss(y, score))
-    # GATE-ML-3 / H-07: BSS climatology uses historical train_prevalence, NEVER y_test.mean().
+    # GATE-ML-3 / H-07: BSS climatology uses strictly historical train_prevalence
+    # (scalar for a single fold, or per-row PIT train_prevalence_Y for pooled walk-forward),
+    # NEVER y_test.mean() or future folds' prevalences.
     bss: float | None = None
-    if reference_prevalence is not None and np.isfinite(reference_prevalence):
-        p0 = float(np.clip(reference_prevalence, 0.0, 1.0))
-        clim_brier = float(brier_score_loss(y, np.full(len(y), p0, dtype=np.float64)))
-        if clim_brier > 1e-12:
-            bss = float(1.0 - brier / clim_brier)
+    if reference_prevalence is not None:
+        if isinstance(reference_prevalence, np.ndarray):
+            ref_arr = np.asarray(reference_prevalence, dtype=np.float64).reshape(-1)
+            if ref_arr.size == finite.size:
+                ref_vec = ref_arr[finite]
+            elif ref_arr.size == y.size:
+                ref_vec = ref_arr
+            else:
+                raise ContractViolationError(
+                    "Per-observation reference_prevalence length must match y."
+                )
+            if np.all(np.isfinite(ref_vec)):
+                clim_brier = float(brier_score_loss(y, np.clip(ref_vec, 0.0, 1.0)))
+                if clim_brier > 1e-12:
+                    bss = float(1.0 - brier / clim_brier)
+        elif np.isfinite(reference_prevalence):
+            p0 = float(np.clip(reference_prevalence, 0.0, 1.0))
+            clim_brier = float(
+                brier_score_loss(y, np.full(len(y), p0, dtype=np.float64))
+            )
+            if clim_brier > 1e-12:
+                bss = float(1.0 - brier / clim_brier)
     return {
         "pr_auc": float(average_precision_score(y, score)),
         "roc_auc": float(roc_auc_score(y, score)),
@@ -920,11 +980,15 @@ def train_distress_model(
             spw_in, mcw_in = _compute_xgb_regularization(
                 int((y_tr == 1).sum()), int((y_tr == 0).sum())
             )
+            base_in = _compute_xgb_base_score(
+                int((y_tr == 1).sum()), int((y_tr == 0).sum()), spw_in
+            )
             inner_clf = _make_xgb_classifier(
                 model_features=inner_feats,
                 scale_pos_weight=spw_in,
                 min_child_weight=mcw_in,
                 n_estimators=XGB_MAX_ESTIMATORS,
+                base_score=base_in,
                 early_stopping_rounds=XGB_EARLY_STOPPING_ROUNDS,
             )
             inner_clf.fit(x_tr_in, y_tr, eval_set=[(x_va_in, y_va)], verbose=False)
@@ -966,11 +1030,13 @@ def train_distress_model(
 
     x_train = prep.transform(train).select(model_features).to_numpy()
     x_train_logit = logit_prep.transform(train).select(model_features).to_numpy()
+    base_score_full = _compute_xgb_base_score(pos_count, neg_count, scale_pos_weight)
     classifier = _make_xgb_classifier(
         model_features=model_features,
         scale_pos_weight=scale_pos_weight,
         min_child_weight=min_child_weight,
         n_estimators=best_n_estimators,
+        base_score=base_score_full,
     )
     classifier.fit(x_train, y_train)
     baseline = _make_logit_classifier()
@@ -1003,11 +1069,15 @@ def train_distress_model(
             spw_in, mcw_in = _compute_xgb_regularization(
                 int((y_tr == 1).sum()), int((y_tr == 0).sum())
             )
+            base_in = _compute_xgb_base_score(
+                int((y_tr == 1).sum()), int((y_tr == 0).sum()), spw_in
+            )
             oof_clf = _make_xgb_classifier(
                 model_features=inner_feats,
                 scale_pos_weight=spw_in,
                 min_child_weight=mcw_in,
                 n_estimators=best_n_estimators,
+                base_score=base_in,
             )
             oof_clf.fit(x_tr_in, y_tr)
             oof_xgb_margin[va_idx] = np.asarray(
@@ -1204,9 +1274,21 @@ def train_distress_model(
     )
     oof_xgb_prob = calibrated.oof_probabilities
     oof_log_prob = calibrated_logit.oof_probabilities
-    common_oof = common & np.isfinite(oof_xgb_prob) & np.isfinite(oof_log_prob)
+    oof_alt_prob = np.full(len(y_val), np.nan, dtype=np.float64)
+    if calibrated_altman is not None:
+        oof_alt_prob[alt_valid_mask] = calibrated_altman.oof_probabilities
+    else:
+        oof_alt_prob = alt_prob
+    common_oof = (
+        common
+        & np.isfinite(oof_alt_prob)
+        & np.isfinite(oof_xgb_prob)
+        & np.isfinite(oof_log_prob)
+    )
     thresholds = {
-        "Baseline_1_AltmanZ": _optimal_f2_threshold(y_val[common], alt_prob[common]),
+        "Baseline_1_AltmanZ": _optimal_f2_threshold(
+            y_val[common_oof], oof_alt_prob[common_oof]
+        ),
         "Baseline_2_Logit": _optimal_f2_threshold(
             y_val[common_oof], oof_log_prob[common_oof]
         ),
@@ -1540,7 +1622,7 @@ def cluster_bootstrap_metrics(
     score: NDArray[np.float64],
     issuer_ids: NDArray[Any],
     *,
-    reference_prevalence: float | None = None,
+    reference_prevalence: float | NDArray[np.floating[Any]] | None = None,
     f2_threshold: float = 0.5,
     n_bootstrap: int = 1000,
     seed: int = 42,
@@ -1550,11 +1632,24 @@ def cluster_bootstrap_metrics(
     y_fin = np.asarray(y, dtype=np.int8)[finite]
     s_fin = np.asarray(score, dtype=np.float64)[finite]
     iss_fin = np.asarray(issuer_ids)[finite]
+    ref_is_array = isinstance(reference_prevalence, np.ndarray)
+    ref_fin: float | NDArray[np.float64] | None
+    if ref_is_array:
+        ref_arr = np.asarray(reference_prevalence, dtype=np.float64).reshape(-1)
+        if ref_arr.size != finite.size:
+            raise ContractViolationError(
+                "Per-observation reference_prevalence length must match y."
+            )
+        ref_fin = ref_arr[finite]
+    else:
+        ref_fin = (
+            float(reference_prevalence) if reference_prevalence is not None else None
+        )
     point = _metrics(
         y_fin,
         s_fin,
         f2_threshold=f2_threshold,
-        reference_prevalence=reference_prevalence,
+        reference_prevalence=ref_fin,
     )
     metric_keys = (
         "roc_auc",
@@ -1584,11 +1679,12 @@ def cluster_bootstrap_metrics(
         y_b = y_fin[idx]
         if np.unique(y_b).size < 2:
             continue
+        ref_b = ref_fin[idx] if isinstance(ref_fin, np.ndarray) else ref_fin
         m_b = _metrics(
             y_b,
             s_fin[idx],
             f2_threshold=f2_threshold,
-            reference_prevalence=reference_prevalence,
+            reference_prevalence=ref_b,
         )
         valid_draws += 1
         for k in metric_keys:
@@ -1655,11 +1751,12 @@ def run_expanding_walk_forward_evaluation(
     per_year: dict[str, Any] = {}
     pooled_y: list[NDArray[np.int8]] = []
     pooled_iss: list[NDArray[Any]] = []
+    pooled_ref_prevs: list[NDArray[np.float64]] = []
     pooled_scores: dict[str, list[NDArray[np.float64]]] = {m: [] for m in model_names}
     unseen_y: list[NDArray[np.int8]] = []
     unseen_iss: list[NDArray[Any]] = []
+    unseen_ref_prevs: list[NDArray[np.float64]] = []
     unseen_scores: dict[str, list[NDArray[np.float64]]] = {m: [] for m in model_names}
-    pooled_train_prevs: list[float] = []
 
     for year in test_years:
         fold_pair = splits_by_year[int(year)]
@@ -1695,29 +1792,37 @@ def run_expanding_walk_forward_evaluation(
             evaluation_role="OUT_OF_SAMPLE_TRUE_UNSEEN_ISSUERS",
         )
 
-        # Accumulate pooled common-sample OOS predictions for Cluster Bootstrap 95% CI
+        # Accumulate pooled common-sample OOS predictions for Cluster Bootstrap 95% CI.
+        # Each observation keeps its own strictly historical train_prevalence_Y (zero future-fold peek).
         if not te_prepared.is_empty():
             y_t, alt_p, log_p, xgb_p, common = _score_three_models(
                 trained, te_prepared, target="distress_target"
             )
             if np.any(common):
+                n_common = int(common.sum())
                 pooled_y.append(y_t[common])
                 pooled_iss.append(
                     te_prepared.get_column("issuer_id").to_numpy()[common]
                 )
+                pooled_ref_prevs.append(
+                    np.full(n_common, trained.train_prevalence, dtype=np.float64)
+                )
                 pooled_scores["Baseline_1_AltmanZ"].append(alt_p[common])
                 pooled_scores["Baseline_2_Logit"].append(log_p[common])
                 pooled_scores["XGBoost"].append(xgb_p[common])
-                pooled_train_prevs.append(trained.train_prevalence)
 
         if not unseen_df.is_empty():
             y_u, alt_u, log_u, xgb_u, common_u = _score_three_models(
                 trained, unseen_df, target="distress_target"
             )
             if np.any(common_u):
+                n_common_u = int(common_u.sum())
                 unseen_y.append(y_u[common_u])
                 unseen_iss.append(
                     unseen_df.get_column("issuer_id").to_numpy()[common_u]
+                )
+                unseen_ref_prevs.append(
+                    np.full(n_common_u, trained.train_prevalence, dtype=np.float64)
                 )
                 unseen_scores["Baseline_1_AltmanZ"].append(alt_u[common_u])
                 unseen_scores["Baseline_2_Logit"].append(log_u[common_u])
@@ -1765,7 +1870,10 @@ def run_expanding_walk_forward_evaluation(
                     summary[m][k] = {"mean": None, "std": None, "n_years": 0}
         return summary
 
-    pooled_ref_prev = float(np.mean(pooled_train_prevs)) if pooled_train_prevs else None
+    pooled_ref_vec = np.concatenate(pooled_ref_prevs) if pooled_ref_prevs else None
+    pooled_ref_prev = (
+        float(np.mean(pooled_ref_vec)) if pooled_ref_vec is not None else None
+    )
     pooled_bootstrap: dict[str, Any] = {}
     if pooled_y:
         all_y = np.concatenate(pooled_y)
@@ -1775,11 +1883,12 @@ def run_expanding_walk_forward_evaluation(
                 all_y,
                 np.concatenate(pooled_scores[m]),
                 all_iss,
-                reference_prevalence=pooled_ref_prev,
+                reference_prevalence=pooled_ref_vec,
                 n_bootstrap=n_bootstrap,
                 seed=seed,
             )
 
+    unseen_ref_vec = np.concatenate(unseen_ref_prevs) if unseen_ref_prevs else None
     unseen_bootstrap: dict[str, Any] = {}
     if unseen_y:
         all_uy = np.concatenate(unseen_y)
@@ -1789,7 +1898,7 @@ def run_expanding_walk_forward_evaluation(
                 all_uy,
                 np.concatenate(unseen_scores[m]),
                 all_uiss,
-                reference_prevalence=pooled_ref_prev,
+                reference_prevalence=unseen_ref_vec,
                 n_bootstrap=n_bootstrap,
                 seed=seed,
             )
@@ -1897,12 +2006,27 @@ def compute_taxonomy_drift_psi(
         tgt_scored = score_distress_model(result, target_frame)
         ref_p = ref_scored.get_column("calibrated_distress_prob").to_numpy()
         tgt_p = tgt_scored.get_column("calibrated_distress_prob").to_numpy()
+        ref_r4_r5 = float(
+            ref_scored.select(
+                pl.col("risk_tier").is_in(["R4", "R5"]).fill_null(False).mean()
+            ).item()
+            or 0.0
+        )
+        tgt_r4_r5 = float(
+            tgt_scored.select(
+                pl.col("risk_tier").is_in(["R4", "R5"]).fill_null(False).mean()
+            ).item()
+            or 0.0
+        )
         p90_cut = float(np.nanquantile(ref_p, 0.90))
         p95_cut = float(np.nanquantile(ref_p, 0.95))
         score_drift = {
             "score_psi": _population_stability_index(ref_p, tgt_p),
             "ref_mean_pd": float(np.nanmean(ref_p)),
             "tgt_mean_pd": float(np.nanmean(tgt_p)),
+            "ref_r4_r5_share": ref_r4_r5,
+            "tgt_r4_r5_share": tgt_r4_r5,
+            "r4_r5_share_delta": tgt_r4_r5 - ref_r4_r5,
             "ref_p90_cutoff": p90_cut,
             "ref_share_above_p90": float(np.mean(ref_p >= p90_cut)),
             "tgt_share_above_p90": float(np.mean(tgt_p >= p90_cut)),
@@ -1963,11 +2087,11 @@ def score_distress_model(result: TrainingResult, frame: pl.DataFrame) -> pl.Data
         probability = np.asarray(
             result.calibrated.predict_proba(matrix)[:, 1], dtype=np.float64
         )
-    tiers = assign_risk_tiers(probability, result.risk_tier_cutoffs)
+    cutoffs = getattr(result, "risk_tier_cutoffs", DEFAULT_RISK_TIER_CUTOFFS)
+    tiers = assign_risk_tiers(probability, cutoffs)
+    raw_prev = float(getattr(result, "train_prevalence", 0.0))
     base_rate_val: float | None = (
-        float(result.train_prevalence)
-        if np.isfinite(result.train_prevalence) and result.train_prevalence > 0.0
-        else None
+        raw_prev if np.isfinite(raw_prev) and raw_prev > 0.0 else None
     )
     if base_rate_val is not None:
         base_rate_col = np.full(frame.height, base_rate_val, dtype=np.float64)

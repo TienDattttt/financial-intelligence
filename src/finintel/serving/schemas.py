@@ -483,7 +483,7 @@ class RatioLineageResponse(BaseModel):
 
 
 class ScreenerItem(BaseModel):
-    """Single issuer row matching ``DashboardQueryService.screen_market()`` (37 columns)."""
+    """Single issuer row matching ``DashboardQueryService.screen_market()`` (41 columns)."""
 
     issuer_id: str
     ticker: str
@@ -855,6 +855,7 @@ class MarketChangeItem(BaseModel):
     risk_tier_prev: RiskTier | str | None = None
     risk_tier_curr: RiskTier | str | None = None
     risk_market_percentile_curr: float | None = None
+    market_base_rate_curr: float | None = None
     relative_risk_lift_curr: float | None = None
     red_flag_count_prev: int
     red_flag_count_curr: int

@@ -3835,6 +3835,7 @@ class DashboardQueryService:
                 else None
             )
             pct_curr = _finite_field(curr_ml, "risk_market_percentile")
+            base_rate_curr = _finite_field(curr_ml, "market_base_rate")
             lift_curr = _finite_field(curr_ml, "relative_risk_lift")
 
             curr_flags = rf_lookup.get((iid, curr_d), set())
@@ -3880,6 +3881,7 @@ class DashboardQueryService:
                     "risk_tier_prev": tier_prev,
                     "risk_tier_curr": tier_curr,
                     "risk_market_percentile_curr": pct_curr,
+                    "market_base_rate_curr": base_rate_curr,
                     "relative_risk_lift_curr": lift_curr,
                     "red_flag_count_prev": len(prev_flags),
                     "red_flag_count_curr": len(curr_flags),
@@ -4034,7 +4036,6 @@ class DashboardQueryService:
                     "altman_zone": pl.String,
                     "beneish_flag": pl.String,
                     "calibrated_distress_prob": pl.Float64,
-                    "risk_tier": pl.String,
                 }
             )
             avail_ml = _available_table_columns(
@@ -4048,7 +4049,6 @@ class DashboardQueryService:
                         "altman_zone",
                         "beneish_flag",
                         "calibrated_distress_prob",
-                        "risk_tier",
                     ),
                     avail_ml,
                 )

@@ -928,6 +928,12 @@ def _train_ml_with_bundle(
             "target_mode": ml_config.target_mode,
             "platt_slope": training.platt_slope,
             "platt_intercept": training.platt_intercept,
+            "risk_tier_cutoffs": {
+                "R2_min_pd": training.risk_tier_cutoffs[0],
+                "R3_min_pd": training.risk_tier_cutoffs[1],
+                "R4_min_pd": training.risk_tier_cutoffs[2],
+                "R5_min_pd": training.risk_tier_cutoffs[3],
+            },
             "f2_thresholds": dict(training.f2_thresholds),
         }
     )
@@ -974,8 +980,17 @@ def _train_ml_with_bundle(
         "feature_set": ml_config.feature_set,
         "peer_standardization_mode": peer_standardization_mode,
         "target_mode": ml_config.target_mode,
+        "oof_strategy": training.oof_strategy,
+        "best_n_estimators": training.best_n_estimators,
+        "train_prevalence": training.train_prevalence,
         "platt_slope": training.platt_slope,
         "platt_intercept": training.platt_intercept,
+        "risk_tier_cutoffs": {
+            "R2_min_pd": training.risk_tier_cutoffs[0],
+            "R3_min_pd": training.risk_tier_cutoffs[1],
+            "R4_min_pd": training.risk_tier_cutoffs[2],
+            "R5_min_pd": training.risk_tier_cutoffs[3],
+        },
         "f2_thresholds": dict(training.f2_thresholds),
         "random_seed": 42,
         "facts_sha256": facts_sha256,
@@ -1466,9 +1481,13 @@ def run_incremental_analytics_transform(
                 )
             else:
                 new_ml = pl.DataFrame(schema=ML_SCORES_SCHEMA)
-            ml_scores = pl.concat([kept_ml, new_ml], how="vertical").sort(
-                list(ML_SCORES_KEY)
+            from finintel.ml.supervised.train import (
+                compute_cross_sectional_risk_percentile,
             )
+
+            ml_scores = compute_cross_sectional_risk_percentile(
+                pl.concat([kept_ml, new_ml], how="vertical")
+            ).sort(list(ML_SCORES_KEY))
             validate_analytics_table(ML_SCORES_TABLE, ml_scores)
             ml_run_manifest = {
                 "cadence_mode": "incremental_score_preserve_prior",

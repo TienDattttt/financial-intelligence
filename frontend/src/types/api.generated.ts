@@ -936,6 +936,8 @@ export interface components {
             risk_tier_curr?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
             /** Risk Market Percentile Curr */
             risk_market_percentile_curr?: number | null;
+            /** Market Base Rate Curr */
+            market_base_rate_curr?: number | null;
             /** Relative Risk Lift Curr */
             relative_risk_lift_curr?: number | null;
             /** Red Flag Count Prev */
