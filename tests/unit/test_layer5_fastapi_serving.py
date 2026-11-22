@@ -970,7 +970,7 @@ def test_20_threads_200_concurrent_requests_and_shutdown_close(
         for r in app.routes
         if isinstance(r, APIRoute) and r.path.startswith("/api/v1/")
     ]
-    assert len(api_routes) == 10
+    assert len(api_routes) == 11
     for route in api_routes:
         assert not inspect.iscoroutinefunction(route.endpoint), (
             f"Route {route.path} must be sync def for DuckDB cursor threadpool safety"
