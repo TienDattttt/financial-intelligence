@@ -1,5 +1,8 @@
 # Tier 1 Production Dagster Instance Configuration (PostgreSQL Storage)
 # Usage: copy or mount into $DAGSTER_HOME/dagster.yaml when running with docker-compose.yml.
+# After starting Postgres, run the bootstrap hook once to seed op concurrency pools
+# (fhsc_api_pool=1, public_disclosure_pool=3) and corporate ticker partitions:
+#   uv run python -m finintel.orchestration.resources --dagster-home config
 storage:
   postgres:
     postgres_db:
@@ -19,3 +22,11 @@ run_coordinator:
   class: QueuedRunCoordinator
   config:
     max_concurrent_runs: 4
+
+concurrency:
+  pools:
+    granularity: "op"
+    default_limit: 4
+
+telemetry:
+  enabled: false

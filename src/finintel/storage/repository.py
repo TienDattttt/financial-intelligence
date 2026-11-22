@@ -32,7 +32,7 @@ from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import duckdb
 import polars as pl
@@ -50,6 +50,9 @@ from finintel.storage.snapshot_publisher import (
     KNOWN_TABLES,
     snapshot_read_lock,
 )
+
+if TYPE_CHECKING:
+    from finintel.config import FinIntelRuntimeConfig
 
 _SCALAR_FILTER_TYPES = (str, bytes, bool, int, float, date, datetime)
 _COLLECTION_FILTER_TYPES = (list, tuple, set, frozenset)
@@ -758,6 +761,22 @@ class ParquetRepository:
         self._session_connection = _session_connection
         self._cached_located_catalog: tuple[Path, Path, Path] | None = None
 
+    @classmethod
+    def from_runtime_config(
+        cls,
+        config: FinIntelRuntimeConfig,
+    ) -> ParquetRepository:
+        """Construct a ``ParquetRepository`` from unified ``FinIntelRuntimeConfig``."""
+        return cls(
+            data_root=config.data_root,
+            catalog_path=config.catalog_sqlite_path,
+            lakehouse_data_path=config.lakehouse_data_path,
+            catalog_alias=config.catalog_alias,
+            catalog_driver=config.catalog_driver,
+            postgres_dsn_env=config.postgres_dsn_env,
+            backend=config.backend,
+        )
+
     def _find_ducklake_catalog(self) -> tuple[Path, Path, Path] | None:
         """Return ``(catalog_path, state_path, lake_data_path)`` if DuckLake is configured or present."""
         cached_loc = self._cached_located_catalog
@@ -770,14 +789,16 @@ class ParquetRepository:
             self._cached_located_catalog = None
 
         if self._catalog_driver == "postgres":
-            state_candidates = (
-                (self._catalog_path.parent / "state.sqlite",)
-                if self._catalog_path is not None
-                else (
+            raw_candidates: list[Path] = []
+            if self._catalog_path is not None:
+                raw_candidates.append(self._catalog_path.parent / "state.sqlite")
+            raw_candidates.extend(
+                [
                     self._source / "metadata" / "state.sqlite",
                     self._source / "data" / "metadata" / "state.sqlite",
-                )
+                ]
             )
+            state_candidates = tuple(dict.fromkeys(raw_candidates))
             for state_path in state_candidates:
                 if state_path.exists():
                     meta_dir = state_path.parent

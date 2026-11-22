@@ -1,6 +1,6 @@
 # FinIntel V2 Tier 1 Production Infrastructure Stack
 # Services:
-#   - postgres:   PostgreSQL 16 (ducklake_catalog + dagster_state databases)
+#   - postgres:   pgvector/pgvector:pg16 (ducklake_catalog + dagster_state + finintel_rag)
 #   - valkey:     Valkey 8 shared L2 response cache across multi-worker Granian API
 #   - prometheus: RED metrics scraper targeting FastAPI /metrics
 #
@@ -13,7 +13,7 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: finintel-postgres
     restart: unless-stopped
     environment:
