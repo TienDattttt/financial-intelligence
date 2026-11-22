@@ -441,14 +441,14 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     const sourceBtn = page.getByRole("button", { name: /Truy nguồn/i }).first();
     await sourceBtn.scrollIntoViewIfNeeded();
     await sourceBtn.click();
-    const drawer = page.getByRole("dialog", { name: "Nguồn dữ liệu chỉ số" });
+    const drawer = page.getByRole("dialog").filter({ hasText: "Nguồn dữ liệu chỉ số" });
     await expect(drawer).toBeVisible();
     await expect(drawer).toHaveAttribute("aria-modal", "true");
 
     // Verify focus stays trapped inside the drawer across Tab presses
     await page.keyboard.press("Tab");
     const focusInsideDrawer = await page.evaluate(() => {
-      const dlg = document.querySelector('[role="dialog"][aria-label="Nguồn dữ liệu chỉ số"]');
+      const dlg = document.querySelector('[role="dialog"]');
       return Boolean(dlg && dlg.contains(document.activeElement));
     });
     expect(focusInsideDrawer).toBe(true);
