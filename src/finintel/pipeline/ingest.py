@@ -18,11 +18,13 @@ Verified Sources:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
 import sqlite3
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field
@@ -507,6 +509,393 @@ def _build_inferred_metadata(
     )
 
 
+_BS_ASSETS_KEYS: tuple[str, ...] = (
+    "tongcongtaisan",
+    "bs_total_assets",
+    "total_assets",
+)
+_BS_EQUITY_KEYS: tuple[str, ...] = (
+    "vonchusohuu",
+    "bs_total_equity",
+    "total_equity",
+)
+_IS_REVENUE_KEYS: tuple[str, ...] = (
+    "doanhthuthuanvebanhangvacungcapdichvu",
+    "doanhthuthuan",
+    "is_revenue",
+    "revenue",
+)
+
+
+def _as_finite_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
+
+
+def _first_finite_metric(
+    row: Mapping[str, object], keys: tuple[str, ...]
+) -> float | None:
+    for key in keys:
+        metric = _as_finite_float(row.get(key))
+        if metric is not None:
+            return metric
+    return None
+
+
+def _rel_close(a: float, b: float, *, rel: float = 1e-5) -> bool:
+    return abs(a - b) <= max(1e-6, rel * max(abs(a), abs(b)))
+
+
+def _month_end_date(cal_year: int, month: int) -> date:
+    if month == 12:
+        return date(cal_year, 12, 31)
+    return date(cal_year, month + 1, 1) - timedelta(days=1)
+
+
+def _quarter_end_date(cal_year: int, cal_quarter: int) -> date:
+    return _month_end_date(cal_year, cal_quarter * 3)
+
+
+def _fy_start_for_end(end_date: date) -> date:
+    if end_date.month == 12:
+        return date(end_date.year, 1, 1)
+    return date(end_date.year - 1, end_date.month + 1, 1)
+
+
+@dataclass(frozen=True)
+class FiscalCalendarProfile:
+    """Resolved fiscal-year calendar profile for an issuer's annual filings."""
+
+    fy_start_month: int
+    fy_end_month: int
+    annual_year_offset: int
+    source: str
+    per_year_end_dates: dict[int, date] = field(default_factory=dict)
+
+
+class _TickerFiscalCalendarTracker:
+    """Auto-detect issuer fiscal year-end from metadata and BS/IS quarter reconciliation."""
+
+    def __init__(
+        self,
+        *,
+        ticker: str,
+        explicit_start_month: int | None = None,
+        issuer_end_month: int | None = None,
+        issuer_year_offset: int | None = None,
+    ) -> None:
+        self.ticker = ticker
+        self._explicit_start_month = explicit_start_month
+        self._issuer_end_month = issuer_end_month
+        self._issuer_year_offset = issuer_year_offset
+        self._q_bs: dict[tuple[int, int], tuple[float, float | None]] = {}
+        self._q_is_rev: dict[tuple[int, int], float] = {}
+        self._a_bs: dict[int, tuple[float, float | None]] = {}
+        self._a_is_rev: dict[int, float] = {}
+        self._matched_years: dict[int, tuple[int, int]] = {}
+
+    def observe_rows(
+        self,
+        statement_type: StatementType,
+        period_type: PeriodType,
+        rows: Sequence[Mapping[str, object]],
+    ) -> None:
+        """Record BS/IS rows from a fetched or cached payload and refresh FY matches."""
+        if statement_type not in (
+            StatementType.BALANCE_SHEET,
+            StatementType.INCOME_STATEMENT,
+        ):
+            return
+        changed = False
+        for row in rows:
+            year = row.get("year")
+            if type(year) is not int or not 1 <= year <= 9999:
+                continue
+            if period_type == PeriodType.QUARTER:
+                quarter = row.get("quarter")
+                if type(quarter) is not int or not 1 <= quarter <= 4:
+                    continue
+                if statement_type == StatementType.BALANCE_SHEET:
+                    assets = _first_finite_metric(row, _BS_ASSETS_KEYS)
+                    if assets is not None:
+                        equity = _first_finite_metric(row, _BS_EQUITY_KEYS)
+                        self._q_bs[(year, quarter)] = (assets, equity)
+                        changed = True
+                else:
+                    revenue = _first_finite_metric(row, _IS_REVENUE_KEYS)
+                    if revenue is not None:
+                        self._q_is_rev[(year, quarter)] = revenue
+                        changed = True
+            elif period_type == PeriodType.ANNUAL:
+                changed |= self._record_annual_metrics(statement_type, year, row)
+        if changed:
+            self._reconcile_annual_years()
+
+    def observe_annual_row(
+        self,
+        statement_type: StatementType,
+        annual_year: int,
+        row: Mapping[str, object],
+    ) -> None:
+        """Record a single annual row prior to metadata construction."""
+        if self._record_annual_metrics(statement_type, annual_year, row):
+            self._reconcile_annual_years()
+
+    def _record_annual_metrics(
+        self,
+        statement_type: StatementType,
+        annual_year: int,
+        row: Mapping[str, object],
+    ) -> bool:
+        if statement_type == StatementType.BALANCE_SHEET:
+            assets = _first_finite_metric(row, _BS_ASSETS_KEYS)
+            if assets is not None:
+                equity = _first_finite_metric(row, _BS_EQUITY_KEYS)
+                self._a_bs[annual_year] = (assets, equity)
+                return True
+        elif statement_type == StatementType.INCOME_STATEMENT:
+            revenue = _first_finite_metric(row, _IS_REVENUE_KEYS)
+            if revenue is not None:
+                self._a_is_rev[annual_year] = revenue
+                return True
+        return False
+
+    def seed_from_archive(self, state: StateStore, raw_root: Path) -> None:
+        """Warm quarter and annual BS/IS tables from previously archived FHSC payloads."""
+        if not state.path.exists() or not raw_root.exists():
+            return
+        resolved_root = raw_root.resolve()
+        try:
+            with state.connection() as conn:
+                rows = conn.execute(
+                    """SELECT DISTINCT statement_type, period_type, raw_archive_path
+                       FROM filings_manifest
+                       WHERE source_provider = 'fhsc'
+                         AND ticker_at_filing = ?
+                         AND statement_type IN ('BALANCE_SHEET', 'INCOME_STATEMENT')
+                         AND period_type IN ('QUARTER', 'ANNUAL')""",
+                    (self.ticker,),
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return
+        for db_row in rows:
+            try:
+                stmt = StatementType(str(db_row["statement_type"]))
+                ptype = PeriodType(str(db_row["period_type"]))
+                rel_path = Path(str(db_row["raw_archive_path"]))
+                if rel_path.is_absolute():
+                    continue
+                payload_path = (resolved_root / rel_path).resolve()
+                if (
+                    not payload_path.is_relative_to(resolved_root)
+                    or not payload_path.is_file()
+                ):
+                    continue
+                body = json.loads(payload_path.read_bytes().decode("utf-8"))
+                if isinstance(body, dict) and isinstance(body.get("data"), list):
+                    raw_rows = [r for r in body["data"] if isinstance(r, Mapping)]
+                    self.observe_rows(stmt, ptype, raw_rows)
+            except (OSError, ValueError, TypeError):
+                continue
+
+    def _trailing_quarter_revenue_sum(
+        self, cal_year: int, cal_quarter: int
+    ) -> float | None:
+        anchor_idx = cal_year * 4 + (cal_quarter - 1)
+        total = 0.0
+        for back in range(4):
+            y_i, q_i0 = divmod(anchor_idx - back, 4)
+            rev = self._q_is_rev.get((y_i, q_i0 + 1))
+            if rev is None:
+                return None
+            total += rev
+        return total
+
+    def _match_year_via_bs(self, annual_year: int) -> tuple[int, int] | None:
+        ann = self._a_bs.get(annual_year)
+        if ann is None:
+            return None
+        ann_assets, ann_equity = ann
+        if ann_assets == 0.0:
+            return None
+        candidates = (
+            (annual_year, 1),
+            (annual_year, 2),
+            (annual_year, 3),
+            (annual_year, 4),
+            (annual_year + 1, 1),
+            (annual_year + 1, 2),
+            (annual_year + 1, 3),
+        )
+        asset_matches = [
+            cand
+            for cand in candidates
+            if cand in self._q_bs and _rel_close(ann_assets, self._q_bs[cand][0])
+        ]
+        if len(asset_matches) == 1:
+            return asset_matches[0]
+        if len(asset_matches) > 1:
+            filtered = asset_matches
+            if ann_equity is not None:
+                eq_matches: list[tuple[int, int]] = []
+                for cand in filtered:
+                    cand_equity = self._q_bs[cand][1]
+                    if cand_equity is not None and _rel_close(ann_equity, cand_equity):
+                        eq_matches.append(cand)
+                if len(eq_matches) == 1:
+                    return eq_matches[0]
+                if eq_matches:
+                    filtered = eq_matches
+            ann_rev = self._a_is_rev.get(annual_year)
+            if ann_rev is not None and ann_rev != 0.0:
+                is_matches: list[tuple[int, int]] = []
+                for cand in filtered:
+                    q_sum = self._trailing_quarter_revenue_sum(cand[0], cand[1])
+                    if q_sum is not None and _rel_close(ann_rev, q_sum):
+                        is_matches.append(cand)
+                if len(is_matches) == 1:
+                    return is_matches[0]
+        return None
+
+    def _match_year_via_is(self, annual_year: int) -> tuple[int, int] | None:
+        ann_rev = self._a_is_rev.get(annual_year)
+        if ann_rev is None or ann_rev == 0.0:
+            return None
+        candidates = (
+            (annual_year, 1),
+            (annual_year, 2),
+            (annual_year, 3),
+            (annual_year, 4),
+            (annual_year + 1, 1),
+            (annual_year + 1, 2),
+            (annual_year + 1, 3),
+        )
+        matches: list[tuple[int, int]] = []
+        for cand in candidates:
+            q_sum = self._trailing_quarter_revenue_sum(cand[0], cand[1])
+            if q_sum is not None and _rel_close(ann_rev, q_sum):
+                matches.append(cand)
+        return matches[0] if len(matches) == 1 else None
+
+    def _reconcile_annual_years(self) -> None:
+        matched: dict[int, tuple[int, int]] = {}
+        for annual_year in sorted(set(self._a_bs) | set(self._a_is_rev)):
+            cand = self._match_year_via_bs(annual_year)
+            if cand is None:
+                cand = self._match_year_via_is(annual_year)
+            if cand is not None:
+                matched[annual_year] = cand
+        self._matched_years = matched
+
+    def profile(self) -> FiscalCalendarProfile:
+        """Compute consensus and per-year FY end dates from observed signals."""
+        if self._explicit_start_month is not None:
+            end_month = (
+                12
+                if self._explicit_start_month == 1
+                else self._explicit_start_month - 1
+            )
+            return FiscalCalendarProfile(
+                fy_start_month=self._explicit_start_month,
+                fy_end_month=end_month,
+                annual_year_offset=0,
+                source="explicit_override",
+                per_year_end_dates={},
+            )
+
+        per_year_end_dates = {
+            ay: _quarter_end_date(cy, cq)
+            for ay, (cy, cq) in sorted(self._matched_years.items())
+        }
+        votes: Counter[tuple[int, int]] = Counter(
+            (cq * 3, cy - ay) for ay, (cy, cq) in self._matched_years.items()
+        )
+        if votes:
+            best_month, best_offset = min(
+                votes,
+                key=lambda key: (
+                    -votes[key],
+                    abs(key[1]),
+                    0 if key[0] == 12 else 1,
+                    -key[0],
+                ),
+            )
+            source = (
+                "auto_detected+issuers_metadata"
+                if self._issuer_end_month == best_month
+                else "auto_detected"
+            )
+        elif self._issuer_end_month is not None:
+            best_month = self._issuer_end_month
+            best_offset = (
+                self._issuer_year_offset if self._issuer_year_offset is not None else 0
+            )
+            source = "issuers_metadata"
+        else:
+            best_month = 12
+            best_offset = 0
+            source = "default_calendar"
+
+        fy_start_month = 1 if best_month == 12 else best_month + 1
+        return FiscalCalendarProfile(
+            fy_start_month=fy_start_month,
+            fy_end_month=best_month,
+            annual_year_offset=best_offset,
+            source=source,
+            per_year_end_dates=per_year_end_dates,
+        )
+
+    def build_annual_metadata(
+        self,
+        *,
+        issuer_id: str,
+        ticker: str,
+        statement_type: StatementType,
+        statement_scope: StatementScope,
+        fiscal_year: int,
+    ) -> FilingMetadata:
+        """Build PIT-accurate ANNUAL FilingMetadata preserving transitional FY windows."""
+        prof = self.profile()
+        end_date = prof.per_year_end_dates.get(fiscal_year) or _month_end_date(
+            fiscal_year + prof.annual_year_offset, prof.fy_end_month
+        )
+        fy_start = _fy_start_for_end(end_date)
+        prior_end = prof.per_year_end_dates.get(fiscal_year - 1)
+        if (
+            prior_end is None
+            and prof.per_year_end_dates
+            and (fiscal_year - 1) not in prof.per_year_end_dates
+            and fiscal_year in prof.per_year_end_dates
+        ):
+            prior_end = _month_end_date(
+                (fiscal_year - 1) + prof.annual_year_offset, prof.fy_end_month
+            )
+        if (
+            prior_end is not None
+            and prior_end.month != end_date.month
+            and 0 < (end_date - prior_end).days <= 370
+        ):
+            fy_start = prior_end + timedelta(days=1)
+
+        return FilingMetadata(
+            issuer_id=issuer_id,
+            ticker_at_filing=ticker,
+            statement_type=statement_type,
+            period_type=PeriodType.ANNUAL,
+            fiscal_year=fiscal_year,
+            fiscal_quarter=None,
+            fiscal_year_start_date=fy_start,
+            period_start_date=fy_start,
+            period_end_date=end_date,
+            statement_scope=statement_scope,
+            published_at=None,
+            audit_status=AuditStatus.UNKNOWN,
+            audit_opinion=AuditOpinion.UNKNOWN,
+        )
+
+
 @dataclass(frozen=True)
 class _DisclosureEnrichmentConfig:
     raw_disclosures_dir: Path | None
@@ -556,6 +945,7 @@ class IngestHandler:
             raise ContractViolationError("as_of_year must be a valid year integer.")
         self._as_of_year = as_of_year
         self._progress: dict[tuple[str, tuple[str, ...]], _IngestProgress] = {}
+        self._fiscal_trackers: dict[str, _TickerFiscalCalendarTracker] = {}
         if "raw_path" in self.settings:
             self._resolve_confined(_text(self.settings, "raw_path"))
         # Validate optional V2 ingestion settings eagerly so security or contract
@@ -752,6 +1142,81 @@ class IngestHandler:
                         resolved[clean] = issuer
         resolved.update(self._explicit_issuer_id_map)
         return resolved
+
+    @property
+    def detected_fiscal_calendars(self) -> dict[str, FiscalCalendarProfile]:
+        """Return resolved fiscal-year calendar profiles observed during ingestion."""
+        return {
+            ticker: tracker.profile()
+            for ticker, tracker in self._fiscal_trackers.items()
+        }
+
+    def _resolve_raw_root(self) -> Path:
+        if "raw_path" in self.settings:
+            return self._resolve_confined(_text(self.settings, "raw_path"))
+        state_parent = self.state.path.parent
+        base_root = (
+            state_parent.parent if state_parent.name == "metadata" else state_parent
+        )
+        return base_root / "raw"
+
+    def _resolve_checkpoint_dir(self) -> Path | None:
+        state_parent = self.state.path.parent
+        if state_parent.is_symlink():
+            return None
+        return state_parent / "fhsc_checkpoints"
+
+    def _load_issuer_calendar_metadata(
+        self,
+    ) -> dict[str, tuple[int | None, int | None]]:
+        if self._issuers_path is None:
+            return {}
+        if not self._issuers_path.is_file():
+            raise ContractViolationError("Configured issuers_path does not exist.")
+        schema = pl.read_parquet_schema(self._issuers_path)
+        end_col = next(
+            (col for col in ("fiscal_year_end_month", "fy_end_month") if col in schema),
+            None,
+        )
+        start_col = next(
+            (
+                col
+                for col in ("fiscal_year_start_month", "fy_start_month")
+                if col in schema
+            ),
+            None,
+        )
+        offset_col = "annual_year_offset" if "annual_year_offset" in schema else None
+        if end_col is None and start_col is None and offset_col is None:
+            return {}
+        read_cols = ["ticker"]
+        for col in (end_col, start_col, offset_col):
+            if col is not None:
+                read_cols.append(col)
+        table = pl.read_parquet(self._issuers_path, columns=read_cols)
+        result: dict[str, tuple[int | None, int | None]] = {}
+        for row in table.iter_rows(named=True):
+            raw_ticker = row.get("ticker")
+            if not isinstance(raw_ticker, str):
+                continue
+            clean_ticker = raw_ticker.strip().upper()
+            if not clean_ticker:
+                continue
+            end_month: int | None = None
+            raw_end = row.get(end_col) if end_col is not None else None
+            if type(raw_end) is int and 1 <= raw_end <= 12:
+                end_month = raw_end
+            elif start_col is not None:
+                raw_start = row.get(start_col)
+                if type(raw_start) is int and 1 <= raw_start <= 12:
+                    end_month = 12 if raw_start == 1 else raw_start - 1
+            offset: int | None = None
+            raw_offset = row.get(offset_col) if offset_col is not None else None
+            if type(raw_offset) is int and raw_offset in {0, 1}:
+                offset = raw_offset
+            if end_month is not None or offset is not None:
+                result[clean_ticker] = (end_month, offset)
+        return result
 
     def _effective_as_of_year(self) -> int:
         if self._as_of_year is not None:
@@ -1066,13 +1531,7 @@ class IngestHandler:
         return summary
 
     def __call__(self, context: StepContext) -> StepOutcome:
-        state_parent = self.state.path.parent
-        root = (
-            state_parent.parent if state_parent.name == "metadata" else state_parent
-        ) / "raw"
-        if "raw_path" in self.settings:
-            root = self._resolve_confined(_text(self.settings, "raw_path"))
-        archive = RawArchive(root, self.state)
+        archive = RawArchive(self._resolve_raw_root(), self.state)
 
         progress_key = (context.run_id, context.tickers)
         progress = self._progress.get(progress_key)
@@ -1178,6 +1637,13 @@ class IngestHandler:
         issuer_id_map = (
             self._load_issuer_id_map() if self._infer_calendar_schedule else {}
         )
+        issuer_cal_map = (
+            self._load_issuer_calendar_metadata()
+            if self._infer_calendar_schedule
+            else {}
+        )
+        raw_root = self._resolve_raw_root()
+        checkpoint_dir = self._resolve_checkpoint_dir()
         period = context.request.period
         year = quarter = None
         periods: tuple[PeriodType, ...] = (PeriodType.QUARTER, PeriodType.ANNUAL)
@@ -1191,6 +1657,8 @@ class IngestHandler:
         )
         for ticker in context.tickers:
             inferred_issuer_id: str | None = None
+            tracker: _TickerFiscalCalendarTracker | None = None
+            explicit_start = self._fiscal_year_overrides.get(ticker)
             if self._infer_calendar_schedule:
                 inferred_issuer_id = issuer_id_map.get(ticker)
                 if inferred_issuer_id is None:
@@ -1198,43 +1666,111 @@ class IngestHandler:
                         f"Missing issuer_id for ticker {ticker!r} with "
                         "infer_calendar_schedule enabled."
                     )
-            fy_start_month = self._fiscal_year_overrides.get(ticker, 1)
+                issuer_end, issuer_offset = issuer_cal_map.get(ticker, (None, None))
+                tracker = _TickerFiscalCalendarTracker(
+                    ticker=ticker,
+                    explicit_start_month=explicit_start,
+                    issuer_end_month=issuer_end,
+                    issuer_year_offset=issuer_offset,
+                )
+                if explicit_start is None:
+                    tracker.seed_from_archive(self.state, raw_root)
+                self._fiscal_trackers[ticker] = tracker
             for statement in StatementType:
                 for period_type in periods:
                     resolver: (
                         Callable[[int, int | None], FilingMetadata | None] | None
                     ) = None
+                    record_resolver: (
+                        Callable[
+                            [int, int | None, Mapping[str, object]],
+                            FilingMetadata | None,
+                        ]
+                        | None
+                    ) = None
+                    page_observer: (
+                        Callable[[Sequence[Mapping[str, object]]], None] | None
+                    ) = None
                     if (
                         self._infer_calendar_schedule
+                        and tracker is not None
                         and inferred_issuer_id is not None
                         and self._default_statement_scope is not None
                     ):
                         scope = self._default_statement_scope
                         issuer_id = inferred_issuer_id
-
-                        def _resolve(
-                            fy: int,
-                            fq: int | None,
-                            *,
-                            _issuer_id: str = issuer_id,
-                            _ticker: str = ticker,
-                            _statement: StatementType = statement,
-                            _period_type: PeriodType = period_type,
-                            _scope: StatementScope = scope,
-                            _fy_start_month: int = fy_start_month,
-                        ) -> FilingMetadata:
-                            return _build_inferred_metadata(
-                                issuer_id=_issuer_id,
-                                ticker=_ticker,
-                                statement_type=_statement,
-                                period_type=_period_type,
-                                statement_scope=_scope,
-                                fy_start_month=_fy_start_month,
-                                fiscal_year=fy,
-                                fiscal_quarter=fq,
+                        active_tracker = tracker
+                        if (
+                            explicit_start is not None
+                            or period_type == PeriodType.QUARTER
+                        ):
+                            fixed_start_month = (
+                                explicit_start if explicit_start is not None else 1
                             )
 
-                        resolver = _resolve
+                            def _resolve(
+                                fy: int,
+                                fq: int | None,
+                                *,
+                                _issuer_id: str = issuer_id,
+                                _ticker: str = ticker,
+                                _statement: StatementType = statement,
+                                _period_type: PeriodType = period_type,
+                                _scope: StatementScope = scope,
+                                _fy_start_month: int = fixed_start_month,
+                            ) -> FilingMetadata:
+                                return _build_inferred_metadata(
+                                    issuer_id=_issuer_id,
+                                    ticker=_ticker,
+                                    statement_type=_statement,
+                                    period_type=_period_type,
+                                    statement_scope=_scope,
+                                    fy_start_month=_fy_start_month,
+                                    fiscal_year=fy,
+                                    fiscal_quarter=fq,
+                                )
+
+                            resolver = _resolve
+                        else:
+
+                            def _resolve_annual(
+                                fy: int,
+                                fq: int | None,
+                                row: Mapping[str, object],
+                                *,
+                                _tracker: _TickerFiscalCalendarTracker = active_tracker,
+                                _issuer_id: str = issuer_id,
+                                _ticker: str = ticker,
+                                _statement: StatementType = statement,
+                                _scope: StatementScope = scope,
+                            ) -> FilingMetadata:
+                                del fq
+                                _tracker.observe_annual_row(_statement, fy, row)
+                                return _tracker.build_annual_metadata(
+                                    issuer_id=_issuer_id,
+                                    ticker=_ticker,
+                                    statement_type=_statement,
+                                    statement_scope=_scope,
+                                    fiscal_year=fy,
+                                )
+
+                            record_resolver = _resolve_annual
+
+                        if explicit_start is None and statement in (
+                            StatementType.BALANCE_SHEET,
+                            StatementType.INCOME_STATEMENT,
+                        ):
+
+                            def _observe_page(
+                                rows: Sequence[Mapping[str, object]],
+                                *,
+                                _tracker: _TickerFiscalCalendarTracker = active_tracker,
+                                _statement: StatementType = statement,
+                                _period_type: PeriodType = period_type,
+                            ) -> None:
+                                _tracker.observe_rows(_statement, _period_type, rows)
+
+                            page_observer = _observe_page
 
                     early_stop_pred: Callable[[tuple[RawFiling, ...]], bool] | None = (
                         None
@@ -1247,6 +1783,13 @@ class IngestHandler:
                             lookback_years=self._incremental_lookback_years,
                         )
 
+                    checkpoint_path: Path | None = None
+                    if checkpoint_dir is not None and year is None and quarter is None:
+                        checkpoint_path = (
+                            checkpoint_dir
+                            / f"{ticker}__{statement.value}__{period_type.value}.json"
+                        )
+
                     yield FhscOapiAdapter(
                         ticker,
                         statement,
@@ -1256,6 +1799,9 @@ class IngestHandler:
                         quarter=quarter,
                         early_stop_predicate=early_stop_pred,
                         metadata_resolver=resolver,
+                        record_metadata_resolver=record_resolver,
+                        page_observer=page_observer,
+                        checkpoint_path=checkpoint_path,
                         sleeper=self._request_sleeper,
                         clock=self._request_clock,
                     )
