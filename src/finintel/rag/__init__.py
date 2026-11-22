@@ -1,0 +1,39 @@
+"""Curated Grounded Document AI / PDF RAG package (UI-08)."""
+
+from finintel.rag.pdf_catalog import (
+    CURATED_PDFS_MANIFEST_SCHEMA,
+    DOC_TYPE_AUDITED_ANNUAL_CONSOLIDATED,
+    CuratedPdfRecord,
+    PdfCandidate,
+    build_manifest_dataframe,
+    compute_sha256,
+    download_curated_pdf,
+    extract_audited_consolidated_annual_candidates,
+    extract_verified_pdf_payload,
+    normalize_cafef_pdf_url,
+    render_curated_pdfs_audit_markdown,
+    select_candidates_for_years,
+    store_immutable_pdf,
+    verify_pdf_bytes,
+    verify_stored_manifest_files,
+    write_manifest_parquet,
+)
+
+__all__ = [
+    "CURATED_PDFS_MANIFEST_SCHEMA",
+    "DOC_TYPE_AUDITED_ANNUAL_CONSOLIDATED",
+    "CuratedPdfRecord",
+    "PdfCandidate",
+    "build_manifest_dataframe",
+    "compute_sha256",
+    "download_curated_pdf",
+    "extract_audited_consolidated_annual_candidates",
+    "extract_verified_pdf_payload",
+    "normalize_cafef_pdf_url",
+    "render_curated_pdfs_audit_markdown",
+    "select_candidates_for_years",
+    "store_immutable_pdf",
+    "verify_pdf_bytes",
+    "verify_stored_manifest_files",
+    "write_manifest_parquet",
+]
