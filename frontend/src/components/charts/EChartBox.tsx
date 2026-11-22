@@ -102,6 +102,27 @@ export function EChartBox({
 
     instance.on("click", handleClick);
 
+    const zr = instance.getZr();
+    const handleZrClick = (event: {
+      target?: unknown;
+      offsetX: number;
+      offsetY: number;
+    }) => {
+      if (event.target || !onClickRef.current) return;
+      const point: [number, number] = [event.offsetX, event.offsetY];
+      try {
+        if (!instance.containPixel("grid", point)) return;
+        const coord = instance.convertFromPixel({ seriesIndex: 0 }, point);
+        const xIdx = Array.isArray(coord) ? Math.round(Number(coord[0])) : NaN;
+        if (Number.isInteger(xIdx) && xIdx >= 0) {
+          onClickRef.current({ dataIndex: xIdx });
+        }
+      } catch {
+        // Non-cartesian charts (e.g. treemap, radar) do not have a grid coordinate system
+      }
+    };
+    zr.on("click", handleZrClick);
+
     const observer = new ResizeObserver(() => {
       instance.resize();
     });
@@ -109,6 +130,7 @@ export function EChartBox({
 
     return () => {
       observer.disconnect();
+      zr.off("click", handleZrClick);
       instance.off("click", handleClick);
       instance.dispose();
       chartRef.current = null;
