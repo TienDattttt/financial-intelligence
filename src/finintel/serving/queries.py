@@ -27,6 +27,7 @@ Architectural invariants:
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import threading
@@ -67,6 +68,7 @@ from finintel.storage.schemas import (
     ISSUERS_SCHEMA,
     ML_SCORES_SCHEMA,
     ML_SCORES_TABLE,
+    MODEL_CARD_META_TABLE,
     QUALITY_SUMMARY_SCHEMA,
     QUALITY_SUMMARY_TABLE,
     RATIOS_TABLE,
@@ -2968,6 +2970,7 @@ class DashboardQueryService:
         period_type: str = "QUARTER",
         period_end_date: date | None = None,
         *,
+        tickers: Sequence[str] | None = None,
         connection: duckdb.DuckDBPyConnection | None = None,
     ) -> pl.DataFrame:
         """Read exact required stress-test inputs and ICB Level 2 sector metadata for one period slice."""
@@ -2975,6 +2978,24 @@ class DashboardQueryService:
             raise ValueError(f"Unsupported statement_scope: {statement_scope!r}")
         if period_type not in PERIOD_TYPES:
             raise ValueError(f"Unsupported period_type: {period_type!r}")
+        target_tickers: tuple[str, ...] | None = (
+            tuple(
+                dict.fromkeys(
+                    t.strip().upper()
+                    for t in tickers
+                    if isinstance(t, str) and t.strip()
+                )
+            )
+            if tickers is not None
+            else None
+        )
+
+        def _filter_tickers(frame: pl.DataFrame) -> pl.DataFrame:
+            if target_tickers is None:
+                return frame
+            if not target_tickers or frame.is_empty():
+                return frame.clear()
+            return frame.filter(pl.col("ticker").is_in(list(target_tickers)))
 
         with self.repository.snapshot_session(connection=connection) as pinned:
             avail_ratio_cols = _available_table_columns(
@@ -3058,7 +3079,7 @@ class DashboardQueryService:
                     cached_inputs = _STRESS_INPUTS_CACHE.get(stress_cache_key)
                     if cached_inputs is not None:
                         _STRESS_INPUTS_CACHE.move_to_end(stress_cache_key)
-                        return cached_inputs.clone()
+                        return _filter_tickers(cached_inputs.clone())
 
             stress_ratio_cols = list(
                 dict.fromkeys(("issuer_id", "ticker", *REQUIRED_STRESS_COLUMNS))
@@ -3074,10 +3095,12 @@ class DashboardQueryService:
                 connection=connection,
             )
             if ratios.is_empty():
-                return ratios.with_columns(
-                    pl.lit(None, dtype=pl.String).alias("company_name_vn"),
-                    pl.lit(None, dtype=pl.String).alias("icb_code_level2"),
-                    pl.lit(None, dtype=pl.String).alias("icb_name_level2"),
+                return _filter_tickers(
+                    ratios.with_columns(
+                        pl.lit(None, dtype=pl.String).alias("company_name_vn"),
+                        pl.lit(None, dtype=pl.String).alias("icb_code_level2"),
+                        pl.lit(None, dtype=pl.String).alias("icb_name_level2"),
+                    )
                 )
 
             issuers = pinned.read_table(
@@ -3098,7 +3121,7 @@ class DashboardQueryService:
                     _STRESS_INPUTS_CACHE[stress_cache_key] = result
                     while len(_STRESS_INPUTS_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _STRESS_INPUTS_CACHE.popitem(last=False)
-            return result.clone()
+            return _filter_tickers(result.clone())
 
     def get_meta_periods_and_sectors(
         self, *, connection: duckdb.DuckDBPyConnection | None = None
@@ -4421,3 +4444,42 @@ class DashboardQueryService:
                 limit=limit,
                 connection=connection,
             )
+
+    def get_model_card(
+        self, *, connection: duckdb.DuckDBPyConnection | None = None
+    ) -> dict[str, Any]:
+        """Read the persisted Model Card exclusively from active snapshot ``model_card_meta`` (H-04)."""
+        with self.repository.snapshot_session(connection=connection) as pinned:
+            avail_cols = _available_table_columns(
+                pinned, MODEL_CARD_META_TABLE, connection=connection
+            )
+            if not avail_cols or "model_card_json" not in avail_cols:
+                raise ValueError(
+                    "Model card metadata was not found in active snapshot."
+                )
+            card_df = pinned.read_table(
+                MODEL_CARD_META_TABLE,
+                columns=["model_card_id", "model_card_json"],
+                connection=connection,
+            )
+            if card_df.is_empty():
+                raise ValueError(
+                    "Model card metadata was not found in active snapshot."
+                )
+            row = card_df.sort("model_card_id").row(0, named=True)
+            raw_json = row.get("model_card_json")
+            if not isinstance(raw_json, str) or not raw_json.strip():
+                raise ContractViolationError(
+                    "Model card metadata table has invalid or empty JSON payload."
+                )
+            try:
+                parsed = json.loads(raw_json)
+            except ValueError as exc:
+                raise ContractViolationError(
+                    "Model card metadata table contains malformed JSON payload."
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ContractViolationError(
+                    "Model card metadata payload must be a JSON object."
+                )
+            return parsed

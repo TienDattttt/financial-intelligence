@@ -4,6 +4,40 @@
  */
 
 export interface paths {
+    "/health/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Health Live */
+        get: operations["get_health_live_health_live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Health Ready */
+        get: operations["get_health_ready_health_ready_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health": {
         parameters: {
             query?: never;
@@ -208,6 +242,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/meta/model-card": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get V2 Meta Model Card */
+        get: operations["get_v2_meta_model_card_api_v2_meta_model_card_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/companies/{ticker}/benchmarks/summary": {
         parameters: {
             query?: never;
@@ -394,6 +445,24 @@ export interface components {
             peer_count: number;
             /** Sparkline */
             sparkline?: (number | null)[];
+        };
+        /**
+         * BootstrapCI95Item
+         * @description Issuer-clustered 95% bootstrap confidence intervals.
+         */
+        BootstrapCI95Item: {
+            /** Roc Auc */
+            roc_auc?: number[] | null;
+            /** Pr Auc */
+            pr_auc?: number[] | null;
+            /** Brier Score */
+            brier_score?: number[] | null;
+            /** Brier Skill Score */
+            brier_skill_score?: number[] | null;
+            /** Recall At Top 5 Percent */
+            recall_at_top_5_percent?: number[] | null;
+            /** Recall At Top 10 Percent */
+            recall_at_top_10_percent?: number[] | null;
         };
         /**
          * CapitalStructurePoint
@@ -702,6 +771,22 @@ export interface components {
             dupont_valid_flag?: boolean | null;
         };
         /**
+         * FeatureDriftItem
+         * @description Single feature PSI and missing-rate delta across TT200 -> TT99.
+         */
+        FeatureDriftItem: {
+            /** Feature */
+            feature: string;
+            /** Psi */
+            psi?: number | null;
+            /** Ref Missing Rate */
+            ref_missing_rate?: number | null;
+            /** Tgt Missing Rate */
+            tgt_missing_rate?: number | null;
+            /** Missing Rate Delta */
+            missing_rate_delta?: number | null;
+        };
+        /**
          * GrowthPoint
          * @description Pre-computed revenue, net income, and CFO time-series point.
          */
@@ -729,7 +814,7 @@ export interface components {
         };
         /**
          * HealthResponse
-         * @description Route 1 response: service liveness and active snapshot binding.
+         * @description Route 1 response: service readiness and active snapshot binding.
          */
         HealthResponse: {
             /**
@@ -741,6 +826,56 @@ export interface components {
             active_snapshot_id: string | null;
             /** Storage Backend */
             storage_backend: string;
+        };
+        /**
+         * HistoricalCaseStudyItem
+         * @description Real Vietnamese corporate distress case study from the 23-feature model (ML-05/ML-07a).
+         */
+        HistoricalCaseStudyItem: {
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Company Name Vn */
+            company_name_vn?: string | null;
+            /** Exchange */
+            exchange?: string | null;
+            /** First Warning Or Control Date */
+            first_warning_or_control_date?: string | null;
+            /** First Warning Event Type */
+            first_warning_event_type?: string | null;
+            /** Forced Delisting Or Suspension Date */
+            forced_delisting_or_suspension_date?: string | null;
+            /** Exchange Delisted From */
+            exchange_delisted_from?: string | null;
+            /** First R4 R5 Period End Date */
+            first_r4_r5_period_end_date?: string | null;
+            /** First R4 R5 Fiscal Year */
+            first_r4_r5_fiscal_year?: number | null;
+            /** First R4 R5 Fiscal Quarter */
+            first_r4_r5_fiscal_quarter?: number | null;
+            /** First R4 R5 Available At */
+            first_r4_r5_available_at?: string | null;
+            /** First R4 R5 Risk Tier */
+            first_r4_r5_risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** First R4 R5 Pd */
+            first_r4_r5_pd?: number | null;
+            /** First R4 R5 Market Percentile */
+            first_r4_r5_market_percentile?: number | null;
+            /** First R4 R5 Lift */
+            first_r4_r5_lift?: number | null;
+            /** Early Warning Lead Quarters */
+            early_warning_lead_quarters?: number | null;
+            /** Early Warning Lead Days */
+            early_warning_lead_days?: number | null;
+            /** Peak Risk Tier */
+            peak_risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** Peak Pd */
+            peak_pd?: number | null;
+            /** Peak Period End Date */
+            peak_period_end_date?: string | null;
+            /** Top 3 Shap Drivers */
+            top_3_shap_drivers?: components["schemas"]["ShapDriverItem"][];
         };
         /**
          * IssuerItem
@@ -829,6 +964,17 @@ export interface components {
             effective_available_at?: string | null;
             /** Canonical Content Sha256 */
             canonical_content_sha256?: string | null;
+        };
+        /**
+         * LivenessResponse
+         * @description Event-loop-only Kubernetes/Docker liveness probe response.
+         */
+        LivenessResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "alive";
         };
         /**
          * MLScoreItem
@@ -998,6 +1144,84 @@ export interface components {
             };
             /** Sectors Level2 */
             sectors_level2: components["schemas"]["SectorOptionItem"][];
+        };
+        /**
+         * ModelCardResponse
+         * @description V2 Meta route response: complete DuckLake-persisted Model Card (ML-08 / H-04).
+         */
+        ModelCardResponse: {
+            /** Snapshot Id */
+            snapshot_id: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version: number;
+            /** Run Id */
+            run_id: string;
+            /** Model Version */
+            model_version: string;
+            /** Model Role */
+            model_role: string;
+            /** Target Mode */
+            target_mode: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Feature Set */
+            feature_set: string;
+            /** Feature Count */
+            feature_count: number;
+            /** Selected Features */
+            selected_features: string[];
+            /** Peer Standardization Mode */
+            peer_standardization_mode: string;
+            /**
+             * Trained As Of
+             * Format: date
+             */
+            trained_as_of: string;
+            /** Generated At */
+            generated_at: string;
+            /** Artifact Sha256 */
+            artifact_sha256: string;
+            /** Platt Slope */
+            platt_slope: number;
+            /** Platt Intercept */
+            platt_intercept: number;
+            /** Train Prevalence */
+            train_prevalence: number;
+            risk_tier_cutoffs: components["schemas"]["RiskTierCutoffsItem"];
+            /** F2 Thresholds */
+            f2_thresholds: {
+                [key: string]: number;
+            };
+            walk_forward: components["schemas"]["WalkForwardReportItem"];
+            risk_tier_reliability: components["schemas"]["RiskTierReliabilityReportItem"];
+            taxonomy_drift_psi: components["schemas"]["TaxonomyDriftPSIItem"];
+            /** Case Studies */
+            case_studies: components["schemas"]["HistoricalCaseStudyItem"][];
+            /** Limitations */
+            limitations: string[];
+        };
+        /**
+         * ModelMetricsItem
+         * @description Standardized evaluation metrics on common OOS samples.
+         */
+        ModelMetricsItem: {
+            /** Roc Auc */
+            roc_auc?: number | null;
+            /** Pr Auc */
+            pr_auc?: number | null;
+            /** Brier Score */
+            brier_score?: number | null;
+            /** Brier Skill Score */
+            brier_skill_score?: number | null;
+            /** F2 Score */
+            f2_score?: number | null;
+            /** Recall At Top 5 Percent */
+            recall_at_top_5_percent?: number | null;
+            /** Recall At Top 10 Percent */
+            recall_at_top_10_percent?: number | null;
         };
         /**
          * PeerBandHistoryPoint
@@ -1197,6 +1421,41 @@ export interface components {
             orphan_filing_ids: string[];
         };
         /**
+         * ReadinessResponse
+         * @description Deep storage & DuckDB readiness probe response (HTTP 200 ready / HTTP 503 unready).
+         */
+        ReadinessResponse: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "unready";
+            /** Active Snapshot Id */
+            active_snapshot_id?: string | null;
+            /**
+             * Storage Backend
+             * @default parquet
+             */
+            storage_backend: string;
+            /**
+             * Duckdb Ok
+             * @default false
+             */
+            duckdb_ok: boolean;
+            /**
+             * Snapshot Readable
+             * @default false
+             */
+            snapshot_readable: boolean;
+            /**
+             * Cache Enabled
+             * @default false
+             */
+            cache_enabled: boolean;
+            /** Detail */
+            detail?: string | null;
+        };
+        /**
          * RedFlagDictionaryItem
          * @description Dictionary definition for one forensic red-flag screening rule.
          */
@@ -1239,8 +1498,53 @@ export interface components {
             filing_id?: string | null;
         };
         /**
+         * RiskTierCutoffsItem
+         * @description Frozen Through-the-Cycle PD boundaries separating R1..R5.
+         */
+        RiskTierCutoffsItem: {
+            /** R2 Min Pd */
+            R2_min_pd: number;
+            /** R3 Min Pd */
+            R3_min_pd: number;
+            /** R4 Min Pd */
+            R4_min_pd: number;
+            /** R5 Min Pd */
+            R5_min_pd: number;
+        };
+        /**
+         * RiskTierReliabilityReportItem
+         * @description Calibration reliability and monotonicity summary across R1..R5.
+         */
+        RiskTierReliabilityReportItem: {
+            /** Evaluation Source */
+            evaluation_source?: string | null;
+            cutoffs: components["schemas"]["RiskTierCutoffsItem"];
+            /** Tiers */
+            tiers: components["schemas"]["RiskTierReliabilityRowItem"][];
+            /** Is Monotone Non Decreasing */
+            is_monotone_non_decreasing: boolean;
+        };
+        /**
+         * RiskTierReliabilityRowItem
+         * @description Empirical event rate and predicted PD for a single risk tier (R1..R5).
+         */
+        RiskTierReliabilityRowItem: {
+            /** Risk Tier */
+            risk_tier: ("R1" | "R2" | "R3" | "R4" | "R5") | string;
+            /** Count */
+            count: number;
+            /** Share */
+            share: number;
+            /** Positive Count */
+            positive_count: number;
+            /** Empirical Event Rate */
+            empirical_event_rate?: number | null;
+            /** Mean Predicted Pd */
+            mean_predicted_pd?: number | null;
+        };
+        /**
          * ScreenerItem
-         * @description Single issuer row matching ``DashboardQueryService.screen_market()`` (37 columns).
+         * @description Single issuer row matching ``DashboardQueryService.screen_market()`` (41 columns).
          */
         ScreenerItem: {
             /** Issuer Id */
@@ -1630,6 +1934,10 @@ export interface components {
              * @default 50
              */
             top_n: number;
+            /** Include All Newly Distressed */
+            include_all_newly_distressed?: boolean | null;
+            /** Tickers */
+            tickers?: string[] | null;
         };
         /**
          * StressSectorSummaryItem
@@ -1689,6 +1997,51 @@ export interface components {
             /** Top Stressed Issuers */
             top_stressed_issuers: components["schemas"]["StressIssuerItem"][];
         };
+        /**
+         * TaxonomyDriftPSIItem
+         * @description Cross-taxonomy stability audit between VAS_TT200_2014 and VAS_TT99_2025 (M-05).
+         */
+        TaxonomyDriftPSIItem: {
+            /** Reference Taxonomy */
+            reference_taxonomy: string;
+            /** Target Taxonomy */
+            target_taxonomy: string;
+            /** Reference Rows */
+            reference_rows: number;
+            /** Target Rows */
+            target_rows: number;
+            /** Mean Feature Psi */
+            mean_feature_psi?: number | null;
+            /** Max Feature Psi */
+            max_feature_psi?: number | null;
+            /** Features Psi Gt 0 25 */
+            features_psi_gt_0_25: string[];
+            /** Mean Ref Missing Rate */
+            mean_ref_missing_rate?: number | null;
+            /** Mean Tgt Missing Rate */
+            mean_tgt_missing_rate?: number | null;
+            score_drift?: components["schemas"]["TaxonomyScoreDriftItem"] | null;
+            /** Feature Drift */
+            feature_drift: components["schemas"]["FeatureDriftItem"][];
+        };
+        /**
+         * TaxonomyScoreDriftItem
+         * @description Score & R4/R5 share drift across TT200 -> TT99 transition.
+         */
+        TaxonomyScoreDriftItem: {
+            /** Score Psi */
+            score_psi?: number | null;
+            /** Ref Mean Pd */
+            ref_mean_pd?: number | null;
+            /** Tgt Mean Pd */
+            tgt_mean_pd?: number | null;
+            /** Ref R4 R5 Share */
+            ref_r4_r5_share?: number | null;
+            /** Tgt R4 R5 Share */
+            tgt_r4_r5_share?: number | null;
+            /** R4 R5 Share Delta */
+            r4_r5_share_delta?: number | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -1702,6 +2055,95 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /**
+         * WalkForwardModelSummaryItem
+         * @description Aggregated yearly mean/std + pooled cluster-bootstrap CI95 for one model.
+         */
+        WalkForwardModelSummaryItem: {
+            /** Model */
+            model: string;
+            /** Yearly Roc Auc Mean */
+            yearly_roc_auc_mean?: number | null;
+            /** Yearly Roc Auc Std */
+            yearly_roc_auc_std?: number | null;
+            /** Yearly Pr Auc Mean */
+            yearly_pr_auc_mean?: number | null;
+            /** Yearly Pr Auc Std */
+            yearly_pr_auc_std?: number | null;
+            /** Yearly Brier Mean */
+            yearly_brier_mean?: number | null;
+            /** Yearly Brier Std */
+            yearly_brier_std?: number | null;
+            /** Yearly Bss Mean */
+            yearly_bss_mean?: number | null;
+            /** Yearly Bss Std */
+            yearly_bss_std?: number | null;
+            /** Yearly Recall Top5 Mean */
+            yearly_recall_top5_mean?: number | null;
+            /** Yearly Recall Top10 Mean */
+            yearly_recall_top10_mean?: number | null;
+            pooled_point: components["schemas"]["ModelMetricsItem"];
+            pooled_ci95: components["schemas"]["BootstrapCI95Item"];
+            /** N Bootstrap Valid */
+            n_bootstrap_valid: number;
+            /** N Clusters */
+            n_clusters: number;
+        };
+        /**
+         * WalkForwardReportItem
+         * @description Complete 2-Way Purged Expanding Walk-Forward report (2021-2025).
+         */
+        WalkForwardReportItem: {
+            /** Test Years */
+            test_years: number[];
+            /** Skipped Years */
+            skipped_years?: number[];
+            /** Pooled Reference Train Prevalence */
+            pooled_reference_train_prevalence?: number | null;
+            /** Per Year */
+            per_year: components["schemas"]["WalkForwardYearItem"][];
+            /** Summary All Oos */
+            summary_all_oos: components["schemas"]["WalkForwardModelSummaryItem"][];
+            /** Summary True Unseen */
+            summary_true_unseen: components["schemas"]["WalkForwardModelSummaryItem"][];
+            pooled_oos_risk_tier_reliability?: components["schemas"]["RiskTierReliabilityReportItem"] | null;
+        };
+        /**
+         * WalkForwardYearItem
+         * @description Single expanding Walk-Forward test year comparison (All OOS & True Unseen Issuers).
+         */
+        WalkForwardYearItem: {
+            /** Year */
+            year: number;
+            /** Train Rows */
+            train_rows: number;
+            /** Train Positive Rows */
+            train_positive_rows: number;
+            /** Train Unique Positive Issuers */
+            train_unique_positive_issuers: number;
+            /** Train Prevalence */
+            train_prevalence?: number | null;
+            /** Test Rows */
+            test_rows: number;
+            /** Test Positive Rows */
+            test_positive_rows: number;
+            /** Test Unique Positive Issuers */
+            test_unique_positive_issuers: number;
+            /** Unseen Rows */
+            unseen_rows: number;
+            /** Unseen Positive Rows */
+            unseen_positive_rows: number;
+            /** Unseen Unique Positive Issuers */
+            unseen_unique_positive_issuers: number;
+            /** Models */
+            models: {
+                [key: string]: components["schemas"]["ModelMetricsItem"];
+            };
+            /** True Unseen Models */
+            true_unseen_models: {
+                [key: string]: components["schemas"]["ModelMetricsItem"];
+            };
+        };
     };
     responses: never;
     parameters: never;
@@ -1711,6 +2153,46 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_health_live_health_live_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LivenessResponse"];
+                };
+            };
+        };
+    };
+    get_health_ready_health_ready_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessResponse"];
+                };
+            };
+        };
+    };
     get_health_api_v1_health_get: {
         parameters: {
             query?: never;
@@ -2120,6 +2602,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MetaDictionaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_v2_meta_model_card_api_v2_meta_model_card_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCardResponse"];
                 };
             };
             /** @description Validation Error */

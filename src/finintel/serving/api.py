@@ -101,6 +101,7 @@ from finintel.serving.schemas import (
     MetaDictionaryResponse,
     MetaPeriodsResponse,
     MLScoreItem,
+    ModelCardResponse,
     PeerBandHistoryPoint,
     PeerRankingItem,
     QualitySummaryItem,
@@ -1224,6 +1225,7 @@ def create_app(
                     statement_scope=payload.statement_scope,
                     period_type=payload.period_type,
                     period_end_date=payload.period_end_date,
+                    tickers=payload.tickers,
                     connection=cursor,
                 )
 
@@ -1560,6 +1562,39 @@ def create_app(
             for rf in RED_FLAG_DICTIONARY
         ]
         body = MetaDictionaryResponse(ratios=ratios, red_flags=red_flags)
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
+
+    @api.get(
+        "/api/v2/meta/model-card",
+        response_model=ModelCardResponse,
+        tags=["v2-meta"],
+    )
+    def get_v2_meta_model_card(
+        request: Request,
+        response: Response,
+        if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+        cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
+        service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
+    ) -> ModelCardResponse | Response:
+        with service.repository.snapshot_session(connection=cursor) as pinned:
+            meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
+            snap_id = _extract_snapshot_id(meta)
+            not_modified = _conditional_not_modified(if_none_match, snap_id)
+            if not_modified is not None:
+                return not_modified
+
+            cache_key, hit = _cached_json_response(cache, snap_id, "v2/meta/model-card")
+            if hit is not None:
+                return hit
+
+            card_payload = DashboardQueryService(pinned).get_model_card(
+                connection=cursor
+            )
+
+        _apply_cache_headers(response, snap_id)
+        body = ModelCardResponse(snapshot_id=snap_id, **card_payload)
         return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     @api.get(
