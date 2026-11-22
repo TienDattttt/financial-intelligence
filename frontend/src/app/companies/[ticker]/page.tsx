@@ -12,8 +12,10 @@ import {
   Printer,
   ShieldAlert,
 } from "lucide-react";
+import { CapitalStructureChart } from "@/components/charts/CapitalStructureChart";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
 import { ExplainWaterfallChart } from "@/components/charts/ExplainWaterfallChart";
+import { GrowthComboChart } from "@/components/charts/GrowthComboChart";
 import { PeerBandChart } from "@/components/charts/PeerBandChart";
 import { FinancialTable } from "@/components/financial/FinancialTable";
 import { PercentileBar } from "@/components/financial/PercentileBar";
@@ -152,12 +154,21 @@ function CompanyProfileContent() {
 
   const [showAll38, setShowAll38] = React.useState(false);
   const [trafficMode, setTrafficMode] = React.useState<"VALUE" | "PERCENTILE">("VALUE");
+  const [growthLocalView, setGrowthLocalView] = React.useState<"TTM" | "Quarterly">("TTM");
   const [statementType, setStatementType] =
     React.useState<StatementType>("INCOME_STATEMENT");
   const [periodsLimit, setPeriodsLimit] = React.useState<number>(8);
   const [lineageFilter, setLineageFilter] = React.useState("");
 
+  const effectiveGrowthView = periodType === "ANNUAL" ? "Annual" : growthLocalView;
+
   const profileQuery = useCompanyProfile(ticker, statementScope, periodView, snapshotId);
+  const growthProfileQuery = useCompanyProfile(
+    ticker,
+    statementScope,
+    effectiveGrowthView,
+    snapshotId,
+  );
   const dictQuery = useMetaDictionary(snapshotId);
   const issuersQuery = useAllIssuers(snapshotId);
   const filingsQuery = useCompanyFilings(ticker, { statementScope }, snapshotId);
@@ -812,6 +823,30 @@ function CompanyProfileContent() {
                 </CardContent>
               </Card>
             </div>
+          </section>
+
+          {/* Tier 2b: Core Financial Visual Storytelling (Growth + Capital Structure) */}
+          <section
+            aria-label="Diễn biến tăng trưởng và cơ cấu vốn"
+            className="grid grid-cols-1 gap-4 xl:grid-cols-2"
+          >
+            <GrowthComboChart
+              ticker={profile.ticker}
+              points={
+                growthProfileQuery.data?.growth_series ?? profile.growth_series
+              }
+              globalPeriodType={periodType}
+              localPeriodView={effectiveGrowthView}
+              onChangeLocalPeriodView={setGrowthLocalView}
+              isLoading={
+                growthProfileQuery.isLoading && !growthProfileQuery.data
+              }
+            />
+            <CapitalStructureChart
+              ticker={profile.ticker}
+              points={profile.capital_structure_series}
+              periodType={periodType}
+            />
           </section>
 
           {/* Tier 3: Stockopedia-style Traffic Light Peer Benchmark Table */}

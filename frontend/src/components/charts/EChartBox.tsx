@@ -2,10 +2,10 @@
 
 import * as React from "react";
 import * as echarts from "echarts";
-import { BarChart3, Table2 } from "lucide-react";
+import { BarChart3, Download, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { applyChartThemeDefaults, useChartTheme } from "@/lib/echarts-theme";
+import { applyChartThemeDefaults, getChartPalette, useChartTheme } from "@/lib/echarts-theme";
 import { cn } from "@/lib/utils";
 
 export type EChartsOption = echarts.EChartsOption;
@@ -15,6 +15,19 @@ export interface ChartClickPayload {
   dataIndex?: number;
   seriesName?: string;
   data?: unknown;
+}
+
+export function buildSafeExportFilename(title: string): string {
+  const base = title
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return `${base || "finintel-chart"}.png`;
 }
 
 export function EChartBox({
@@ -29,6 +42,8 @@ export function EChartBox({
   onChartClick,
   emptyMessage = "Chưa có dữ liệu biểu đồ cho lát cắt này.",
   isEmpty = false,
+  enableExportPng = true,
+  enableTableToggle = true,
   className,
 }: {
   title: string;
@@ -42,6 +57,8 @@ export function EChartBox({
   onChartClick?: (params: ChartClickPayload) => void;
   emptyMessage?: string;
   isEmpty?: boolean;
+  enableExportPng?: boolean;
+  enableTableToggle?: boolean;
   className?: string;
 }) {
   const [showTable, setShowTable] = React.useState(false);
@@ -103,6 +120,23 @@ export function EChartBox({
     chartRef.current.setOption(themedOption, { notMerge: true });
   }, [themedOption, showTable, isEmpty]);
 
+  const handleExportPng = React.useCallback(() => {
+    const instance = chartRef.current;
+    if (!instance || showTable || isEmpty) return;
+    const palette = getChartPalette(theme);
+    const dataUrl = instance.getDataURL({
+      type: "png",
+      pixelRatio: 2,
+      backgroundColor: palette.surface,
+    });
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = buildSafeExportFilename(title);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, [isEmpty, showTable, theme, title]);
+
   return (
     <Card className={cn("overflow-hidden rounded-lg shadow-xs transition-colors duration-150", className)}>
       <CardHeader className="flex-wrap gap-2 py-2.5">
@@ -112,9 +146,9 @@ export function EChartBox({
             <p className="mt-0.5 text-xs text-ink-muted">{subtitle}</p>
           ) : null}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           {headerRight}
-          {!isEmpty ? (
+          {!isEmpty && enableTableToggle ? (
             <Button
               type="button"
               variant="outline"
@@ -133,6 +167,24 @@ export function EChartBox({
                   <span>Xem dạng bảng</span>
                 </>
               )}
+            </Button>
+          ) : null}
+          {!isEmpty && enableExportPng ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={handleExportPng}
+              disabled={showTable}
+              title={
+                showTable
+                  ? "Chuyển về chế độ biểu đồ để xuất ảnh PNG"
+                  : "Tải xuống biểu đồ dạng ảnh PNG"
+              }
+              aria-label={`Xuất PNG: ${title}`}
+            >
+              <Download className="size-3" />
+              <span>Xuất PNG</span>
             </Button>
           ) : null}
         </div>
