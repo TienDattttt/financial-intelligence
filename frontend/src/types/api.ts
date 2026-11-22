@@ -60,6 +60,13 @@ export type FeatureDriftItem = Schema["FeatureDriftItem"];
 export type TaxonomyDriftPSIItem = Schema["TaxonomyDriftPSIItem"];
 export type HistoricalCaseStudyItem = Schema["HistoricalCaseStudyItem"];
 export type ModelCardResponse = Schema["ModelCardResponse"];
+export type DrawdownWindowMetricsItem = Schema["DrawdownWindowMetricsItem"];
+export type MarkerDrawdownBundleItem = Schema["MarkerDrawdownBundleItem"];
+export type ModelRiskMarkerItem = Schema["ModelRiskMarkerItem"];
+export type RegulatoryEventMarkerItem = Schema["RegulatoryEventMarkerItem"];
+export type PriceOverlayPointItem = Schema["PriceOverlayPointItem"];
+export type WarningSummaryItem = Schema["WarningSummaryItem"];
+export type CompanyMarketOverlayResponse = Schema["CompanyMarketOverlayResponse"];
 
 export type StatementScope = CompanyBenchmarksResponse["statement_scope"];
 export type PeriodType = CompanyBenchmarksResponse["period_type"];

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Download, Plus, X } from "lucide-react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
+import { RiskTierBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
@@ -12,6 +13,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/primitives";
 import { useAllIssuers, useCompareCompanies } from "@/hooks/use-finintel-queries";
 import {
+  formatCreditTrio,
+  getRiskTierMeta,
   PERIOD_TYPE_LABELS,
   selectMlScoreForPeriod,
   STATEMENT_SCOPE_LABELS,
@@ -291,8 +294,34 @@ function CompareContent() {
       ),
     ]);
     rows.push([
-      "Xác suất kiệt quệ",
+      "Bậc tín nhiệm (R1–R5)",
+      ...matrixData.latestMl.map((m) => getRiskTierMeta(m?.risk_tier).shortLabel),
+    ]);
+    rows.push([
+      "Vị thế rủi ro cùng kỳ",
+      ...matrixData.latestMl.map(
+        (m) =>
+          formatCreditTrio({
+            risk_tier: m?.risk_tier,
+            risk_market_percentile: m?.risk_market_percentile,
+            calibrated_distress_prob: m?.calibrated_distress_prob,
+            relative_risk_lift: m?.relative_risk_lift,
+            market_base_rate: m?.market_base_rate,
+          }).topPercentLabel,
+      ),
+    ]);
+    rows.push([
+      "Xác suất kiệt quệ 1 năm (1Y PD)",
       ...matrixData.latestMl.map((m) => formatPercent(m?.calibrated_distress_prob)),
+    ]);
+    rows.push([
+      "Hệ số rủi ro so nền thị trường",
+      ...matrixData.latestMl.map(
+        (m) =>
+          formatCreditTrio({
+            relative_risk_lift: m?.relative_risk_lift,
+          }).liftLabel ?? "N/A",
+      ),
     ]);
 
     for (const [metricName, meta] of matrixData.ratioList.entries()) {
@@ -570,13 +599,64 @@ function CompareContent() {
                         scope="row"
                         className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
                       >
-                        Xác suất kiệt quệ (Mô hình)
+                        Bậc tín nhiệm (R1–R5)
                       </th>
                       {matrixData.latestMl.map((m, i) => (
-                        <td key={tickers[i]} className="num px-3 py-2 text-right font-medium">
-                          {formatPercent(m?.calibrated_distress_prob)}
+                        <td key={tickers[i]} className="px-3 py-2 text-right">
+                          <div className="flex justify-end">
+                            <RiskTierBadge riskTier={m?.risk_tier} />
+                          </div>
                         </td>
                       ))}
+                    </tr>
+                    <tr className="border-b border-border/60">
+                      <th
+                        scope="row"
+                        className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
+                      >
+                        Vị thế rủi ro cùng kỳ (PIT)
+                      </th>
+                      {matrixData.latestMl.map((m, i) => {
+                        const trio = formatCreditTrio({
+                          risk_tier: m?.risk_tier,
+                          risk_market_percentile: m?.risk_market_percentile,
+                          calibrated_distress_prob: m?.calibrated_distress_prob,
+                          relative_risk_lift: m?.relative_risk_lift,
+                          market_base_rate: m?.market_base_rate,
+                        });
+                        return (
+                          <td key={tickers[i]} className="num px-3 py-2 text-right text-ink-muted">
+                            {trio.topPercentLabel}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                    <tr className="border-b border-border/60">
+                      <th
+                        scope="row"
+                        className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
+                      >
+                        Xác suất kiệt quệ 1 năm (1Y PD · × nền)
+                      </th>
+                      {matrixData.latestMl.map((m, i) => {
+                        const trio = formatCreditTrio({
+                          risk_tier: m?.risk_tier,
+                          risk_market_percentile: m?.risk_market_percentile,
+                          calibrated_distress_prob: m?.calibrated_distress_prob,
+                          relative_risk_lift: m?.relative_risk_lift,
+                          market_base_rate: m?.market_base_rate,
+                        });
+                        return (
+                          <td key={tickers[i]} className="num px-3 py-2 text-right font-medium">
+                            <span>{trio.pdLabel}</span>
+                            {trio.liftLabel ? (
+                              <span className="ml-1.5 text-[11px] font-normal text-ink-muted">
+                                ({trio.liftLabel})
+                              </span>
+                            ) : null}
+                          </td>
+                        );
+                      })}
                     </tr>
                     <tr className="border-b border-border bg-surface-muted/30">
                       <th

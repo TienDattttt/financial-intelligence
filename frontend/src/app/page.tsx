@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Plus, ShieldAlert } from "lucide-react";
 import { SectorTreemapChart } from "@/components/charts/SectorTreemapChart";
-import { RiskBadge } from "@/components/financial/RiskBadge";
+import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,8 @@ import {
 } from "@/hooks/use-finintel-queries";
 import {
   ALTMAN_ZONE_META,
-  getDistressRiskBadge,
+  formatCreditTrio,
+  getRiskTierMeta,
   PERIOD_TYPE_LABELS,
   STATEMENT_SCOPE_LABELS,
 } from "@/lib/domain-labels";
@@ -334,10 +335,13 @@ export default function MarketOverviewPage() {
                         Ngành
                       </th>
                       <th scope="col" className="px-3 py-2 text-left font-semibold">
+                        Bậc tín nhiệm
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">
                         Chuyển vùng Altman
                       </th>
                       <th scope="col" className="px-3 py-2 text-right font-semibold">
-                        Biến động XS kiệt quệ
+                        1Y PD (Biến động)
                       </th>
                       <th scope="col" className="px-3 py-2 text-right font-semibold">
                         Cờ đỏ mới
@@ -352,6 +356,14 @@ export default function MarketOverviewPage() {
                       const currMeta = row.altman_zone_curr
                         ? ALTMAN_ZONE_META[row.altman_zone_curr]
                         : null;
+                      const prevTier = getRiskTierMeta(row.risk_tier_prev);
+                      const trio = formatCreditTrio({
+                        risk_tier: row.risk_tier_curr,
+                        risk_market_percentile: row.risk_market_percentile_curr,
+                        calibrated_distress_prob: row.distress_prob_curr,
+                        relative_risk_lift: row.relative_risk_lift_curr,
+                        market_base_rate: row.market_base_rate_curr,
+                      });
                       return (
                         <tr
                           key={row.issuer_id}
@@ -365,8 +377,23 @@ export default function MarketOverviewPage() {
                               {row.ticker}
                             </Link>
                           </td>
-                          <td className="max-w-[160px] truncate px-3 py-2 text-ink-muted">
+                          <td className="max-w-[140px] truncate px-3 py-2 text-ink-muted">
                             {row.icb_name_level2 ?? "—"}
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex flex-wrap items-center gap-1">
+                              {prevTier.tier ? (
+                                <span className="font-mono text-[11px] text-ink-muted">
+                                  {prevTier.badgeText} →
+                                </span>
+                              ) : null}
+                              <RiskTierBadge riskTier={row.risk_tier_curr} compact />
+                            </div>
+                            {trio.topPercent !== null ? (
+                              <div className="mt-0.5 text-[10px] text-ink-subtle">
+                                {trio.topPercentLabel}
+                              </div>
+                            ) : null}
                           </td>
                           <td className="px-3 py-2">
                             <div className="flex flex-wrap items-center gap-1">
@@ -380,18 +407,23 @@ export default function MarketOverviewPage() {
                             </div>
                           </td>
                           <td className="num px-3 py-2 text-right">
-                            <span
-                              className={
-                                (row.distress_prob_delta ?? 0) > 0.005
-                                  ? "font-medium text-risk-high"
-                                  : "text-ink"
-                              }
-                            >
-                              {formatPercentPoints(row.distress_prob_delta, 1)}
-                            </span>
-                            <span className="ml-1 text-[11px] text-ink-subtle">
-                              ({formatPercent(row.distress_prob_curr)})
-                            </span>
+                            <div>
+                              <span
+                                className={
+                                  (row.distress_prob_delta ?? 0) > 0.005
+                                    ? "font-medium text-risk-high"
+                                    : "text-ink"
+                                }
+                              >
+                                {formatPercent(row.distress_prob_curr)}
+                              </span>
+                              <span className="ml-1 text-[11px] text-ink-subtle">
+                                ({formatPercentPoints(row.distress_prob_delta, 1)})
+                              </span>
+                            </div>
+                            {trio.liftLabel ? (
+                              <div className="text-[10px] text-ink-muted">{trio.liftLabel}</div>
+                            ) : null}
                           </td>
                           <td className="num px-3 py-2 text-right">
                             {row.new_red_flag_codes.length > 0 ? (
@@ -468,10 +500,10 @@ export default function MarketOverviewPage() {
                         Mã
                       </th>
                       <th scope="col" className="px-2.5 py-2 text-left font-semibold">
-                        Mức độ rủi ro
+                        Bậc &amp; Vị thế
                       </th>
                       <th scope="col" className="px-2.5 py-2 text-right font-semibold">
-                        XS kiệt quệ
+                        1Y PD (× nền)
                       </th>
                       <th scope="col" className="px-2.5 py-2 text-right font-semibold">
                         Cờ đỏ
@@ -480,7 +512,13 @@ export default function MarketOverviewPage() {
                   </thead>
                   <tbody>
                     {(watchlistChanges.data?.items ?? []).map((item) => {
-                      const badge = getDistressRiskBadge(item.distress_prob_curr);
+                      const trio = formatCreditTrio({
+                        risk_tier: item.risk_tier_curr,
+                        risk_market_percentile: item.risk_market_percentile_curr,
+                        calibrated_distress_prob: item.distress_prob_curr,
+                        relative_risk_lift: item.relative_risk_lift_curr,
+                        market_base_rate: item.market_base_rate_curr,
+                      });
                       return (
                         <tr
                           key={item.ticker}
@@ -495,10 +533,20 @@ export default function MarketOverviewPage() {
                             </Link>
                           </td>
                           <td className="px-2.5 py-2">
-                            <RiskBadge tone={badge.tone} label={badge.shortLabel} />
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <RiskTierBadge riskTier={item.risk_tier_curr} compact />
+                              {trio.topPercent !== null ? (
+                                <span className="text-[11px] text-ink-muted">
+                                  {trio.topPercentLabel}
+                                </span>
+                              ) : null}
+                            </div>
                           </td>
                           <td className="num px-2.5 py-2 text-right">
-                            {formatPercent(item.distress_prob_curr)}
+                            <div className="font-medium text-ink">{trio.pdLabel}</div>
+                            {trio.liftLabel ? (
+                              <div className="text-[10px] text-ink-muted">{trio.liftLabel}</div>
+                            ) : null}
                           </td>
                           <td className="num px-2.5 py-2 text-right">
                             {item.red_flag_count_curr}

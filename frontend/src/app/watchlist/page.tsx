@@ -3,14 +3,20 @@
 import * as React from "react";
 import Link from "next/link";
 import { Download, GitCompare, Plus, Trash2, Upload } from "lucide-react";
-import { RiskBadge } from "@/components/financial/RiskBadge";
+import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/primitives";
 import { useAllIssuers, useMarketChanges } from "@/hooks/use-finintel-queries";
-import { ALTMAN_ZONE_META, PERIOD_TYPE_LABELS, STATEMENT_SCOPE_LABELS } from "@/lib/domain-labels";
+import {
+  ALTMAN_ZONE_META,
+  formatCreditTrio,
+  getRiskTierMeta,
+  PERIOD_TYPE_LABELS,
+  STATEMENT_SCOPE_LABELS,
+} from "@/lib/domain-labels";
 import {
   formatPeriodLabel,
   formatPercent,
@@ -236,10 +242,13 @@ export default function WatchlistPage() {
                       Kỳ so sánh
                     </th>
                     <th scope="col" className="px-3 py-2 text-left font-semibold">
+                      Bậc tín nhiệm &amp; Vị thế
+                    </th>
+                    <th scope="col" className="px-3 py-2 text-left font-semibold">
                       Chuyển vùng Altman
                     </th>
                     <th scope="col" className="px-3 py-2 text-right font-semibold">
-                      XS kiệt quệ (Trước → Nay)
+                      1Y PD (Trước → Nay · × nền)
                     </th>
                     <th scope="col" className="px-3 py-2 text-right font-semibold">
                       Biến động
@@ -261,7 +270,7 @@ export default function WatchlistPage() {
                           <td className="px-3 py-2 font-mono font-semibold text-accent-ink">
                             <Link href={`/companies/${ticker}`}>{ticker}</Link>
                           </td>
-                          <td colSpan={6} className="px-3 py-2 text-ink-subtle">
+                          <td colSpan={7} className="px-3 py-2 text-ink-subtle">
                             Không có đủ dữ liệu cho phạm vi/loại kỳ đang chọn.
                           </td>
                           <td className="px-3 py-2 text-right">
@@ -285,6 +294,14 @@ export default function WatchlistPage() {
                     const currMeta = row.altman_zone_curr
                       ? ALTMAN_ZONE_META[row.altman_zone_curr]
                       : null;
+                    const prevTier = getRiskTierMeta(row.risk_tier_prev);
+                    const trio = formatCreditTrio({
+                      risk_tier: row.risk_tier_curr,
+                      risk_market_percentile: row.risk_market_percentile_curr,
+                      calibrated_distress_prob: row.distress_prob_curr,
+                      relative_risk_lift: row.relative_risk_lift_curr,
+                      market_base_rate: row.market_base_rate_curr,
+                    });
 
                     return (
                       <tr
@@ -315,6 +332,21 @@ export default function WatchlistPage() {
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap items-center gap-1">
+                            {prevTier.tier ? (
+                              <span className="font-mono text-[11px] text-ink-muted">
+                                {prevTier.badgeText} →
+                              </span>
+                            ) : null}
+                            <RiskTierBadge riskTier={row.risk_tier_curr} compact />
+                          </div>
+                          {trio.topPercent !== null ? (
+                            <div className="mt-0.5 text-[11px] text-ink-muted">
+                              {trio.topPercentLabel}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap items-center gap-1">
                             <span className="text-ink-muted">
                               {prevMeta?.shortLabel ?? "N/A"} →
                             </span>
@@ -325,10 +357,15 @@ export default function WatchlistPage() {
                           </div>
                         </td>
                         <td className="num px-3 py-2 text-right">
-                          {formatPercent(row.distress_prob_prev)} →{" "}
-                          <strong className="text-ink">
-                            {formatPercent(row.distress_prob_curr)}
-                          </strong>
+                          <div>
+                            {formatPercent(row.distress_prob_prev)} →{" "}
+                            <strong className="text-ink">
+                              {formatPercent(row.distress_prob_curr)}
+                            </strong>
+                          </div>
+                          {trio.liftLabel ? (
+                            <div className="text-[11px] text-ink-muted">{trio.liftLabel}</div>
+                          ) : null}
                         </td>
                         <td className="num px-3 py-2 text-right">
                           <span

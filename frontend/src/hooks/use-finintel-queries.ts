@@ -50,6 +50,14 @@ export function useMetaDictionary(snapshotId?: string | null) {
   });
 }
 
+export function useModelCard(snapshotId?: string | null) {
+  return useQuery({
+    queryKey: ["model-card", snapshotId ?? "latest"],
+    queryFn: apiClient.getModelCard,
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}
+
 export function useAllIssuers(snapshotId?: string | null) {
   return useQuery({
     queryKey: ["all-issuers", snapshotId ?? "latest"],
@@ -217,6 +225,28 @@ export function useCompanyFilings(
         statement_scope: opts?.statementScope,
       }),
     enabled: (opts?.enabled ?? true) && cleanTicker.length > 0,
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}
+
+export function useCompanyMarketOverlay(
+  ticker: string,
+  statementScope: StatementScope = "CONSOLIDATED",
+  snapshotId?: string | null,
+  asOf?: string | null,
+) {
+  const cleanTicker = ticker.trim().toUpperCase();
+  return useQuery({
+    queryKey: [
+      "company-market-overlay",
+      snapshotId ?? "latest",
+      cleanTicker,
+      statementScope,
+      asOf ?? "latest",
+    ],
+    queryFn: () =>
+      apiClient.getCompanyMarketOverlay(cleanTicker, statementScope, asOf),
+    enabled: cleanTicker.length > 0,
     staleTime: SNAPSHOT_STALE_MS,
   });
 }

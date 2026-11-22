@@ -9,6 +9,7 @@ export function VerdictCard({
   title,
   tooltip,
   value,
+  subValueText,
   tone,
   badgeLabel,
   thresholdText,
@@ -21,6 +22,7 @@ export function VerdictCard({
   title: string;
   tooltip: string;
   value: string;
+  subValueText?: string | null;
   tone: RiskTone;
   badgeLabel: string;
   thresholdText: string;
@@ -49,9 +51,16 @@ export function VerdictCard({
         </div>
 
         <div className="mt-2 flex items-baseline justify-between gap-2">
-          <span className="num text-[26px] font-semibold leading-8 tracking-tight text-ink">
-            {value}
-          </span>
+          <div className="flex items-baseline gap-1.5">
+            <span className="num text-[26px] font-semibold leading-8 tracking-tight text-ink">
+              {value}
+            </span>
+            {subValueText ? (
+              <span className="num rounded bg-surface-muted px-1.5 py-0.5 text-[11px] font-medium text-ink-muted">
+                {subValueText}
+              </span>
+            ) : null}
+          </div>
           {deltaText ? (
             <span className={cn("num text-xs font-medium", deltaColor)}>
               {deltaText}

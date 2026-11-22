@@ -1104,3 +1104,116 @@ class ModelCardResponse(BaseModel):
     taxonomy_drift_psi: TaxonomyDriftPSIItem
     case_studies: list[HistoricalCaseStudyItem]
     limitations: list[str]
+
+
+DrawdownHorizonKey = Literal["T+30d", "T+90d", "T+180d", "T+365d"]
+
+
+class DrawdownWindowMetricsItem(BaseModel):
+    """Peak/trough prices and percentage drawdowns over a post-warning window (UI-09b)."""
+
+    start_trade_date: date
+    end_trade_date: date
+    target_end_date: date
+    session_count: int
+    base_close_adj: float
+    peak_close_adj: float
+    peak_date: date
+    trough_close_adj: float
+    trough_date: date
+    end_close_adj: float
+    return_pct: float
+    drawdown_from_marker_pct: float
+    max_peak_to_trough_drawdown_pct: float
+
+
+class MarkerDrawdownBundleItem(BaseModel):
+    """Post-warning drawdown metrics across standard horizons and cutoff bounds."""
+
+    horizons: dict[DrawdownHorizonKey, DrawdownWindowMetricsItem | None]
+    to_first_regulatory_event: DrawdownWindowMetricsItem | None = None
+    to_current: DrawdownWindowMetricsItem | None = None
+
+
+class ModelRiskMarkerItem(BaseModel):
+    """PIT marker for first model upgrade to R4 or R5."""
+
+    marker_type: Literal["MODEL_RISK_TIER"]
+    marker_kind: Literal["FIRST_R4_UPGRADE", "FIRST_R5_UPGRADE"]
+    risk_tier: Literal["R4", "R5"]
+    is_first_r4_or_r5: bool
+    disclosure_date: date
+    date_basis: Literal["PIT_DISCLOSURE", "PERIOD_END_FALLBACK"]
+    aligned_trade_date: date | None = None
+    period_end_date: date
+    close_adj_at_marker: float | None = None
+    close_raw_at_marker: float | None = None
+    calibrated_distress_prob: float | None = None
+    risk_market_percentile: float | None = None
+    relative_risk_lift: float | None = None
+    drawdowns: MarkerDrawdownBundleItem | None = None
+
+
+class RegulatoryEventMarkerItem(BaseModel):
+    """PIT marker for a real regulatory distress or audit sanction event."""
+
+    marker_type: Literal["REGULATORY_EVENT"]
+    event_type: str
+    event_stage: str
+    event_date: date
+    effective_from: date
+    resolution_date: date | None = None
+    aligned_trade_date: date | None = None
+    close_adj_at_marker: float | None = None
+    close_raw_at_marker: float | None = None
+    raw_headline: str
+    source_provider: str
+    source_url: str
+    drawdowns: MarkerDrawdownBundleItem | None = None
+
+
+class PriceOverlayPointItem(BaseModel):
+    """Single daily point on the continuous Price & Risk Event Overlay series."""
+
+    trade_date: date
+    close_adj: float
+    close_raw: float
+    volume: float
+    shares_outstanding_market: float | None = None
+    running_drawdown_pct: float
+    drawdown_from_first_warning_pct: float | None = None
+    market_cap_vnd: float | None = None
+    pe_ttm: float | None = None
+    pb_ratio: float | None = None
+    pe_flag: str | None = None
+    pb_flag: str | None = None
+    shares_source: str | None = None
+
+
+class WarningSummaryItem(BaseModel):
+    """Summary anchored at the earliest warning marker (model R4/R5 or regulatory)."""
+
+    warning_source: Literal["MODEL_RISK_TIER", "REGULATORY_EVENT"]
+    warning_label: str
+    warning_date: date
+    aligned_trade_date: date | None = None
+    base_close_adj: float | None = None
+    latest_trade_date: date | None = None
+    latest_close_adj: float | None = None
+    horizons: dict[DrawdownHorizonKey, DrawdownWindowMetricsItem | None]
+    to_first_regulatory_event: DrawdownWindowMetricsItem | None = None
+    to_current: DrawdownWindowMetricsItem | None = None
+
+
+class CompanyMarketOverlayResponse(BaseModel):
+    """V2 Company route response: PIT valuation & Price/Risk Event Overlay (UI-09b)."""
+
+    snapshot_id: str | None = None
+    issuer_id: str
+    ticker: str
+    as_of: date | None = None
+    latest_valuation: PriceOverlayPointItem | None = None
+    price_series: list[PriceOverlayPointItem]
+    model_markers: list[ModelRiskMarkerItem]
+    regulatory_markers: list[RegulatoryEventMarkerItem]
+    earliest_warning_summary: WarningSummaryItem | None = None

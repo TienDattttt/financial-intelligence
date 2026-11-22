@@ -1,6 +1,6 @@
 import { AlertTriangle, CheckCircle2, MinusCircle, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/primitives";
-import type { RiskTone } from "@/lib/domain-labels";
+import { getRiskTierMeta, type RiskTone } from "@/lib/domain-labels";
 import { cn } from "@/lib/utils";
 
 const TONE_STYLES: Record<RiskTone, string> = {
@@ -33,5 +33,24 @@ export function RiskBadge({
       <Icon className="size-3 shrink-0" aria-hidden="true" />
       <span>{label}</span>
     </Badge>
+  );
+}
+
+export function RiskTierBadge({
+  riskTier,
+  compact = false,
+  className,
+}: {
+  riskTier: string | null | undefined;
+  compact?: boolean;
+  className?: string;
+}) {
+  const meta = getRiskTierMeta(riskTier);
+  return (
+    <RiskBadge
+      tone={meta.tone}
+      label={compact ? meta.badgeText : meta.shortLabel}
+      className={cn("font-mono", className)}
+    />
   );
 }

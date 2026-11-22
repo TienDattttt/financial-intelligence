@@ -1,3 +1,4 @@
+import type { CompanyMarketOverlayResponse } from "@/lib/market-overlay-types";
 import type {
   AuditQuarantinePageResponse,
   CompanyBenchmarksResponse,
@@ -10,6 +11,7 @@ import type {
   MarketChangesResponse,
   MetaDictionaryResponse,
   MetaPeriodsResponse,
+  ModelCardResponse,
   PeriodType,
   PeriodView,
   QualitySummaryPageResponse,
@@ -118,6 +120,9 @@ export const apiClient = {
   getMetaDictionary: () =>
     requestJson<MetaDictionaryResponse>("/api/v2/meta/dictionary"),
 
+  getModelCard: () =>
+    requestJson<ModelCardResponse>("/api/v2/meta/model-card"),
+
   getCompanyProfile: (
     ticker: string,
     opts?: { statement_scope?: StatementScope; period_view?: PeriodView },
@@ -198,6 +203,18 @@ export const apiClient = {
       buildUrl(`/api/v2/companies/${encodeURIComponent(ticker.toUpperCase())}/filings`, {
         statement_scope: opts?.statement_scope,
         limit: opts?.limit ?? 100,
+      }),
+    ),
+
+  getCompanyMarketOverlay: (
+    ticker: string,
+    statementScope?: StatementScope,
+    asOf?: string | null,
+  ) =>
+    requestJson<CompanyMarketOverlayResponse>(
+      buildUrl(`/api/v2/companies/${encodeURIComponent(ticker.toUpperCase())}/market-overlay`, {
+        statement_scope: statementScope,
+        as_of: asOf,
       }),
     ),
 

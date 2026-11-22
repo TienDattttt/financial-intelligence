@@ -1,15 +1,160 @@
 /**
  * Domain label mappings from backend technical enums to clean Vietnamese financial terminology
- * per PRODUCT.md §8.
+ * per PRODUCT.md §8 and DESIGN.md §2.6.
  */
 
+import { formatNumber, formatPercent } from "@/lib/format";
+
 export type RiskTone = "low" | "mid" | "high" | "neutral";
+export type CreditRiskTier = "R1" | "R2" | "R3" | "R4" | "R5";
 
 export interface EnumDisplayMeta {
   label: string;
   shortLabel: string;
   tone: RiskTone;
   description: string;
+}
+
+export interface RiskTierDisplayMeta extends EnumDisplayMeta {
+  tier: CreditRiskTier;
+  badgeText: string;
+  rankOrder: number;
+}
+
+export const RISK_TIER_ORDER: readonly CreditRiskTier[] = ["R1", "R2", "R3", "R4", "R5"];
+
+export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
+  R1: {
+    tier: "R1",
+    badgeText: "R1",
+    label: "R1 · Rủi ro rất thấp",
+    shortLabel: "R1 · Rất thấp",
+    tone: "low",
+    rankOrder: 1,
+    description:
+      "Bậc tín nhiệm R1 (chuẩn toàn chu kỳ TTC): xác suất kiệt quệ 1 năm nằm ở vùng an toàn nhất.",
+  },
+  R2: {
+    tier: "R2",
+    badgeText: "R2",
+    label: "R2 · Rủi ro thấp",
+    shortLabel: "R2 · Thấp",
+    tone: "low",
+    rankOrder: 2,
+    description:
+      "Bậc tín nhiệm R2 (chuẩn toàn chu kỳ TTC): rủi ro thấp, cấu trúc tài chính duy trì ổn định.",
+  },
+  R3: {
+    tier: "R3",
+    badgeText: "R3",
+    label: "R3 · Rủi ro trung bình",
+    shortLabel: "R3 · Trung bình",
+    tone: "mid",
+    rankOrder: 3,
+    description:
+      "Bậc tín nhiệm R3 (chuẩn toàn chu kỳ TTC): mức trung bình, cần theo dõi xu hướng đòn bẩy và dòng tiền.",
+  },
+  R4: {
+    tier: "R4",
+    badgeText: "R4",
+    label: "R4 · Rủi ro cao",
+    shortLabel: "R4 · Cao",
+    tone: "high",
+    rankOrder: 4,
+    description:
+      "Bậc tín nhiệm R4 (chuẩn toàn chu kỳ TTC): cảnh báo sớm rủi ro cao, cần rà soát cờ đỏ kế toán và thanh khoản.",
+  },
+  R5: {
+    tier: "R5",
+    badgeText: "R5",
+    label: "R5 · Rủi ro rất cao",
+    shortLabel: "R5 · Rất cao",
+    tone: "high",
+    rankOrder: 5,
+    description:
+      "Bậc tín nhiệm R5 (chuẩn toàn chu kỳ TTC): vùng căng thẳng tài chính nghiêm trọng, rủi ro kiệt quệ rất cao.",
+  },
+};
+
+export function isCreditRiskTier(value: string | null | undefined): value is CreditRiskTier {
+  return value === "R1" || value === "R2" || value === "R3" || value === "R4" || value === "R5";
+}
+
+export function getRiskTierMeta(tier: string | null | undefined): EnumDisplayMeta & {
+  tier: CreditRiskTier | null;
+  badgeText: string;
+  rankOrder: number;
+} {
+  if (isCreditRiskTier(tier)) {
+    return RISK_TIER_META[tier];
+  }
+  return {
+    tier: null,
+    badgeText: "N/A",
+    label: "Chưa xếp bậc",
+    shortLabel: "Chưa xếp bậc",
+    tone: "neutral",
+    rankOrder: 0,
+    description: "Chưa có dữ liệu xếp bậc tín nhiệm R1–R5 cho kỳ hoặc phạm vi báo cáo này.",
+  };
+}
+
+export interface CreditTrioDisplay {
+  tierMeta: ReturnType<typeof getRiskTierMeta>;
+  topPercent: number | null;
+  topPercentLabel: string;
+  pdLabel: string;
+  liftLabel: string | null;
+  baseRateLabel: string | null;
+  compactSummary: string;
+}
+
+export function formatCreditTrio(input: {
+  risk_tier?: string | null;
+  risk_market_percentile?: number | null;
+  calibrated_distress_prob?: number | null;
+  relative_risk_lift?: number | null;
+  market_base_rate?: number | null;
+}): CreditTrioDisplay {
+  const tierMeta = getRiskTierMeta(input.risk_tier);
+  const pct = input.risk_market_percentile;
+  const validPct = typeof pct === "number" && Number.isFinite(pct);
+  const topPercent = validPct
+    ? Math.max(0.1, 100 - Math.min(100, Math.max(0, pct)))
+    : null;
+  const topPercentLabel =
+    topPercent !== null
+      ? `Top ${formatNumber(topPercent, topPercent < 10 ? 1 : 0)}% rủi ro nhất`
+      : "Chưa có vị thế kỳ";
+  const pdLabel = formatPercent(input.calibrated_distress_prob);
+  const lift = input.relative_risk_lift;
+  const liftLabel =
+    typeof lift === "number" && Number.isFinite(lift)
+      ? `${formatNumber(lift, 1)}× nền`
+      : null;
+  const baseRate = input.market_base_rate;
+  const baseRateLabel =
+    typeof baseRate === "number" && Number.isFinite(baseRate)
+      ? `Mức nền thị trường ${formatPercent(baseRate)}`
+      : null;
+
+  const compactSummary = [
+    tierMeta.tier ? tierMeta.badgeText : null,
+    topPercent !== null ? topPercentLabel : null,
+    liftLabel,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+
+  return {
+    tierMeta,
+    topPercent,
+    topPercentLabel,
+    pdLabel,
+    liftLabel,
+    baseRateLabel,
+    compactSummary: compactSummary || "Chưa đủ dữ liệu đánh giá",
+  };
 }
 
 export const ALTMAN_ZONE_META: Record<string, EnumDisplayMeta> = {
@@ -172,7 +317,17 @@ export const RATIO_CATEGORY_LABELS: Record<string, string> = {
   FORENSIC: "Chất lượng lợi nhuận & Điều tra",
 };
 
-export function getDistressRiskBadge(prob: number | null | undefined): EnumDisplayMeta {
+/**
+ * @deprecated Use `getRiskTierMeta` + `formatCreditTrio` (R1–R5 TTC + Top X% PIT + 1Y PD × nền).
+ * Retained temporarily without hardcoded cutoffs solely for unmerged parallel branches.
+ */
+export function getDistressRiskBadge(
+  prob: number | null | undefined,
+  riskTier?: string | null,
+): EnumDisplayMeta {
+  if (isCreditRiskTier(riskTier)) {
+    return RISK_TIER_META[riskTier];
+  }
   if (prob === null || prob === undefined || !Number.isFinite(prob)) {
     return {
       label: "Chưa đánh giá",
@@ -181,28 +336,249 @@ export function getDistressRiskBadge(prob: number | null | undefined): EnumDispl
       description: "Không áp dụng mô hình cho nhóm ngành/kỳ này.",
     };
   }
-  if (prob < 0.03) {
-    return {
-      label: "Rủi ro thấp",
-      shortLabel: "Thấp",
-      tone: "low",
-      description: "Xác suất kiệt quệ đã hiệu chỉnh nằm trong nhóm an toàn.",
-    };
-  }
-  if (prob < 0.08) {
-    return {
-      label: "Cần theo dõi",
-      shortLabel: "Trung bình",
-      tone: "mid",
-      description: "Xác suất kiệt quệ ở mức trung bình — cần xem các yếu tố SHAP.",
-    };
-  }
   return {
-    label: "Rủi ro cao",
-    shortLabel: "Cao",
-    tone: "high",
-    description: "Xác suất kiệt quệ cao đáng kể so với mặt bằng chung.",
+    label: `1Y PD ${formatPercent(prob)}`,
+    shortLabel: formatPercent(prob),
+    tone: "neutral",
+    description: "Xác suất kiệt quệ 1 năm đã hiệu chỉnh theo mô hình; xem bậc tín nhiệm R1–R5.",
   };
+}
+
+export interface ValuationFlagDisplayMeta {
+  label: string;
+  explanation: string;
+  isValid: boolean;
+}
+
+export const VALUATION_FLAG_META: Record<string, ValuationFlagDisplayMeta> = {
+  VALID: {
+    label: "Hợp lệ",
+    explanation: "Định giá Point-in-Time hợp lệ từ giá đóng cửa chưa điều chỉnh và BCTC đã công bố.",
+    isValid: true,
+  },
+  NEGATIVE_EARNINGS: {
+    label: "Lợi nhuận âm",
+    explanation:
+      "Không áp dụng P/E do lợi nhuận sau thuế công ty mẹ 4 quý gần nhất âm hoặc bằng 0.",
+    isValid: false,
+  },
+  NEGATIVE_EQUITY: {
+    label: "VCSH âm",
+    explanation: "Không áp dụng P/B do vốn chủ sở hữu công ty mẹ âm hoặc bằng 0.",
+    isValid: false,
+  },
+  MISSING_EARNINGS: {
+    label: "Thiếu dữ liệu lợi nhuận",
+    explanation: "Chưa có dữ liệu lợi nhuận sau thuế công ty mẹ 4 quý gần nhất tại ngày giao dịch.",
+    isValid: false,
+  },
+  MISSING_EQUITY: {
+    label: "Thiếu dữ liệu VCSH",
+    explanation: "Chưa có dữ liệu vốn chủ sở hữu công ty mẹ tại ngày giao dịch.",
+    isValid: false,
+  },
+  MISSING_SHARES: {
+    label: "Thiếu số lượng cổ phiếu",
+    explanation: "Chưa có dữ liệu số cổ phiếu lưu hành hợp lệ tại ngày giao dịch.",
+    isValid: false,
+  },
+};
+
+export function getValuationFlagMeta(flag: string | null | undefined): ValuationFlagDisplayMeta {
+  if (!flag) {
+    return {
+      label: "Chưa có dữ liệu",
+      explanation: "Chưa ghi nhận dữ liệu định giá tại thời điểm này.",
+      isValid: false,
+    };
+  }
+  return (
+    VALUATION_FLAG_META[flag] ?? {
+      label: "Không áp dụng",
+      explanation: "Không đủ điều kiện tính chỉ số định giá tại thời điểm giao dịch.",
+      isValid: false,
+    }
+  );
+}
+
+export const SHARES_SOURCE_LABELS: Record<string, string> = {
+  ESTIMATED_SHARES_OUTSTANDING: "Số CP ước tính từ vốn góp phổ thông trên BCTC",
+  BS_ORDINARY_SHARES_EXPLICIT_ZERO_TREASURY: "Vốn góp cổ phiếu phổ thông (không có cổ phiếu quỹ)",
+  BS_ORDINARY_SHARES_NULL_TREASURY_ASSUMED_ZERO:
+    "Vốn góp cổ phiếu phổ thông (cổ phiếu quỹ mặc định 0)",
+  SHARES_OUTSTANDING_MARKET: "Số cổ phiếu lưu hành thực tế trên thị trường",
+  MISSING_SHARES: "Thiếu dữ liệu số cổ phiếu lưu hành",
+};
+
+export function formatSharesSourceLabel(source: string | null | undefined): string {
+  if (!source) return "Dữ liệu cổ phiếu lưu hành Point-in-Time";
+  return SHARES_SOURCE_LABELS[source] ?? "Dữ liệu cổ phiếu lưu hành Point-in-Time";
+}
+
+export const DATE_BASIS_LABELS: Record<string, string> = {
+  PIT_DISCLOSURE: "Ngày công bố BCTC thực tế",
+  PERIOD_END_FALLBACK: "Ngày kết thúc kỳ báo cáo",
+};
+
+export function formatDateBasisLabel(basis: string | null | undefined): string {
+  if (!basis) return "Ngày công bố dữ liệu";
+  return DATE_BASIS_LABELS[basis] ?? "Ngày công bố dữ liệu";
+}
+
+export const REGULATORY_EVENT_TYPE_META: Record<
+  string,
+  { label: string; shortLabel: string; tone: RiskTone }
+> = {
+  CONTROL: {
+    label: "Cảnh báo / Kiểm soát",
+    shortLabel: "Kiểm soát",
+    tone: "mid",
+  },
+  TRADING_RESTRICTION: {
+    label: "Hạn chế giao dịch",
+    shortLabel: "Hạn chế GD",
+    tone: "high",
+  },
+  SUSPENSION: {
+    label: "Đình chỉ giao dịch",
+    shortLabel: "Đình chỉ",
+    tone: "high",
+  },
+  FORCED_DELISTING: {
+    label: "Hủy niêm yết bắt buộc",
+    shortLabel: "Hủy niêm yết",
+    tone: "high",
+  },
+  ADVERSE_OR_DISCLAIMER_AUDIT: {
+    label: "Kiểm toán trái ngược / Từ chối",
+    shortLabel: "Ý kiến kiểm toán",
+    tone: "high",
+  },
+};
+
+export function formatRegulatoryEventType(eventType: string | null | undefined): {
+  label: string;
+  shortLabel: string;
+  tone: RiskTone;
+} {
+  if (!eventType) {
+    return { label: "Sự kiện giám sát", shortLabel: "Giám sát", tone: "mid" };
+  }
+  return (
+    REGULATORY_EVENT_TYPE_META[eventType] ?? {
+      label: "Sự kiện giám sát thị trường",
+      shortLabel: "Giám sát",
+      tone: "mid",
+    }
+  );
+}
+
+export const REGULATORY_EVENT_STAGE_LABELS: Record<string, string> = {
+  FIRST_ENTRY: "Lần đầu áp dụng",
+  ESCALATION: "Nâng mức chế tài",
+};
+
+export function formatRegulatoryEventStage(stage: string | null | undefined): string {
+  if (!stage) return "Ghi nhận sự kiện";
+  return REGULATORY_EVENT_STAGE_LABELS[stage] ?? "Ghi nhận sự kiện";
+}
+
+export const MODEL_COMPARISON_LABELS: Record<string, string> = {
+  Baseline_1_AltmanZ: "Altman Z″ (Hiệu chỉnh)",
+  Baseline_2_Logit: "Logit / Shumway",
+  XGBoost: "XGBoost (Đơn điệu + Platt)",
+};
+
+export function formatModelDisplayName(modelKey: string | null | undefined): string {
+  if (!modelKey) return "Mô hình định lượng";
+  return MODEL_COMPARISON_LABELS[modelKey] ?? "Mô hình định lượng";
+}
+
+export const EVALUATION_SOURCE_LABELS: Record<string, string> = {
+  WALK_FORWARD_POOLED_OOS: "Kiểm định cuốn chiếu ngoài mẫu (Walk-Forward 2021–2025)",
+  OUT_OF_SAMPLE_TEST: "Tập kiểm thử ngoài mẫu",
+  INNER_OOF_CALIBRATION: "Hiệu chuẩn chéo ngoài mẫu nội bộ",
+};
+
+export function formatEvaluationSourceLabel(source: string | null | undefined): string {
+  if (!source) return "Kiểm định ngoài mẫu";
+  return EVALUATION_SOURCE_LABELS[source] ?? "Kiểm định ngoài mẫu";
+}
+
+export const PEER_STANDARDIZATION_LABELS: Record<string, string> = {
+  MARKET_ONLY_BEFORE_2026:
+    "Chuẩn hóa toàn thị trường phi tài chính (do trước 2026 chưa có lịch sử phân ngành theo năm)",
+  SECTOR_Z_SCORE: "Chuẩn hóa Z-Score theo phân ngành ICB cùng kỳ",
+  HYBRID: "Chuẩn hóa kết hợp theo ngành ICB và toàn thị trường",
+};
+
+export function formatPeerStandardizationMode(mode: string | null | undefined): string {
+  if (!mode) return "Chuẩn hóa thống kê cùng kỳ công bố";
+  return PEER_STANDARDIZATION_LABELS[mode] ?? "Chuẩn hóa thống kê cùng kỳ công bố";
+}
+
+export const TARGET_MODE_LABELS: Record<string, string> = {
+  REGULATORY_DISTRESS: "Biến cố kiểm soát, hạn chế/đình chỉ giao dịch, hủy niêm yết hoặc kiểm toán ngoại trừ nặng (12 tháng)",
+};
+
+export function formatTargetModeLabel(mode: string | null | undefined): string {
+  if (!mode) return "Biến cố căng thẳng tài chính 12 tháng";
+  return TARGET_MODE_LABELS[mode] ?? "Biến cố căng thẳng tài chính 12 tháng";
+}
+
+export const ML_FEATURE_LABELS: Record<string, string> = {
+  roa: "Tỷ suất sinh lời trên tài sản (ROA)",
+  roe_parent: "ROE công ty mẹ",
+  roic: "Tỷ suất sinh lời trên vốn đầu tư (ROIC)",
+  ebit_margin: "Biên lợi nhuận hoạt động (EBIT)",
+  current_ratio: "Hệ số thanh toán hiện hành",
+  quick_ratio: "Hệ số thanh toán nhanh",
+  cash_ratio: "Hệ số thanh toán tiền mặt",
+  interest_coverage: "Khả năng thanh toán lãi vay (EBIT / Lãi vay)",
+  ocf_to_current_liabilities: "CFO / Nợ ngắn hạn",
+  fcf_to_revenue: "Dòng tiền tự do / Doanh thu",
+  altman_z_double_prime: "Điểm Altman Z″ (Thị trường mới nổi)",
+  piotroski_f_score: "Điểm Piotroski F-Score",
+  liabilities_to_assets: "Nợ phải trả / Tổng tài sản",
+  financial_debt_to_assets: "Nợ vay tài chính / Tổng tài sản",
+  debt_to_equity: "Nợ vay / Vốn chủ sở hữu",
+  net_debt_to_ebitda: "Nợ vay ròng / EBITDA",
+  accruals_to_assets: "Chênh lệch dồn tích / Tổng tài sản",
+  asset_turnover: "Vòng quay tổng tài sản",
+  cash_conversion_cycle: "Chu kỳ chuyển hóa tiền mặt (CCC)",
+  revenue_growth_yoy: "Tăng trưởng doanh thu thuần (YoY)",
+  cross_sectional_asset_size_pct: "Phân vị quy mô tổng tài sản cùng kỳ",
+  overdue_or_late_count_4q: "Số kỳ nộp trễ BCTC trong 4 quý gần nhất",
+  consecutive_loss_quarters: "Số quý lỗ sau thuế liên tiếp",
+  sector_z_asset_turnover: "Vòng quay tổng tài sản (chuẩn hóa cùng kỳ)",
+  sector_z_ebit_margin: "Biên EBIT (chuẩn hóa cùng kỳ)",
+  sector_z_cash_conversion_cycle: "Chu kỳ tiền mặt CCC (chuẩn hóa cùng kỳ)",
+  sector_z_debt_to_equity: "Nợ vay / VCSH (chuẩn hóa cùng kỳ)",
+  delta_roa_4q: "Biến động ROA 4 quý",
+  delta_liabilities_to_assets_4q: "Biến động Nợ / Tổng tài sản 4 quý",
+  delta_current_ratio_4q: "Biến động thanh toán hiện hành 4 quý",
+};
+
+export function getMlFeatureLabel(feature: string | null | undefined): string {
+  if (!feature) return "Chỉ tiêu định lượng";
+  return ML_FEATURE_LABELS[feature] ?? "Chỉ tiêu định lượng mô hình";
+}
+
+export function sanitizeModelLimitationText(raw: string): string {
+  return raw
+    .replace(/\(\s*CORPORATE\s*\)/gi, "(doanh nghiệp phi tài chính)")
+    .replace(/\bCORPORATE\b/g, "doanh nghiệp phi tài chính")
+    .replace(
+      /\bMARKET_ONLY_BEFORE_2026\b/g,
+      PEER_STANDARDIZATION_LABELS.MARKET_ONLY_BEFORE_2026,
+    )
+    .replace(/\bSECTOR_Z_SCORE\b/g, PEER_STANDARDIZATION_LABELS.SECTOR_Z_SCORE)
+    .replace(/\brevision_no\s*=\s*1\b/gi, "phiên bản đơn kỳ ban đầu")
+    .replace(/\bVAS_TT200_2014\b/g, "TT200/2014")
+    .replace(/\bVAS_TT99_2025\b/g, "TT99/2025")
+    .replace(/\bREGIME_FALLBACK\b/g, "toàn thị trường cùng chuẩn mực")
+    .replace(/\bissuer_id\b/g, "mã doanh nghiệp")
+    .replace(/\.parquet\b/gi, "");
 }
 
 export const STATEMENT_METRIC_LABELS: Record<string, string> = {

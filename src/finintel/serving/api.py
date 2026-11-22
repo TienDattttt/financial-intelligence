@@ -21,6 +21,8 @@ Verified Sources:
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 import math
 import os
@@ -86,6 +88,7 @@ from finintel.serving.schemas import (
     CompanyBenchmarksSummaryResponse,
     CompanyFilingItem,
     CompanyFilingsResponse,
+    CompanyMarketOverlayResponse,
     CompanyProfileResponse,
     CompanyStatementsResponse,
     CoreEarningsPoint,
@@ -225,6 +228,37 @@ def _frame_to_records(df: pl.DataFrame) -> list[dict[str, Any]]:
     if df.is_empty():
         return []
     return _finite_frame(df).to_dicts()
+
+
+_CSV_FORMULA_PREFIXES: tuple[str, ...] = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _sanitize_csv_cell(value: object) -> str | int | float:
+    """Apply OWASP CSV formula injection guard while preserving numeric negatives."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else ""
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value)
+    if text.startswith(_CSV_FORMULA_PREFIXES):
+        return f"'{text}"
+    return text
+
+
+def _dataframe_to_safe_csv_bytes(df: pl.DataFrame) -> bytes:
+    """Serialize a Polars DataFrame to UTF-8 BOM CSV with OWASP formula sanitization."""
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerow(df.columns)
+    for row in df.rows():
+        writer.writerow([_sanitize_csv_cell(cell) for cell in row])
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
 
 def _extract_snapshot_id(meta: dict[str, object]) -> str | None:
@@ -1180,6 +1214,80 @@ def create_app(
         return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     # ------------------------------------------------------------------
+    # Route 7b: GET /api/v1/screener/export (UI-05a full CSV export)
+    # ------------------------------------------------------------------
+    @api.get(
+        "/api/v1/screener/export",
+        tags=["screener"],
+        responses={
+            200: {
+                "content": {"text/csv; charset=utf-8": {}},
+                "description": "Full filtered screener dataset as UTF-8 BOM CSV.",
+            }
+        },
+    )
+    def export_screener_csv(
+        request: Request,
+        period_type: PeriodType = Query("QUARTER"),
+        period_end_date: date | None = Query(None),
+        statement_scope: StatementScope = Query("CONSOLIDATED"),
+        icb_code_level2: str | None = Query(None, pattern=_ICB_CODE_PATTERN),
+        min_f_score: int | None = Query(None, ge=0, le=9),
+        altman_zone: AltmanZone | None = Query(None),
+        risk_tier: RiskTier | None = Query(None),
+        beneish_flag: BeneishFlag | None = Query(None),
+        max_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
+        min_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
+        max_red_flags: int | None = Query(None, ge=0),
+        min_red_flags: int | None = Query(None, ge=0),
+        q: str | None = Query(None, max_length=80),
+        sort_by: ScreenerSortField = Query("calibrated_distress_prob"),
+        sort_dir: SortDirection = Query("desc"),
+        if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+        cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
+        service: DashboardQueryService = Depends(get_query_service),
+    ) -> Response:
+        with service.repository.snapshot_session(connection=cursor) as pinned:
+            meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
+            snap_id = _extract_snapshot_id(meta)
+            not_modified = _conditional_not_modified(if_none_match, snap_id)
+            if not_modified is not None:
+                return not_modified
+
+            full_df = DashboardQueryService(pinned).export_screener(
+                period_type=period_type,
+                period_end_date=period_end_date,
+                statement_scope=statement_scope,
+                icb_code_level2=icb_code_level2,
+                min_f_score=min_f_score,
+                altman_zone=altman_zone,
+                risk_tier=risk_tier,
+                beneish_flag=beneish_flag,
+                max_distress_prob=max_distress_prob,
+                min_distress_prob=min_distress_prob,
+                max_red_flags=max_red_flags,
+                min_red_flags=min_red_flags,
+                q=q,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                connection=cursor,
+            )
+
+        csv_bytes = _dataframe_to_safe_csv_bytes(full_df)
+        headers: dict[str, str] = {
+            "Content-Disposition": 'attachment; filename="finintel-screener.csv"',
+            "Cache-Control": CACHE_CONTROL_HEADER,
+        }
+        if snap_id is not None:
+            headers["ETag"] = _format_etag(snap_id)
+        return Response(
+            content=csv_bytes,
+            media_type="text/csv; charset=utf-8",
+            headers=headers,
+        )
+
+    # ------------------------------------------------------------------
     # Route 8: POST /api/v1/stress-test (event-loop bulkhead via StressBulkheadMiddleware)
     # ------------------------------------------------------------------
     @api.post(
@@ -1781,6 +1889,56 @@ def create_app(
             issuer_id=issuer_id,
             items=[CompanyFilingItem(**item) for item in items],  # type: ignore[arg-type]
         )
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
+
+    @api.get(
+        "/api/v2/companies/{ticker}/market-overlay",
+        response_model=CompanyMarketOverlayResponse,
+        tags=["v2-companies"],
+    )
+    def get_v2_company_market_overlay(
+        request: Request,
+        response: Response,
+        ticker: str = PathParam(..., pattern=_TICKER_PATTERN),
+        statement_scope: StatementScope = Query("CONSOLIDATED"),
+        as_of: date | None = Query(None),
+        if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+        cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
+        service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
+    ) -> CompanyMarketOverlayResponse | Response:
+        clean_ticker = ticker.strip().upper()
+        with service.repository.snapshot_session(connection=cursor) as pinned:
+            meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
+            snap_id = _extract_snapshot_id(meta)
+            not_modified = _conditional_not_modified(if_none_match, snap_id)
+            if not_modified is not None:
+                return not_modified
+
+            cache_key, hit = _cached_json_response(
+                cache,
+                snap_id,
+                "v2/companies/market-overlay",
+                {
+                    "ticker": clean_ticker,
+                    "statement_scope": statement_scope,
+                    "as_of": as_of.isoformat() if as_of is not None else None,
+                },
+            )
+            if hit is not None:
+                return hit
+
+            overlay_payload = DashboardQueryService(pinned).get_company_market_overlay(
+                clean_ticker,
+                statement_scope=statement_scope,
+                as_of=as_of,
+                port_data_root=service.repository._source,
+                connection=cursor,
+            )
+
+        _apply_cache_headers(response, snap_id)
+        body = CompanyMarketOverlayResponse(snapshot_id=snap_id, **overlay_payload)
         return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     @api.get(
