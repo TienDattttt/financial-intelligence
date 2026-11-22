@@ -146,9 +146,22 @@ export function SectorHeatmapChart({
     formatNumber(s.avg_red_flags, 2),
   ]);
 
+  const dynamicTitle = React.useMemo(() => {
+    const top = sorted[0];
+    if (!top) return "Phân bố rủi ro tài chính theo ngành ICB cấp 2";
+    if (metric === "distress_prob") {
+      return `Xếp hạng rủi ro ngành: ${top.icb_name_level2} dẫn đầu (${formatPercent(top.median_distress_prob)})`;
+    }
+    if (metric === "distress_zone_pct") {
+      const share = top.issuer_count > 0 ? top.distress_zone_count / top.issuer_count : 0;
+      return `Xếp hạng vùng nguy cơ: ${top.icb_name_level2} chiếm ${formatPercent(share)} DN`;
+    }
+    return `Mật độ cờ đỏ ngành: ${top.icb_name_level2} đạt ${formatNumber(top.avg_red_flags, 2)} cờ/DN`;
+  }, [metric, sorted]);
+
   return (
     <EChartBox
-      title="Phân bố rủi ro tài chính theo ngành ICB cấp 2"
+      title={dynamicTitle}
       subtitle="Nhấp vào thanh ngành bất kỳ để sàng lọc danh sách doanh nghiệp thuộc ngành đó"
       option={option}
       height={chartHeight}

@@ -1,11 +1,61 @@
 "use client";
 
 import * as React from "react";
+import { RotateCcw } from "lucide-react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
+import { Button } from "@/components/ui/button";
 import { useChartTheme } from "@/lib/echarts-theme";
 import { formatNumber, formatPercent, MINUS_SIGN } from "@/lib/format";
 import { buildShapNarrativeVi } from "@/lib/narrative";
 import type { ShapExplanationItem } from "@/types/api";
+
+export function resolveCrossFilteredMlScore<T extends { period_end_date: string }>(
+  scores: readonly T[],
+  selectedPeriodEndDate: string | null | undefined,
+  globalPeriodEndDate: string | null | undefined,
+): {
+  active: T | null;
+  defaultLatest: T | null;
+  prev: T | null;
+  isCustomSelected: boolean;
+} {
+  if (scores.length === 0) {
+    return { active: null, defaultLatest: null, prev: null, isCustomSelected: false };
+  }
+  const sorted = [...scores].sort((a, b) =>
+    a.period_end_date.localeCompare(b.period_end_date),
+  );
+  let defaultIdx = sorted.length - 1;
+  if (globalPeriodEndDate) {
+    const exact = sorted.findIndex((m) => m.period_end_date === globalPeriodEndDate);
+    if (exact >= 0) {
+      defaultIdx = exact;
+    } else {
+      const le = sorted.reduce(
+        (best, m, i) => (m.period_end_date <= globalPeriodEndDate ? i : best),
+        -1,
+      );
+      if (le >= 0) defaultIdx = le;
+    }
+  }
+  const defaultLatest = sorted[defaultIdx] ?? null;
+
+  let activeIdx = defaultIdx;
+  if (selectedPeriodEndDate) {
+    const pickedIdx = sorted.findIndex(
+      (m) => m.period_end_date === selectedPeriodEndDate,
+    );
+    if (pickedIdx >= 0) {
+      activeIdx = pickedIdx;
+    }
+  }
+  const active = sorted[activeIdx] ?? null;
+  const prev = activeIdx > 0 ? sorted[activeIdx - 1] ?? null : null;
+  const isCustomSelected = Boolean(
+    active && defaultLatest && active.period_end_date !== defaultLatest.period_end_date,
+  );
+  return { active, defaultLatest, prev, isCustomSelected };
+}
 
 interface WaterfallStep {
   label: string;
@@ -28,9 +78,15 @@ function formatSignedLogOdds(val: number): string {
 export function ExplainWaterfallChart({
   shap,
   distressProb,
+  periodLabel,
+  isCustomPeriod = false,
+  onResetToLatest,
 }: {
   shap: ShapExplanationItem | null | undefined;
   distressProb?: number | null;
+  periodLabel?: string | null;
+  isCustomPeriod?: boolean;
+  onResetToLatest?: () => void;
 }) {
   const { palette } = useChartTheme();
 
@@ -229,7 +285,11 @@ export function ExplainWaterfallChart({
   return (
     <div className="space-y-3">
       <EChartBox
-        title="Các yếu tố dẫn dắt điểm rủi ro mô hình"
+        title={
+          periodLabel
+            ? `Các yếu tố dẫn dắt điểm rủi ro mô hình (${periodLabel})`
+            : "Các yếu tố dẫn dắt điểm rủi ro mô hình"
+        }
         subtitle={probSubtitle}
         option={option}
         height={310}
@@ -237,6 +297,32 @@ export function ExplainWaterfallChart({
         emptyMessage="Chưa có dữ liệu giải thích TreeSHAP cho kỳ và phạm vi báo cáo đang chọn."
         tableHeaders={tableHeaders}
         tableRows={tableRows}
+        headerRight={
+          periodLabel ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span
+                className={
+                  isCustomPeriod
+                    ? "rounded-full border border-accent-ink/30 bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent-ink"
+                    : "rounded-full border border-border bg-surface-muted px-2 py-0.5 text-[11px] font-medium text-ink-muted"
+                }
+              >
+                {isCustomPeriod ? `Đang xem: ${periodLabel}` : `Kỳ: ${periodLabel}`}
+              </span>
+              {isCustomPeriod && onResetToLatest ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={onResetToLatest}
+                >
+                  <RotateCcw className="size-3" />
+                  <span>Về kỳ mới nhất</span>
+                </Button>
+              ) : null}
+            </div>
+          ) : null
+        }
       />
 
       {narratives.length > 0 ? (

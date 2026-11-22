@@ -2,7 +2,6 @@
 
 import {
   keepPreviousData,
-  useMutation,
   useQueries,
   useQuery,
 } from "@tanstack/react-query";
@@ -15,7 +14,6 @@ import type {
   ScreenerQueryParams,
   StatementScope,
   StatementType,
-  StressScenarioRequest,
 } from "@/types/api";
 
 const SNAPSHOT_STALE_MS = 1000 * 60 * 60; // Immutable snapshot data pinned by snapshotId
@@ -391,12 +389,5 @@ export function useQualityQuarantine(limit = 50, offset = 0, snapshotId?: string
     queryKey: ["quality-quarantine", snapshotId ?? "latest", limit, offset],
     queryFn: () => apiClient.getQualityQuarantine(limit, offset),
     staleTime: SNAPSHOT_STALE_MS,
-  });
-}
-
-export function useStressTestMutation() {
-  return useMutation({
-    mutationFn: (req: { payload: StressScenarioRequest; signal?: AbortSignal }) =>
-      apiClient.postStressTest(req.payload, req.signal),
   });
 }

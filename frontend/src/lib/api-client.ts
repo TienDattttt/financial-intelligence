@@ -263,7 +263,7 @@ export const apiClient = {
     ),
 
   postStressTest: async (
-    payload: StressScenarioRequest,
+    payload: StressScenarioRequest & { tickers?: string[] | null },
     signal?: AbortSignal,
   ): Promise<StressTestResponse> => {
     const attempt = async () =>

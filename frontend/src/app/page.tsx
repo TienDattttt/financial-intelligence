@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Plus, ShieldAlert } from "lucide-react";
-import { SectorHeatmapChart } from "@/components/charts/SectorHeatmapChart";
+import { SectorTreemapChart } from "@/components/charts/SectorTreemapChart";
 import { RiskBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
@@ -27,6 +27,7 @@ import {
   formatPercent,
   formatPercentPoints,
   formatPeriodLabel,
+  MINUS_SIGN,
 } from "@/lib/format";
 import {
   addWatchlistTicker,
@@ -39,7 +40,8 @@ const PREFERRED_SUGGESTIONS = ["HPG", "FPT", "VNM", "MWG", "GAS"];
 
 export default function MarketOverviewPage() {
   const router = useRouter();
-  const { statementScope, periodType, periodEndDate, snapshotId } = useAppState();
+  const { statementScope, periodType, periodEndDate, availableDates, snapshotId } =
+    useAppState();
 
   const watchlist = React.useSyncExternalStore(
     subscribePreferences,
@@ -51,6 +53,24 @@ export default function MarketOverviewPage() {
     { statementScope, periodType, periodEndDate },
     snapshotId,
   );
+  const currentPeriodDate =
+    sectorSummary.data?.period_end_date ?? periodEndDate ?? availableDates[0] ?? null;
+
+  const prevPeriodDate = React.useMemo(() => {
+    if (!currentPeriodDate || availableDates.length === 0) return null;
+    const desc = [...availableDates].sort((a, b) => b.localeCompare(a));
+    return desc.find((d) => d < currentPeriodDate) ?? null;
+  }, [availableDates, currentPeriodDate]);
+
+  const prevSectorSummary = useSectorRiskSummary(
+    {
+      statementScope,
+      periodType,
+      periodEndDate: prevPeriodDate ?? periodEndDate,
+    },
+    snapshotId,
+  );
+  const prevData = prevPeriodDate ? prevSectorSummary.data ?? null : null;
   const watchlistChanges = useMarketChanges(
     {
       tickers: watchlist,
@@ -86,11 +106,63 @@ export default function MarketOverviewPage() {
     const beneishShare = total > 0 ? data.beneish_flagged_count / total : 0;
     const redFlagShare = total > 0 ? data.high_red_flag_count / total : 0;
 
+    const prevTotal = prevData?.total_issuers ?? 0;
+    const hasPrev = Boolean(prevData && prevTotal > 0);
+    const prevLabel = prevData?.period_end_date
+      ? formatPeriodLabel(prevData.period_end_date, data.period_type)
+      : "kỳ trước";
+
+    const formatCountDelta = (
+      currCount: number,
+      prevCount: number | null,
+      currShare: number,
+      prevShare: number | null,
+      higherIsWorse: boolean,
+    ): { text: string; toneClass: string } | null => {
+      if (!hasPrev || prevCount === null) return null;
+      const diff = currCount - prevCount;
+      const sign = diff > 0 ? "+" : diff < 0 ? MINUS_SIGN : "";
+      const countPart =
+        diff === 0 ? "0 DN" : `${sign}${formatNumber(Math.abs(diff), 0)} DN`;
+      const ppPart =
+        prevShare !== null ? ` (${formatPercentPoints(currShare - prevShare, 1)})` : "";
+      const toneClass =
+        diff === 0
+          ? "text-ink-subtle"
+          : higherIsWorse
+            ? diff > 0
+              ? "text-risk-high"
+              : "text-risk-low"
+            : diff > 0
+              ? "text-up"
+              : "text-down";
+      return {
+        text: `${countPart}${ppPart} so với ${prevLabel}`,
+        toneClass,
+      };
+    };
+
+    const totalDelta = hasPrev
+      ? (() => {
+          const diff = total - prevTotal;
+          const sign = diff > 0 ? "+" : diff < 0 ? MINUS_SIGN : "";
+          return {
+            text:
+              diff === 0
+                ? `Không đổi so với ${prevLabel}`
+                : `${sign}${formatNumber(Math.abs(diff), 0)} DN so với ${prevLabel}`,
+            toneClass:
+              diff > 0 ? "text-up" : diff < 0 ? "text-down" : "text-ink-subtle",
+          };
+        })()
+      : null;
+
     return [
       {
         title: "Doanh nghiệp được đánh giá",
         value: formatNumber(total, 0),
         sub: `${data.safe_zone_count} An toàn · ${data.grey_zone_count} Vùng xám`,
+        delta: totalDelta,
         href: "/screener",
         toneClass: "text-ink",
       },
@@ -98,6 +170,13 @@ export default function MarketOverviewPage() {
         title: "Vùng nguy cơ kiệt quệ (Z″ < 1,10)",
         value: formatNumber(data.distress_zone_count, 0),
         sub: `${formatPercent(distressShare)} số DN trong lát cắt`,
+        delta: formatCountDelta(
+          data.distress_zone_count,
+          prevData?.distress_zone_count ?? null,
+          distressShare,
+          prevData && prevTotal > 0 ? prevData.distress_zone_count / prevTotal : null,
+          true,
+        ),
         href: "/screener?altman_zone=DISTRESS_ZONE",
         toneClass: "text-risk-high",
       },
@@ -105,6 +184,13 @@ export default function MarketOverviewPage() {
         title: "Nghi vấn điều chỉnh LN (M-Score)",
         value: formatNumber(data.beneish_flagged_count, 0),
         sub: `${formatPercent(beneishShare)} vượt ngưỡng Beneish > −1,78`,
+        delta: formatCountDelta(
+          data.beneish_flagged_count,
+          prevData?.beneish_flagged_count ?? null,
+          beneishShare,
+          prevData && prevTotal > 0 ? prevData.beneish_flagged_count / prevTotal : null,
+          true,
+        ),
         href: "/screener?beneish_flag=HIGH_MANIPULATION_RISK_SCREEN",
         toneClass: "text-risk-mid",
       },
@@ -112,11 +198,18 @@ export default function MarketOverviewPage() {
         title: "Cảnh báo ≥ 2 cờ đỏ kế toán",
         value: formatNumber(data.high_red_flag_count, 0),
         sub: `${formatPercent(redFlagShare)} DN có nhiều tín hiệu bất thường`,
+        delta: formatCountDelta(
+          data.high_red_flag_count,
+          prevData?.high_red_flag_count ?? null,
+          redFlagShare,
+          prevData && prevTotal > 0 ? prevData.high_red_flag_count / prevTotal : null,
+          true,
+        ),
         href: "/screener?min_red_flags=2",
         toneClass: "text-risk-high",
       },
     ];
-  }, [data]);
+  }, [data, prevData]);
 
   if (sectorSummary.isLoading) {
     return <PageSkeleton />;
@@ -180,7 +273,7 @@ export default function MarketOverviewPage() {
           <Link
             key={kpi.title}
             href={kpi.href}
-            className="group block rounded border border-border bg-surface p-3.5 transition-colors hover:border-accent-ink/60"
+            className="group block rounded-lg border border-border bg-surface p-3.5 shadow-xs transition-colors duration-150 hover:border-accent-ink/60"
           >
             <p className="text-xs font-medium text-ink-muted group-hover:text-accent-ink">
               {kpi.title}
@@ -189,11 +282,16 @@ export default function MarketOverviewPage() {
               {kpi.value}
             </p>
             <p className="num mt-1.5 text-[11px] text-ink-muted">{kpi.sub}</p>
+            {kpi.delta ? (
+              <p className={`num mt-1 text-[11px] font-medium ${kpi.delta.toneClass}`}>
+                {kpi.delta.text}
+              </p>
+            ) : null}
           </Link>
         ))}
       </section>
 
-      <SectorHeatmapChart
+      <SectorTreemapChart
         sectors={data.sectors}
         onSelectSector={(code) =>
           router.push(`/screener?icb_code_level2=${encodeURIComponent(code)}`)
