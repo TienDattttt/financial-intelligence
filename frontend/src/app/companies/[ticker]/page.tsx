@@ -31,6 +31,10 @@ import {
   type RatioTableSortField,
 } from "@/components/charts/HealthRadarChart";
 import { PeerBandChart } from "@/components/charts/PeerBandChart";
+import {
+  PitValuationStrip,
+  PriceRiskOverlayChart,
+} from "@/components/charts/PriceRiskOverlayChart";
 import { SectorBoxPlotChart } from "@/components/charts/SectorBoxPlotChart";
 import { FinancialTable } from "@/components/financial/FinancialTable";
 import { PercentileBar } from "@/components/financial/PercentileBar";
@@ -50,6 +54,7 @@ import {
   useCompanyBenchmarks,
   useCompanyBenchmarksSummary,
   useCompanyFilings,
+  useCompanyMarketOverlay,
   useCompanyProfile,
   useCompanyStatements,
   useMetaDictionary,
@@ -206,6 +211,7 @@ function CompanyProfileContent() {
   const dictQuery = useMetaDictionary(snapshotId);
   const issuersQuery = useAllIssuers(snapshotId);
   const filingsQuery = useCompanyFilings(ticker, { statementScope }, snapshotId);
+  const overlayQuery = useCompanyMarketOverlay(ticker, statementScope, snapshotId);
 
   const loadedTicker = profileQuery.data?.ticker;
   React.useEffect(() => {
@@ -858,6 +864,21 @@ function CompanyProfileContent() {
               </div>
             </VerdictCard>
           </section>
+
+          {/* Tier 1b: PIT Market Valuation & Early-Warning Price Overlay (UI-09b) */}
+          <PitValuationStrip
+            latestValuation={overlayQuery.data?.latest_valuation}
+            isLoading={overlayQuery.isLoading}
+          />
+
+          <PriceRiskOverlayChart
+            ticker={profile.ticker}
+            overlay={overlayQuery.data}
+            isLoading={overlayQuery.isLoading}
+            isError={overlayQuery.isError}
+            errorMessage={overlayQuery.error?.message}
+            onRetry={() => overlayQuery.refetch()}
+          />
 
           {/* Tier 2: SHAP Drivers (60%) + Red Flags & Filings (40%) */}
           <section className="grid grid-cols-1 gap-4 lg:grid-cols-12">

@@ -1,3 +1,4 @@
+import type { CompanyMarketOverlayResponse } from "@/lib/market-overlay-types";
 import type {
   AuditQuarantinePageResponse,
   CompanyBenchmarksResponse,
@@ -202,6 +203,18 @@ export const apiClient = {
       buildUrl(`/api/v2/companies/${encodeURIComponent(ticker.toUpperCase())}/filings`, {
         statement_scope: opts?.statement_scope,
         limit: opts?.limit ?? 100,
+      }),
+    ),
+
+  getCompanyMarketOverlay: (
+    ticker: string,
+    statementScope?: StatementScope,
+    asOf?: string | null,
+  ) =>
+    requestJson<CompanyMarketOverlayResponse>(
+      buildUrl(`/api/v2/companies/${encodeURIComponent(ticker.toUpperCase())}/market-overlay`, {
+        statement_scope: statementScope,
+        as_of: asOf,
       }),
     ),
 

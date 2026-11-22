@@ -229,6 +229,28 @@ export function useCompanyFilings(
   });
 }
 
+export function useCompanyMarketOverlay(
+  ticker: string,
+  statementScope: StatementScope = "CONSOLIDATED",
+  snapshotId?: string | null,
+  asOf?: string | null,
+) {
+  const cleanTicker = ticker.trim().toUpperCase();
+  return useQuery({
+    queryKey: [
+      "company-market-overlay",
+      snapshotId ?? "latest",
+      cleanTicker,
+      statementScope,
+      asOf ?? "latest",
+    ],
+    queryFn: () =>
+      apiClient.getCompanyMarketOverlay(cleanTicker, statementScope, asOf),
+    enabled: cleanTicker.length > 0,
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}
+
 export function useRatioLineage(
   opts: {
     ticker: string;
