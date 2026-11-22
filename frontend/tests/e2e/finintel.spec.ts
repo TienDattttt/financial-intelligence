@@ -415,16 +415,18 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     const rBox = await riskCanvas.boundingBox();
     expect(rBox).not.toBeNull();
 
-    // Try clicking an earlier x-position along the line series until "Về kỳ mới nhất" appears
+    // Click an earlier x-position inside the plot grid (left-third -> earlier quarter) so TreeSHAP updates
     let crossFiltered = false;
-    for (const xFrac of [0.25, 0.35, 0.45, 0.55]) {
-      for (const yFrac of [0.5, 0.65, 0.35, 0.75]) {
+    const plotLeft = rBox!.x + 56;
+    const plotWidth = Math.max(40, rBox!.width - 80);
+    for (const xFrac of [0.15, 0.3, 0.45]) {
+      for (const yFrac of [0.5, 0.75, 0.85]) {
         await page.mouse.click(
-          rBox!.x + rBox!.width * xFrac,
+          plotLeft + plotWidth * xFrac,
           rBox!.y + rBox!.height * yFrac,
         );
         const resetBtn = page.getByRole("button", { name: /Về kỳ mới nhất/i }).first();
-        if (await resetBtn.isVisible({ timeout: 300 }).catch(() => false)) {
+        if (await resetBtn.isVisible({ timeout: 500 }).catch(() => false)) {
           crossFiltered = true;
           break;
         }
