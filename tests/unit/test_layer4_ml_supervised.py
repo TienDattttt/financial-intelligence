@@ -846,8 +846,8 @@ def test_pit_symmetric_peer_z_prevents_future_icb_leakage_and_upgrades_when_hist
     )
     from tests.unit.test_layer4_analytics import facts
 
-    assert len(BASE_FEATURES) == 20
-    assert len(SECTOR_ADJUSTED_FEATURES) == 20
+    assert len(BASE_FEATURES) == 23
+    assert len(SECTOR_ADJUSTED_FEATURES) == 23
     adj_constraints = dict(
         zip(
             SECTOR_ADJUSTED_FEATURES,
@@ -859,6 +859,9 @@ def test_pit_symmetric_peer_z_prevents_future_icb_leakage_and_upgrades_when_hist
     assert adj_constraints["sector_z_debt_to_equity"] == 1
     assert adj_constraints["sector_z_asset_turnover"] == -1
     assert adj_constraints["sector_z_ebit_margin"] == -1
+    assert adj_constraints["overdue_or_late_count_4q"] == 1
+    assert adj_constraints["consecutive_loss_quarters"] == 1
+    assert adj_constraints["cross_sectional_asset_size_pct"] == 0
 
     def make_corp_facts(idx: int) -> pl.DataFrame:
         template: dict[str, float | None] = {
@@ -2203,3 +2206,288 @@ def test_ml07a_credit_risk_triad_ttc_tiers_pit_percentile_lift_and_reliability()
     assert legacy_scored["risk_tier"].null_count() == 0
     assert legacy_scored["market_base_rate"].null_count() == 10
     assert legacy_scored["relative_risk_lift"].null_count() == 10
+
+
+def test_ml05_leak_free_overdue_loss_streak_asset_size_pct_momentum_and_labels() -> (
+    None
+):
+    """Prove ML-05 (H-06 / GATE-ML-2..5): 0% leakage, discrete loss streak, PIT size rank & labels."""
+    from finintel.analytics.intermediates import prepare_periods
+    from finintel.ml.supervised.explain import get_feature_display_names
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        SECTOR_ADJUSTED_FEATURES,
+        _constraints,
+    )
+    from tests.unit.test_layer4_analytics import facts
+
+    # 1. Retained feature set & ablation-candidate monotonicity rules
+    assert {
+        "consecutive_loss_quarters",
+        "overdue_or_late_count_4q",
+        "cross_sectional_asset_size_pct",
+    } <= set(BASE_FEATURES)
+    assert {
+        "consecutive_loss_quarters",
+        "overdue_or_late_count_4q",
+        "cross_sectional_asset_size_pct",
+    } <= set(SECTOR_ADJUSTED_FEATURES)
+    # Dropped noisy delta_4q candidates must NOT pollute BASE_FEATURES / SECTOR_ADJUSTED_FEATURES
+    for dropped in (
+        "delta_roa_4q",
+        "delta_liabilities_to_assets_4q",
+        "delta_current_ratio_4q",
+    ):
+        assert dropped not in BASE_FEATURES
+        assert dropped not in SECTOR_ADJUSTED_FEATURES
+    assert _constraints(
+        (
+            "overdue_or_late_count_4q",
+            "consecutive_loss_quarters",
+            "cross_sectional_asset_size_pct",
+            "delta_roa_4q",
+            "delta_liabilities_to_assets_4q",
+            "delta_current_ratio_4q",
+        )
+    ) == (1, 1, 0, -1, 1, 0)
+
+    # Vietnamese SHAP labels exist for all retained + candidate features
+    labels_market = get_feature_display_names("PIT_REGIME_SYMMETRIC")
+    assert labels_market["consecutive_loss_quarters"] == "Số quý lỗ ròng liên tiếp"
+    assert (
+        labels_market["overdue_or_late_count_4q"]
+        == "Số quý nộp trễ hoặc quá hạn công bố BCTC (4Q)"
+    )
+    assert (
+        labels_market["cross_sectional_asset_size_pct"]
+        == "Phân vị quy mô tổng tài sản theo quý"
+    )
+
+    # 2. Build multi-issuer panel testing:
+    #    - Issuer LATE_EVADE:
+    #        2021-Q1 (2021-03-31): filed ON TIME 2021-04-28 (<= deadline 2021-05-04),
+    #                              then restated 2021-09-01 (still counts ON TIME!)
+    #        2021-Q2 (2021-06-30): filed LATE 2021-10-15 (> deadline 2021-08-30, > Q3 a_t? Wait: arrives 2021-12-01!)
+    #        2021-Q3 (2021-09-30): EVADED / NEVER FILED!
+    #        2021-Q4 (2021-12-31): filed ON TIME 2022-01-25 (<= deadline 2022-02-07)
+    #        2022-Q1..Q4: all filed ON TIME
+    #      And net income discrete sequence for LATE_EVADE:
+    #        2021-Q1: +100 (big profit so 4Q TTM stays positive!),
+    #        2021-Q2: -10 (loss, arrives 2021-12-01), 2021-Q3: missing,
+    #        2021-Q4: -15, 2022-Q1: -20, 2022-Q2: -5 (3 consecutive discrete losses even if TTM > 0!)
+    #    - Issuer LATE_IPO: starts reporting at 2022-Q1 (pre-IPO 2021 quarters must NOT count overdue!)
+    #    - Issuer BIG_PEER: larger assets for cross_sectional_asset_size_pct check
+    def mk_template(
+        assets: float, liab: float, ca: float, cl: float, ni: float
+    ) -> dict[str, float | None]:
+        return {
+            "BS_TOTAL_ASSETS": assets,
+            "BS_TOTAL_EQUITY": assets - liab,
+            "BS_TOTAL_LIABILITIES": liab,
+            "BS_CURRENT_ASSETS": ca,
+            "BS_CURRENT_LIABILITIES": cl,
+            "IS_NET_REVENUE": 200.0,
+            "IS_NET_INCOME": ni,
+        }
+
+    def set_exact_dates(
+        df: pl.DataFrame,
+        avail_map: dict[tuple[int, int], tuple[date, bool]],
+        *,
+        audit_status: str = "UNAUDITED",
+    ) -> pl.DataFrame:
+        out_rows = []
+        for row in df.to_dicts():
+            key = (int(row["fiscal_year"]), int(row["fiscal_quarter"]))
+            pub, late = avail_map[key]
+            row["published_at"] = pub
+            row["effective_available_at"] = pub
+            row["published_at_basis"] = "EXACT_FILING"
+            row["is_filed_late"] = late
+            if key[1] == 2:
+                row["audit_status"] = "REVIEWED"
+            else:
+                row["audit_status"] = audit_status
+            out_rows.append(row)
+        return pl.DataFrame(out_rows, schema=df.schema)
+
+    evade_base = facts(
+        {
+            (2021, 1): mk_template(100.0, 40.0, 50.0, 25.0, 100.0),
+            (2021, 2): mk_template(100.0, 45.0, 45.0, 25.0, -10.0),
+            # (2021, 3) EVADED!
+            (2021, 4): mk_template(100.0, 50.0, 40.0, 25.0, -15.0),
+            (2022, 1): mk_template(100.0, 55.0, 35.0, 25.0, -20.0),
+            (2022, 2): mk_template(100.0, 60.0, 30.0, 25.0, -5.0),
+            (2022, 3): mk_template(100.0, 65.0, 30.0, 25.0, 12.0),
+        },
+        issuer_id="LATE_EVADE",
+    )
+    evade_dates = {
+        (2021, 1): (date(2021, 4, 28), False),
+        (2021, 2): (date(2022, 3, 15), True),  # Arrives AFTER 2021-Q4 (2022-01-25)!
+        (2021, 4): (date(2022, 1, 25), False),
+        (2022, 1): (date(2022, 4, 25), False),
+        (2022, 2): (date(2022, 8, 20), False),
+        (2022, 3): (date(2022, 10, 25), False),
+    }
+    evade_facts = set_exact_dates(evade_base, evade_dates)
+    # Add an audited restatement for 2021-Q1 arriving late in 2021-09-01: must NOT turn 2021-Q1 overdue!
+    evade_q1_restated = evade_facts.filter(
+        (pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 1)
+    ).with_columns(
+        pl.lit(2, dtype=pl.Int64).alias("revision_no"),
+        pl.lit("LATE_EVADE-2021-1-R2").alias("filing_id"),
+        pl.lit(["LATE_EVADE-2021-1-R2"]).alias("source_filing_ids"),
+        pl.lit(date(2021, 9, 1)).alias("published_at"),
+        pl.lit(date(2021, 9, 1)).alias("effective_available_at"),
+        pl.lit(True).alias("is_filed_late"),
+        pl.lit("AUDITED_UPDATE").alias("revision_reason"),
+    )
+
+    ipo_base = facts(
+        {
+            (2022, 1): mk_template(200.0, 80.0, 80.0, 40.0, 10.0),
+            (2022, 2): mk_template(200.0, 80.0, 80.0, 40.0, 10.0),
+        },
+        issuer_id="LATE_IPO",
+    )
+    ipo_facts = set_exact_dates(
+        ipo_base,
+        {
+            (2022, 1): (date(2022, 4, 25), False),
+            (2022, 2): (date(2022, 8, 20), False),
+        },
+    )
+
+    big_base = facts(
+        {
+            (2021, 4): mk_template(1000.0, 300.0, 400.0, 100.0, 50.0),
+            (2022, 1): mk_template(1000.0, 300.0, 400.0, 100.0, 50.0),
+            (2022, 2): mk_template(1000.0, 300.0, 400.0, 100.0, 50.0),
+        },
+        issuer_id="BIG_PEER",
+    )
+    big_facts = set_exact_dates(
+        big_base,
+        {
+            (2021, 4): (date(2022, 1, 25), False),
+            (2022, 1): (date(2022, 4, 25), False),
+            (2022, 2): (date(2022, 8, 20), False),
+        },
+    )
+
+    all_facts = pl.concat([evade_facts, evade_q1_restated, ipo_facts, big_facts])
+    issuers_df = pl.DataFrame(
+        {
+            "issuer_id": ["LATE_EVADE", "LATE_IPO", "BIG_PEER"],
+            "ticker": ["LE", "LI", "BP"],
+            "accounting_regime": ["CORPORATE"] * 3,
+        }
+    )
+
+    # 0% lookahead invariance check: 2021-Q4 (available 2022-01-25) evaluated at
+    # as_of=2022-02-01 (before 2021-Q2 late filing arrives on 2022-03-15) vs
+    # as_of=2022-12-31 (after 2021-Q2 late filing arrived) MUST produce identical values!
+    early_p = prepare_periods(
+        all_facts, issuers_df, as_of=date(2022, 2, 1), include_ml_inputs=True
+    )
+    late_p = prepare_periods(
+        all_facts, issuers_df, as_of=date(2022, 12, 31), include_ml_inputs=True
+    )
+
+    q4_early = early_p.filter(
+        (pl.col("issuer_id") == "LATE_EVADE")
+        & (pl.col("fiscal_year") == 2021)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    q4_late = late_p.filter(
+        (pl.col("issuer_id") == "LATE_EVADE")
+        & (pl.col("fiscal_year") == 2021)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    # 2021-Q1 restated on time (0), 2021-Q2 overdue (1), 2021-Q3 evaded (1), 2021-Q4 on time (0) -> 2.0!
+    assert q4_early["overdue_or_late_count_4q"] == pytest.approx(2.0)
+    assert q4_late["overdue_or_late_count_4q"] == pytest.approx(2.0)
+    assert q4_early["consecutive_loss_quarters"] == pytest.approx(1.0)
+    assert q4_late["consecutive_loss_quarters"] == pytest.approx(1.0)
+
+    # By 2022-Q2 (available 2022-08-20):
+    # - 2021-Q3 evaded (1) + 2021-Q4 on time (0) + 2022-Q1 on time (0) + 2022-Q2 on time (0) -> overdue = 1.0
+    # - Discrete losses: 2021-Q4 (-15), 2022-Q1 (-20), 2022-Q2 (-5) -> streak = 3.0 (stopped at 2021-Q3 gap!)
+    # - 2022-Q3 returns to profit (+12) -> streak resets to 0.0!
+    ev_22_q2 = late_p.filter(
+        (pl.col("issuer_id") == "LATE_EVADE")
+        & (pl.col("fiscal_year") == 2022)
+        & (pl.col("fiscal_quarter") == 2)
+    ).row(0, named=True)
+    ev_22_q3 = late_p.filter(
+        (pl.col("issuer_id") == "LATE_EVADE")
+        & (pl.col("fiscal_year") == 2022)
+        & (pl.col("fiscal_quarter") == 3)
+    ).row(0, named=True)
+    assert ev_22_q2["overdue_or_late_count_4q"] == pytest.approx(1.0)
+    assert ev_22_q2["consecutive_loss_quarters"] == pytest.approx(3.0)
+    assert ev_22_q3["consecutive_loss_quarters"] == pytest.approx(0.0)
+
+    # Pre-IPO quarters must NOT be flagged overdue on LATE_IPO's first quarter (2022-Q1)
+    ipo_q1 = late_p.filter(
+        (pl.col("issuer_id") == "LATE_IPO")
+        & (pl.col("fiscal_year") == 2022)
+        & (pl.col("fiscal_quarter") == 1)
+    ).row(0, named=True)
+    assert ipo_q1["overdue_or_late_count_4q"] == pytest.approx(0.0)
+
+    # Cross-sectional asset size pct in 2022-Q2: assets = [100, 200, 1000] -> [0.0, 50.0, 100.0],
+    # and invariant to uniform 10x nominal asset inflation across all issuers!
+    q2_22 = late_p.filter(
+        (pl.col("fiscal_year") == 2022) & (pl.col("fiscal_quarter") == 2)
+    ).sort("BS_TOTAL_ASSETS")
+    assert q2_22["cross_sectional_asset_size_pct"].to_list() == pytest.approx(
+        [0.0, 50.0, 100.0]
+    )
+    inflated_facts = all_facts.with_columns(
+        pl.when(pl.col("metric_id") == "BS_TOTAL_ASSETS")
+        .then(pl.col("value") * 10.0)
+        .otherwise(pl.col("value"))
+        .alias("value")
+    )
+    inflated_q2_22 = (
+        prepare_periods(
+            inflated_facts, issuers_df, as_of=date(2022, 12, 31), include_ml_inputs=True
+        )
+        .filter((pl.col("fiscal_year") == 2022) & (pl.col("fiscal_quarter") == 2))
+        .sort("BS_TOTAL_ASSETS")
+    )
+    assert inflated_q2_22["cross_sectional_asset_size_pct"].to_list() == pytest.approx(
+        [0.0, 50.0, 100.0]
+    )
+
+    # 4Q delta calculations & cross-taxonomy guard
+    assert ev_22_q2["delta_liabilities_to_assets_4q"] == pytest.approx(0.60 - 0.45)
+    assert ev_22_q2["delta_current_ratio_4q"] == pytest.approx(
+        (30.0 / 25.0) - (45.0 / 25.0)
+    )
+    tt99_incompat = all_facts.with_columns(
+        pl.when(pl.col("fiscal_year") == 2022)
+        .then(pl.lit("VAS_TT99_2025"))
+        .otherwise(pl.col("taxonomy_version"))
+        .alias("taxonomy_version"),
+        pl.when(pl.col("fiscal_year") == 2022)
+        .then(pl.lit(False))
+        .otherwise(pl.col("comparable_across_taxonomy"))
+        .alias("comparable_across_taxonomy"),
+    )
+    incompat_q2 = (
+        prepare_periods(
+            tt99_incompat, issuers_df, as_of=date(2022, 12, 31), include_ml_inputs=True
+        )
+        .filter(
+            (pl.col("issuer_id") == "LATE_EVADE")
+            & (pl.col("fiscal_year") == 2022)
+            & (pl.col("fiscal_quarter") == 2)
+        )
+        .row(0, named=True)
+    )
+    assert incompat_q2["delta_liabilities_to_assets_4q"] is None
+    assert incompat_q2["delta_current_ratio_4q"] is None

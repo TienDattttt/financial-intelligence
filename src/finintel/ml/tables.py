@@ -167,6 +167,8 @@ def build_ml_artifacts(
             "scored_taxonomies": list(scored_taxonomies),
             "scored_period_types": ["QUARTER"],
             "feature_set": feature_set,
+            "feature_count": len(selected_features),
+            "selected_features": list(selected_features),
             "peer_standardization_mode": peer_standardization_mode,
             "target_mode": resolved_target_mode,
             "split_mode": "TWO_WAY_PURGED_OOF"
@@ -242,6 +244,8 @@ def build_ml_artifacts(
         "scored_taxonomies": list(scored_taxonomies),
         "scored_period_types": ["QUARTER"],
         "feature_set": feature_set,
+        "feature_count": len(selected_features),
+        "selected_features": list(selected_features),
         "peer_standardization_mode": peer_standardization_mode,
         "target_mode": resolved_target_mode,
         "platt_slope": training.platt_slope,
