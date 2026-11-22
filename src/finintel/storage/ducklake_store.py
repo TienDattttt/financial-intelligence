@@ -30,6 +30,8 @@ Runtime API Verification (Python 3.11.9, duckdb==1.4.2, DuckLake format 0.3):
 
 from __future__ import annotations
 
+import hashlib
+import importlib
 import json
 import logging
 import os
@@ -40,7 +42,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
 import duckdb
@@ -72,6 +74,7 @@ from finintel.storage.snapshot_publisher import (
 logger = logging.getLogger("finintel.storage.ducklake")
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 SNAPSHOT_AUDIT_TABLE = "_snapshot_audit"
+POSTGRES_ACTIVE_SNAPSHOT_TABLE = "public.finintel_active_snapshot"
 DEFAULT_CATALOG_ALIAS = "finintel_lake"
 DEFAULT_POSTGRES_DSN_ENV = "FININTEL_DUCKLAKE_PG_DSN"
 DEFAULT_OVERRIDE_DATA_PATH_ENV = "FININTEL_DUCKLAKE_OVERRIDE_DATA_PATH"
@@ -133,6 +136,57 @@ def validate_sql_identifier(name: str, *, label: str = "identifier") -> str:
 
 def _escape_sql_literal(value: str) -> str:
     return value.replace("'", "''")
+
+
+def _sha256_table_frame(filename: str, frame: pl.DataFrame) -> str:
+    """Compute a deterministic SHA-256 content + schema + layout digest for a prepared table."""
+    layout = TABLE_PHYSICAL_LAYOUT.get(filename)
+    sort_cols = (
+        [c for c in layout.sort_by if c in frame.columns] if layout is not None else []
+    )
+    rg_size = row_group_size_for_table(filename)
+    schema_sig = "|".join(f"{name}:{dtype}" for name, dtype in frame.schema.items())
+    header = (
+        f"v1|{filename}|rg={rg_size}|sort={','.join(sort_cols)}|"
+        f"rows={frame.height}|{schema_sig}\n"
+    ).encode("utf-8")
+    digest = hashlib.sha256(header)
+    if frame.is_empty():
+        digest.update(b"EMPTY")
+        return digest.hexdigest()
+
+    norm_exprs: list[pl.Expr] = []
+    for col, dtype in frame.schema.items():
+        if dtype.is_float():
+            norm_exprs.append(
+                pl.when(pl.col(col) == 0.0)
+                .then(pl.lit(0.0, dtype=dtype))
+                .otherwise(pl.col(col))
+                .alias(col)
+            )
+        else:
+            norm_exprs.append(pl.col(col))
+    normalized = frame.select(norm_exprs)
+
+    order_cols = list(sort_cols)
+    for col, dtype in normalized.schema.items():
+        if col not in order_cols and not isinstance(dtype, (pl.List, pl.Struct)):
+            order_cols.append(col)
+    if order_cols:
+        normalized = normalized.sort(order_cols, nulls_last=True)
+
+    hash_exprs: list[pl.Expr] = []
+    for col, dtype in normalized.schema.items():
+        if isinstance(dtype, pl.List):
+            hash_exprs.append(
+                pl.col(col).cast(pl.List(pl.String)).list.join("\x1f").alias(col)
+            )
+        elif isinstance(dtype, pl.Struct):
+            hash_exprs.append(pl.col(col).struct.json_encode().alias(col))
+    hashable = normalized.with_columns(hash_exprs) if hash_exprs else normalized
+    row_hashes = hashable.hash_rows(seed=0, seed_1=1, seed_2=2, seed_3=3)
+    digest.update(row_hashes.to_numpy().tobytes())
+    return digest.hexdigest()
 
 
 def _to_utc(value: object) -> datetime:
@@ -471,6 +525,149 @@ def ensure_ducklake_attached(
     connection.execute(f"ATTACH 'ducklake:sqlite:{cat_sql}' AS \"{alias}\" ({opts});")
 
 
+@dataclass(frozen=True)
+class PostgresActiveSnapshotPointer:
+    """Active snapshot pointer stored outside the DuckLake catalog on PostgreSQL (H-04)."""
+
+    snapshot_id: str
+    ducklake_version: int
+    run_id: str
+    published_at: str | None
+
+
+def _import_psycopg() -> Any:
+    """Lazy-import ``psycopg`` so core CI ``mvp-checks`` never requires ``platform`` deps (M-03)."""
+    try:
+        return importlib.import_module("psycopg")
+    except ImportError as exc:
+        raise ContractViolationError(
+            "psycopg is required for PostgreSQL active snapshot pointer; "
+            "install the 'platform' dependency group."
+        ) from exc
+
+
+def _resolve_postgres_dsn(postgres_dsn_env: str) -> str:
+    raw_dsn = os.environ.get(postgres_dsn_env, "").strip()
+    if not raw_dsn:
+        raise ContractViolationError(
+            f"Environment variable {postgres_dsn_env} is not set for PostgreSQL active snapshot pointer."
+        )
+    # Validate syntax via _parse_postgres_dsn without leaking credentials.
+    _parse_postgres_dsn(raw_dsn, env_name=postgres_dsn_env)
+    return raw_dsn
+
+
+def upsert_postgres_active_snapshot(
+    *,
+    postgres_dsn_env: str,
+    catalog_alias: str,
+    snapshot_id: str,
+    ducklake_version: int,
+    run_id: str,
+    published_at: str,
+) -> None:
+    """Atomically upsert ``public.finintel_active_snapshot`` outside DuckLake catalog (H-04)."""
+    alias = validate_sql_identifier(catalog_alias, label="catalog_alias")
+    if (
+        not snapshot_id.startswith("snap_")
+        or Path(snapshot_id).name != snapshot_id
+        or ":" in snapshot_id
+    ):
+        raise ValueError(
+            "snapshot_id must be a path-safe value beginning with 'snap_'."
+        )
+    raw_dsn = _resolve_postgres_dsn(postgres_dsn_env)
+    psycopg = _import_psycopg()
+    try:
+        with psycopg.connect(raw_dsn, connect_timeout=5) as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {POSTGRES_ACTIVE_SNAPSHOT_TABLE} (
+                        catalog_alias TEXT PRIMARY KEY,
+                        snapshot_id TEXT NOT NULL,
+                        ducklake_version BIGINT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        published_at TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    f"""
+                    INSERT INTO {POSTGRES_ACTIVE_SNAPSHOT_TABLE} (
+                        catalog_alias, snapshot_id, ducklake_version, run_id, published_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (catalog_alias) DO UPDATE SET
+                        snapshot_id = EXCLUDED.snapshot_id,
+                        ducklake_version = EXCLUDED.ducklake_version,
+                        run_id = EXCLUDED.run_id,
+                        published_at = EXCLUDED.published_at,
+                        updated_at = NOW()
+                    """,
+                    (alias, snapshot_id, int(ducklake_version), run_id, published_at),
+                )
+            pg_conn.commit()
+    except ContractViolationError:
+        raise
+    except Exception:
+        # Never leak raw PostgreSQL DSN/credentials in tracebacks.
+        raise ContractViolationError(
+            f"Failed to update {POSTGRES_ACTIVE_SNAPSHOT_TABLE} via {postgres_dsn_env}."
+        ) from None
+
+
+def read_postgres_active_snapshot(
+    *,
+    postgres_dsn_env: str,
+    catalog_alias: str,
+) -> PostgresActiveSnapshotPointer | None:
+    """Read the active snapshot pointer from ``public.finintel_active_snapshot`` (H-04)."""
+    alias = validate_sql_identifier(catalog_alias, label="catalog_alias")
+    raw_dsn = _resolve_postgres_dsn(postgres_dsn_env)
+    psycopg = _import_psycopg()
+    try:
+        with psycopg.connect(raw_dsn, connect_timeout=5) as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT snapshot_id, ducklake_version, run_id, published_at
+                    FROM {POSTGRES_ACTIVE_SNAPSHOT_TABLE}
+                    WHERE catalog_alias = %s
+                    LIMIT 1
+                    """,
+                    (alias,),
+                )
+                row = cur.fetchone()
+    except ContractViolationError:
+        raise
+    except Exception as exc:
+        if getattr(exc, "sqlstate", None) == "42P01":
+            return None
+        raise ContractViolationError(
+            f"Failed to read {POSTGRES_ACTIVE_SNAPSHOT_TABLE} via {postgres_dsn_env}."
+        ) from None
+
+    if row is None:
+        return None
+    snapshot_id = str(row[0])
+    if (
+        not snapshot_id.startswith("snap_")
+        or Path(snapshot_id).name != snapshot_id
+        or ":" in snapshot_id
+    ):
+        raise ContractViolationError(
+            f"Invalid active snapshot ID in {POSTGRES_ACTIVE_SNAPSHOT_TABLE}."
+        )
+    return PostgresActiveSnapshotPointer(
+        snapshot_id=snapshot_id,
+        ducklake_version=int(row[1]),
+        run_id=str(row[2]),
+        published_at=str(row[3]) if row[3] is not None else None,
+    )
+
+
 class DuckLakeStore:
     """ACID multi-table DuckLake publisher with cross-DB consistency, rollback, and maintenance."""
 
@@ -591,6 +788,37 @@ class DuckLakeStore:
             if str(row[0]) != SNAPSHOT_AUDIT_TABLE
             and str(row[0]) in MANAGED_MART_CATALOG_TABLES
             and str(row[0]) not in EXTENSION_PORT_CATALOG_TABLES
+        }
+
+    def _load_previous_head_table_hashes(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        prev_head_version: int,
+    ) -> dict[str, str]:
+        """Return per-table SHA-256 hashes of the current DuckLake HEAD snapshot if audited."""
+        row = con.execute(
+            f"""
+            SELECT ducklake_version, metadata_json
+            FROM "{self.catalog_alias}"."{SNAPSHOT_AUDIT_TABLE}"
+            ORDER BY ducklake_version DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None or int(row[0]) != prev_head_version or row[1] is None:
+            return {}
+        try:
+            parsed = json.loads(str(row[1]))
+        except ValueError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        raw_hashes = parsed.get("table_hashes")
+        if not isinstance(raw_hashes, dict):
+            return {}
+        return {
+            str(k): str(v)
+            for k, v in raw_hashes.items()
+            if isinstance(k, str) and isinstance(v, str) and len(v) == 64
         }
 
     def _apply_set_sorted_by_best_effort(
@@ -719,9 +947,10 @@ class DuckLakeStore:
                     parsed_args.get("dagster_run_id"), str
                 ):
                     audit_meta["dagster_run_id"] = parsed_args["dagster_run_id"]
-            metadata_json = json.dumps(
-                audit_meta, ensure_ascii=False, sort_keys=True, default=str
-            )
+            current_table_hashes: dict[str, str] = {
+                filename: _sha256_table_frame(filename, frame)
+                for filename, frame in prepared.items()
+            }
 
             con = self._open_rw_connection()
             registered_views: list[str] = []
@@ -746,15 +975,35 @@ class DuckLakeStore:
                     raise ContractViolationError(
                         "Unable to determine current DuckLake snapshot version."
                     )
-                expected_version = int(pre_row[0]) + 1
+                prev_head_version = int(pre_row[0])
+                expected_version = prev_head_version + 1
                 published_at = datetime.now(UTC).isoformat()
                 tables_json = json.dumps(sorted(prepared), ensure_ascii=False)
 
+                prev_table_hashes = self._load_previous_head_table_hashes(
+                    con, prev_head_version
+                )
+                skipped_tables: set[str] = set()
                 for filename, frame in prepared.items():
                     tbl = filename.removesuffix(".parquet")
+                    if (
+                        tbl in existing_tables
+                        and tbl in MANAGED_MART_CATALOG_TABLES
+                        and tbl not in EXTENSION_PORT_CATALOG_TABLES
+                        and prev_table_hashes.get(filename)
+                        == current_table_hashes[filename]
+                    ):
+                        skipped_tables.add(tbl)
+                        continue
                     view_name = f"_finintel_stage_{tbl}"
                     con.register(view_name, frame)
                     registered_views.append(view_name)
+
+                audit_meta["table_hashes"] = current_table_hashes
+                audit_meta["skipped_tables"] = sorted(skipped_tables)
+                metadata_json = json.dumps(
+                    audit_meta, ensure_ascii=False, sort_keys=True, default=str
+                )
 
                 # Phase 1: Single Atomic DuckLake Multi-Table Commit.
                 con.execute("BEGIN TRANSACTION;")
@@ -762,7 +1011,11 @@ class DuckLakeStore:
                     new_catalog_tables: set[str] = set()
                     for filename, frame in prepared.items():
                         tbl = filename.removesuffix(".parquet")
+                        # Always retain unchanged tables in new_catalog_tables so
+                        # stale_tables never issues DROP TABLE against them (B-03).
                         new_catalog_tables.add(tbl)
+                        if tbl in skipped_tables:
+                            continue
                         view_name = f"_finintel_stage_{tbl}"
                         rg_size = row_group_size_for_table(filename)
                         con.execute(
@@ -831,7 +1084,23 @@ class DuckLakeStore:
                         "DuckLake committed snapshot version diverged from audited version."
                     )
 
-                self._apply_set_sorted_by_best_effort(con, prepared)
+                if skipped_tables:
+                    logger.debug(
+                        "DuckLake publish skipped %d unchanged table(s): %s",
+                        len(skipped_tables),
+                        ", ".join(sorted(skipped_tables)),
+                        extra={
+                            "event": "ducklake_hash_skip",
+                            "run_id": run_id,
+                            "details": {"skipped_tables": sorted(skipped_tables)},
+                        },
+                    )
+                written_tables = {
+                    filename: frame
+                    for filename, frame in prepared.items()
+                    if filename.removesuffix(".parquet") not in skipped_tables
+                }
+                self._apply_set_sorted_by_best_effort(con, written_tables)
             finally:
                 for view_name in registered_views:
                     try:
@@ -840,8 +1109,17 @@ class DuckLakeStore:
                         pass
                 con.close()
 
-            # Phase 2: Promote active snapshot pointer in state.sqlite.
+            # Phase 2: Promote active snapshot pointer in state.sqlite (and Postgres pointer if configured).
             self.state_store.publish_snapshot(run_id, snapshot_id)
+            if self.catalog_driver == "postgres":
+                upsert_postgres_active_snapshot(
+                    postgres_dsn_env=self.postgres_dsn_env,
+                    catalog_alias=self.catalog_alias,
+                    snapshot_id=snapshot_id,
+                    ducklake_version=expected_version,
+                    run_id=run_id,
+                    published_at=published_at,
+                )
             return expected_version
 
     publish = publish_snapshot
@@ -983,6 +1261,15 @@ class DuckLakeStore:
                     """,
                     (target_snapshot_id, target_run_id, now),
                 )
+            if self.catalog_driver == "postgres":
+                upsert_postgres_active_snapshot(
+                    postgres_dsn_env=self.postgres_dsn_env,
+                    catalog_alias=self.catalog_alias,
+                    snapshot_id=target_snapshot_id,
+                    ducklake_version=target_version,
+                    run_id=target_run_id,
+                    published_at=now,
+                )
             return target_version
 
     def maintain(
@@ -1046,6 +1333,32 @@ class DuckLakeStore:
                     active_sid = str(active["snapshot_id"])
                     if active_sid in audit_by_snap_id:
                         protected_versions.add(audit_by_snap_id[active_sid])
+
+                if self.catalog_driver == "postgres":
+                    pg_pointer = read_postgres_active_snapshot(
+                        postgres_dsn_env=self.postgres_dsn_env,
+                        catalog_alias=self.catalog_alias,
+                    )
+                    if pg_pointer is not None:
+                        protected_versions.add(int(pg_pointer.ducklake_version))
+                        if pg_pointer.snapshot_id in audit_by_snap_id:
+                            protected_versions.add(
+                                audit_by_snap_id[pg_pointer.snapshot_id]
+                            )
+                    elif active is not None and active.get("snapshot_id") is not None:
+                        active_sid = str(active["snapshot_id"])
+                        if active_sid in audit_by_snap_id:
+                            upsert_postgres_active_snapshot(
+                                postgres_dsn_env=self.postgres_dsn_env,
+                                catalog_alias=self.catalog_alias,
+                                snapshot_id=active_sid,
+                                ducklake_version=audit_by_snap_id[active_sid],
+                                run_id=str(active.get("run_id") or "maintain_sync"),
+                                published_at=str(
+                                    active.get("published_at")
+                                    or datetime.now(UTC).isoformat()
+                                ),
+                            )
 
                 promoted_audit_versions = [
                     int(row[1]) for row in audit_rows if str(row[0]) in promoted_set
