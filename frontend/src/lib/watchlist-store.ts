@@ -45,8 +45,10 @@ export function getWatchlistSnapshot(): string[] {
   return cachedWatchlist;
 }
 
+const EMPTY_WATCHLIST: string[] = [];
+
 export function getWatchlistServerSnapshot(): string[] {
-  return [];
+  return EMPTY_WATCHLIST;
 }
 
 function saveWatchlist(next: string[]) {

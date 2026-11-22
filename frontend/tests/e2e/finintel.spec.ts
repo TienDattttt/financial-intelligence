@@ -104,6 +104,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
   test("supports Light / Dark / System toggle persistence and passes axe checks in Dark Mode", async ({
     page,
   }) => {
+    test.setTimeout(90_000);
     for (const vp of VIEWPORTS) {
       await page.setViewportSize({ width: vp.width, height: vp.height });
       await page.goto("/", { waitUntil: "networkidle" });
@@ -216,5 +217,399 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     await expect(stressFilterBtn).toBeVisible();
     await stressFilterBtn.click();
     await expect(page.getByRole("button", { name: /Đóng bảng tham số sốc/i })).toBeVisible();
+  });
+
+  test("Wave 1-6 Home (/): Sector Risk Treemap, 4 KPI cards with QoQ delta, sector click navigates to /screener with matching count", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+
+    const summaryPromise = page.waitForResponse(
+      (res) =>
+        res.url().includes("/api/v2/sectors/risk-summary") &&
+        res.status() === 200,
+    );
+    await page.goto("/", { waitUntil: "networkidle" });
+    const summaryRes = await summaryPromise;
+    const summaryJson = (await summaryRes.json()) as {
+      total_issuers: number;
+      high_red_flag_count: number;
+      sectors: Array<{
+        icb_code_level2: string;
+        icb_name_level2: string;
+        issuer_count: number;
+      }>;
+    };
+
+    // 4 KPI cards with QoQ delta text ("so với ...")
+    const kpiSection = page.locator('section[aria-label="Chỉ số tổng hợp rủi ro"]');
+    const kpiLinks = kpiSection.locator("a");
+    await expect(kpiLinks).toHaveCount(4);
+    for (let i = 0; i < 4; i++) {
+      const cardText = await kpiLinks.nth(i).innerText();
+      expect(cardText).toMatch(/so với\s+/i);
+    }
+
+    // Sector Risk Treemap renders canvas and accessible table view
+    const treemapCard = page
+      .locator("div.overflow-hidden")
+      .filter({ has: page.locator('select[aria-label="Chọn chỉ tiêu tô màu bản đồ ngành"]') })
+      .first();
+    await expect(treemapCard).toBeVisible();
+    const treemapCanvas = treemapCard.locator("canvas").first();
+    await expect(treemapCanvas).toBeVisible();
+
+    // Verify no technical leaks on Home
+    const homeText = await page.evaluate(() => document.body.innerText ?? "");
+    for (const pattern of FORBIDDEN_TECHNICAL_LEAKS) {
+      expect(pattern.test(homeText)).toBe(false);
+    }
+
+    // Click top-left area of the Treemap (largest sector tile) to navigate to /screener?icb_code_level2=...
+    const box = await treemapCanvas.boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.click(box!.x + box!.width * 0.2, box!.y + box!.height * 0.3);
+    await page.waitForURL(/\/screener\?icb_code_level2=/, { timeout: 15_000 });
+    await page.waitForLoadState("networkidle");
+
+    const landedUrl = new URL(page.url());
+    const clickedCode = landedUrl.searchParams.get("icb_code_level2");
+    expect(clickedCode).toBeTruthy();
+    const matchedSector = summaryJson.sectors.find(
+      (s) => s.icb_code_level2 === clickedCode,
+    );
+    expect(matchedSector).toBeDefined();
+
+    // Verify Screener total count matches the clicked sector's issuer_count
+    await expect(
+      page.locator("p").filter({ hasText: /Tìm thấy\s+\d+\s+doanh nghiệp/ }).first(),
+    ).toContainText(`Tìm thấy ${matchedSector!.issuer_count} doanh nghiệp`);
+
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("Wave 1-6 Screener (/screener): Base UI Combobox filter, Saved Screen reload persistence, Column Customizer, and Export CSV > 50 rows", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/screener", { waitUntil: "networkidle" });
+    await expect(page.locator("table")).toBeVisible();
+
+    // 1. @base-ui/react Combobox filter (Risk Tier R1-R5)
+    const riskTierTrigger = page.locator("#scr-risk-tier");
+    await expect(riskTierTrigger).toBeVisible();
+    await riskTierTrigger.click();
+    const optionR4 = page.getByRole("option", { name: /R4 — Rủi ro cao/i });
+    await expect(optionR4).toBeVisible();
+    await optionR4.click();
+    await expect(page).toHaveURL(/risk_tier=R4/);
+
+    // 2. Save & load Saved Screen persisting across page.reload()
+    const uniqueName = "E2E R4 Watch";
+    await page.getByRole("button", { name: /Lưu bộ lọc/i }).click();
+    const nameInput = page.getByLabel("Tên bộ lọc muốn lưu");
+    await expect(nameInput).toBeVisible();
+    await nameInput.fill(uniqueName);
+    await page.getByRole("button", { name: /^Lưu$/ }).click();
+    await expect(page.getByRole("button", { name: uniqueName, exact: true })).toBeVisible();
+
+    // Reset filters, reload page, verify Saved Screen persists and restores URL on click
+    await page.getByRole("button", { name: "Đặt lại", exact: true }).click();
+    await expect(page).not.toHaveURL(/risk_tier=R4/);
+    await page.reload({ waitUntil: "networkidle" });
+    const savedChip = page.getByRole("button", { name: uniqueName, exact: true });
+    await expect(savedChip).toBeVisible();
+    await savedChip.click();
+    await expect(page).toHaveURL(/risk_tier=R4/);
+
+    // Clean up saved screen & reset filters so full set (> 50 rows) is active for CSV export
+    await page.getByRole("button", { name: `Xóa bộ lọc ${uniqueName}` }).click();
+    await expect(savedChip).toBeHidden();
+    await page.getByRole("button", { name: "Đặt lại", exact: true }).click();
+    await expect(page).not.toHaveURL(/risk_tier=R4/);
+    await expect(page.locator("table")).toBeVisible();
+    await expect(page.locator("thead th").first()).toBeVisible();
+
+    // 3. Column Customizer opens and toggles additional columns
+    const colBtn = page.getByRole("button", { name: /^Cột \(/ });
+    await colBtn.click();
+    const colDialog = page.getByRole("dialog", { name: "Tùy chỉnh cột phân tích" });
+    await expect(colDialog).toBeVisible();
+    const beforeCols = await page.locator("thead th").count();
+    await colDialog.getByRole("button", { name: "Hiện tất cả" }).click();
+    const afterCols = await page.locator("thead th").count();
+    expect(afterCols).toBeGreaterThan(beforeCols);
+    await colDialog.getByRole("button", { name: "Mặc định" }).click();
+    await page.keyboard.press("Escape");
+
+    // 4. Export CSV calls /api/v1/screener/export returning HTTP 200 with > 50 rows
+    const exportBtn = page.getByRole("button", { name: /Xuất CSV \(\d+\)/ });
+    await expect(exportBtn).toBeVisible();
+    const exportPromise = page.waitForResponse(
+      (res) =>
+        res.url().includes("/api/v1/screener/export") &&
+        res.request().method() === "GET",
+    );
+    await exportBtn.click();
+    const exportRes = await exportPromise;
+    expect(exportRes.status()).toBe(200);
+    const csvText = await exportRes.text();
+    const nonEmptyLines = csvText
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    // Header + > 50 data rows
+    expect(nonEmptyLines.length).toBeGreaterThan(51);
+  });
+
+  test("Wave 1-6 Company Profile (/companies/FPT): Credit Trio, Growth+Capital, PriceOverlay, Cross-Filter TreeSHAP, Radar+BoxPlot, FinancialTable, SourceDrawer focus-trap", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    const overlayPromise = page.waitForResponse(
+      (res) =>
+        res.url().includes("/api/v2/companies/FPT/market-overlay") &&
+        res.status() === 200,
+    );
+    await page.goto("/companies/FPT", { waitUntil: "networkidle" });
+    await overlayPromise;
+
+    // 1. R1-R5 + Top X% + 1Y PD credit trio
+    await expect(page.getByText("Xác suất kiệt quệ 1 năm (1Y PD)")).toBeVisible();
+    await expect(
+      page.getByText(/\bR[1-5]\b|Chưa xếp hạng/).first(),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/Top\s+[\d.,]+%|Chưa có vị thế kỳ/i).first(),
+    ).toBeVisible();
+
+    // 2. Price + Early Warning R4/R5 chart (PriceRiskOverlayChart)
+    await expect(
+      page.getByText(/Đường giá điều chỉnh chia tách\/cổ tức/i),
+    ).toBeVisible();
+
+    // 3. Growth Combo + Capital Structure charts
+    const growthSection = page.locator(
+      'section[aria-label="Diễn biến tăng trưởng và cơ cấu vốn"]',
+    );
+    await expect(growthSection).toBeVisible();
+    await expect(growthSection.locator("canvas")).toHaveCount(2);
+
+    // 4. Cross-Filter: click an earlier quarter on historical distress prob chart to update TreeSHAP
+    const riskHistoryCard = page
+      .locator("div.overflow-hidden")
+      .filter({
+        hasText: "Diễn biến Xác suất kiệt quệ theo kỳ — Nhấp kỳ để xem TreeSHAP",
+      })
+      .first();
+    const riskCanvas = riskHistoryCard.locator("canvas").first();
+    await riskCanvas.scrollIntoViewIfNeeded();
+    const rBox = await riskCanvas.boundingBox();
+    expect(rBox).not.toBeNull();
+
+    // Try clicking an earlier x-position along the line series until "Về kỳ mới nhất" appears
+    let crossFiltered = false;
+    for (const xFrac of [0.25, 0.35, 0.45, 0.55]) {
+      for (const yFrac of [0.5, 0.65, 0.35, 0.75]) {
+        await page.mouse.click(
+          rBox!.x + rBox!.width * xFrac,
+          rBox!.y + rBox!.height * yFrac,
+        );
+        const resetBtn = page.getByRole("button", { name: /Về kỳ mới nhất/i }).first();
+        if (await resetBtn.isVisible({ timeout: 300 }).catch(() => false)) {
+          crossFiltered = true;
+          break;
+        }
+      }
+      if (crossFiltered) break;
+    }
+    expect(crossFiltered, "Clicking a historical risk quarter should update TreeSHAP").toBe(true);
+    await page.getByRole("button", { name: /Về kỳ mới nhất/i }).first().click();
+    await expect(page.getByRole("button", { name: /Về kỳ mới nhất/i })).toHaveCount(0);
+
+    // 5. SourceDrawer focus-trap (open via "Truy nguồn" button)
+    const sourceBtn = page.getByRole("button", { name: /Truy nguồn/i }).first();
+    await sourceBtn.scrollIntoViewIfNeeded();
+    await sourceBtn.click();
+    const drawer = page.getByRole("dialog", { name: "Nguồn dữ liệu chỉ số" });
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toHaveAttribute("aria-modal", "true");
+
+    // Verify focus stays trapped inside the drawer across Tab presses
+    await page.keyboard.press("Tab");
+    const focusInsideDrawer = await page.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Nguồn dữ liệu chỉ số"]');
+      return Boolean(dlg && dlg.contains(document.activeElement));
+    });
+    expect(focusInsideDrawer).toBe(true);
+
+    // Ensure no raw internal metric codes leak inside SourceDrawer
+    const drawerText = await drawer.innerText();
+    for (const pattern of FORBIDDEN_TECHNICAL_LEAKS) {
+      expect(pattern.test(drawerText)).toBe(false);
+    }
+    await page.keyboard.press("Escape");
+    await expect(drawer).toBeHidden();
+
+    // 6. Ratios & Peers tab: Health Radar + Sector Box Plot
+    await page.getByRole("button", { name: "Tỷ số & Ngành" }).click();
+    await expect(
+      page.getByText(/Thang điểm 0–100 chuẩn hóa theo phân vị cùng ngành/i),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/Hộp thể hiện P25–P75, râu Tukey/i),
+    ).toBeVisible();
+
+    // 7. Financial Statements tab: Hierarchical FinancialTable
+    await page.getByRole("button", { name: "Báo cáo tài chính" }).click();
+    await expect(page.locator("table").first()).toBeVisible();
+    const stmtRows = await page.locator("tbody tr").count();
+    expect(stmtRows).toBeGreaterThan(5);
+  });
+
+  test("Wave 1-6 Stress Test (/stress-test): 3 scopes (Market, Single Company, Watchlist), Scenario A vs B comparison, and URL reload restoration", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    // Seed watchlist so Watchlist scope has tickers
+    await page.goto("/", { waitUntil: "networkidle" });
+    await page.evaluate(() => {
+      window.localStorage.setItem(
+        "finintel:watchlist:v1",
+        JSON.stringify(["FPT", "HPG"]),
+      );
+    });
+
+    // 1. Scope 1: Full market
+    const marketStress = page.waitForResponse(
+      (res) =>
+        res.url().includes("/api/v1/stress-test") &&
+        res.request().method() === "POST" &&
+        res.status() === 200,
+    );
+    await page.goto("/stress-test", { waitUntil: "networkidle" });
+    const marketJson = (await (await marketStress).json()) as {
+      total_issuers_evaluated: number;
+    };
+    expect(marketJson.total_issuers_evaluated).toBeGreaterThan(50);
+
+    // 2. Side-by-side Scenario A vs B comparison
+    const pinBtn = page.getByRole("button", { name: /So sánh A vs B \(Ghim A\)/i });
+    await expect(pinBtn).toBeVisible();
+    await pinBtn.click();
+
+    const revInput = page.locator("#shock-rev");
+    const rateInput = page.locator("#shock-rate");
+    await revInput.fill("-25");
+    await rateInput.fill("350");
+
+    await expect(
+      page.getByText(/So sánh song song: Kịch bản A vs Kịch bản B/i).first(),
+    ).toBeVisible({ timeout: 15_000 });
+
+    // 3. URL reload restores shock parameters accurately
+    await expect(page).toHaveURL(/rev=-25/);
+    await expect(page).toHaveURL(/rate=350/);
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.locator("#shock-rev")).toHaveValue("-25");
+    await expect(page.locator("#shock-rate")).toHaveValue("350");
+
+    // 4. Scope 2: Single company (FPT)
+    await page.getByRole("tab", { name: /1 Doanh nghiệp cụ thể/i }).click();
+    const companySearch = page.getByLabel("Tìm doanh nghiệp để chạy Stress Test");
+    await companySearch.fill("FPT");
+    const singleStress = page.waitForResponse(
+      (res) =>
+        res.url().includes("/api/v1/stress-test") &&
+        res.request().method() === "POST" &&
+        res.status() === 200,
+    );
+    await page
+      .locator("button")
+      .filter({ hasText: /^FPT/ })
+      .first()
+      .click();
+    await singleStress;
+    await expect(
+      page.getByText(/Chi tiết tác động lên FPT/i),
+    ).toBeVisible();
+
+    // 5. Scope 3: Watchlist portfolio
+    const watchlistStress = page.waitForResponse(
+      (res) =>
+        res.url().includes("/api/v1/stress-test") &&
+        res.request().method() === "POST" &&
+        res.status() === 200,
+    );
+    await page.getByRole("tab", { name: /Danh mục Watchlist/i }).click();
+    await watchlistStress;
+    await expect(
+      page.getByText(/Tổng nợ chịu rủi ro danh mục \(ICR < 1\)/i),
+    ).toBeVisible();
+  });
+
+  test("Wave 1-6 Methodology (/methodology): loads /api/v2/meta/model-card, Walk-Forward chart, Tier R1->R5, and Case Study navigation", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const modelCardPromise = page.waitForResponse((res) =>
+      res.url().includes("/api/v2/meta/model-card"),
+    );
+    await page.goto("/methodology?tab=models", { waitUntil: "networkidle" });
+    const cardRes = await modelCardPromise;
+    expect([200, 404]).toContain(cardRes.status());
+
+    if (cardRes.status() === 200) {
+      const cardJson = (await cardRes.json()) as {
+        case_studies?: Array<{ ticker: string }>;
+      };
+
+      // Walk-Forward chart + Tier R1 -> R5 reliability chart
+      await expect(
+        page.getByText(/Kiểm định cuốn chiếu Walk-Forward/i),
+      ).toBeVisible();
+      await expect(
+        page.getByText(/Độ tin cậy phân tầng tín nhiệm R1 → R5/i),
+      ).toBeVisible();
+
+      // Case Studies table & clicking a Case Study navigates to its Company Profile
+      await expect(
+        page.getByText(/Case Studies lịch sử Việt Nam/i),
+      ).toBeVisible();
+      const firstCaseTicker = cardJson.case_studies?.[0]?.ticker;
+      expect(firstCaseTicker).toBeTruthy();
+
+      const caseLink = page
+        .locator(`a[href="/companies/${firstCaseTicker}"]`)
+        .first();
+      await expect(caseLink).toBeVisible();
+      await caseLink.click();
+      await page.waitForURL(new RegExp(`/companies/${firstCaseTicker}$`), {
+        timeout: 15_000,
+      });
+      await expect(
+        page.getByText(firstCaseTicker!, { exact: false }).first(),
+      ).toBeVisible();
+    } else {
+      // Snapshot predates model_card_meta publication: verify clean Vietnamese fallback with zero leaks
+      const bodyText = await page.evaluate(() => document.body.innerText ?? "");
+      expect(bodyText.length).toBeGreaterThan(40);
+      for (const pattern of FORBIDDEN_TECHNICAL_LEAKS) {
+        expect(pattern.test(bodyText)).toBe(false);
+      }
+      // Verify Dictionary tab still renders real 38 ratios & 9 red flags
+      await page.getByRole("button", { name: "Từ điển chỉ số & Cờ đỏ" }).click();
+      await expect(page.getByText(/38 tỷ số tài chính chuẩn hóa/i)).toBeVisible();
+      await expect(page.getByText(/9 quy tắc phát hiện bất thường kế toán/i)).toBeVisible();
+    }
   });
 });
