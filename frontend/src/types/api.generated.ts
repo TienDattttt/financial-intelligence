@@ -157,6 +157,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/screener/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Screener Csv */
+        get: operations["export_screener_csv_api_v1_screener_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stress-test": {
         parameters: {
             query?: never;
@@ -302,6 +319,23 @@ export interface paths {
         };
         /** Get V2 Company Filings */
         get: operations["get_v2_company_filings_api_v2_companies__ticker__filings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/companies/{ticker}/market-overlay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get V2 Company Market Overlay */
+        get: operations["get_v2_company_market_overlay_api_v2_companies__ticker__market_overlay_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -628,6 +662,28 @@ export interface components {
             items: components["schemas"]["CompanyFilingItem"][];
         };
         /**
+         * CompanyMarketOverlayResponse
+         * @description V2 Company route response: PIT valuation & Price/Risk Event Overlay (UI-09b).
+         */
+        CompanyMarketOverlayResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** As Of */
+            as_of?: string | null;
+            latest_valuation?: components["schemas"]["PriceOverlayPointItem"] | null;
+            /** Price Series */
+            price_series: components["schemas"]["PriceOverlayPointItem"][];
+            /** Model Markers */
+            model_markers: components["schemas"]["ModelRiskMarkerItem"][];
+            /** Regulatory Markers */
+            regulatory_markers: components["schemas"]["RegulatoryEventMarkerItem"][];
+            earliest_warning_summary?: components["schemas"]["WarningSummaryItem"] | null;
+        };
+        /**
          * CompanyProfileResponse
          * @description Route 4 response: full financial profile, core earnings, red flags, and ML scores.
          */
@@ -738,6 +794,53 @@ export interface components {
             core_to_ebt_ratio?: number | null;
             /** Core To Ebt Ratio Flag */
             core_to_ebt_ratio_flag?: string | null;
+        };
+        /**
+         * DrawdownWindowMetricsItem
+         * @description Peak/trough prices and percentage drawdowns over a post-warning window (UI-09b).
+         */
+        DrawdownWindowMetricsItem: {
+            /**
+             * Start Trade Date
+             * Format: date
+             */
+            start_trade_date: string;
+            /**
+             * End Trade Date
+             * Format: date
+             */
+            end_trade_date: string;
+            /**
+             * Target End Date
+             * Format: date
+             */
+            target_end_date: string;
+            /** Session Count */
+            session_count: number;
+            /** Base Close Adj */
+            base_close_adj: number;
+            /** Peak Close Adj */
+            peak_close_adj: number;
+            /**
+             * Peak Date
+             * Format: date
+             */
+            peak_date: string;
+            /** Trough Close Adj */
+            trough_close_adj: number;
+            /**
+             * Trough Date
+             * Format: date
+             */
+            trough_date: string;
+            /** End Close Adj */
+            end_close_adj: number;
+            /** Return Pct */
+            return_pct: number;
+            /** Drawdown From Marker Pct */
+            drawdown_from_marker_pct: number;
+            /** Max Peak To Trough Drawdown Pct */
+            max_peak_to_trough_drawdown_pct: number;
         };
         /**
          * DuPontPoint
@@ -1047,6 +1150,18 @@ export interface components {
             shap_top_drivers?: components["schemas"]["ShapExplanationItem"] | null;
         };
         /**
+         * MarkerDrawdownBundleItem
+         * @description Post-warning drawdown metrics across standard horizons and cutoff bounds.
+         */
+        MarkerDrawdownBundleItem: {
+            /** Horizons */
+            horizons: {
+                [key: string]: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+            };
+            to_first_regulatory_event?: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+            to_current?: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+        };
+        /**
          * MarketChangeItem
          * @description Quarter-over-quarter or year-over-year risk transition for one issuer.
          */
@@ -1224,6 +1339,57 @@ export interface components {
             recall_at_top_10_percent?: number | null;
         };
         /**
+         * ModelRiskMarkerItem
+         * @description PIT marker for first model upgrade to R4 or R5.
+         */
+        ModelRiskMarkerItem: {
+            /**
+             * Marker Type
+             * @constant
+             */
+            marker_type: "MODEL_RISK_TIER";
+            /**
+             * Marker Kind
+             * @enum {string}
+             */
+            marker_kind: "FIRST_R4_UPGRADE" | "FIRST_R5_UPGRADE";
+            /**
+             * Risk Tier
+             * @enum {string}
+             */
+            risk_tier: "R4" | "R5";
+            /** Is First R4 Or R5 */
+            is_first_r4_or_r5: boolean;
+            /**
+             * Disclosure Date
+             * Format: date
+             */
+            disclosure_date: string;
+            /**
+             * Date Basis
+             * @enum {string}
+             */
+            date_basis: "PIT_DISCLOSURE" | "PERIOD_END_FALLBACK";
+            /** Aligned Trade Date */
+            aligned_trade_date?: string | null;
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Close Adj At Marker */
+            close_adj_at_marker?: number | null;
+            /** Close Raw At Marker */
+            close_raw_at_marker?: number | null;
+            /** Calibrated Distress Prob */
+            calibrated_distress_prob?: number | null;
+            /** Risk Market Percentile */
+            risk_market_percentile?: number | null;
+            /** Relative Risk Lift */
+            relative_risk_lift?: number | null;
+            drawdowns?: components["schemas"]["MarkerDrawdownBundleItem"] | null;
+        };
+        /**
          * PeerBandHistoryPoint
          * @description Single period on the historical peer percentile band trajectory.
          */
@@ -1273,6 +1439,41 @@ export interface components {
             icb_name_level3?: string | null;
             /** Icb Name Level2 */
             icb_name_level2?: string | null;
+        };
+        /**
+         * PriceOverlayPointItem
+         * @description Single daily point on the continuous Price & Risk Event Overlay series.
+         */
+        PriceOverlayPointItem: {
+            /**
+             * Trade Date
+             * Format: date
+             */
+            trade_date: string;
+            /** Close Adj */
+            close_adj: number;
+            /** Close Raw */
+            close_raw: number;
+            /** Volume */
+            volume: number;
+            /** Shares Outstanding Market */
+            shares_outstanding_market?: number | null;
+            /** Running Drawdown Pct */
+            running_drawdown_pct: number;
+            /** Drawdown From First Warning Pct */
+            drawdown_from_first_warning_pct?: number | null;
+            /** Market Cap Vnd */
+            market_cap_vnd?: number | null;
+            /** Pe Ttm */
+            pe_ttm?: number | null;
+            /** Pb Ratio */
+            pb_ratio?: number | null;
+            /** Pe Flag */
+            pe_flag?: string | null;
+            /** Pb Flag */
+            pb_flag?: string | null;
+            /** Shares Source */
+            shares_source?: string | null;
         };
         /**
          * QualitySummaryItem
@@ -1496,6 +1697,46 @@ export interface components {
             evidence_json?: string | null;
             /** Filing Id */
             filing_id?: string | null;
+        };
+        /**
+         * RegulatoryEventMarkerItem
+         * @description PIT marker for a real regulatory distress or audit sanction event.
+         */
+        RegulatoryEventMarkerItem: {
+            /**
+             * Marker Type
+             * @constant
+             */
+            marker_type: "REGULATORY_EVENT";
+            /** Event Type */
+            event_type: string;
+            /** Event Stage */
+            event_stage: string;
+            /**
+             * Event Date
+             * Format: date
+             */
+            event_date: string;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /** Resolution Date */
+            resolution_date?: string | null;
+            /** Aligned Trade Date */
+            aligned_trade_date?: string | null;
+            /** Close Adj At Marker */
+            close_adj_at_marker?: number | null;
+            /** Close Raw At Marker */
+            close_raw_at_marker?: number | null;
+            /** Raw Headline */
+            raw_headline: string;
+            /** Source Provider */
+            source_provider: string;
+            /** Source Url */
+            source_url: string;
+            drawdowns?: components["schemas"]["MarkerDrawdownBundleItem"] | null;
         };
         /**
          * RiskTierCutoffsItem
@@ -2144,6 +2385,38 @@ export interface components {
                 [key: string]: components["schemas"]["ModelMetricsItem"];
             };
         };
+        /**
+         * WarningSummaryItem
+         * @description Summary anchored at the earliest warning marker (model R4/R5 or regulatory).
+         */
+        WarningSummaryItem: {
+            /**
+             * Warning Source
+             * @enum {string}
+             */
+            warning_source: "MODEL_RISK_TIER" | "REGULATORY_EVENT";
+            /** Warning Label */
+            warning_label: string;
+            /**
+             * Warning Date
+             * Format: date
+             */
+            warning_date: string;
+            /** Aligned Trade Date */
+            aligned_trade_date?: string | null;
+            /** Base Close Adj */
+            base_close_adj?: number | null;
+            /** Latest Trade Date */
+            latest_trade_date?: string | null;
+            /** Latest Close Adj */
+            latest_close_adj?: number | null;
+            /** Horizons */
+            horizons: {
+                [key: string]: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+            };
+            to_first_regulatory_event?: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+            to_current?: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -2452,6 +2725,54 @@ export interface operations {
             };
         };
     };
+    export_screener_csv_api_v1_screener_export_get: {
+        parameters: {
+            query?: {
+                period_type?: "QUARTER" | "ANNUAL";
+                period_end_date?: string | null;
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                icb_code_level2?: string | null;
+                min_f_score?: number | null;
+                altman_zone?: ("SAFE_ZONE" | "GREY_ZONE" | "DISTRESS_ZONE") | null;
+                risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
+                beneish_flag?: ("VALID" | "HIGH_MANIPULATION_RISK_SCREEN" | "MIXED_TAXONOMY" | "MISSING_PRIOR_YEAR_BASE" | "MISSING_DEPRECIATION_DIRECT_CF" | "MISSING_OR_INVALID_INPUT") | null;
+                max_distress_prob?: number | null;
+                min_distress_prob?: number | null;
+                max_red_flags?: number | null;
+                min_red_flags?: number | null;
+                q?: string | null;
+                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "debt_to_equity";
+                sort_dir?: "asc" | "desc";
+            };
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Full filtered screener dataset as UTF-8 BOM CSV. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "text/csv; charset=utf-8": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     run_stress_test_api_v1_stress_test_post: {
         parameters: {
             query?: never;
@@ -2745,6 +3066,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CompanyFilingsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_v2_company_market_overlay_api_v2_companies__ticker__market_overlay_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                as_of?: string | null;
+            };
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyMarketOverlayResponse"];
                 };
             };
             /** @description Validation Error */
