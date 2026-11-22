@@ -1740,3 +1740,221 @@ def test_ducklake_snapshot_cache_hit_eliminates_catalog_and_where_1_eq_0_roundtr
             filters={"ticker": "FPT"},
         )
         assert df_rb["company_name_vn"].to_list() == ["FPT Corp v1"]
+
+
+def test_ducklake_hash_skip_reuses_unchanged_parquet_files_and_preserves_extension_ports(
+    tmp_path: Path,
+) -> None:
+    """ARCH-07a (B-03): unchanged mart tables skip CREATE OR REPLACE TABLE, reuse Parquet files,
+    remain in new_catalog_tables (never dropped), preserve Extension Ports, and survive maintain/rollback."""
+    data_root, state, store = _make_ducklake_env(
+        tmp_path, keep_snapshots=2, min_snapshot_age_seconds=0
+    )
+    issuers_v1 = _sample_issuers("steady")
+    facts_v1 = _sample_facts(value_offset=0.0)
+    latest_v1 = build_latest_facts_table(facts_v1, as_of=date(2026, 2, 1))
+    manifest_v1 = _sample_manifest("steady")
+    ratios_v1 = _sample_ratios(row_count=6, value_offset=0.0)
+
+    state.start_run("run-hs-1", "CLI_MANUAL", {"source": "fhsc"}, None)
+    ver1 = store.publish_snapshot(
+        "snap_hs_001",
+        {
+            "issuers.parquet": issuers_v1,
+            "financial_facts.parquet": facts_v1,
+            "latest_facts.parquet": latest_v1,
+            FILINGS_MANIFEST_TABLE: manifest_v1,
+            RATIOS_TABLE: ratios_v1,
+        },
+        run_id="run-hs-1",
+    )
+    state.finish_run("run-hs-1", "SUCCEEDED", "snap_hs_001")
+
+    def _list_files(table: str, version: int) -> tuple[str, ...]:
+        con = duckdb.connect(":memory:")
+        try:
+            ensure_ducklake_attached(
+                con,
+                catalog_path=store.catalog_path,
+                data_path=store.data_path,
+                catalog_alias=store.catalog_alias,
+                read_only=True,
+            )
+            rows = con.execute(
+                "SELECT data_file FROM ducklake_list_files(?, ?, snapshot_version => ?) ORDER BY 1",
+                [store.catalog_alias, table, version],
+            ).fetchall()
+            return tuple(str(r[0]) for r in rows)
+        finally:
+            con.close()
+
+    issuers_files_v1 = _list_files("issuers", ver1)
+    facts_files_v1 = _list_files("financial_facts", ver1)
+    manifest_files_v1 = _list_files("filings_manifest", ver1)
+    ratios_files_v1 = _list_files("financial_ratios", ver1)
+    assert issuers_files_v1 and facts_files_v1 and manifest_files_v1 and ratios_files_v1
+
+    # Publish snap_hs_002: ONLY financial_ratios changes; issuers is passed in reversed row order
+    # to verify canonical hash determinism.
+    ratios_v2 = _sample_ratios(row_count=6, value_offset=0.05)
+    state.start_run("run-hs-2", "CLI_MANUAL", {"source": "fhsc"}, None)
+    ver2 = store.publish_snapshot(
+        "snap_hs_002",
+        {
+            "issuers.parquet": issuers_v1.reverse(),
+            "financial_facts.parquet": facts_v1,
+            "latest_facts.parquet": latest_v1,
+            FILINGS_MANIFEST_TABLE: manifest_v1,
+            RATIOS_TABLE: ratios_v2,
+        },
+        run_id="run-hs-2",
+    )
+    state.finish_run("run-hs-2", "SUCCEEDED", "snap_hs_002")
+    assert ver2 == ver1 + 1
+
+    # Unchanged tables MUST reuse exact Parquet file paths (zero write amplification).
+    assert _list_files("issuers", ver2) == issuers_files_v1
+    assert _list_files("financial_facts", ver2) == facts_files_v1
+    assert _list_files("filings_manifest", ver2) == manifest_files_v1
+    # Changed table MUST write a fresh Parquet file.
+    ratios_files_v2 = _list_files("financial_ratios", ver2)
+    assert ratios_files_v2 != ratios_files_v1
+
+    # Verify audit metadata records skipped_tables accurately.
+    con = duckdb.connect(":memory:")
+    try:
+        ensure_ducklake_attached(
+            con,
+            catalog_path=store.catalog_path,
+            data_path=store.data_path,
+            catalog_alias=store.catalog_alias,
+            read_only=True,
+        )
+        raw_meta = con.execute(
+            f'SELECT metadata_json FROM "{store.catalog_alias}"."_snapshot_audit" '
+            "WHERE snapshot_id = 'snap_hs_002'"
+        ).fetchone()
+        assert raw_meta is not None and raw_meta[0] is not None
+        parsed_meta = json.loads(str(raw_meta[0]))
+        assert set(parsed_meta["skipped_tables"]) == {
+            "issuers",
+            "financial_facts",
+            "latest_facts",
+            "filings_manifest",
+        }
+    finally:
+        con.close()
+
+    # Add an Extension Port table outside MANAGED_MART_TABLES, then publish snap_hs_003.
+    rw_con = store._open_rw_connection()
+    try:
+        rw_con.execute(
+            f'CREATE TABLE "{store.catalog_alias}"."regulatory_events" '
+            "(issuer_id VARCHAR, event_type VARCHAR);"
+        )
+        rw_con.execute(
+            f'INSERT INTO "{store.catalog_alias}"."regulatory_events" '
+            "VALUES ('FPT', 'WARNING');"
+        )
+    finally:
+        rw_con.close()
+
+    ratios_v3 = _sample_ratios(row_count=6, value_offset=0.10)
+    state.start_run("run-hs-3", "CLI_MANUAL", {"source": "fhsc"}, None)
+    ver3 = store.publish_snapshot(
+        "snap_hs_003",
+        {
+            "issuers.parquet": issuers_v1,
+            "financial_facts.parquet": facts_v1,
+            "latest_facts.parquet": latest_v1,
+            FILINGS_MANIFEST_TABLE: manifest_v1,
+            RATIOS_TABLE: ratios_v3,
+        },
+        run_id="run-hs-3",
+    )
+    state.finish_run("run-hs-3", "SUCCEEDED", "snap_hs_003")
+    assert ver3 > ver2
+
+    # Extension Port table MUST still exist and be readable.
+    ro_con = duckdb.connect(":memory:")
+    try:
+        ensure_ducklake_attached(
+            ro_con,
+            catalog_path=store.catalog_path,
+            data_path=store.data_path,
+            catalog_alias=store.catalog_alias,
+            read_only=True,
+        )
+        port_rows = ro_con.execute(
+            f'SELECT issuer_id, event_type FROM "{store.catalog_alias}"."regulatory_events"'
+        ).fetchall()
+        assert port_rows == [("FPT", "WARNING")]
+    finally:
+        ro_con.close()
+
+    # Run maintain(keep_snapshots=2, min_snapshot_age_seconds=0) -> expires ver1,
+    # while unchanged Parquet files referenced by ver2/ver3 remain intact & readable.
+    store.maintain(keep_snapshots=2, min_snapshot_age_seconds=0)
+    repo = ParquetRepository(data_root=data_root)
+    with repo.snapshot_session() as pinned3:
+        assert pinned3.snapshot_id == "snap_hs_003"
+        assert pinned3.read_table("issuers.parquet").height == 3
+        assert pinned3.read_table(RATIOS_TABLE).height == 6
+
+    store.rollback_snapshot("snap_hs_002", state)
+    with repo.snapshot_session() as pinned2:
+        assert pinned2.snapshot_id == "snap_hs_002"
+        assert pinned2.read_table("issuers.parquet").height == 3
+
+
+def test_ducklake_hash_skip_all_tables_unchanged_still_commits_audit_snapshot(
+    tmp_path: Path,
+) -> None:
+    """ARCH-07a: publishing 100% identical tables still commits a new audited snapshot version
+    while writing zero duplicate Parquet files for mart tables."""
+    data_root, state, store = _make_ducklake_env(tmp_path)
+    issuers_df = _sample_issuers("same")
+    facts_df = _sample_facts(value_offset=0.0)
+    latest_df = build_latest_facts_table(facts_df, as_of=date(2026, 2, 1))
+    tables = {
+        "issuers.parquet": issuers_df,
+        "financial_facts.parquet": facts_df,
+        "latest_facts.parquet": latest_df,
+    }
+
+    state.start_run("run-same-1", "CLI_MANUAL", {"source": "fhsc"}, None)
+    ver1 = store.publish_snapshot("snap_same_001", tables, run_id="run-same-1")
+    state.finish_run("run-same-1", "SUCCEEDED", "snap_same_001")
+
+    state.start_run("run-same-2", "CLI_MANUAL", {"source": "fhsc"}, None)
+    ver2 = store.publish_snapshot("snap_same_002", tables, run_id="run-same-2")
+    state.finish_run("run-same-2", "SUCCEEDED", "snap_same_002")
+    assert ver2 == ver1 + 1
+
+    con = duckdb.connect(":memory:")
+    try:
+        ensure_ducklake_attached(
+            con,
+            catalog_path=store.catalog_path,
+            data_path=store.data_path,
+            catalog_alias=store.catalog_alias,
+            read_only=True,
+        )
+        for tbl in ("issuers", "financial_facts", "latest_facts"):
+            f1 = con.execute(
+                "SELECT data_file FROM ducklake_list_files(?, ?, snapshot_version => ?) ORDER BY 1",
+                [store.catalog_alias, tbl, ver1],
+            ).fetchall()
+            f2 = con.execute(
+                "SELECT data_file FROM ducklake_list_files(?, ?, snapshot_version => ?) ORDER BY 1",
+                [store.catalog_alias, tbl, ver2],
+            ).fetchall()
+            assert f1 == f2
+    finally:
+        con.close()
+
+    repo = ParquetRepository(data_root=data_root)
+    with repo.snapshot_session() as pinned:
+        assert pinned.snapshot_id == "snap_same_002"
+        assert pinned.read_table("issuers.parquet").height == 3
+        assert pinned.read_table("financial_facts.parquet").height == 3

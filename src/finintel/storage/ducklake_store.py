@@ -30,6 +30,7 @@ Runtime API Verification (Python 3.11.9, duckdb==1.4.2, DuckLake format 0.3):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -133,6 +134,57 @@ def validate_sql_identifier(name: str, *, label: str = "identifier") -> str:
 
 def _escape_sql_literal(value: str) -> str:
     return value.replace("'", "''")
+
+
+def _sha256_table_frame(filename: str, frame: pl.DataFrame) -> str:
+    """Compute a deterministic SHA-256 content + schema + layout digest for a prepared table."""
+    layout = TABLE_PHYSICAL_LAYOUT.get(filename)
+    sort_cols = (
+        [c for c in layout.sort_by if c in frame.columns] if layout is not None else []
+    )
+    rg_size = row_group_size_for_table(filename)
+    schema_sig = "|".join(f"{name}:{dtype}" for name, dtype in frame.schema.items())
+    header = (
+        f"v1|{filename}|rg={rg_size}|sort={','.join(sort_cols)}|"
+        f"rows={frame.height}|{schema_sig}\n"
+    ).encode("utf-8")
+    digest = hashlib.sha256(header)
+    if frame.is_empty():
+        digest.update(b"EMPTY")
+        return digest.hexdigest()
+
+    norm_exprs: list[pl.Expr] = []
+    for col, dtype in frame.schema.items():
+        if dtype.is_float():
+            norm_exprs.append(
+                pl.when(pl.col(col) == 0.0)
+                .then(pl.lit(0.0, dtype=dtype))
+                .otherwise(pl.col(col))
+                .alias(col)
+            )
+        else:
+            norm_exprs.append(pl.col(col))
+    normalized = frame.select(norm_exprs)
+
+    order_cols = list(sort_cols)
+    for col, dtype in normalized.schema.items():
+        if col not in order_cols and not isinstance(dtype, (pl.List, pl.Struct)):
+            order_cols.append(col)
+    if order_cols:
+        normalized = normalized.sort(order_cols, nulls_last=True)
+
+    hash_exprs: list[pl.Expr] = []
+    for col, dtype in normalized.schema.items():
+        if isinstance(dtype, pl.List):
+            hash_exprs.append(
+                pl.col(col).cast(pl.List(pl.String)).list.join("\x1f").alias(col)
+            )
+        elif isinstance(dtype, pl.Struct):
+            hash_exprs.append(pl.col(col).struct.json_encode().alias(col))
+    hashable = normalized.with_columns(hash_exprs) if hash_exprs else normalized
+    row_hashes = hashable.hash_rows(seed=0, seed_1=1, seed_2=2, seed_3=3)
+    digest.update(row_hashes.to_numpy().tobytes())
+    return digest.hexdigest()
 
 
 def _to_utc(value: object) -> datetime:
@@ -593,6 +645,37 @@ class DuckLakeStore:
             and str(row[0]) not in EXTENSION_PORT_CATALOG_TABLES
         }
 
+    def _load_previous_head_table_hashes(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        prev_head_version: int,
+    ) -> dict[str, str]:
+        """Return per-table SHA-256 hashes of the current DuckLake HEAD snapshot if audited."""
+        row = con.execute(
+            f"""
+            SELECT ducklake_version, metadata_json
+            FROM "{self.catalog_alias}"."{SNAPSHOT_AUDIT_TABLE}"
+            ORDER BY ducklake_version DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None or int(row[0]) != prev_head_version or row[1] is None:
+            return {}
+        try:
+            parsed = json.loads(str(row[1]))
+        except ValueError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        raw_hashes = parsed.get("table_hashes")
+        if not isinstance(raw_hashes, dict):
+            return {}
+        return {
+            str(k): str(v)
+            for k, v in raw_hashes.items()
+            if isinstance(k, str) and isinstance(v, str) and len(v) == 64
+        }
+
     def _apply_set_sorted_by_best_effort(
         self,
         con: duckdb.DuckDBPyConnection,
@@ -719,9 +802,10 @@ class DuckLakeStore:
                     parsed_args.get("dagster_run_id"), str
                 ):
                     audit_meta["dagster_run_id"] = parsed_args["dagster_run_id"]
-            metadata_json = json.dumps(
-                audit_meta, ensure_ascii=False, sort_keys=True, default=str
-            )
+            current_table_hashes: dict[str, str] = {
+                filename: _sha256_table_frame(filename, frame)
+                for filename, frame in prepared.items()
+            }
 
             con = self._open_rw_connection()
             registered_views: list[str] = []
@@ -746,15 +830,35 @@ class DuckLakeStore:
                     raise ContractViolationError(
                         "Unable to determine current DuckLake snapshot version."
                     )
-                expected_version = int(pre_row[0]) + 1
+                prev_head_version = int(pre_row[0])
+                expected_version = prev_head_version + 1
                 published_at = datetime.now(UTC).isoformat()
                 tables_json = json.dumps(sorted(prepared), ensure_ascii=False)
 
+                prev_table_hashes = self._load_previous_head_table_hashes(
+                    con, prev_head_version
+                )
+                skipped_tables: set[str] = set()
                 for filename, frame in prepared.items():
                     tbl = filename.removesuffix(".parquet")
+                    if (
+                        tbl in existing_tables
+                        and tbl in MANAGED_MART_CATALOG_TABLES
+                        and tbl not in EXTENSION_PORT_CATALOG_TABLES
+                        and prev_table_hashes.get(filename)
+                        == current_table_hashes[filename]
+                    ):
+                        skipped_tables.add(tbl)
+                        continue
                     view_name = f"_finintel_stage_{tbl}"
                     con.register(view_name, frame)
                     registered_views.append(view_name)
+
+                audit_meta["table_hashes"] = current_table_hashes
+                audit_meta["skipped_tables"] = sorted(skipped_tables)
+                metadata_json = json.dumps(
+                    audit_meta, ensure_ascii=False, sort_keys=True, default=str
+                )
 
                 # Phase 1: Single Atomic DuckLake Multi-Table Commit.
                 con.execute("BEGIN TRANSACTION;")
@@ -762,7 +866,11 @@ class DuckLakeStore:
                     new_catalog_tables: set[str] = set()
                     for filename, frame in prepared.items():
                         tbl = filename.removesuffix(".parquet")
+                        # Always retain unchanged tables in new_catalog_tables so
+                        # stale_tables never issues DROP TABLE against them (B-03).
                         new_catalog_tables.add(tbl)
+                        if tbl in skipped_tables:
+                            continue
                         view_name = f"_finintel_stage_{tbl}"
                         rg_size = row_group_size_for_table(filename)
                         con.execute(
@@ -831,7 +939,23 @@ class DuckLakeStore:
                         "DuckLake committed snapshot version diverged from audited version."
                     )
 
-                self._apply_set_sorted_by_best_effort(con, prepared)
+                if skipped_tables:
+                    logger.debug(
+                        "DuckLake publish skipped %d unchanged table(s): %s",
+                        len(skipped_tables),
+                        ", ".join(sorted(skipped_tables)),
+                        extra={
+                            "event": "ducklake_hash_skip",
+                            "run_id": run_id,
+                            "details": {"skipped_tables": sorted(skipped_tables)},
+                        },
+                    )
+                written_tables = {
+                    filename: frame
+                    for filename, frame in prepared.items()
+                    if filename.removesuffix(".parquet") not in skipped_tables
+                }
+                self._apply_set_sorted_by_best_effort(con, written_tables)
             finally:
                 for view_name in registered_views:
                     try:
