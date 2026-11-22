@@ -100,6 +100,15 @@ _SEPARATE_ONLY_MARKERS: tuple[str, ...] = (
     "riêng lẻ",
     "rieng le",
 )
+_SEPARATE_FILENAME_MARKERS: tuple[str, ...] = (
+    "cong_ty_me",
+    "congtyme",
+    "bctc_rieng",
+    "bctcrieng",
+    "rieng_le",
+    "riengle",
+    "_mekt",
+)
 
 ArchiveFormat = Literal["pdf", "zip"]
 
@@ -300,6 +309,9 @@ def extract_audited_consolidated_annual_candidates(
             continue
         raw_href = href_match[1].strip()
         if not _cafef_row_matches_ticker(tr_html, raw_href, clean_ticker):
+            continue
+        href_basename_lower = raw_href.split("?", 1)[0].rsplit("/", 1)[-1].lower()
+        if any(marker in href_basename_lower for marker in _SEPARATE_FILENAME_MARKERS):
             continue
 
         try:
@@ -594,6 +606,55 @@ def write_manifest_parquet(
             tmp_path.unlink()
         raise
     return frame
+
+
+def load_existing_manifest_records(
+    manifest_path: Path,
+    *,
+    output_root: Path,
+) -> list[CuratedPdfRecord]:
+    """Load and re-verify existing manifest records for idempotent incremental runs."""
+    if not manifest_path.is_file():
+        return []
+    frame = pl.read_parquet(manifest_path)
+    records: list[CuratedPdfRecord] = []
+    for row in frame.iter_rows(named=True):
+        rel_path = str(row["local_rel_path"])
+        expected_sha = str(row["content_sha256"])
+        expected_size = int(row["file_size_bytes"])
+        file_path = output_root / rel_path
+        if not file_path.is_file():
+            continue
+        payload = file_path.read_bytes()
+        if (
+            not verify_pdf_bytes(payload)
+            or len(payload) != expected_size
+            or compute_sha256(payload) != expected_sha
+        ):
+            continue
+        fq_raw = row["fiscal_quarter"]
+        zip_member_raw = row["zip_member_name"]
+        records.append(
+            CuratedPdfRecord(
+                issuer_id=str(row["issuer_id"]),
+                fiscal_year=int(row["fiscal_year"]),
+                fiscal_quarter=int(fq_raw) if fq_raw is not None else None,
+                statement_scope=str(row["statement_scope"]),
+                doc_type=str(row["doc_type"]),
+                source_url=str(row["source_url"]),
+                file_size_bytes=expected_size,
+                content_sha256=expected_sha,
+                local_rel_path=rel_path,
+                is_valid_pdf=bool(row["is_valid_pdf"]),
+                cohort=str(row["cohort"]),
+                extracted_from_zip=bool(row["extracted_from_zip"]),
+                zip_member_name=(
+                    str(zip_member_raw) if zip_member_raw is not None else None
+                ),
+                source_title=str(row["source_title"]),
+            )
+        )
+    return records
 
 
 def verify_stored_manifest_files(

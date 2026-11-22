@@ -21,6 +21,7 @@ from finintel.rag.pdf_catalog import (
     download_curated_pdf,
     extract_audited_consolidated_annual_candidates,
     extract_verified_pdf_payload,
+    load_existing_manifest_records,
     normalize_cafef_pdf_url,
     render_curated_pdfs_audit_markdown,
     select_candidates_for_years,
@@ -320,3 +321,52 @@ def test_build_manifest_dataframe_rejects_duplicate_or_separate_scope() -> None:
     )
     with pytest.raises(ContractViolationError):
         build_manifest_dataframe([bad])
+
+
+def test_extract_rejects_mislabeled_separate_filename_and_loads_existing_manifest(
+    tmp_path: Path,
+) -> None:
+    html = """
+    <table>
+      <tr>
+        <td>Báo cáo tài chính hợp nhất năm 2025 (đã kiểm toán)</td>
+        <td>CN/2025</td>
+        <td><a href="https://cafefnew.mediacdn.vn//Images/Uploaded/DuLieuDownload/BCTC/PVD_BCTC_kiem_toan_Cong_ty_me_2025.pdf">Tải về</a></td>
+      </tr>
+      <tr>
+        <td>Báo cáo tài chính hợp nhất năm 2024 (đã kiểm toán)</td>
+        <td>CN/2024</td>
+        <td><a href="https://cafefnew.mediacdn.vn//Images/Uploaded/DuLieuDownload/BCTC/PVD_BCTC_hop_nhat_2024.pdf">Tải về</a></td>
+      </tr>
+    </table>
+    """
+    candidates = extract_audited_consolidated_annual_candidates("PVD", html)
+    assert [c.fiscal_year for c in candidates] == [2024]
+
+    digest, rel_path, size = store_immutable_pdf(
+        _SAMPLE_PDF_BYTES, output_root=tmp_path
+    )
+    rec = CuratedPdfRecord(
+        issuer_id="PVD",
+        fiscal_year=2024,
+        fiscal_quarter=None,
+        statement_scope="CONSOLIDATED",
+        doc_type=DOC_TYPE_AUDITED_ANNUAL_CONSOLIDATED,
+        source_url="https://cafef1.mediacdn.vn/pvd_2024.pdf",
+        file_size_bytes=size,
+        content_sha256=digest,
+        local_rel_path=rel_path,
+        is_valid_pdf=True,
+        cohort="watchlist_bluechip",
+        extracted_from_zip=False,
+        zip_member_name=None,
+        source_title="BCTC HN KT 2024",
+    )
+    manifest_path = tmp_path / "curated_pdfs_manifest.parquet"
+    write_manifest_parquet([rec], manifest_path)
+    loaded = load_existing_manifest_records(manifest_path, output_root=tmp_path)
+    assert loaded == [rec]
+
+    # Corrupted file on disk is skipped by incremental loader
+    (tmp_path / rel_path).write_bytes(b"corrupt")
+    assert load_existing_manifest_records(manifest_path, output_root=tmp_path) == []

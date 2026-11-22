@@ -22,6 +22,7 @@ from finintel.rag.pdf_catalog import (
     PdfCandidate,
     download_curated_pdf,
     extract_audited_consolidated_annual_candidates,
+    load_existing_manifest_records,
     render_curated_pdfs_audit_markdown,
     select_candidates_for_years,
     verify_stored_manifest_files,
@@ -85,7 +86,75 @@ WATCHLIST_TARGETS: tuple[IssuerCollectionTarget, ...] = (
     IssuerCollectionTarget("CIG", "watchlist_high_risk", (2025, 2024), 1),
 )
 
-ALL_TARGETS: tuple[IssuerCollectionTarget, ...] = CASE_STUDY_TARGETS + WATCHLIST_TARGETS
+REGULATORY_DISTRESS_TARGETS: tuple[IssuerCollectionTarget, ...] = (
+    IssuerCollectionTarget("DRH", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("OGC", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("TTF", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("VMD", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("PTC", "regulatory_distress", (2023, 2022), 1),
+    IssuerCollectionTarget("PVV", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("PTL", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("FID", "regulatory_distress", (2024, 2023), 1),
+    IssuerCollectionTarget("ECI", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("GKM", "regulatory_distress", (2023, 2022, 2021), 1),
+    IssuerCollectionTarget("PIT", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("DTL", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("HPX", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("JVC", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("PLP", "regulatory_distress", (2025, 2022, 2021), 1),
+    IssuerCollectionTarget("VPG", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("LDG", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("SRF", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("TDH", "regulatory_distress", (2024, 2023, 2022), 1),
+    IssuerCollectionTarget("TSC", "regulatory_distress", (2024, 2023, 2022), 1),
+)
+
+SECTOR_LEADER_TARGETS: tuple[IssuerCollectionTarget, ...] = (
+    IssuerCollectionTarget("HSG", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("NKG", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("DCM", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("DPM", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("PVS", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("PLX", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("POW", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("KBC", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("IDC", "sector_leader", (2025, 2024), 1),
+    IssuerCollectionTarget("NLG", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("KDH", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("DIG", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("DXG", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("PDR", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("CII", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("CTD", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("VCG", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("FRT", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("DGW", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("HAH", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("PVT", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("ACV", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("VJC", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("VHC", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("ANV", "sector_leader", (2025, 2024), 1),
+    IssuerCollectionTarget("DBC", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("QNS", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("KDC", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("PC1", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("BMP", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("VCS", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("CMG", "sector_leader", (2025, 2023), 1),
+    IssuerCollectionTarget("CTR", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("VGC", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("BCM", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("HDG", "sector_leader", (2025, 2024, 2023), 1),
+    IssuerCollectionTarget("GEG", "sector_leader", (2025, 2024, 2023), 1),
+)
+
+ALL_TARGETS: tuple[IssuerCollectionTarget, ...] = (
+    CASE_STUDY_TARGETS
+    + WATCHLIST_TARGETS
+    + REGULATORY_DISTRESS_TARGETS
+    + SECTOR_LEADER_TARGETS
+)
 
 
 def _plan_candidates(
@@ -143,9 +212,22 @@ def collect_curated_pack(
             print(f"  {target.issuer_id:4s} ({target.cohort}): FY={years}")
         return 0
 
+    manifest_path = output_dir / "curated_pdfs_manifest.parquet"
+    existing_records = load_existing_manifest_records(
+        manifest_path, output_root=output_dir
+    )
+    records_by_slot: dict[tuple[str, int], CuratedPdfRecord] = {
+        (rec.issuer_id, rec.fiscal_year): rec for rec in existing_records
+    }
+    existing_count_by_issuer: dict[str, int] = {}
+    for rec in existing_records:
+        existing_count_by_issuer[rec.issuer_id] = (
+            existing_count_by_issuer.get(rec.issuer_id, 0) + 1
+        )
+
     min_interval = 1.0 / rate_limit_rps if rate_limit_rps > 0 else 0.0
     last_request_ts = 0.0
-    records: list[CuratedPdfRecord] = []
+    newly_downloaded = 0
 
     headers = {
         "User-Agent": (
@@ -158,10 +240,15 @@ def collect_curated_pack(
         timeout=httpx.Timeout(60.0, connect=15.0), headers=headers
     ) as client:
         for target, candidates in plan:
-            collected_for_issuer = 0
+            collected_for_issuer = existing_count_by_issuer.get(target.issuer_id, 0)
+            if collected_for_issuer >= target.max_items:
+                continue
             for candidate in candidates:
                 if collected_for_issuer >= target.max_items:
                     break
+                slot = (candidate.issuer_id, candidate.fiscal_year)
+                if slot in records_by_slot:
+                    continue
                 elapsed = time.monotonic() - last_request_ts
                 if last_request_ts > 0.0 and elapsed < min_interval:
                     time.sleep(min_interval - elapsed)
@@ -183,8 +270,9 @@ def collect_curated_pack(
                     print(f"[WARN] {note}", file=sys.stderr)
                     continue
 
-                records.append(rec)
+                records_by_slot[slot] = rec
                 collected_for_issuer += 1
+                newly_downloaded += 1
                 size_mb = rec.file_size_bytes / (1024 * 1024)
                 print(
                     f"[OK] {rec.issuer_id:4s} FY{rec.fiscal_year} ({rec.cohort}) "
@@ -192,8 +280,7 @@ def collect_curated_pack(
                     f"zip={rec.extracted_from_zip}"
                 )
 
-    manifest_path = output_dir / "curated_pdfs_manifest.parquet"
-    manifest = write_manifest_parquet(records, manifest_path)
+    manifest = write_manifest_parquet(records_by_slot.values(), manifest_path)
     verification = verify_stored_manifest_files(manifest, output_root=output_dir)
 
     audit_md = render_curated_pdfs_audit_markdown(
@@ -206,13 +293,14 @@ def collect_curated_pack(
     audit_report_path.write_text(audit_md, encoding="utf-8")
 
     print(
-        f"\n[DONE] Collected {manifest.height} valid PDFs across "
-        f"{manifest['issuer_id'].n_unique()} issuers | "
+        f"\n[DONE] Total {manifest.height} valid PDFs across "
+        f"{manifest['issuer_id'].n_unique()} issuers "
+        f"(reused={len(existing_records)}, newly_downloaded={newly_downloaded}) | "
         f"verified_ok={verification['verified_ok']} "
         f"invalid={verification['invalid_or_missing']} | "
         f"manifest={manifest_path} | audit={audit_report_path}"
     )
-    if verification["invalid_or_missing"] > 0 or not (30 <= manifest.height <= 50):
+    if verification["invalid_or_missing"] > 0 or manifest.height < 30:
         return 1
     return 0
 
