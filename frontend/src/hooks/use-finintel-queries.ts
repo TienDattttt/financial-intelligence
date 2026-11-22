@@ -50,6 +50,14 @@ export function useMetaDictionary(snapshotId?: string | null) {
   });
 }
 
+export function useModelCard(snapshotId?: string | null) {
+  return useQuery({
+    queryKey: ["model-card", snapshotId ?? "latest"],
+    queryFn: apiClient.getModelCard,
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}
+
 export function useAllIssuers(snapshotId?: string | null) {
   return useQuery({
     queryKey: ["all-issuers", snapshotId ?? "latest"],

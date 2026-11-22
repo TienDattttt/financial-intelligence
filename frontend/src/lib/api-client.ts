@@ -10,6 +10,7 @@ import type {
   MarketChangesResponse,
   MetaDictionaryResponse,
   MetaPeriodsResponse,
+  ModelCardResponse,
   PeriodType,
   PeriodView,
   QualitySummaryPageResponse,
@@ -117,6 +118,9 @@ export const apiClient = {
 
   getMetaDictionary: () =>
     requestJson<MetaDictionaryResponse>("/api/v2/meta/dictionary"),
+
+  getModelCard: () =>
+    requestJson<ModelCardResponse>("/api/v2/meta/model-card"),
 
   getCompanyProfile: (
     ticker: string,

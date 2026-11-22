@@ -35,7 +35,7 @@ import { SectorBoxPlotChart } from "@/components/charts/SectorBoxPlotChart";
 import { FinancialTable } from "@/components/financial/FinancialTable";
 import { PercentileBar } from "@/components/financial/PercentileBar";
 import { RedFlagChecklist } from "@/components/financial/RedFlagChecklist";
-import { RiskBadge } from "@/components/financial/RiskBadge";
+import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
 import { ScoreDots } from "@/components/financial/ScoreDots";
 import { SparklineSvg } from "@/components/financial/SparklineSvg";
 import { VerdictCard } from "@/components/financial/VerdictCard";
@@ -59,9 +59,10 @@ import {
   AUDIT_OPINION_LABELS,
   AUDIT_STATUS_LABELS,
   BENEISH_FLAG_META,
+  formatCreditTrio,
   formatFormulaVi,
   formatPeerGroupLabel,
-  getDistressRiskBadge,
+  getMlFeatureLabel,
   MODEL_ROLE_LABELS,
   PERIOD_TYPE_LABELS,
   RATIO_CATEGORY_LABELS,
@@ -500,9 +501,17 @@ function CompanyProfileContent() {
           const first = list[0] as { dataIndex?: number } | undefined;
           const m = sortedMl[first?.dataIndex ?? -1];
           if (!m) return "";
+          const trio = formatCreditTrio({
+            risk_tier: m.risk_tier,
+            risk_market_percentile: m.risk_market_percentile,
+            calibrated_distress_prob: m.calibrated_distress_prob,
+            relative_risk_lift: m.relative_risk_lift,
+            market_base_rate: m.market_base_rate,
+          });
           return [
             `<div style="font-weight:600;margin-bottom:4px">${formatPeriodLabel(m.period_end_date, periodType)}</div>`,
-            `<div>XS kiệt quệ mô hình: <b style="color:${palette.riskHigh}">${formatPercent(m.calibrated_distress_prob)}</b></div>`,
+            `<div>1Y PD mô hình: <b style="color:${palette.riskHigh}">${trio.pdLabel}</b>${trio.liftLabel ? ` (${trio.liftLabel})` : ""}</div>`,
+            `<div>Bậc &amp; Vị thế: <b>${trio.tierMeta.shortLabel}</b> · ${trio.topPercentLabel}</div>`,
             `<div style="color:${palette.company};font-size:11px;margin-top:3px">Nhấp để xem TreeSHAP kỳ này</div>`,
           ].join("");
         },
@@ -588,7 +597,13 @@ function CompanyProfileContent() {
       description: "Chưa có kết quả kiểm tra Beneish M-Score.",
     };
 
-  const distressBadge = getDistressRiskBadge(latestMl?.calibrated_distress_prob);
+  const creditTrio = formatCreditTrio({
+    risk_tier: latestMl?.risk_tier,
+    risk_market_percentile: latestMl?.risk_market_percentile,
+    calibrated_distress_prob: latestMl?.calibrated_distress_prob,
+    relative_risk_lift: latestMl?.relative_risk_lift,
+    market_base_rate: latestMl?.market_base_rate,
+  });
 
   const fScore = latestMl?.piotroski_f_score ?? null;
   const fTone =
@@ -810,12 +825,13 @@ function CompanyProfileContent() {
             />
 
             <VerdictCard
-              title="Xác suất kiệt quệ (Mô hình)"
-              tooltip={distressBadge.description}
-              value={formatPercent(latestMl?.calibrated_distress_prob)}
-              tone={distressBadge.tone}
-              badgeLabel={distressBadge.shortLabel}
-              thresholdText="Ngưỡng tham chiếu: < 3% Thấp · ≥ 8% Cao"
+              title="Xác suất kiệt quệ 1 năm (1Y PD)"
+              tooltip={creditTrio.tierMeta.description}
+              value={creditTrio.pdLabel}
+              subValueText={creditTrio.liftLabel}
+              tone={creditTrio.tierMeta.tone}
+              badgeLabel={creditTrio.tierMeta.shortLabel}
+              thresholdText={creditTrio.baseRateLabel ?? creditTrio.tierMeta.description}
               deltaText={
                 probDelta !== null ? formatPercentPoints(probDelta, 1) : null
               }
@@ -833,7 +849,14 @@ function CompanyProfileContent() {
                   ? `10 kỳ: Thấp ${formatPercent(probStats.min)} · TV ${formatPercent(probStats.median)} · Cao ${formatPercent(probStats.max)}`
                   : null
               }
-            />
+            >
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <RiskTierBadge riskTier={latestMl?.risk_tier} compact />
+                <span className="rounded bg-surface-muted px-1.5 py-0.5 font-medium text-ink-muted">
+                  {creditTrio.topPercentLabel}
+                </span>
+              </div>
+            </VerdictCard>
           </section>
 
           {/* Tier 2: SHAP Drivers (60%) + Red Flags & Filings (40%) */}
@@ -854,12 +877,22 @@ function CompanyProfileContent() {
                 height={190}
                 isEmpty={sortedMl.length === 0}
                 onChartClick={handleRiskPeriodClick}
-                tableHeaders={["Kỳ", "XS kiệt quệ", "Altman Z″"]}
-                tableRows={sortedMl.map((m) => [
-                  formatPeriodLabel(m.period_end_date, periodType),
-                  formatPercent(m.calibrated_distress_prob),
-                  formatNumber(m.altman_z_double_prime, 2),
-                ])}
+                tableHeaders={["Kỳ", "1Y PD", "Bậc", "Vị thế PIT", "Altman Z″"]}
+                tableRows={sortedMl.map((m) => {
+                  const rowTrio = formatCreditTrio({
+                    risk_tier: m.risk_tier,
+                    risk_market_percentile: m.risk_market_percentile,
+                    calibrated_distress_prob: m.calibrated_distress_prob,
+                    relative_risk_lift: m.relative_risk_lift,
+                  });
+                  return [
+                    formatPeriodLabel(m.period_end_date, periodType),
+                    rowTrio.liftLabel ? `${rowTrio.pdLabel} (${rowTrio.liftLabel})` : rowTrio.pdLabel,
+                    rowTrio.tierMeta.badgeText,
+                    rowTrio.topPercentLabel,
+                    formatNumber(m.altman_z_double_prime, 2),
+                  ];
+                })}
                 headerRight={
                   isCustomMlPeriod ? (
                     <Button
@@ -1978,15 +2011,16 @@ function CompanyProfileContent() {
 
             <EChartBox
               title="Diễn biến lịch sử Xác suất kiệt quệ mô hình — Nhấp kỳ để cập nhật TreeSHAP"
-              subtitle="Đơn vị: phần trăm (%) · Xác suất kiệt quệ đã hiệu chỉnh"
+              subtitle="Đơn vị: phần trăm (%) · Xác suất kiệt quệ 1 năm đã hiệu chỉnh (1Y PD)"
               option={mlDistressProbOption}
               height={290}
               isEmpty={sortedMl.length === 0}
               onChartClick={handleRiskPeriodClick}
-              tableHeaders={["Kỳ", "XS kiệt quệ", "F-Score", "Beneish M"]}
+              tableHeaders={["Kỳ", "1Y PD", "Bậc", "F-Score", "Beneish M"]}
               tableRows={sortedMl.map((m) => [
                 formatPeriodLabel(m.period_end_date, periodType),
                 formatPercent(m.calibrated_distress_prob),
+                m.risk_tier ?? "N/A",
                 m.piotroski_f_score !== null && m.piotroski_f_score !== undefined
                   ? `${m.piotroski_f_score}/9`
                   : "N/A",
@@ -2050,7 +2084,7 @@ function CompanyProfileContent() {
                             drv.display_name_vn &&
                             drv.display_name_vn !== drv.feature
                               ? drv.display_name_vn
-                              : (ratioFallback ?? drv.display_name_vn);
+                              : (ratioFallback ?? getMlFeatureLabel(drv.feature));
                           return (
                             <tr
                               key={drv.feature}
