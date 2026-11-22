@@ -1846,3 +1846,168 @@ def test_ml07a_serving_exposes_credit_risk_triad_and_supports_legacy_snapshots(
         assert r_chg.status_code == 200
         assert all(it["risk_tier_curr"] is None for it in r_chg.json()["items"])
         assert all(it["market_base_rate_curr"] is None for it in r_chg.json()["items"])
+
+
+def test_arch03b_valkey_l2_lineage_headers_and_cors_across_all_17_routes(
+    tmp_path: Path,
+    synthetic_tables: dict[str, pl.DataFrame],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ARCH-03b: Valkey L2 MISS->HIT, lineage headers on 17/17 routes & M-02 CORS expose_headers."""
+    data_root = tmp_path / "lake_arch03b"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    run_id = "run_arch03b_001"
+    snapshot_id = "snap_arch03b_001"
+    expected_git_sha = "0123456789abcdef0123456789abcdef01234567"
+    state.start_run(run_id, "MANUAL", {"backend": "ducklake"}, expected_git_sha)
+
+    store = DuckLakeStore(
+        catalog_path=data_root / "metadata" / "ducklake_catalog.sqlite",
+        data_path=data_root / "lakehouse" / "data",
+        state_store=state,
+    )
+    try:
+        store.publish_snapshot(
+            snapshot_id,
+            synthetic_tables,
+            run_id=run_id,
+            metadata={"dagster_run_id": run_id, "git_commit_sha": expected_git_sha},
+        )
+    except duckdb.Error as exc:
+        pytest.skip(f"DuckLake extension unavailable in this environment: {exc}")
+    state.finish_run(run_id, "SUCCEEDED", snapshot_id)
+
+    # In-memory Redis/Valkey wire store exercising real ValkeyResponseCache serialization & keys.
+    kv_store: dict[str, bytes] = {}
+
+    class _InMemoryRedisClient:
+        def ping(self) -> bool:
+            return True
+
+        def get(self, key: str) -> bytes | None:
+            return kv_store.get(key)
+
+        def setex(self, key: str, _ttl: int, payload: bytes) -> bool:
+            kv_store[key] = bytes(payload)
+            return True
+
+        def close(self) -> None:
+            return None
+
+    import sys
+    from types import SimpleNamespace
+
+    try:
+        import redis
+
+        monkeypatch.setattr(
+            redis.Redis,
+            "from_url",
+            classmethod(lambda _cls, *_args, **_kwargs: _InMemoryRedisClient()),
+        )
+    except ImportError:
+
+        class _StubRedis:
+            @classmethod
+            def from_url(
+                cls, *_args: object, **_kwargs: object
+            ) -> _InMemoryRedisClient:
+                return _InMemoryRedisClient()
+
+        monkeypatch.setitem(sys.modules, "redis", SimpleNamespace(Redis=_StubRedis))
+
+    repo = ParquetRepository(data_root=data_root, backend="ducklake")
+    app = create_app(
+        repository=repo,
+        cors_origins=["http://localhost:3000"],
+        valkey_url="redis://127.0.0.1:6379/0",
+    )
+
+    # All 17 /api/* routes (10 v1 + 7 v2)
+    get_data_routes = [
+        "/api/v1/snapshot/overview",
+        "/api/v1/issuers",
+        "/api/v1/companies/FPT/profile",
+        "/api/v1/companies/FPT/benchmarks?metric_name=roe_total",
+        "/api/v1/companies/FPT/lineage?ratio_name=roe_total&period_end_date=2025-12-31",
+        "/api/v1/screener",
+        "/api/v1/quality/summary",
+        "/api/v1/quality/quarantine",
+        "/api/v2/meta/periods",
+        "/api/v2/meta/dictionary",
+        "/api/v2/companies/FPT/benchmarks/summary",
+        "/api/v2/companies/FPT/statements",
+        "/api/v2/companies/FPT/filings",
+        "/api/v2/sectors/risk-summary",
+        "/api/v2/market/changes",
+    ]
+    stress_payload = {"scenario_name": "ARCH03b Cache Test", "revenue_shock_pct": -0.1}
+
+    with TestClient(app) as client:
+        # 1. Verify /api/v1/health lineage + M-02 CORS expose_headers
+        r_health = client.get(
+            "/api/v1/health",
+            headers={"Origin": "http://localhost:3000"},
+        )
+        assert r_health.status_code == 200
+        assert r_health.headers.get("X-Snapshot-ID") == snapshot_id
+        assert r_health.headers.get("X-Dagster-Run-ID") == run_id
+        assert r_health.headers.get("X-Git-Commit-SHA") == expected_git_sha
+        exposed = {
+            h.strip()
+            for h in r_health.headers.get("access-control-expose-headers", "").split(
+                ","
+            )
+            if h.strip()
+        }
+        assert {
+            "ETag",
+            "Cache-Control",
+            "X-Request-ID",
+            "X-Snapshot-ID",
+            "X-Dagster-Run-ID",
+            "X-Git-Commit-SHA",
+            "X-Cache",
+        }.issubset(exposed)
+
+        # 2. Verify all 15 GET data routes emit MISS -> HIT + identical JSON + lineage headers
+        for url in get_data_routes:
+            r1 = client.get(url, headers={"Origin": "http://localhost:3000"})
+            assert r1.status_code == 200, f"GET {url} failed: {r1.text}"
+            assert r1.headers.get("X-Cache") == "MISS", f"Expected MISS on {url}"
+            assert r1.headers.get("X-Snapshot-ID") == snapshot_id
+            assert r1.headers.get("X-Dagster-Run-ID") == run_id
+            assert r1.headers.get("X-Git-Commit-SHA") == expected_git_sha
+
+            r2 = client.get(url, headers={"Origin": "http://localhost:3000"})
+            assert r2.status_code == 200
+            assert r2.headers.get("X-Cache") == "HIT", f"Expected HIT on {url}"
+            assert r2.headers.get("X-Snapshot-ID") == snapshot_id
+            assert r2.headers.get("X-Dagster-Run-ID") == run_id
+            assert r2.headers.get("X-Git-Commit-SHA") == expected_git_sha
+            assert r2.json() == r1.json()
+
+        # 3. Verify POST /api/v1/stress-test emits MISS -> HIT, preserves no-store & lineage headers
+        rs1 = client.post(
+            "/api/v1/stress-test",
+            json=stress_payload,
+            headers={"Origin": "http://localhost:3000"},
+        )
+        assert rs1.status_code == 200
+        assert rs1.headers.get("X-Cache") == "MISS"
+        assert rs1.headers.get("Cache-Control") == "private, no-store"
+        assert rs1.headers.get("X-Snapshot-ID") == snapshot_id
+        assert rs1.headers.get("X-Dagster-Run-ID") == run_id
+        assert rs1.headers.get("X-Git-Commit-SHA") == expected_git_sha
+
+        rs2 = client.post(
+            "/api/v1/stress-test",
+            json=stress_payload,
+            headers={"Origin": "http://localhost:3000"},
+        )
+        assert rs2.status_code == 200
+        assert rs2.headers.get("X-Cache") == "HIT"
+        assert rs2.headers.get("Cache-Control") == "private, no-store"
+        assert rs2.json() == rs1.json()
+        assert len(kv_store) == 16

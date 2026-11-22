@@ -3127,19 +3127,30 @@ class DashboardQueryService:
                         connection=connection,
                     )
                     .drop_nulls(["statement_scope", "period_type", "period_end_date"])
+                    .filter(
+                        pl.col("statement_scope").is_in(STATEMENT_SCOPES)
+                        & pl.col("period_type").is_in(PERIOD_TYPES)
+                    )
                     .unique()
                     .sort("period_end_date", descending=True)
                 )
-                for row in periods_df.to_dicts():
-                    scope = str(row["statement_scope"])
-                    ptype = str(row["period_type"])
-                    pdate = row["period_end_date"]
-                    if (
-                        scope in available_periods
-                        and ptype in available_periods[scope]
-                        and isinstance(pdate, date)
-                    ):
-                        available_periods[scope][ptype].append(pdate)
+                if not periods_df.is_empty():
+                    for key_tuple, sub in periods_df.partition_by(
+                        ["statement_scope", "period_type"],
+                        as_dict=True,
+                        maintain_order=True,
+                    ).items():
+                        scope = str(key_tuple[0])
+                        ptype = str(key_tuple[1])
+                        if (
+                            scope in available_periods
+                            and ptype in available_periods[scope]
+                        ):
+                            available_periods[scope][ptype] = [
+                                pdate
+                                for pdate in sub.get_column("period_end_date").to_list()
+                                if isinstance(pdate, date)
+                            ]
 
             avail_iss = _available_table_columns(
                 pinned, "issuers.parquet", connection=connection
@@ -3161,18 +3172,31 @@ class DashboardQueryService:
                             .alias("icb_name_level2"),
                             pl.len().cast(pl.Int64).alias("issuer_count"),
                         )
+                        .with_columns(
+                            pl.col("icb_code_level2").cast(pl.String),
+                            pl.when(
+                                pl.col("icb_name_level2").is_not_null()
+                                & (pl.col("icb_name_level2").cast(pl.String) != "")
+                            )
+                            .then(pl.col("icb_name_level2").cast(pl.String))
+                            .otherwise(pl.col("icb_code_level2").cast(pl.String))
+                            .alias("icb_name_level2"),
+                        )
                         .sort(["icb_name_level2", "icb_code_level2"])
                     )
-                    for row in grouped.to_dicts():
-                        code = str(row["icb_code_level2"])
-                        name = str(row["icb_name_level2"] or code)
-                        sectors.append(
-                            {
-                                "icb_code_level2": code,
-                                "icb_name_level2": name,
-                                "issuer_count": int(row["issuer_count"]),
-                            }
+                    sectors = [
+                        {
+                            "icb_code_level2": str(code),
+                            "icb_name_level2": str(name),
+                            "issuer_count": int(cnt),
+                        }
+                        for code, name, cnt in zip(
+                            grouped.get_column("icb_code_level2").to_list(),
+                            grouped.get_column("icb_name_level2").to_list(),
+                            grouped.get_column("issuer_count").to_list(),
+                            strict=True,
                         )
+                    ]
         return published_at, available_periods, sectors
 
     def get_company_benchmarks_summary(
@@ -3283,8 +3307,11 @@ class DashboardQueryService:
                     },
                     connection=connection,
                 )
-                for row in bench_df.to_dicts():
-                    bench_by_metric[str(row["metric_or_ratio_name"])] = row
+                if not bench_df.is_empty():
+                    for key_tuple, sub in bench_df.partition_by(
+                        "metric_or_ratio_name", as_dict=True
+                    ).items():
+                        bench_by_metric[str(key_tuple[0])] = sub.row(0, named=True)
 
             def _opt_finite(raw: object) -> float | None:
                 if raw is None or isinstance(raw, bool):
@@ -3294,17 +3321,27 @@ class DashboardQueryService:
                     return val if math.isfinite(val) else None
                 return None
 
+            spark_cols = [m for m in selected_metrics if m in hist_window.columns]
+            cleaned_hist = (
+                hist_window.select(
+                    pl.when(pl.col(c).cast(pl.Float64, strict=False).is_finite())
+                    .then(pl.col(c).cast(pl.Float64, strict=False))
+                    .otherwise(None)
+                    .alias(c)
+                    for c in spark_cols
+                )
+                if spark_cols
+                else pl.DataFrame()
+            )
+
             items: list[dict[str, object]] = []
             for metric_name in selected_metrics:
                 spec = RATIO_LINEAGE_CATALOG[metric_name]
                 meta = RATIO_DICTIONARY_META[metric_name]
                 b_row = bench_by_metric.get(metric_name, {})
                 sparkline: list[float | None] = (
-                    [
-                        _opt_finite(v)
-                        for v in hist_window.get_column(metric_name).to_list()
-                    ]
-                    if metric_name in hist_window.columns
+                    cleaned_hist.get_column(metric_name).to_list()
+                    if metric_name in cleaned_hist.columns
                     else []
                 )
                 company_val = _opt_finite(b_row.get("value"))
@@ -3445,81 +3482,122 @@ class DashboardQueryService:
                 .get_column("period_end_date")
                 .to_list()
             )
-            facts = facts.filter(pl.col("period_end_date").is_in(recent_dates))
+            valid_facts = facts.filter(
+                pl.col("period_end_date").is_in(recent_dates)
+                & pl.col("period_end_date").is_not_null()
+            )
+            if valid_facts.is_empty():
+                return issuer_id, [], []
 
-            periods_by_date: dict[date, dict[str, object]] = {}
-            rows_map: dict[str, dict[str, float | None]] = {}
-            units_seen: dict[str, str] = {}
-            comparable_seen: dict[str, bool] = {}
-
-            for rec in facts.to_dicts():
-                pdate = rec.get("period_end_date")
-                if not isinstance(pdate, date):
-                    continue
-                if pdate not in periods_by_date:
-                    fy = rec.get("fiscal_year")
-                    fq = rec.get("fiscal_quarter")
-                    fy_int = int(fy) if isinstance(fy, int) else pdate.year
-                    fq_int = int(fq) if isinstance(fq, int) else None
-                    label = (
-                        f"Năm {fy_int}"
-                        if period_type == "ANNUAL"
-                        else f"Q{fq_int or ((pdate.month - 1) // 3 + 1)}/{fy_int}"
-                    )
-                    periods_by_date[pdate] = {
-                        "period_end_date": pdate,
-                        "fiscal_year": fy_int,
-                        "fiscal_quarter": fq_int,
-                        "label": label,
-                        "taxonomy_version": (
-                            str(rec["taxonomy_version"])
-                            if rec.get("taxonomy_version") is not None
-                            else None
-                        ),
-                        "audit_status": (
-                            str(rec["audit_status"])
-                            if rec.get("audit_status") is not None
-                            else None
-                        ),
-                    }
-
-                mid = str(rec["metric_id"])
-                raw_val = rec.get("value")
-                val = (
-                    float(raw_val)
-                    if isinstance(raw_val, (int, float))
-                    and not isinstance(raw_val, bool)
-                    and math.isfinite(float(raw_val))
-                    else None
+            fy_expr = (
+                pl.coalesce(
+                    pl.col("fiscal_year").cast(pl.Int64, strict=False),
+                    pl.col("period_end_date").dt.year().cast(pl.Int64),
                 )
-                rows_map.setdefault(mid, {})[pdate.isoformat()] = val
-                if mid not in units_seen and rec.get("unit") is not None:
-                    units_seen[mid] = str(rec["unit"])
-                if (
-                    mid not in comparable_seen
-                    and rec.get("comparable_across_taxonomy") is not None
-                ):
-                    comparable_seen[mid] = bool(rec["comparable_across_taxonomy"])
+                if "fiscal_year" in valid_facts.columns
+                else pl.col("period_end_date").dt.year().cast(pl.Int64)
+            )
+            fq_expr = (
+                pl.col("fiscal_quarter").cast(pl.Int64, strict=False)
+                if "fiscal_quarter" in valid_facts.columns
+                else pl.lit(None, dtype=pl.Int64)
+            )
+            derived_fq = (
+                (pl.col("period_end_date").dt.month().cast(pl.Int64) - 1) // 3
+            ) + 1
+            label_expr = (
+                (pl.lit("Năm ") + fy_expr.cast(pl.String))
+                if period_type == "ANNUAL"
+                else (
+                    pl.lit("Q")
+                    + pl.coalesce(
+                        pl.when(fq_expr != 0).then(fq_expr).otherwise(None),
+                        derived_fq,
+                    ).cast(pl.String)
+                    + pl.lit("/")
+                    + fy_expr.cast(pl.String)
+                )
+            )
+            periods_df = (
+                valid_facts.unique(subset=["period_end_date"], keep="first")
+                .select(
+                    pl.col("period_end_date"),
+                    fy_expr.alias("fiscal_year"),
+                    fq_expr.alias("fiscal_quarter"),
+                    label_expr.alias("label"),
+                    (
+                        pl.col("taxonomy_version").cast(pl.String)
+                        if "taxonomy_version" in valid_facts.columns
+                        else pl.lit(None, dtype=pl.String)
+                    ).alias("taxonomy_version"),
+                    (
+                        pl.col("audit_status").cast(pl.String)
+                        if "audit_status" in valid_facts.columns
+                        else pl.lit(None, dtype=pl.String)
+                    ).alias("audit_status"),
+                )
+                .sort("period_end_date", descending=True)
+            )
+            periods_out = cast(list[dict[str, object]], periods_df.to_dicts())
 
-            periods_out = [
-                periods_by_date[d] for d in recent_dates if d in periods_by_date
-            ]
+            val_f64 = pl.col("value").cast(pl.Float64, strict=False)
+            clean_facts = valid_facts.select(
+                pl.col("metric_id").cast(pl.String).alias("metric_id"),
+                pl.col("period_end_date").dt.strftime("%Y-%m-%d").alias("period_iso"),
+                pl.when(val_f64.is_finite())
+                .then(val_f64)
+                .otherwise(None)
+                .alias("value"),
+                (
+                    pl.col("unit").cast(pl.String)
+                    if "unit" in valid_facts.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("unit"),
+                (
+                    pl.col("comparable_across_taxonomy").cast(pl.Boolean, strict=False)
+                    if "comparable_across_taxonomy" in valid_facts.columns
+                    else pl.lit(None, dtype=pl.Boolean)
+                ).alias("comparable_across_taxonomy"),
+            )
+
             rows_out: list[dict[str, object]] = []
-            for mid, values in rows_map.items():
+            for key_tuple, sub in clean_facts.partition_by(
+                "metric_id", as_dict=True, maintain_order=True
+            ).items():
+                mid = str(key_tuple[0])
                 mmeta = catalog.get(mid)
+                values: dict[str, float | None] = dict(
+                    zip(
+                        sub.get_column("period_iso").to_list(),
+                        sub.get_column("value").to_list(),
+                        strict=True,
+                    )
+                )
+                if mmeta is not None:
+                    unit_val = mmeta.unit
+                    comp_val = mmeta.comparable_across_taxonomy
+                else:
+                    non_null_units = sub.get_column("unit").drop_nulls()
+                    unit_val = (
+                        str(non_null_units[0])
+                        if not non_null_units.is_empty()
+                        else "VND"
+                    )
+                    non_null_comp = sub.get_column(
+                        "comparable_across_taxonomy"
+                    ).drop_nulls()
+                    comp_val = (
+                        bool(non_null_comp[0]) if not non_null_comp.is_empty() else True
+                    )
                 rows_out.append(
                     {
                         "metric_id": mid,
                         "display_name_vn": mmeta.display_name_vn if mmeta else mid,
                         "tt200_code": mmeta.tt200_code if mmeta else None,
                         "tt99_code": mmeta.tt99_code if mmeta else None,
-                        "unit": mmeta.unit if mmeta else units_seen.get(mid, "VND"),
+                        "unit": unit_val,
                         "is_total": mmeta.is_total if mmeta else False,
-                        "comparable_across_taxonomy": (
-                            mmeta.comparable_across_taxonomy
-                            if mmeta
-                            else comparable_seen.get(mid, True)
-                        ),
+                        "comparable_across_taxonomy": comp_val,
                         "sort_order": mmeta.sort_order if mmeta else 99_999,
                         "values": values,
                     }
@@ -3609,29 +3687,83 @@ class DashboardQueryService:
             if sort_cols:
                 df = df.sort(sort_cols, descending=sort_desc, nulls_last=True)
 
-            items: list[dict[str, object]] = []
-            for rec in df.head(limit).to_dicts():
-                rev = rec.get("revision_no")
-                rev_int = int(rev) if isinstance(rev, int) else None
-                items.append(
-                    {
-                        "filing_id": str(rec.get("filing_id") or ""),
-                        "statement_type": rec.get("statement_type"),
-                        "statement_scope": rec.get("statement_scope"),
-                        "period_type": rec.get("period_type"),
-                        "period_end_date": rec.get("period_end_date"),
-                        "taxonomy_version": rec.get("taxonomy_version"),
-                        "published_at": rec.get("published_at"),
-                        "published_at_basis": rec.get("published_at_basis"),
-                        "effective_available_at": rec.get("effective_available_at"),
-                        "audit_status": rec.get("audit_status"),
-                        "audit_opinion": rec.get("audit_opinion"),
-                        "revision_no": rev_int,
-                        "revision_reason": rec.get("revision_reason"),
-                        "has_restatement": bool(rev_int is not None and rev_int > 1),
-                        "source_provider": rec.get("source_provider"),
-                    }
-                )
+            head_df = df.head(limit)
+            rev_expr = (
+                pl.col("revision_no").cast(pl.Int64, strict=False)
+                if "revision_no" in head_df.columns
+                else pl.lit(None, dtype=pl.Int64)
+            )
+            filing_expr = (
+                pl.coalesce(pl.col("filing_id").cast(pl.String), pl.lit(""))
+                if "filing_id" in head_df.columns
+                else pl.lit("")
+            )
+            out_df = head_df.select(
+                filing_expr.alias("filing_id"),
+                (
+                    pl.col("statement_type")
+                    if "statement_type" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("statement_type"),
+                (
+                    pl.col("statement_scope")
+                    if "statement_scope" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("statement_scope"),
+                (
+                    pl.col("period_type")
+                    if "period_type" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("period_type"),
+                (
+                    pl.col("period_end_date")
+                    if "period_end_date" in head_df.columns
+                    else pl.lit(None, dtype=pl.Date)
+                ).alias("period_end_date"),
+                (
+                    pl.col("taxonomy_version")
+                    if "taxonomy_version" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("taxonomy_version"),
+                (
+                    pl.col("published_at")
+                    if "published_at" in head_df.columns
+                    else pl.lit(None, dtype=pl.Date)
+                ).alias("published_at"),
+                (
+                    pl.col("published_at_basis")
+                    if "published_at_basis" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("published_at_basis"),
+                (
+                    pl.col("effective_available_at")
+                    if "effective_available_at" in head_df.columns
+                    else pl.lit(None, dtype=pl.Date)
+                ).alias("effective_available_at"),
+                (
+                    pl.col("audit_status")
+                    if "audit_status" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("audit_status"),
+                (
+                    pl.col("audit_opinion")
+                    if "audit_opinion" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("audit_opinion"),
+                rev_expr.alias("revision_no"),
+                (
+                    pl.col("revision_reason")
+                    if "revision_reason" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("revision_reason"),
+                (rev_expr.is_not_null() & (rev_expr > 1)).alias("has_restatement"),
+                (
+                    pl.col("source_provider")
+                    if "source_provider" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("source_provider"),
+            )
+            items = cast(list[dict[str, object]], out_df.to_dicts())
         return issuer_id, items
 
     @staticmethod
@@ -3659,9 +3791,6 @@ class DashboardQueryService:
         if issuers.is_empty():
             return []
         issuer_ids = issuers["issuer_id"].unique().to_list()
-        issuer_lookup: dict[str, dict[str, object]] = {
-            str(r["issuer_id"]): r for r in issuers.to_dicts()
-        }
 
         avail_ratio_cols = _available_table_columns(
             pinned, RATIOS_TABLE, connection=connection
@@ -3679,7 +3808,7 @@ class DashboardQueryService:
             columns=["issuer_id", "period_end_date"],
             filters=ratio_filters,
             connection=connection,
-        )
+        ).filter(pl.col("period_end_date").is_not_null())
         if target_date is not None:
             ratio_dates_df = ratio_dates_df.filter(
                 pl.col("period_end_date") <= target_date
@@ -3687,42 +3816,55 @@ class DashboardQueryService:
         if ratio_dates_df.is_empty():
             return []
 
-        per_issuer_dates: dict[str, list[date]] = {}
-        for rec in (
+        pairs_df = (
             ratio_dates_df.unique()
             .sort(["issuer_id", "period_end_date"], descending=[False, True])
-            .to_dicts()
-        ):
-            iid = str(rec["issuer_id"])
-            pdate = rec["period_end_date"]
-            if isinstance(pdate, date):
-                lst = per_issuer_dates.setdefault(iid, [])
-                if len(lst) < 2:
-                    lst.append(pdate)
-
-        # Retain only issuers whose latest period matches target_date (when specified)
-        relevant_dates: set[date] = set()
-        selected_pairs: dict[str, tuple[date, date | None]] = {}
-        for iid, dates in per_issuer_dates.items():
-            if not dates:
-                continue
-            if target_date is not None and dates[0] != target_date:
-                continue
-            curr_d = dates[0]
-            prev_d = dates[1] if len(dates) > 1 else None
-            selected_pairs[iid] = (curr_d, prev_d)
-            relevant_dates.add(curr_d)
-            if prev_d is not None:
-                relevant_dates.add(prev_d)
-
-        if not selected_pairs:
+            .group_by("issuer_id", maintain_order=True)
+            .agg(
+                pl.col("period_end_date").first().alias("curr_period_end_date"),
+                pl.when(pl.len() > 1)
+                .then(pl.col("period_end_date").get(1))
+                .otherwise(None)
+                .cast(pl.Date)
+                .alias("prev_period_end_date"),
+            )
+        )
+        if target_date is not None:
+            pairs_df = pairs_df.filter(pl.col("curr_period_end_date") == target_date)
+        if pairs_df.is_empty():
             return []
 
-        date_list = sorted(relevant_dates)
-        ml_lookup: dict[tuple[str, date], dict[str, object]] = {}
+        date_list = (
+            pl.concat(
+                [
+                    pairs_df.select(pl.col("curr_period_end_date").alias("d")),
+                    pairs_df.select(
+                        pl.col("prev_period_end_date").alias("d")
+                    ).drop_nulls(),
+                ]
+            )
+            .unique()
+            .sort("d")
+            .get_column("d")
+            .to_list()
+        )
+
+        ml_pair_schema = pl.Schema(
+            {
+                "issuer_id": pl.String,
+                "period_end_date": pl.Date,
+                "altman_zone": pl.String,
+                "calibrated_distress_prob": pl.Float64,
+                "risk_tier": pl.String,
+                "risk_market_percentile": pl.Float64,
+                "market_base_rate": pl.Float64,
+                "relative_risk_lift": pl.Float64,
+            }
+        )
         avail_ml_cols = _available_table_columns(
             pinned, ML_SCORES_TABLE, connection=connection
         )
+        ml_dedup = pl.DataFrame(schema=ml_pair_schema)
         if avail_ml_cols:
             ml_cols = _select_existing_columns(
                 (
@@ -3750,22 +3892,40 @@ class DashboardQueryService:
                 columns=ml_cols,
                 filters=ml_filters,
                 connection=connection,
-            )
+            ).filter(pl.col("period_end_date").is_not_null())
             if not ml_df.is_empty():
                 sort_ml = [
                     c
                     for c in ("issuer_id", "period_end_date", "filing_id")
                     if c in ml_df.columns
                 ]
-                ml_df = ml_df.sort(sort_ml).unique(
-                    subset=["issuer_id", "period_end_date"], keep="last"
+                ml_dedup = _pad_schema_columns(
+                    ml_df.sort(sort_ml).unique(
+                        subset=["issuer_id", "period_end_date"], keep="last"
+                    ),
+                    ml_pair_schema,
                 )
-                for rec in ml_df.to_dicts():
-                    pd_val = rec.get("period_end_date")
-                    if isinstance(pd_val, date):
-                        ml_lookup[(str(rec["issuer_id"]), pd_val)] = rec
+                float_ml_cols = [
+                    "calibrated_distress_prob",
+                    "risk_market_percentile",
+                    "market_base_rate",
+                    "relative_risk_lift",
+                ]
+                ml_dedup = ml_dedup.with_columns(
+                    pl.when(pl.col(c).is_finite())
+                    .then(pl.col(c))
+                    .otherwise(None)
+                    .alias(c)
+                    for c in float_ml_cols
+                )
 
-        rf_lookup: dict[tuple[str, date], set[str]] = {}
+        rf_agg = pl.DataFrame(
+            schema={
+                "issuer_id": pl.String,
+                "period_end_date": pl.Date,
+                "flags": pl.List(pl.String),
+            }
+        )
         avail_rf_cols = _available_table_columns(
             pinned, RED_FLAGS_TABLE, connection=connection
         )
@@ -3782,128 +3942,164 @@ class DashboardQueryService:
                 columns=["issuer_id", "period_end_date", "flag_code"],
                 filters=rf_filters,
                 connection=connection,
+            ).filter(pl.col("period_end_date").is_not_null())
+            if not rf_df.is_empty():
+                rf_agg = rf_df.group_by(["issuer_id", "period_end_date"]).agg(
+                    pl.col("flag_code").cast(pl.String).unique().sort().alias("flags")
+                )
+
+        curr_ml_df = ml_dedup.select(
+            pl.col("issuer_id"),
+            pl.col("period_end_date").alias("curr_period_end_date"),
+            pl.col("altman_zone").alias("altman_zone_curr"),
+            pl.col("calibrated_distress_prob").alias("distress_prob_curr"),
+            pl.col("risk_tier").alias("risk_tier_curr"),
+            pl.col("risk_market_percentile").alias("risk_market_percentile_curr"),
+            pl.col("market_base_rate").alias("market_base_rate_curr"),
+            pl.col("relative_risk_lift").alias("relative_risk_lift_curr"),
+        )
+        prev_ml_df = ml_dedup.select(
+            pl.col("issuer_id"),
+            pl.col("period_end_date").alias("prev_period_end_date"),
+            pl.col("altman_zone").alias("altman_zone_prev"),
+            pl.col("calibrated_distress_prob").alias("distress_prob_prev"),
+            pl.col("risk_tier").alias("risk_tier_prev"),
+        )
+        curr_rf_df = rf_agg.select(
+            pl.col("issuer_id"),
+            pl.col("period_end_date").alias("curr_period_end_date"),
+            pl.col("flags").alias("_curr_flags"),
+        )
+        prev_rf_df = rf_agg.select(
+            pl.col("issuer_id"),
+            pl.col("period_end_date").alias("prev_period_end_date"),
+            pl.col("flags").alias("_prev_flags"),
+        )
+
+        empty_flags = pl.lit([], dtype=pl.List(pl.String))
+        joined = (
+            pairs_df.join(issuers, on="issuer_id", how="left")
+            .join(curr_ml_df, on=["issuer_id", "curr_period_end_date"], how="left")
+            .join(prev_ml_df, on=["issuer_id", "prev_period_end_date"], how="left")
+            .join(curr_rf_df, on=["issuer_id", "curr_period_end_date"], how="left")
+            .join(prev_rf_df, on=["issuer_id", "prev_period_end_date"], how="left")
+            .with_columns(
+                pl.coalesce(
+                    pl.when(pl.col("ticker").is_not_null() & (pl.col("ticker") != ""))
+                    .then(pl.col("ticker"))
+                    .otherwise(None),
+                    pl.col("issuer_id"),
+                ).alias("ticker"),
+                pl.coalesce(pl.col("_curr_flags"), empty_flags).alias("_curr_flags"),
+                pl.coalesce(pl.col("_prev_flags"), empty_flags).alias("_prev_flags"),
             )
-            for rec in rf_df.to_dicts():
-                pd_val = rec.get("period_end_date")
-                if isinstance(pd_val, date):
-                    rf_lookup.setdefault((str(rec["issuer_id"]), pd_val), set()).add(
-                        str(rec["flag_code"])
+            .with_columns(
+                (
+                    pl.when(
+                        pl.col("distress_prob_curr").is_not_null()
+                        & pl.col("distress_prob_prev").is_not_null()
                     )
-
-        def _finite_field(
-            rec: dict[str, object] | None, field_name: str
-        ) -> float | None:
-            if not rec:
-                return None
-            raw = rec.get(field_name)
-            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-                val = float(raw)
-                return val if math.isfinite(val) else None
-            return None
-
-        changes: list[dict[str, object]] = []
-        for iid, (curr_d, prev_d) in selected_pairs.items():
-            iss = issuer_lookup.get(iid, {})
-            curr_ml = ml_lookup.get((iid, curr_d))
-            prev_ml = ml_lookup.get((iid, prev_d)) if prev_d is not None else None
-
-            zone_curr = (
-                str(curr_ml["altman_zone"])
-                if curr_ml and curr_ml.get("altman_zone") is not None
-                else None
+                    .then(pl.col("distress_prob_curr") - pl.col("distress_prob_prev"))
+                    .otherwise(None)
+                    .cast(pl.Float64)
+                ).alias("distress_prob_delta"),
+                pl.col("_curr_flags")
+                .list.len()
+                .cast(pl.Int64)
+                .alias("red_flag_count_curr"),
+                pl.when(pl.col("prev_period_end_date").is_not_null())
+                .then(pl.col("_prev_flags").list.len().cast(pl.Int64))
+                .otherwise(pl.lit(0, dtype=pl.Int64))
+                .alias("red_flag_count_prev"),
+                pl.col("_curr_flags")
+                .list.set_difference(pl.col("_prev_flags"))
+                .list.sort()
+                .alias("new_red_flag_codes"),
+                pl.when(pl.col("prev_period_end_date").is_not_null())
+                .then(
+                    pl.col("_prev_flags")
+                    .list.set_difference(pl.col("_curr_flags"))
+                    .list.sort()
+                )
+                .otherwise(empty_flags)
+                .alias("resolved_red_flag_codes"),
             )
-            zone_prev = (
-                str(prev_ml["altman_zone"])
-                if prev_ml and prev_ml.get("altman_zone") is not None
-                else None
+            .with_columns(
+                pl.col("new_red_flag_codes")
+                .list.len()
+                .cast(pl.Int64)
+                .alias("_new_flag_count"),
+                (
+                    (
+                        pl.col("altman_zone_curr").is_not_null()
+                        & pl.col("altman_zone_prev").is_not_null()
+                        & (
+                            pl.col("altman_zone_curr").replace_strict(
+                                _ALTMAN_SEVERITY_RANK,
+                                default=-1,
+                                return_dtype=pl.Int64,
+                            )
+                            > pl.col("altman_zone_prev").replace_strict(
+                                _ALTMAN_SEVERITY_RANK,
+                                default=-1,
+                                return_dtype=pl.Int64,
+                            )
+                        )
+                    )
+                    | (
+                        pl.col("risk_tier_curr").is_not_null()
+                        & pl.col("risk_tier_prev").is_not_null()
+                        & (
+                            pl.col("risk_tier_curr").replace_strict(
+                                _RISK_TIER_SEVERITY_RANK,
+                                default=-1,
+                                return_dtype=pl.Int64,
+                            )
+                            > pl.col("risk_tier_prev").replace_strict(
+                                _RISK_TIER_SEVERITY_RANK,
+                                default=-1,
+                                return_dtype=pl.Int64,
+                            )
+                        )
+                    )
+                    | (
+                        pl.col("distress_prob_delta").is_not_null()
+                        & (pl.col("distress_prob_delta") >= 0.003)
+                    )
+                    | (pl.col("new_red_flag_codes").list.len() > 0)
+                ).alias("deteriorated"),
             )
-            tier_curr = (
-                str(curr_ml["risk_tier"])
-                if curr_ml and curr_ml.get("risk_tier") is not None
-                else None
+            .sort(
+                ["deteriorated", "_new_flag_count", "distress_prob_delta", "ticker"],
+                descending=[True, True, True, False],
+                nulls_last=True,
             )
-            tier_prev = (
-                str(prev_ml["risk_tier"])
-                if prev_ml and prev_ml.get("risk_tier") is not None
-                else None
-            )
-            prob_curr = _finite_field(curr_ml, "calibrated_distress_prob")
-            prob_prev = _finite_field(prev_ml, "calibrated_distress_prob")
-            prob_delta = (
-                prob_curr - prob_prev
-                if prob_curr is not None and prob_prev is not None
-                else None
-            )
-            pct_curr = _finite_field(curr_ml, "risk_market_percentile")
-            base_rate_curr = _finite_field(curr_ml, "market_base_rate")
-            lift_curr = _finite_field(curr_ml, "relative_risk_lift")
-
-            curr_flags = rf_lookup.get((iid, curr_d), set())
-            prev_flags = (
-                rf_lookup.get((iid, prev_d), set()) if prev_d is not None else set()
-            )
-            new_flags = sorted(curr_flags - prev_flags)
-            resolved_flags = (
-                sorted(prev_flags - curr_flags) if prev_d is not None else []
-            )
-
-            zone_worsened = (
-                zone_curr is not None
-                and zone_prev is not None
-                and _ALTMAN_SEVERITY_RANK.get(zone_curr, -1)
-                > _ALTMAN_SEVERITY_RANK.get(zone_prev, -1)
-            )
-            tier_worsened = (
-                tier_curr is not None
-                and tier_prev is not None
-                and _RISK_TIER_SEVERITY_RANK.get(tier_curr, -1)
-                > _RISK_TIER_SEVERITY_RANK.get(tier_prev, -1)
-            )
-            deteriorated = bool(
-                zone_worsened
-                or tier_worsened
-                or (prob_delta is not None and prob_delta >= 0.003)
-                or len(new_flags) > 0
-            )
-            changes.append(
-                {
-                    "issuer_id": iid,
-                    "ticker": str(iss.get("ticker") or iid),
-                    "company_name_vn": iss.get("company_name_vn"),
-                    "icb_name_level2": iss.get("icb_name_level2"),
-                    "prev_period_end_date": prev_d,
-                    "curr_period_end_date": curr_d,
-                    "altman_zone_prev": zone_prev,
-                    "altman_zone_curr": zone_curr,
-                    "distress_prob_prev": prob_prev,
-                    "distress_prob_curr": prob_curr,
-                    "distress_prob_delta": prob_delta,
-                    "risk_tier_prev": tier_prev,
-                    "risk_tier_curr": tier_curr,
-                    "risk_market_percentile_curr": pct_curr,
-                    "market_base_rate_curr": base_rate_curr,
-                    "relative_risk_lift_curr": lift_curr,
-                    "red_flag_count_prev": len(prev_flags),
-                    "red_flag_count_curr": len(curr_flags),
-                    "new_red_flag_codes": new_flags,
-                    "resolved_red_flag_codes": resolved_flags,
-                    "deteriorated": deteriorated,
-                }
-            )
-
-        changes.sort(
-            key=lambda item: (
-                not bool(item["deteriorated"]),
-                -(len(cast(list[str], item["new_red_flag_codes"]))),
-                -(
-                    cast(float, item["distress_prob_delta"])
-                    if item["distress_prob_delta"] is not None
-                    else -999.0
-                ),
-                str(item["ticker"]),
+            .head(limit)
+            .select(
+                "issuer_id",
+                "ticker",
+                "company_name_vn",
+                "icb_name_level2",
+                "prev_period_end_date",
+                "curr_period_end_date",
+                "altman_zone_prev",
+                "altman_zone_curr",
+                "distress_prob_prev",
+                "distress_prob_curr",
+                "distress_prob_delta",
+                "risk_tier_prev",
+                "risk_tier_curr",
+                "risk_market_percentile_curr",
+                "market_base_rate_curr",
+                "relative_risk_lift_curr",
+                "red_flag_count_prev",
+                "red_flag_count_curr",
+                "new_red_flag_codes",
+                "resolved_red_flag_codes",
+                "deteriorated",
             )
         )
-        return changes[:limit]
+        return cast(list[dict[str, object]], joined.to_dicts())
 
     def get_sector_risk_summary(
         self,
@@ -4131,50 +4327,38 @@ class DashboardQueryService:
                     pl.col("red_flag_count").mean().alias("avg_red_flags"),
                     pl.col("total_debt").sum().alias("total_debt_sum"),
                 )
+                .with_columns(
+                    pl.col("icb_code_level2").cast(pl.String),
+                    pl.col("icb_name_level2").cast(pl.String),
+                    pl.when(
+                        pl.col("median_distress_prob")
+                        .cast(pl.Float64, strict=False)
+                        .is_finite()
+                    )
+                    .then(pl.col("median_distress_prob").cast(pl.Float64, strict=False))
+                    .otherwise(None)
+                    .alias("median_distress_prob"),
+                    pl.when(
+                        pl.col("avg_red_flags")
+                        .cast(pl.Float64, strict=False)
+                        .is_finite()
+                    )
+                    .then(pl.col("avg_red_flags").cast(pl.Float64, strict=False))
+                    .otherwise(pl.lit(0.0, dtype=pl.Float64))
+                    .alias("avg_red_flags"),
+                    pl.when(
+                        pl.col("total_debt_sum")
+                        .cast(pl.Float64, strict=False)
+                        .is_finite()
+                    )
+                    .then(pl.col("total_debt_sum").cast(pl.Float64, strict=False))
+                    .otherwise(pl.lit(0.0, dtype=pl.Float64))
+                    .alias("total_debt_sum"),
+                )
                 .sort(["distress_zone_count", "issuer_count"], descending=[True, True])
             )
 
-            sectors_out: list[SectorRiskDict] = []
-            for rec in sector_df.to_dicts():
-                raw_med = rec.get("median_distress_prob")
-                med_prob = (
-                    float(raw_med)
-                    if isinstance(raw_med, (int, float))
-                    and not isinstance(raw_med, bool)
-                    and math.isfinite(float(raw_med))
-                    else None
-                )
-                raw_avg_rf = rec.get("avg_red_flags")
-                avg_rf = (
-                    float(raw_avg_rf)
-                    if isinstance(raw_avg_rf, (int, float))
-                    and not isinstance(raw_avg_rf, bool)
-                    and math.isfinite(float(raw_avg_rf))
-                    else 0.0
-                )
-                raw_debt = rec.get("total_debt_sum")
-                debt_sum = (
-                    float(raw_debt)
-                    if isinstance(raw_debt, (int, float))
-                    and not isinstance(raw_debt, bool)
-                    and math.isfinite(float(raw_debt))
-                    else 0.0
-                )
-                sectors_out.append(
-                    {
-                        "icb_code_level2": str(rec["icb_code_level2"]),
-                        "icb_name_level2": str(rec["icb_name_level2"]),
-                        "issuer_count": int(rec["issuer_count"]),
-                        "safe_zone_count": int(rec["safe_zone_count"]),
-                        "grey_zone_count": int(rec["grey_zone_count"]),
-                        "distress_zone_count": int(rec["distress_zone_count"]),
-                        "beneish_flagged_count": int(rec["beneish_flagged_count"]),
-                        "high_red_flag_count": int(rec["high_red_flag_count"]),
-                        "median_distress_prob": med_prob,
-                        "avg_red_flags": avg_rf,
-                        "total_debt_sum": debt_sum,
-                    }
-                )
+            sectors_out = cast(list[SectorRiskDict], sector_df.to_dicts())
 
             deteriorating = [
                 c

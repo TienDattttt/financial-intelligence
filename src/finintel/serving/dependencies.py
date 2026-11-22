@@ -24,13 +24,13 @@ from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from typing import cast
-from urllib.parse import urlparse
 
 import duckdb
 from fastapi import FastAPI, Request
 
+from finintel.config import parse_cors_origins, resolve_runtime_config
 from finintel.serving.cache import ValkeyResponseCache
-from finintel.serving.queries import DashboardQueryService, resolve_data_root
+from finintel.serving.queries import DashboardQueryService
 from finintel.storage.ducklake_store import ensure_ducklake_attached
 from finintel.storage.repository import ParquetRepository
 
@@ -84,24 +84,9 @@ def resolve_duckdb_memory_limit(explicit: str | None = None) -> str:
 
 def resolve_cors_origins(explicit: Sequence[str] | None = None) -> tuple[str, ...]:
     """Resolve allowlisted CORS origins; returns empty tuple (deny-by-default) when unset."""
-    raw_items: Sequence[str]
     if explicit is not None:
-        raw_items = explicit
-    else:
-        raw_env = os.getenv("FININTEL_CORS_ORIGINS", "")
-        raw_items = [item for item in raw_env.split(",") if item.strip()]
-
-    validated: list[str] = []
-    for item in raw_items:
-        origin = item.strip().rstrip("/")
-        if not origin:
-            continue
-        parsed = urlparse(origin)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError(f"Invalid CORS origin configured: {origin!r}")
-        if origin not in validated:
-            validated.append(origin)
-    return tuple(validated)
+        return parse_cors_origins(explicit)
+    return resolve_runtime_config().cors_origins
 
 
 def _attach_ducklake_read_only_if_applicable(
@@ -152,12 +137,16 @@ def build_lifespan(
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         threads = resolve_duckdb_threads(duckdb_threads)
         memory_limit = resolve_duckdb_memory_limit(duckdb_memory_limit)
+        runtime_cfg = resolve_runtime_config(
+            data_root=data_root,
+            valkey_url=valkey_url,
+        )
         repo = (
             repository
             if repository is not None
-            else ParquetRepository(data_root=resolve_data_root(data_root))
+            else ParquetRepository.from_runtime_config(runtime_cfg)
         )
-        response_cache = ValkeyResponseCache(url=valkey_url)
+        response_cache = ValkeyResponseCache(url=runtime_cfg.valkey_url)
 
         duckdb_conn = duckdb.connect(":memory:")
         try:
