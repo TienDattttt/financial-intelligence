@@ -279,7 +279,7 @@ def test_v1_screener_export_filter_sort_parity_and_formula_injection(
         assert by_ticker["T000"]["ebit_margin"] == "-0.12"
 
         # 2. Verify exact filter & sort parity with /api/v1/screener
-        filter_cases: list[dict[str, object]] = [
+        filter_cases: list[dict[str, str | int]] = [
             {"risk_tier": "R4", "sort_by": "roe_total", "sort_dir": "asc"},
             {
                 "altman_zone": "DISTRESS_ZONE",
