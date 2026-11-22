@@ -473,8 +473,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     // 7. Financial Statements tab: Hierarchical FinancialTable
     await page.getByRole("button", { name: "Báo cáo tài chính" }).click();
     await expect(page.locator("table").first()).toBeVisible();
-    const stmtRows = await page.locator("tbody tr").count();
-    expect(stmtRows).toBeGreaterThan(5);
+    await expect(page.locator("tbody tr").nth(5)).toBeVisible({ timeout: 10_000 });
   });
 
   test("Wave 1-6 Stress Test (/stress-test): 3 scopes (Market, Single Company, Watchlist), Scenario A vs B comparison, and URL reload restoration", async ({
