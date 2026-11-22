@@ -150,4 +150,53 @@ describe("narrative.ts deterministic TreeSHAP explanation", () => {
     expect(out[2]).toContain("cao hơn trung vị ngành");
     expect(out[2]).not.toContain("tích cực hơn");
   });
+
+  it("formats ML-05 VN-specific features (overdue/late count, consecutive loss, asset size pct) cleanly", () => {
+    const out = buildShapNarrativeVi({
+      base_value: -2.2,
+      prediction_score: -0.9,
+      other_features_delta: 0,
+      top_risk_increasing: [
+        {
+          feature: "overdue_or_late_count_4q",
+          display_name_vn: "Số quý nộp trễ hoặc quá hạn công bố BCTC (4Q)",
+          value: 3,
+          peer_median: 0,
+          shap_delta: 0.55,
+        },
+        {
+          feature: "consecutive_loss_quarters",
+          display_name_vn: "Số quý lỗ ròng liên tiếp",
+          value: 6,
+          peer_median: 0,
+          shap_delta: 0.48,
+        },
+        {
+          feature: "cross_sectional_asset_size_pct",
+          display_name_vn: "Phân vị quy mô tổng tài sản theo quý",
+          value: 82.5,
+          peer_median: 50.0,
+          shap_delta: 0.18,
+        },
+      ],
+      top_risk_decreasing: [
+        {
+          feature: "overdue_or_late_count_4q",
+          display_name_vn: "Số quý nộp trễ hoặc quá hạn công bố BCTC (4Q)",
+          value: 0,
+          peer_median: 1,
+          shap_delta: -0.22,
+        },
+      ],
+    });
+    expect(out[0]).toContain("(3 quý)");
+    expect(out[0]).toContain("bất lợi hơn so với trung vị ngành (0 quý)");
+    expect(out[1]).toContain("(6 quý)");
+    expect(out[1]).toContain("bất lợi hơn so với trung vị ngành (0 quý)");
+    expect(out[2]).toContain("(82,5%)");
+    expect(out[2]).toContain("cao hơn trung vị ngành (50,0%)");
+    expect(out[2]).not.toContain("bất lợi hơn");
+    expect(out[3]).toContain("(0 quý)");
+    expect(out[3]).toContain("tích cực hơn trung vị ngành (1 quý)");
+  });
 });

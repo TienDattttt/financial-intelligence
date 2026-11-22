@@ -1,4 +1,8 @@
-import { formatNumber, MINUS_SIGN } from "@/lib/format";
+import {
+  formatNumber,
+  formatPercentPoints,
+  MINUS_SIGN,
+} from "@/lib/format";
 
 export interface ShapDriverInput {
   feature: string;
@@ -60,6 +64,12 @@ const METRIC_DIRECTIONS: Record<string, MetricDirection> = {
   non_core_distortion_to_assets: "LOWER_IS_BETTER",
   sector_z_cash_conversion_cycle: "LOWER_IS_BETTER",
   sector_z_debt_to_equity: "LOWER_IS_BETTER",
+  overdue_or_late_count_4q: "LOWER_IS_BETTER",
+  consecutive_loss_quarters: "LOWER_IS_BETTER",
+  cross_sectional_asset_size_pct: "NEUTRAL",
+  delta_roa_4q: "HIGHER_IS_BETTER",
+  delta_liabilities_to_assets_4q: "LOWER_IS_BETTER",
+  delta_current_ratio_4q: "NEUTRAL",
   payables_turnover: "NEUTRAL",
   dpo: "NEUTRAL",
 };
@@ -78,6 +88,26 @@ function formatDriverValue(feature: string, val: number): string {
   const lowered = feature.toLowerCase();
   if (lowered.startsWith("sector_z_")) {
     return formatZScore(val);
+  }
+  if (
+    lowered === "overdue_or_late_count_4q" ||
+    lowered === "consecutive_loss_quarters"
+  ) {
+    return `${formatNumber(Math.round(val), 0)} quý`;
+  }
+  if (lowered === "cross_sectional_asset_size_pct" || lowered.endsWith("_pct")) {
+    return `${new Intl.NumberFormat("vi-VN", {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    }).format(val)}%`;
+  }
+  if (lowered === "delta_roa_4q" || lowered === "delta_liabilities_to_assets_4q") {
+    return formatPercentPoints(val, 1);
+  }
+  if (lowered === "delta_current_ratio_4q") {
+    const clean = Math.abs(val) < 0.005 ? 0 : val;
+    const formatted = formatNumber(clean, 2);
+    return clean > 0 ? `+${formatted}` : formatted;
   }
   if (
     lowered.includes("margin") ||

@@ -58,11 +58,20 @@ NEGATIVE = frozenset(
 )
 POSITIVE = frozenset(
     "liabilities_to_assets financial_debt_to_assets debt_to_equity net_debt_to_ebitda "
-    "accruals_to_assets sector_z_cash_conversion_cycle sector_z_debt_to_equity".split()
+    "accruals_to_assets sector_z_cash_conversion_cycle sector_z_debt_to_equity "
+    "overdue_or_late_count_4q consecutive_loss_quarters".split()
 )
 UNCONSTRAINED = frozenset(
-    "asset_turnover cash_conversion_cycle revenue_growth_yoy".split()
+    "asset_turnover cash_conversion_cycle revenue_growth_yoy "
+    "cross_sectional_asset_size_pct".split()
 )
+# Ablation-only candidate monotonicity definitions (evaluated in ML-05 and dropped from active
+# feature sets after failing OOS ablation criteria, retained here for reproducible ablations).
+ABLATION_CANDIDATE_MONOTONE_CONSTRAINTS: dict[str, int] = {
+    "delta_roa_4q": -1,
+    "delta_liabilities_to_assets_4q": 1,
+    "delta_current_ratio_4q": 0,
+}
 BASE_FEATURES: tuple[str, ...] = tuple(
     sorted((NEGATIVE | POSITIVE | UNCONSTRAINED) - set(SECTOR_RAW_TO_Z.values()))
 )
@@ -459,13 +468,27 @@ def _model_features(
 
 def _constraints(features: tuple[str, ...]) -> tuple[int, ...]:
     indicators = {name for name in features if name.endswith("_missing")}
-    unknown = set(features) - NEGATIVE - POSITIVE - UNCONSTRAINED - indicators
+    unknown = (
+        set(features)
+        - NEGATIVE
+        - POSITIVE
+        - UNCONSTRAINED
+        - set(ABLATION_CANDIDATE_MONOTONE_CONSTRAINTS)
+        - indicators
+    )
     if unknown:
         raise ContractViolationError(
             f"No monotonicity rule defined for features: {sorted(unknown)}"
         )
     return tuple(
-        -1 if name in NEGATIVE else 1 if name in POSITIVE else 0 for name in features
+        -1
+        if name in NEGATIVE
+        else 1
+        if name in POSITIVE
+        else 0
+        if name in UNCONSTRAINED or name in indicators
+        else ABLATION_CANDIDATE_MONOTONE_CONSTRAINTS[name]
+        for name in features
     )
 
 

@@ -26,13 +26,21 @@ Verified Sources:
     https://congbao.chinhphu.vn/van-ban/thong-tu-so-202-2014-tt-btc-6558.htm
 """
 
-from datetime import date
+import calendar
+import math
+from datetime import date, timedelta
 
 import polars as pl
 
+from finintel.domain.schemas import _roll_to_next_vn_business_day
 from finintel.exceptions import ContractViolationError
 from finintel.normalization.mapper import FACT_SCHEMA
-from finintel.normalization.periods import BRIDGED_TTM_NOTE, KNOWN_SCOPES, compute_ttm
+from finintel.normalization.periods import (
+    BRIDGED_TTM_NOTE,
+    KNOWN_SCOPES,
+    compute_ttm,
+    derive_quarters,
+)
 from finintel.storage.schemas import canonicalize_financial_facts
 
 ASSETS = "BS_TOTAL_ASSETS"
@@ -655,6 +663,394 @@ def with_prior_year(frame: pl.DataFrame, *columns: str) -> pl.DataFrame:
     ).rename({"_join_prior_end": "_prior_end"})
 
 
+def _shift_quarter_end(period_end: date, quarters_back: int) -> date:
+    """Shift a fiscal quarter-end date back by ``quarters_back`` quarters, aligned to month-end."""
+    if quarters_back == 0:
+        return period_end
+    total_months = (period_end.year * 12 + (period_end.month - 1)) - 3 * quarters_back
+    target_year, zero_month = divmod(total_months, 12)
+    target_month = zero_month + 1
+    last_day = calendar.monthrange(target_year, target_month)[1]
+    return date(target_year, target_month, last_day)
+
+
+def _quarter_statutory_deadline(
+    q_end: date,
+    fiscal_quarter: int,
+    *,
+    is_reviewed: bool = False,
+) -> date:
+    """Circular 96/2020/TT-BTC quarterly outer ceiling rolled to Vietnam business days."""
+    days = 60 if fiscal_quarter == 2 else (45 if is_reviewed else 30)
+    try:
+        return _roll_to_next_vn_business_day(q_end + timedelta(days=days))
+    except OverflowError:
+        return q_end + timedelta(days=days)
+
+
+def _compute_overdue_or_late_count_4q(
+    visible_facts: pl.DataFrame,
+    frame: pl.DataFrame,
+) -> pl.DataFrame:
+    """Count trailing-4Q overdue or late filings at each row's PIT ``a_t`` with 0% lookahead (H-06).
+
+    For each corporate quarter ``t`` available at ``a_t = _period_available_at``, inspects
+    fiscal slots ``{q_idx - 3, q_idx - 2, q_idx - 1, q_idx}`` at or after the issuer's first
+    observed quarter ``<= a_t``. Whenever ``statutory_deadline(q_s) < a_t``, adds 1 if no
+    ``REPORTED_DIRECTLY`` quarterly filing became available on time (``<= statutory_deadline``).
+    Captures both late filings and missing/evaded quarters with 0% future leakage.
+    """
+    if frame.is_empty():
+        return frame.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("overdue_or_late_count_4q")
+        )
+    slots_map: dict[
+        tuple[str, str],
+        dict[int, tuple[date, date | None, date | None, date | None, date]],
+    ] = {}
+    q_facts = visible_facts.filter(
+        (pl.col("period_type") == "QUARTER") & pl.col("fiscal_quarter").is_between(1, 4)
+    )
+    if not q_facts.is_empty():
+        q_agg = (
+            q_facts.with_columns(
+                (
+                    pl.col("fiscal_year").cast(pl.Int32) * 4
+                    + pl.col("fiscal_quarter").cast(pl.Int32)
+                ).alias("_q_idx")
+            )
+            .group_by(["issuer_id", "statement_scope", "_q_idx"])
+            .agg(
+                pl.col("effective_available_at").min().alias("_any_avail"),
+                pl.col("effective_available_at")
+                .filter(
+                    (pl.col("derivation_method") == "REPORTED_DIRECTLY")
+                    & (pl.col("published_at_basis") == "EXACT_FILING")
+                    & ~(pl.col("is_filed_late").fill_null(False))
+                )
+                .min()
+                .alias("_exact_ontime_avail"),
+                pl.col("effective_available_at")
+                .filter(
+                    (pl.col("derivation_method") == "REPORTED_DIRECTLY")
+                    & (pl.col("published_at_basis") == "STATUTORY_LAG")
+                    & ~(pl.col("is_filed_late").fill_null(False))
+                )
+                .min()
+                .alias("_stat_avail"),
+                pl.col("effective_available_at")
+                .filter(
+                    (pl.col("derivation_method") == "REPORTED_DIRECTLY")
+                    & (pl.col("audit_status") == "REVIEWED")
+                )
+                .min()
+                .alias("_reviewed_avail"),
+                pl.col("period_end_date").first().alias("_slot_end"),
+            )
+        )
+        for row in q_agg.iter_rows(named=True):
+            key = (str(row["issuer_id"]), str(row["statement_scope"]))
+            slots_map.setdefault(key, {})[int(row["_q_idx"])] = (
+                row["_any_avail"],
+                row["_exact_ontime_avail"],
+                row["_stat_avail"],
+                row["_reviewed_avail"],
+                row["_slot_end"],
+            )
+
+    counts: list[float | None] = []
+    for row in frame.select(
+        "issuer_id",
+        "statement_scope",
+        "accounting_regime",
+        "period_type",
+        "fiscal_year",
+        "fiscal_quarter",
+        "period_end_date",
+        "_period_available_at",
+    ).iter_rows(named=True):
+        a_t = row["_period_available_at"]
+        fq = row["fiscal_quarter"]
+        if (
+            row["accounting_regime"] != "CORPORATE"
+            or row["period_type"] != "QUARTER"
+            or fq is None
+            or a_t is None
+        ):
+            counts.append(None)
+            continue
+        q_idx = int(row["fiscal_year"]) * 4 + int(fq)
+        t_end: date = row["period_end_date"]
+        slots = slots_map.get((str(row["issuer_id"]), str(row["statement_scope"])), {})
+        first_qi = min(
+            (qi for qi, vals in slots.items() if vals[0] <= a_t),
+            default=q_idx,
+        )
+        overdue = 0
+        for lag in range(4):
+            q_s = q_idx - lag
+            if q_s < first_qi:
+                continue
+            q_num_s = ((q_s - 1) % 4) + 1
+            slot = slots.get(q_s)
+            q_end_s = slot[4] if slot is not None else _shift_quarter_end(t_end, lag)
+            is_rev_s = slot is not None and slot[3] is not None and slot[3] <= a_t
+            deadline_s = _quarter_statutory_deadline(
+                q_end_s, q_num_s, is_reviewed=is_rev_s
+            )
+            if deadline_s >= a_t:
+                continue
+            exact_ontime = slot[1] if slot is not None else None
+            stat_ontime = slot[2] if slot is not None else None
+            arrived_on_time = (
+                exact_ontime is not None and exact_ontime <= deadline_s
+            ) or (stat_ontime is not None and stat_ontime <= a_t)
+            if not arrived_on_time:
+                overdue += 1
+        counts.append(float(overdue))
+
+    return frame.with_columns(
+        pl.Series("overdue_or_late_count_4q", counts, dtype=pl.Float64)
+    )
+
+
+def _compute_consecutive_loss_quarters(
+    visible_facts: pl.DataFrame,
+    frame: pl.DataFrame,
+) -> pl.DataFrame:
+    """Count consecutive discrete-quarter net losses up to ``t`` without future lookahead."""
+    if frame.is_empty():
+        return frame.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("consecutive_loss_quarters")
+        )
+    ni_facts = visible_facts.filter(METRIC == EARNINGS).select(
+        pl.col(name)
+        if name in visible_facts.columns
+        else pl.lit(None, dtype=dtype).alias(name)
+        for name, dtype in FACT_SCHEMA.items()
+    )
+    ni_map: dict[tuple[str, str, int], tuple[float, date]] = {}
+    if not ni_facts.is_empty():
+        discrete_ni = (
+            derive_quarters(ni_facts)
+            .filter(
+                (pl.col("revision_reason") != "RESTATED_REGIME_CHANGE")
+                & pl.col("value").is_not_null()
+            )
+            .sort(REVISION_ORDER)
+            .unique(subset=PERIOD, keep="last")
+        )
+        for row in discrete_ni.select(
+            "issuer_id",
+            "statement_scope",
+            "fiscal_year",
+            "fiscal_quarter",
+            "value",
+            "effective_available_at",
+        ).iter_rows(named=True):
+            val = float(row["value"])
+            if not math.isfinite(val):
+                continue
+            q_idx = int(row["fiscal_year"]) * 4 + int(row["fiscal_quarter"])
+            ni_map[(str(row["issuer_id"]), str(row["statement_scope"]), q_idx)] = (
+                val,
+                row["effective_available_at"],
+            )
+
+    streaks: list[float | None] = []
+    for row in frame.select(
+        "issuer_id",
+        "statement_scope",
+        "accounting_regime",
+        "period_type",
+        "fiscal_year",
+        "fiscal_quarter",
+        "_period_available_at",
+    ).iter_rows(named=True):
+        a_t = row["_period_available_at"]
+        fq = row["fiscal_quarter"]
+        if (
+            row["accounting_regime"] != "CORPORATE"
+            or row["period_type"] != "QUARTER"
+            or fq is None
+            or a_t is None
+        ):
+            streaks.append(None)
+            continue
+        iss = str(row["issuer_id"])
+        scope = str(row["statement_scope"])
+        q_idx = int(row["fiscal_year"]) * 4 + int(fq)
+        cur = ni_map.get((iss, scope, q_idx))
+        if cur is None or cur[1] > a_t:
+            streaks.append(None)
+            continue
+        if cur[0] >= 0.0:
+            streaks.append(0.0)
+            continue
+        streak = 1
+        prev_q = q_idx - 1
+        while True:
+            prev = ni_map.get((iss, scope, prev_q))
+            if prev is None or prev[1] > a_t or prev[0] >= 0.0:
+                break
+            streak += 1
+            prev_q -= 1
+        streaks.append(float(streak))
+
+    return frame.with_columns(
+        pl.Series("consecutive_loss_quarters", streaks, dtype=pl.Float64)
+    )
+
+
+def _attach_ml_candidate_features(
+    frame: pl.DataFrame,
+    visible_facts: pl.DataFrame,
+) -> pl.DataFrame:
+    """Attach leak-free ML-05 candidate features onto corporate periods."""
+    with_counts = _compute_consecutive_loss_quarters(
+        visible_facts,
+        _compute_overdue_or_late_count_4q(visible_facts, frame),
+    )
+
+    c = pl.col
+    asset_group = [
+        "accounting_regime",
+        "statement_scope",
+        "period_type",
+        "period_end_date",
+        "fiscal_year",
+        "fiscal_quarter",
+    ]
+    valid_asset = (
+        pl.when(
+            CORPORATE
+            & ~input_has("mixed", ASSETS)
+            & c(ASSETS).is_finite()
+            & (c(ASSETS) > 0)
+        )
+        .then(c(ASSETS).cast(pl.Float64))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+    )
+    asset_count = valid_asset.count().over(asset_group)
+    asset_rank = valid_asset.rank(method="average").over(asset_group)
+    asset_pct = (
+        pl.when(valid_asset.is_not_null() & (asset_count == 1))
+        .then(50.0)
+        .when(valid_asset.is_not_null() & (asset_count > 1))
+        .then(100.0 * (asset_rank - 1.0) / (asset_count - 1.0))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+        .alias("cross_sectional_asset_size_pct")
+    )
+
+    avg_assets = average(ASSETS)
+    ml_roa = (
+        pl.when(
+            CORPORATE
+            & ~input_has("mixed", EARNINGS, ASSETS, f"{ASSETS}_prior")
+            & ~cross_taxonomy(ASSETS)
+            & c("_prior_end").is_not_null()
+            & c(EARNINGS).is_finite()
+            & avg_assets.is_finite()
+            & (avg_assets > 0)
+        )
+        .then((c(EARNINGS) / avg_assets).cast(pl.Float64))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+        .alias("_ml_roa")
+    )
+    ml_lta = (
+        pl.when(
+            CORPORATE
+            & ~input_has("mixed", LIABILITIES, ASSETS)
+            & c(LIABILITIES).is_finite()
+            & c(ASSETS).is_finite()
+            & (c(ASSETS) > 0)
+        )
+        .then((c(LIABILITIES) / c(ASSETS)).cast(pl.Float64))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+        .alias("_ml_lta")
+    )
+    ml_cr = (
+        pl.when(
+            CORPORATE
+            & ~input_has("mixed", CURRENT_ASSETS, CURRENT_LIABILITIES)
+            & c(CURRENT_ASSETS).is_finite()
+            & c(CURRENT_LIABILITIES).is_finite()
+            & (c(CURRENT_LIABILITIES) > 0)
+        )
+        .then((c(CURRENT_ASSETS) / c(CURRENT_LIABILITIES)).cast(pl.Float64))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+        .alias("_ml_cr")
+    )
+    staged = with_counts.with_columns(asset_pct, ml_roa, ml_lta, ml_cr)
+
+    prior_keys = [*SERIES, "fiscal_year", "fiscal_quarter"]
+    prior_ratios = staged.select(
+        *SERIES,
+        (c("fiscal_year") + 1).alias("fiscal_year"),
+        "fiscal_quarter",
+        c("period_end_date").alias("_ml_prior_end"),
+        c("_ml_roa").alias("_ml_roa_prior"),
+        c("_ml_lta").alias("_ml_lta_prior"),
+        c("_ml_cr").alias("_ml_cr_prior"),
+    )
+    joined = staged.join(
+        prior_ratios, on=prior_keys, how="left", nulls_equal=True, validate="m:1"
+    )
+    prior_match = (
+        (c("period_end_date") - c("_ml_prior_end"))
+        .dt.total_days()
+        .is_between(350, 380)
+        .fill_null(False)
+    )
+    return joined.with_columns(
+        pl.when(
+            prior_match
+            & ~cross_taxonomy(EARNINGS, ASSETS)
+            & ~input_has(
+                "mixed", EARNINGS, ASSETS, f"{EARNINGS}_prior", f"{ASSETS}_prior"
+            )
+        )
+        .then(c("_ml_roa") - c("_ml_roa_prior"))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+        .cast(pl.Float64)
+        .alias("delta_roa_4q"),
+        pl.when(
+            prior_match
+            & ~cross_taxonomy(LIABILITIES, ASSETS)
+            & ~input_has(
+                "mixed", LIABILITIES, ASSETS, f"{LIABILITIES}_prior", f"{ASSETS}_prior"
+            )
+        )
+        .then(c("_ml_lta") - c("_ml_lta_prior"))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+        .cast(pl.Float64)
+        .alias("delta_liabilities_to_assets_4q"),
+        pl.when(
+            prior_match
+            & ~cross_taxonomy(CURRENT_ASSETS, CURRENT_LIABILITIES)
+            & ~input_has(
+                "mixed",
+                CURRENT_ASSETS,
+                CURRENT_LIABILITIES,
+                f"{CURRENT_ASSETS}_prior",
+                f"{CURRENT_LIABILITIES}_prior",
+            )
+        )
+        .then(c("_ml_cr") - c("_ml_cr_prior"))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+        .cast(pl.Float64)
+        .alias("delta_current_ratio_4q"),
+    ).drop(
+        "_ml_roa",
+        "_ml_lta",
+        "_ml_cr",
+        "_ml_prior_end",
+        "_ml_roa_prior",
+        "_ml_lta_prior",
+        "_ml_cr_prior",
+    )
+
+
 def prepare_periods(
     facts: pl.DataFrame,
     issuers: pl.DataFrame,
@@ -710,9 +1106,12 @@ def prepare_periods(
     stocks = (*STOCKS, *ML_STOCKS) if include_ml_inputs else STOCKS
     flows = (*FLOWS, *ML_FLOWS) if include_ml_inputs else FLOWS
     amounts = (*stocks, *flows, EPS)
+    visible_facts = _visible_facts(
+        facts, as_of, stocks, _precanonicalized=_precanonicalized
+    )
     periods = (
         _period_amounts(
-            _visible_facts(facts, as_of, stocks, _precanonicalized=_precanonicalized),
+            visible_facts,
             stocks,
             flows,
         )
@@ -745,29 +1144,26 @@ def prepare_periods(
             for name in amounts
         ),
     )
-    return (
-        result.with_columns(
-            pl.when(pl.col("_period_available_at").is_not_null())
+    assembled = result.with_columns(
+        pl.when(pl.col("_period_available_at").is_not_null())
+        .then(pl.max_horizontal("_period_available_at", "_period_available_at_prior"))
+        .otherwise(None)
+        .alias("_period_available_at"),
+        (
+            pl.col("_period_exact_filing").fill_null(False)
+            & pl.when(pl.col("_prior_end").is_not_null())
             .then(
-                pl.max_horizontal("_period_available_at", "_period_available_at_prior")
+                (
+                    pl.col("_period_available_at_prior")
+                    <= pl.col("_amounts_available_at")
+                ).fill_null(False)
             )
-            .otherwise(None)
-            .alias("_period_available_at"),
-            (
-                pl.col("_period_exact_filing").fill_null(False)
-                & pl.when(pl.col("_prior_end").is_not_null())
-                .then(
-                    (
-                        pl.col("_period_available_at_prior")
-                        <= pl.col("_amounts_available_at")
-                    ).fill_null(False)
-                )
-                .otherwise(pl.lit(True))
-            ).alias("_exact_filing_basis"),
-            combine_filing_ids(
-                pl.col("_period_filing_ids"), pl.col("_period_filing_ids_prior")
-            ).alias("source_filing_ids"),
-        )
-        .rename({"taxonomy_version_prior": "_prior_taxonomy"})
-        .sort(PERIOD)
-    )
+            .otherwise(pl.lit(True))
+        ).alias("_exact_filing_basis"),
+        combine_filing_ids(
+            pl.col("_period_filing_ids"), pl.col("_period_filing_ids_prior")
+        ).alias("source_filing_ids"),
+    ).rename({"taxonomy_version_prior": "_prior_taxonomy"})
+    if include_ml_inputs:
+        assembled = _attach_ml_candidate_features(assembled, visible_facts)
+    return assembled.sort(PERIOD)
