@@ -16,6 +16,7 @@ import {
   selectMlScoreForPeriod,
   STATEMENT_SCOPE_LABELS,
 } from "@/lib/domain-labels";
+import { useChartTheme } from "@/lib/echarts-theme";
 import {
   buildCsvContent,
   formatNumber,
@@ -25,8 +26,6 @@ import {
   normalizeSearchText,
 } from "@/lib/format";
 import type { RatioName } from "@/types/api";
-
-const SERIES_COLORS = ["#1F4E79", "#2E7D5B", "#B7791F", "#A61B1B", "#6B4C9A"];
 
 type CompareMetricKey =
   | "altman_z_double_prime"
@@ -71,6 +70,7 @@ function CompareContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { statementScope, periodType, periodEndDate, snapshotId } = useAppState();
+  const { palette } = useChartTheme();
 
   const tickers = React.useMemo(() => {
     const raw = searchParams.get("tickers") ?? "";
@@ -192,40 +192,34 @@ function CompareContent() {
   const chartOption = React.useMemo<EChartsOption>(() => {
     const xLabels = chartData.dates.map((d) => formatPeriodLabel(d, periodType));
     return {
-      animation: false,
       grid: { left: 54, right: 20, top: 36, bottom: 32 },
-      legend: { top: 4, right: 8, textStyle: { color: "#5B6068", fontSize: 11 } },
+      legend: { top: 4, right: 8 },
       tooltip: {
         trigger: "axis",
-        backgroundColor: "#FFFFFF",
-        borderColor: "#DAD7D0",
-        textStyle: { color: "#1A1D21", fontSize: 12 },
       },
       xAxis: {
         type: "category",
         data: xLabels,
-        axisLine: { lineStyle: { color: "#DAD7D0" } },
-        axisLabel: { color: "#5B6068", fontSize: 11 },
       },
       yAxis: {
         type: "value",
-        splitLine: { lineStyle: { color: "#EFEDE8" } },
         axisLabel: {
-          color: "#5B6068",
-          fontSize: 11,
           formatter: metricConfig.isPct ? "{value}%" : "{value}",
         },
       },
-      series: tickers.map((t, idx) => ({
-        name: t,
-        type: "line",
-        symbolSize: 5,
-        lineStyle: { color: SERIES_COLORS[idx % SERIES_COLORS.length], width: 2 },
-        itemStyle: { color: SERIES_COLORS[idx % SERIES_COLORS.length] },
-        data: chartData.dates.map((d) => chartData.perTickerMap.get(t)?.get(d) ?? null),
-      })),
+      series: tickers.map((t, idx) => {
+        const seriesColor = palette.series[idx % palette.series.length];
+        return {
+          name: t,
+          type: "line",
+          symbolSize: 5,
+          lineStyle: { color: seriesColor, width: 2 },
+          itemStyle: { color: seriesColor },
+          data: chartData.dates.map((d) => chartData.perTickerMap.get(t)?.get(d) ?? null),
+        };
+      }),
     };
-  }, [chartData, metricConfig.isPct, periodType, tickers]);
+  }, [chartData, metricConfig.isPct, palette.series, periodType, tickers]);
 
   const chartTableHeaders = ["Kỳ", ...tickers];
   const chartTableRows = chartData.dates.map((d) => [
@@ -352,17 +346,17 @@ function CompareContent() {
         ) : null}
       </div>
 
-      <Card>
+      <Card className="rounded-lg shadow-xs">
         <CardContent className="space-y-3 p-3.5">
           <div className="flex flex-wrap items-center gap-2">
             {tickers.map((t, idx) => (
               <span
                 key={t}
-                className="inline-flex items-center gap-1.5 rounded border border-border bg-canvas px-2.5 py-1 text-xs font-medium text-ink"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-canvas px-2.5 py-1 text-xs font-medium text-ink"
               >
                 <span
                   className="size-2 rounded-full"
-                  style={{ backgroundColor: SERIES_COLORS[idx % SERIES_COLORS.length] }}
+                  style={{ backgroundColor: palette.series[idx % palette.series.length] }}
                 />
                 <Link href={`/companies/${t}`} className="font-mono font-semibold hover:underline">
                   {t}
@@ -473,7 +467,7 @@ function CompareContent() {
             }
           />
 
-          <Card>
+          <Card className="rounded-lg shadow-xs">
             <CardHeader className="py-2.5">
               <CardTitle className="text-[14px]">
                 Ma trận chỉ số sức khỏe tài chính &amp; định lượng
@@ -481,14 +475,14 @@ function CompareContent() {
                   ? ` (${formatPeriodLabel(periodEndDate, periodType)})`
                   : " kỳ mới nhất"}
               </CardTitle>
-              <div className="inline-flex rounded border border-border bg-canvas p-0.5 text-xs">
+              <div className="inline-flex rounded-lg border border-border bg-canvas p-0.5 text-xs">
                 <button
                   type="button"
                   onClick={() => setMatrixMode("VALUE")}
                   className={
                     matrixMode === "VALUE"
-                      ? "rounded bg-accent-ink px-2.5 py-1 font-medium text-white"
-                      : "px-2.5 py-1 text-ink-muted hover:text-ink"
+                      ? "rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground shadow-xs"
+                      : "rounded-md px-2.5 py-1 text-ink-muted transition-colors duration-150 hover:text-ink"
                   }
                 >
                   Giá trị tuyệt đối
@@ -498,8 +492,8 @@ function CompareContent() {
                   onClick={() => setMatrixMode("PERCENTILE")}
                   className={
                     matrixMode === "PERCENTILE"
-                      ? "rounded bg-accent-ink px-2.5 py-1 font-medium text-white"
-                      : "px-2.5 py-1 text-ink-muted hover:text-ink"
+                      ? "rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground shadow-xs"
+                      : "rounded-md px-2.5 py-1 text-ink-muted transition-colors duration-150 hover:text-ink"
                   }
                 >
                   Phân vị ngành (%)

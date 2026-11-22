@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
+import { useChartTheme } from "@/lib/echarts-theme";
 import { formatPercent, formatVndBillions } from "@/lib/format";
 import type { StressSectorSummaryItem } from "@/types/api";
 
@@ -14,6 +15,8 @@ export function StressSectorBarChart({
   selectedSectorCode: string | null;
   onToggleSector: (icbCodeLevel2: string) => void;
 }) {
+  const { palette } = useChartTheme();
+
   const sorted = React.useMemo(
     () =>
       [...sectors].sort(
@@ -29,8 +32,9 @@ export function StressSectorBarChart({
       itemStyle: {
         color:
           selectedSectorCode && selectedSectorCode !== s.icb_code_level2
-            ? "rgba(91, 96, 104, 0.3)"
-            : "#5B6068",
+            ? palette.peerMedianMuted
+            : palette.peerMedian,
+        borderRadius: [0, 3, 3, 0],
       },
     }));
     const stressedData = sorted.map((s) => ({
@@ -38,25 +42,21 @@ export function StressSectorBarChart({
       itemStyle: {
         color:
           selectedSectorCode && selectedSectorCode !== s.icb_code_level2
-            ? "rgba(166, 27, 27, 0.3)"
-            : "#A61B1B",
+            ? palette.riskHighMuted
+            : palette.riskHigh,
+        borderRadius: [0, 3, 3, 0],
       },
     }));
 
     return {
-      animation: false,
       grid: { left: 185, right: 32, top: 34, bottom: 28 },
       legend: {
         top: 2,
         right: 8,
-        textStyle: { color: "#5B6068", fontSize: 11 },
       },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
-        backgroundColor: "#FFFFFF",
-        borderColor: "#DAD7D0",
-        textStyle: { color: "#1A1D21", fontSize: 12 },
         formatter: (raw: unknown) => {
           const list = Array.isArray(raw) ? raw : [raw];
           const first = list[0] as { dataIndex?: number } | undefined;
@@ -65,7 +65,7 @@ export function StressSectorBarChart({
           return [
             `<div style="font-weight:600;margin-bottom:4px">${s.icb_name_level2}</div>`,
             `<div>Tỷ trọng nợ rủi ro cơ sở: <b>${formatPercent(s.baseline_debt_at_risk_pct)}</b></div>`,
-            `<div>Tỷ trọng nợ rủi ro sau cú sốc: <b style="color:#A61B1B">${formatPercent(s.stressed_debt_at_risk_pct)}</b></div>`,
+            `<div>Tỷ trọng nợ rủi ro sau cú sốc: <b style="color:${palette.riskHigh}">${formatPercent(s.stressed_debt_at_risk_pct)}</b></div>`,
             `<div>DN mới chuyển sang ICR &lt; 1: <b>${s.newly_distressed_count}</b> / ${s.issuer_count} DN</div>`,
             `<div>Tổng dư nợ ngành: <b>${formatVndBillions(s.total_debt_sum, { decimals: 0 })} tỷ</b></div>`,
           ].join("");
@@ -74,15 +74,13 @@ export function StressSectorBarChart({
       xAxis: {
         type: "value",
         max: 100,
-        splitLine: { lineStyle: { color: "#EFEDE8" } },
-        axisLabel: { color: "#5B6068", fontSize: 11, formatter: "{value}%" },
+        axisLabel: { formatter: "{value}%" },
       },
       yAxis: {
         type: "category",
         inverse: true,
         data: labels,
-        axisLine: { lineStyle: { color: "#DAD7D0" } },
-        axisLabel: { color: "#1A1D21", fontSize: 11, width: 170, overflow: "truncate" },
+        axisLabel: { color: palette.ink, fontSize: 11, width: 170, overflow: "truncate" },
       },
       series: [
         {
@@ -90,17 +88,19 @@ export function StressSectorBarChart({
           type: "bar",
           barGap: "18%",
           barMaxWidth: 11,
+          itemStyle: { color: palette.peerMedian },
           data: baseData,
         },
         {
           name: "Sau cú sốc",
           type: "bar",
           barMaxWidth: 11,
+          itemStyle: { color: palette.riskHigh },
           data: stressedData,
         },
       ],
     };
-  }, [selectedSectorCode, sorted]);
+  }, [palette, selectedSectorCode, sorted]);
 
   const height = Math.min(540, Math.max(280, sorted.length * 28 + 64));
 

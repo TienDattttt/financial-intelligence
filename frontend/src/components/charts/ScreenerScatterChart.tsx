@@ -3,6 +3,7 @@
 import * as React from "react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
 import { ALTMAN_ZONE_META } from "@/lib/domain-labels";
+import { useChartTheme } from "@/lib/echarts-theme";
 import { formatNumber, formatPercent } from "@/lib/format";
 import type { ScreenerItem } from "@/types/api";
 
@@ -28,6 +29,8 @@ export function ScreenerScatterChart({
   items: readonly ScreenerItem[];
   onSelectTicker: (ticker: string) => void;
 }) {
+  const { palette } = useChartTheme();
+
   const plottable = React.useMemo(
     () =>
       items.filter(
@@ -80,27 +83,22 @@ export function ScreenerScatterChart({
       if (!d) return "";
       return [
         `<div style="font-weight:600;margin-bottom:3px">${d.ticker} · ${d.companyName}</div>`,
-        `<div style="color:#5B6068;font-size:11px;margin-bottom:4px">${d.sector}</div>`,
+        `<div style="color:${palette.inkMuted};font-size:11px;margin-bottom:4px">${d.sector}</div>`,
         `<div>Altman Z″: <b>${formatNumber(d.rawZ, 2)}</b> (${d.zoneLabel})</div>`,
         `<div>Xác suất kiệt quệ: <b>${formatPercent(d.prob)}</b></div>`,
         `<div>Cờ đỏ kế toán: <b>${d.redFlags}</b></div>`,
-        `<div style="color:#1F4E79;font-size:11px;margin-top:3px">Nhấp để mở hồ sơ ${d.ticker} →</div>`,
+        `<div style="color:${palette.company};font-size:11px;margin-top:3px">Nhấp để mở hồ sơ ${d.ticker} →</div>`,
       ].join("");
     };
 
     return {
-      animation: false,
       grid: { left: 56, right: 24, top: 40, bottom: 44 },
       legend: {
         top: 4,
         right: 12,
-        textStyle: { color: "#5B6068", fontSize: 11 },
       },
       tooltip: {
         trigger: "item",
-        backgroundColor: "#FFFFFF",
-        borderColor: "#DAD7D0",
-        textStyle: { color: "#1A1D21", fontSize: 12 },
         formatter: tooltipFormatter,
       },
       xAxis: {
@@ -108,46 +106,41 @@ export function ScreenerScatterChart({
         name: "Altman Z″ (giới hạn hiển thị [-6; 12])",
         nameLocation: "middle",
         nameGap: 26,
-        nameTextStyle: { color: "#5B6068", fontSize: 11 },
         min: -6,
         max: 12,
-        splitLine: { lineStyle: { color: "#EFEDE8" } },
-        axisLabel: { color: "#5B6068", fontSize: 11 },
       },
       yAxis: {
         type: "value",
         name: "XS kiệt quệ (%)",
-        nameTextStyle: { color: "#5B6068", fontSize: 11 },
         min: 0,
-        splitLine: { lineStyle: { color: "#EFEDE8" } },
-        axisLabel: { color: "#5B6068", fontSize: 11, formatter: "{value}%" },
+        axisLabel: { formatter: "{value}%" },
       },
       series: [
         {
           name: "An toàn (> 2,60)",
           type: "scatter",
           symbolSize: 8,
-          itemStyle: { color: "#2E7D5B", opacity: 0.85 },
+          itemStyle: { color: palette.riskLow, opacity: 0.88 },
           data: groups.SAFE_ZONE,
         },
         {
           name: "Vùng xám (1,10–2,60)",
           type: "scatter",
           symbolSize: 8,
-          itemStyle: { color: "#B7791F", opacity: 0.85 },
+          itemStyle: { color: palette.riskMid, opacity: 0.88 },
           data: groups.GREY_ZONE,
         },
         {
           name: "Nguy cơ (< 1,10)",
           type: "scatter",
           symbolSize: 9,
-          itemStyle: { color: "#A61B1B", opacity: 0.9 },
+          itemStyle: { color: palette.riskHigh, opacity: 0.92 },
           data: groups.DISTRESS_ZONE,
           markLine: {
             silent: true,
             symbol: "none",
-            lineStyle: { type: "dashed", color: "#868B93", width: 1 },
-            label: { fontSize: 10, color: "#5B6068" },
+            lineStyle: { type: "dashed", color: palette.inkSubtle, width: 1 },
+            label: { fontSize: 10, color: palette.inkMuted },
             data: [
               { xAxis: 1.1, label: { formatter: "1,10" } },
               { xAxis: 2.6, label: { formatter: "2,60" } },
@@ -160,14 +153,14 @@ export function ScreenerScatterChart({
                 name: "Khác",
                 type: "scatter" as const,
                 symbolSize: 7,
-                itemStyle: { color: "#5B6068", opacity: 0.7 },
+                itemStyle: { color: palette.neutral, opacity: 0.72 },
                 data: groups.OTHER,
               },
             ]
           : []),
       ],
     };
-  }, [plottable]);
+  }, [palette, plottable]);
 
   const tableHeaders = [
     "Mã",

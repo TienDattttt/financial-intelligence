@@ -12,9 +12,12 @@ import {
   GitCompare,
   LayoutDashboard,
   Menu,
+  Monitor,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Search,
+  Sun,
   X,
 } from "lucide-react";
 import { CommandSearch } from "@/components/layout/CommandSearch";
@@ -26,6 +29,7 @@ import {
   PERIOD_TYPE_LABELS,
   STATEMENT_SCOPE_LABELS,
 } from "@/lib/domain-labels";
+import type { ThemePreference } from "@/lib/echarts-theme";
 import { formatDateVi, formatPeriodLabel } from "@/lib/format";
 import {
   getLastViewedTickerServerSnapshot,
@@ -36,6 +40,19 @@ import {
 } from "@/lib/watchlist-store";
 import { cn } from "@/lib/utils";
 import type { PeriodType, StatementScope } from "@/types/api";
+
+const THEME_OPTIONS: readonly {
+  id: ThemePreference;
+  label: string;
+  ariaLabel: string;
+  Icon: typeof Sun;
+}[] = [
+  { id: "light", label: "Sáng", ariaLabel: "Giao diện Sáng", Icon: Sun },
+  { id: "dark", label: "Tối", ariaLabel: "Giao diện Tối", Icon: Moon },
+  { id: "system", label: "Hệ thống", ariaLabel: "Theo hệ thống", Icon: Monitor },
+];
+
+const subscribeNoop = () => () => {};
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -50,10 +67,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     publishedAt,
     snapshotId,
     setCommandOpen,
+    themePreference,
+    setThemePreference,
   } = useAppState();
 
   const [collapsed, setCollapsed] = React.useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
+  const mounted = React.useSyncExternalStore(
+    subscribeNoop,
+    () => true,
+    () => false,
+  );
 
   const watchlist = React.useSyncExternalStore(
     subscribePreferences,
@@ -123,7 +147,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="flex h-[52px] items-center justify-between border-b border-border px-3">
           {!collapsed ? (
             <Link href="/" className="flex items-center gap-2 font-semibold text-ink">
-              <span className="inline-flex size-6 items-center justify-center rounded bg-accent-ink font-mono text-xs font-semibold text-white">
+              <span className="inline-flex size-6 items-center justify-center rounded-md bg-primary font-mono text-xs font-semibold text-primary-foreground">
                 FI
               </span>
               <span className="tracking-tight text-[15px]">FinIntel</span>
@@ -132,7 +156,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Link
               href="/"
               aria-label="FinIntel Trang chủ"
-              className="mx-auto inline-flex size-7 items-center justify-center rounded bg-accent-ink font-mono text-xs font-semibold text-white"
+              className="mx-auto inline-flex size-7 items-center justify-center rounded-md bg-primary font-mono text-xs font-semibold text-primary-foreground"
             >
               FI
             </Link>
@@ -142,7 +166,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               type="button"
               aria-label="Thu gọn thanh điều hướng"
               onClick={() => setCollapsed(true)}
-              className="rounded p-1 text-ink-muted hover:bg-surface-muted hover:text-ink"
+              className="rounded-md p-1 text-ink-muted transition-colors duration-150 hover:bg-surface-muted hover:text-ink"
             >
               <PanelLeftClose className="size-4" />
             </button>
@@ -159,7 +183,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 href={item.href}
                 title={collapsed ? item.label : undefined}
                 className={cn(
-                  "flex items-center gap-2.5 rounded px-2.5 py-2 text-[13px] font-medium transition-colors",
+                  "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] font-medium transition-colors duration-150",
                   active
                     ? "bg-accent-soft text-accent-ink font-semibold"
                     : "text-ink-muted hover:bg-surface-muted hover:text-ink",
@@ -179,7 +203,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               type="button"
               aria-label="Mở rộng thanh điều hướng"
               onClick={() => setCollapsed(false)}
-              className="flex w-full justify-center rounded p-1.5 text-ink-muted hover:bg-surface-muted hover:text-ink"
+              className="flex w-full justify-center rounded-md p-1.5 text-ink-muted transition-colors duration-150 hover:bg-surface-muted hover:text-ink"
             >
               <PanelLeftOpen className="size-4" />
             </button>
@@ -198,7 +222,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onClick={() => setMobileMenuOpen(false)}
         >
           <aside
-            className="flex h-full w-64 flex-col border-r border-border bg-surface"
+            className="flex h-full w-64 flex-col border-r border-border bg-surface shadow-xs"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex h-[52px] items-center justify-between border-b border-border px-3">
@@ -207,7 +231,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 type="button"
                 aria-label="Đóng menu"
                 onClick={() => setMobileMenuOpen(false)}
-                className="rounded p-1 text-ink-muted"
+                className="rounded-md p-1 text-ink-muted hover:bg-surface-muted hover:text-ink"
               >
                 <X className="size-4" />
               </button>
@@ -222,7 +246,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     href={item.href}
                     onClick={() => setMobileMenuOpen(false)}
                     className={cn(
-                      "flex items-center gap-2.5 rounded px-2.5 py-2 text-[13px] font-medium",
+                      "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] font-medium transition-colors duration-150",
                       active
                         ? "bg-accent-soft text-accent-ink font-semibold"
                         : "text-ink-muted hover:bg-surface-muted hover:text-ink",
@@ -246,14 +270,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               type="button"
               aria-label="Mở menu điều hướng"
               onClick={() => setMobileMenuOpen(true)}
-              className="rounded border border-border p-1.5 text-ink-muted hover:bg-surface-muted lg:hidden"
+              className="rounded-md border border-border p-1.5 text-ink-muted transition-colors duration-150 hover:bg-surface-muted lg:hidden"
             >
               <Menu className="size-4" />
             </button>
             <button
               type="button"
               onClick={() => setCommandOpen(true)}
-              className="flex h-8 w-52 items-center justify-between gap-2 rounded border border-border bg-canvas px-2.5 text-left text-[13px] text-ink-muted hover:border-border-strong sm:w-72"
+              className="flex h-8 w-52 items-center justify-between gap-2 rounded-lg border border-border bg-canvas px-2.5 text-left text-[13px] text-ink-muted transition-colors duration-150 hover:border-border-strong sm:w-72"
             >
               <span className="flex items-center gap-1.5 truncate">
                 <Search className="size-3.5 shrink-0" aria-hidden="true" />
@@ -270,7 +294,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               aria-label="Chọn kỳ dữ liệu"
               value={periodEndDate ?? ""}
               onChange={(e) => setPeriodEndDate(e.target.value || null)}
-              className="h-8 text-xs"
+              className="h-8 rounded-lg text-xs"
             >
               {availableDates.length === 0 ? (
                 <option value="">Kỳ mới nhất</option>
@@ -287,7 +311,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               aria-label="Chọn loại kỳ"
               value={periodType}
               onChange={(e) => setPeriodType(e.target.value as PeriodType)}
-              className="h-8 text-xs"
+              className="h-8 rounded-lg text-xs"
             >
               {Object.entries(PERIOD_TYPE_LABELS).map(([k, lbl]) => (
                 <option key={k} value={k}>
@@ -300,7 +324,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               aria-label="Chọn phạm vi báo cáo"
               value={statementScope}
               onChange={(e) => setStatementScope(e.target.value as StatementScope)}
-              className="h-8 text-xs"
+              className="h-8 rounded-lg text-xs"
             >
               {Object.entries(STATEMENT_SCOPE_LABELS).map(([k, lbl]) => (
                 <option key={k} value={k}>
@@ -308,6 +332,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </option>
               ))}
             </Select>
+
+            <div
+              role="group"
+              aria-label="Chế độ hiển thị"
+              className="inline-flex h-8 items-center rounded-lg border border-border bg-canvas p-0.5"
+            >
+              {THEME_OPTIONS.map(({ id, label, ariaLabel, Icon }) => {
+                const active = mounted ? themePreference === id : id === "light";
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    aria-label={ariaLabel}
+                    aria-pressed={active}
+                    title={ariaLabel}
+                    onClick={() => setThemePreference(id)}
+                    className={cn(
+                      "inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      active
+                        ? "bg-primary text-primary-foreground shadow-xs"
+                        : "text-ink-muted hover:text-ink",
+                    )}
+                  >
+                    <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+                    <span className="hidden xl:inline">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </header>
 

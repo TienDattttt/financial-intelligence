@@ -5,6 +5,7 @@ import * as echarts from "echarts";
 import { BarChart3, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { applyChartThemeDefaults, useChartTheme } from "@/lib/echarts-theme";
 import { cn } from "@/lib/utils";
 
 export type EChartsOption = echarts.EChartsOption;
@@ -47,6 +48,12 @@ export function EChartBox({
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const chartRef = React.useRef<echarts.ECharts | null>(null);
   const onClickRef = React.useRef(onChartClick);
+  const { theme, reducedMotion } = useChartTheme();
+
+  const themedOption = React.useMemo(
+    () => applyChartThemeDefaults(option, theme, reducedMotion),
+    [option, reducedMotion, theme],
+  );
 
   React.useEffect(() => {
     onClickRef.current = onChartClick;
@@ -93,11 +100,11 @@ export function EChartBox({
 
   React.useEffect(() => {
     if (showTable || isEmpty || !chartRef.current) return;
-    chartRef.current.setOption(option, { notMerge: true });
-  }, [option, showTable, isEmpty]);
+    chartRef.current.setOption(themedOption, { notMerge: true });
+  }, [themedOption, showTable, isEmpty]);
 
   return (
-    <Card className={cn("overflow-hidden", className)}>
+    <Card className={cn("overflow-hidden rounded-lg shadow-xs transition-colors duration-150", className)}>
       <CardHeader className="flex-wrap gap-2 py-2.5">
         <div className="min-w-0">
           <CardTitle className="text-[14px] leading-5">{title}</CardTitle>
@@ -134,13 +141,13 @@ export function EChartBox({
       <CardContent className="p-3 sm:p-4">
         {isEmpty ? (
           <div
-            className="flex items-center justify-center rounded border border-dashed border-border bg-canvas/50 px-4 text-center text-xs text-ink-muted"
+            className="flex items-center justify-center rounded-lg border border-dashed border-border bg-canvas/50 px-4 text-center text-xs text-ink-muted"
             style={{ height }}
           >
             {emptyMessage}
           </div>
         ) : showTable ? (
-          <div className="max-h-[340px] overflow-auto rounded border border-border">
+          <div className="max-h-[340px] overflow-auto rounded-lg border border-border">
             <table className="w-full border-collapse text-xs">
               <thead>
                 <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
@@ -162,7 +169,7 @@ export function EChartBox({
                 {tableRows.map((row, rIdx) => (
                   <tr
                     key={rIdx}
-                    className="border-b border-border/60 hover:bg-surface-muted/40"
+                    className="border-b border-border/60 transition-colors duration-150 hover:bg-surface-muted/40"
                   >
                     {row.map((cell, cIdx) => (
                       <td

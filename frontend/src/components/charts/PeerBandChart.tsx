@@ -1,10 +1,11 @@
 "use client";
 
 import * as React from "react";
-import * as echarts from "echarts";
+import type * as echarts from "echarts";
 import { AlertTriangle } from "lucide-react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
 import { formatPeerGroupLabel } from "@/lib/domain-labels";
+import { useChartTheme } from "@/lib/echarts-theme";
 import {
   formatNumber,
   formatPeriodLabel,
@@ -26,6 +27,8 @@ export function PeerBandChart({
   history: readonly PeerBandHistoryPoint[];
   ticker: string;
 }) {
+  const { palette } = useChartTheme();
+
   const sorted = React.useMemo(
     () =>
       [...history].sort((a, b) =>
@@ -71,18 +74,13 @@ export function PeerBandChart({
     };
 
     return {
-      animation: false,
       grid: { left: 56, right: 20, top: 34, bottom: 38 },
       legend: {
         top: 2,
         right: 8,
-        textStyle: { color: "#5B6068", fontSize: 11 },
       },
       tooltip: {
         trigger: "axis",
-        backgroundColor: "#FFFFFF",
-        borderColor: "#DAD7D0",
-        textStyle: { color: "#1A1D21", fontSize: 12 },
         formatter: (raw: unknown) => {
           const list = Array.isArray(raw) ? raw : [raw];
           const first = list[0] as { dataIndex?: number } | undefined;
@@ -96,24 +94,19 @@ export function PeerBandChart({
           return [
             `<div style="font-weight:600;margin-bottom:4px">${formatPeriodLabel(pt.period_end_date, periodType)}</div>`,
             `<div>${ticker}: <b>${formatRatioValue(pt.value, formatType)}</b></div>`,
-            `<div>P75 / Trung vị / P25: <span style="font-family:monospace">${formatRatioValue(pt.peer_p75, formatType)} / ${formatRatioValue(pt.peer_median, formatType)} / ${formatRatioValue(pt.peer_p25, formatType)}</span></div>`,
+            `<div>P75 / Trung vị / P25: <span style="font-family:${palette.monoFontFamily}">${formatRatioValue(pt.peer_p75, formatType)} / ${formatRatioValue(pt.peer_median, formatType)} / ${formatRatioValue(pt.peer_p25, formatType)}</span></div>`,
             `<div>Phân vị ngành: <b>${pt.percentile_rank !== null && pt.percentile_rank !== undefined ? `${formatNumber(pt.percentile_rank, 0)}%` : "N/A"}</b></div>`,
-            `<div style="color:#5B6068;font-size:11px;margin-top:3px">${peerMeta.text}</div>`,
+            `<div style="color:${palette.inkMuted};font-size:11px;margin-top:3px">${peerMeta.text}</div>`,
           ].join("");
         },
       },
       xAxis: {
         type: "category",
         data: labels,
-        axisLine: { lineStyle: { color: "#DAD7D0" } },
-        axisLabel: { color: "#5B6068", fontSize: 11 },
       },
       yAxis: {
         type: "value",
-        splitLine: { lineStyle: { color: "#EFEDE8" } },
         axisLabel: {
-          color: "#5B6068",
-          fontSize: 11,
           formatter: (val: number) => formatAxisVal(val),
         },
       },
@@ -137,7 +130,7 @@ export function PeerBandChart({
                 children.push({
                   type: "polygon",
                   shape: { points: [...upper, ...lower] },
-                  style: { fill: "rgba(91, 96, 104, 0.14)" },
+                  style: { fill: palette.peerBandFill },
                 });
               }
               seg = [];
@@ -181,7 +174,7 @@ export function PeerBandChart({
             markAreas.length > 0
               ? {
                   silent: true,
-                  itemStyle: { color: "rgba(183, 121, 31, 0.10)" },
+                  itemStyle: { color: palette.fallbackAreaFill },
                   data: markAreas,
                 }
               : undefined,
@@ -191,8 +184,8 @@ export function PeerBandChart({
           type: "line",
           z: 2,
           showSymbol: false,
-          lineStyle: { color: "#5B6068", width: 1.5, type: "dashed" },
-          itemStyle: { color: "#5B6068" },
+          lineStyle: { color: palette.peerMedian, width: 1.5, type: "dashed" },
+          itemStyle: { color: palette.peerMedian },
           data: sorted.map((p) => p.peer_median ?? null),
         },
         {
@@ -200,13 +193,13 @@ export function PeerBandChart({
           type: "line",
           z: 3,
           symbolSize: 6,
-          lineStyle: { color: "#1F4E79", width: 2.5 },
-          itemStyle: { color: "#1F4E79" },
+          lineStyle: { color: palette.company, width: 2.5 },
+          itemStyle: { color: palette.company },
           data: sorted.map((p) => p.value ?? null),
         },
       ],
     };
-  }, [formatType, periodType, sorted, ticker]);
+  }, [formatType, palette, periodType, sorted, ticker]);
 
   const tableHeaders = [
     "Kỳ",
@@ -233,7 +226,7 @@ export function PeerBandChart({
     <div className="space-y-2">
       <EChartBox
         title={`${metricLabel} so với dải P25–P75 cùng ngành`}
-        subtitle={`Đường liền nét: ${ticker} · Đường đứt nét: Trung vị ngành · Vùng xám: khoảng tứ phân vị P25–P75`}
+        subtitle={`Đường liền nét: ${ticker} · Đường đứt nét: Trung vị ngành · Vùng tô mờ: khoảng tứ phân vị P25–P75`}
         option={option}
         height={320}
         isEmpty={sorted.length === 0}
@@ -242,7 +235,7 @@ export function PeerBandChart({
         tableRows={tableRows}
       />
       {hasFallbackPeriods ? (
-        <div className="flex items-center gap-2 rounded border border-risk-mid/30 bg-risk-mid-soft px-3 py-1.5 text-xs text-risk-mid">
+        <div className="flex items-center gap-2 rounded-lg border border-risk-mid/30 bg-risk-mid-soft px-3 py-1.5 text-xs text-risk-mid">
           <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
           <span>
             Vùng tô vàng nhạt đánh dấu các kỳ có nhóm ngành ít hơn 5 doanh nghiệp hoặc phải mở rộng ra toàn thị trường cùng chuẩn mực.

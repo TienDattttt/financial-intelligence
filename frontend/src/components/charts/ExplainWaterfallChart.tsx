@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
+import { useChartTheme } from "@/lib/echarts-theme";
 import { formatNumber, formatPercent, MINUS_SIGN } from "@/lib/format";
 import { buildShapNarrativeVi } from "@/lib/narrative";
 import type { ShapExplanationItem } from "@/types/api";
@@ -18,14 +19,6 @@ interface WaterfallStep {
   feature: string;
 }
 
-const STEP_COLORS: Record<WaterfallStep["kind"], string> = {
-  base: "#5B6068",
-  increase: "#A61B1B",
-  decrease: "#2E7D5B",
-  other: "#868B93",
-  final: "#1F4E79",
-};
-
 function formatSignedLogOdds(val: number): string {
   const formatted = formatNumber(Math.abs(val), 2);
   if (Math.abs(val) < 0.005) return "0,00";
@@ -39,6 +32,8 @@ export function ExplainWaterfallChart({
   shap: ShapExplanationItem | null | undefined;
   distressProb?: number | null;
 }) {
+  const { palette } = useChartTheme();
+
   const steps = React.useMemo<WaterfallStep[]>(() => {
     if (!shap) return [];
     const result: WaterfallStep[] = [];
@@ -141,14 +136,10 @@ export function ExplainWaterfallChart({
     const dataRows = steps.map((s, idx) => [idx, s.start, s.end, s.delta]);
 
     return {
-      animation: false,
       grid: { left: 56, right: 20, top: 28, bottom: 72 },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
-        backgroundColor: "#FFFFFF",
-        borderColor: "#DAD7D0",
-        textStyle: { color: "#1A1D21", fontSize: 12 },
         formatter: (raw: unknown) => {
           const list = Array.isArray(raw) ? raw : [raw];
           const first = list[0] as { dataIndex?: number } | undefined;
@@ -173,10 +164,7 @@ export function ExplainWaterfallChart({
       xAxis: {
         type: "category",
         data: categories,
-        axisLine: { lineStyle: { color: "#DAD7D0" } },
         axisLabel: {
-          color: "#5B6068",
-          fontSize: 11,
           rotate: 28,
           interval: 0,
         },
@@ -184,9 +172,6 @@ export function ExplainWaterfallChart({
       yAxis: {
         type: "value",
         name: "log-odds",
-        nameTextStyle: { color: "#5B6068", fontSize: 11 },
-        splitLine: { lineStyle: { color: "#EFEDE8" } },
-        axisLabel: { color: "#5B6068", fontSize: 11 },
       },
       series: [
         {
@@ -194,7 +179,7 @@ export function ExplainWaterfallChart({
           type: "custom",
           encode: { x: 0, y: [1, 2] },
           data: dataRows,
-          renderItem: (params, api) => {
+          renderItem: (_params, api) => {
             const idx = Number(api.value(0));
             const startVal = Number(api.value(1));
             const endVal = Number(api.value(2));
@@ -219,14 +204,14 @@ export function ExplainWaterfallChart({
                 r: 2,
               },
               style: {
-                fill: STEP_COLORS[step.kind],
+                fill: palette.waterfall[step.kind],
               },
             };
           },
         },
       ],
     };
-  }, [steps]);
+  }, [palette.waterfall, steps]);
 
   const tableHeaders = ["Yếu tố (TreeSHAP)", "Giá trị DN", "Trung vị ngành", "Đóng góp (log-odds)"];
   const tableRows = steps.map((s) => [
@@ -255,7 +240,7 @@ export function ExplainWaterfallChart({
       />
 
       {narratives.length > 0 ? (
-        <div className="rounded border border-border bg-surface p-3.5">
+        <div className="rounded-lg border border-border bg-surface p-3.5 shadow-xs">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
             <h3 className="font-semibold text-ink">
               Diễn giải định lượng theo quy tắc (TreeSHAP)

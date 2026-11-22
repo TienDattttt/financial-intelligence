@@ -1,26 +1,14 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans, Source_Serif_4 } from "next/font/google";
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/500.css";
+import "@fontsource/ibm-plex-sans/600.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
 import { AppShell } from "@/components/layout/AppShell";
 import { AppProviders } from "@/components/providers/app-providers";
 import "./globals.css";
 
-const ibmPlexSans = IBM_Plex_Sans({
-  variable: "--font-plex-sans",
-  subsets: ["latin", "vietnamese"],
-  weight: ["400", "500", "600"],
-});
-
-const ibmPlexMono = IBM_Plex_Mono({
-  variable: "--font-plex-mono",
-  subsets: ["latin", "vietnamese"],
-  weight: ["400", "500"],
-});
-
-const sourceSerif = Source_Serif_4({
-  variable: "--font-source-serif",
-  subsets: ["latin", "vietnamese"],
-  weight: ["600"],
-});
+const THEME_INIT_SCRIPT = `(function(){try{var k='finintel:theme:v1';var p=localStorage.getItem(k);var m=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;var d=p==='dark'||(p==='system'&&m);var r=document.documentElement;if(d){r.classList.add('dark');r.setAttribute('data-theme','dark');r.style.colorScheme='dark';}else{r.classList.remove('dark');r.setAttribute('data-theme','light');r.style.colorScheme='light';}}catch(e){}})();`;
 
 export const metadata: Metadata = {
   title: "FinIntel — Phân tích Rủi ro Tài chính & Kế toán Điều tra",
@@ -34,10 +22,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="vi"
-      className={`${ibmPlexSans.variable} ${ibmPlexMono.variable} ${sourceSerif.variable} h-full`}
-    >
+    <html lang="vi" className="h-full" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="min-h-full">
         <AppProviders>
           <AppShell>{children}</AppShell>
