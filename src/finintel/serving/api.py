@@ -63,7 +63,11 @@ from finintel.serving.dependencies import (
     get_stress_semaphore,
     resolve_cors_origins,
 )
-from finintel.serving.observability import attach_observability
+from finintel.serving.observability import (
+    SPAN_ANALYTICS_STRESS_TEST,
+    attach_observability,
+    trace_span,
+)
 from finintel.serving.dictionary import (
     RATIO_DICTIONARY_META,
     RED_FLAG_DICTIONARY,
@@ -1376,14 +1380,23 @@ def create_app(
                 )
 
             resolved_end = inputs_df["period_end_date"][0]
-            stressed_df = simulate_financial_stress(inputs_df, scenario)
-            sector_df = summarize_stress_by_sector(stressed_df)
-            market_df = summarize_stress_by_sector(
-                stressed_df.with_columns(
-                    pl.lit("MARKET").alias("icb_code_level2"),
-                    pl.lit("MARKET").alias("icb_name_level2"),
+            with trace_span(
+                SPAN_ANALYTICS_STRESS_TEST,
+                {
+                    "stress.scenario_name": scenario.name,
+                    "stress.statement_scope": payload.statement_scope,
+                    "stress.period_type": payload.period_type,
+                    "stress.issuer_count": inputs_df.height,
+                },
+            ):
+                stressed_df = simulate_financial_stress(inputs_df, scenario)
+                sector_df = summarize_stress_by_sector(stressed_df)
+                market_df = summarize_stress_by_sector(
+                    stressed_df.with_columns(
+                        pl.lit("MARKET").alias("icb_code_level2"),
+                        pl.lit("MARKET").alias("icb_name_level2"),
+                    )
                 )
-            )
             market_row = market_df.row(0, named=True)
 
             issuer_cols = [

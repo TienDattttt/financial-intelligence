@@ -1,15 +1,21 @@
-# FinIntel V2 Tier 1 Production Infrastructure Stack
+# FinIntel V2 Tier 1 Production Infrastructure & Observability Stack
 # Services:
 #   - postgres:   pgvector/pgvector:pg16 (ducklake_catalog + dagster_state + finintel_rag)
-#   - valkey:     Valkey 8 shared L2 response cache across multi-worker Granian API
-#   - prometheus: RED metrics scraper targeting FastAPI /metrics
+#   - valkey:     Valkey 8 shared L2 response cache across FastAPI serving
+#   - prometheus: RED metrics & Valkey cache scraper targeting FastAPI /metrics
+#   - tempo:      Grafana Tempo 2.7.2 OTLP trace backend (HTTP :4318 / gRPC :4317 / Query :3200)
+#   - grafana:    Grafana 11.5.2 auto-provisioned RED + Trace-to-Metrics dashboard (:3001)
 #
-# Quick start:
+# Quick start (M-01 demo config: pin FININTEL_WORKERS=1 with multi-threaded DuckDB
+# so Prometheus rate() curves on Grafana stay smooth and monotonic; set
+# PROMETHEUS_MULTIPROC_DIR when scaling FININTEL_WORKERS > 1):
 #   docker compose up -d
 #   $env:FININTEL_VALKEY_URL = "redis://127.0.0.1:6379/0"
 #   $env:FININTEL_DUCKLAKE_PG_DSN = "postgresql://finintel:finintel_dev@127.0.0.1:5432/ducklake_catalog"
 #   $env:FININTEL_SERVER_ENGINE = "granian"
-#   $env:FININTEL_WORKERS = "4"
+#   $env:FININTEL_WORKERS = "1"
+#   $env:FININTEL_OTEL_ENABLED = "1"
+#   $env:OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = "http://127.0.0.1:4318/v1/traces"
 
 services:
   postgres:
@@ -68,7 +74,45 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=7d
       - --web.enable-lifecycle
+      - --enable-feature=exemplar-storage
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    container_name: finintel-tempo
+    restart: unless-stopped
+    command:
+      - -config.file=/etc/tempo.yaml
+    ports:
+      - "127.0.0.1:${FININTEL_TEMPO_PORT:-3200}:3200"
+      - "127.0.0.1:${FININTEL_OTLP_GRPC_PORT:-4317}:4317"
+      - "127.0.0.1:${FININTEL_OTLP_HTTP_PORT:-4318}:4318"
+    volumes:
+      - ./config/tempo.yml:/etc/tempo.yaml:ro
+      - finintel_tempo_data:/var/tempo
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: finintel-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - tempo
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SECURITY_ADMIN_USER: ${FININTEL_GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${FININTEL_GRAFANA_PASSWORD:-finintel_dev}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_FEATURE_TOGGLES_ENABLE: "traceqlEditor"
+    ports:
+      - "127.0.0.1:${FININTEL_GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - finintel_grafana_data:/var/lib/grafana
 
 volumes:
   finintel_pg_data:
   finintel_prom_data:
+  finintel_tempo_data:
+  finintel_grafana_data:

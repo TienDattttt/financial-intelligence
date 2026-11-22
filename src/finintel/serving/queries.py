@@ -59,6 +59,7 @@ from finintel.serving.dictionary import (
     RATIO_DICTIONARY_META,
     load_statement_metric_catalog,
 )
+from finintel.serving.observability import SPAN_DUCKDB_QUERY, trace_span
 from finintel.storage.ducklake_store import ensure_ducklake_attached
 from finintel.storage.repository import ParquetRepository, _normalize_table_name
 from finintel.storage.schemas import (
@@ -1016,7 +1017,17 @@ def _sql_count_rows(
     connection: duckdb.DuckDBPyConnection | None = None,
 ) -> int:
     """Count rows in a pinned snapshot table via DuckDB SQL ``COUNT(*)``."""
-    with _pinned_table_source(pinned, table_name, connection=connection) as source:
+    with (
+        trace_span(
+            SPAN_DUCKDB_QUERY,
+            {
+                "db.system": "duckdb",
+                "db.operation": "count_rows",
+                "db.table": table_name,
+            },
+        ),
+        _pinned_table_source(pinned, table_name, connection=connection) as source,
+    ):
         if source is None:
             return 0
         con, source_sql, source_params = source
@@ -1043,9 +1054,19 @@ def _sql_count_quality_statuses(
     connection: duckdb.DuckDBPyConnection | None = None,
 ) -> tuple[int, int]:
     """Count PASS and WARNING periods via DuckDB SQL ``COUNT(*) FILTER (...)``."""
-    with _pinned_table_source(
-        pinned, QUALITY_SUMMARY_TABLE, connection=connection
-    ) as source:
+    with (
+        trace_span(
+            SPAN_DUCKDB_QUERY,
+            {
+                "db.system": "duckdb",
+                "db.operation": "count_quality_statuses",
+                "db.table": QUALITY_SUMMARY_TABLE,
+            },
+        ),
+        _pinned_table_source(
+            pinned, QUALITY_SUMMARY_TABLE, connection=connection
+        ) as source,
+    ):
         if source is None:
             return (0, 0)
         con, source_sql, source_params = source
@@ -1085,7 +1106,19 @@ def _sql_read_page(
     connection: duckdb.DuckDBPyConnection | None = None,
 ) -> tuple[pl.DataFrame, int]:
     """Read a paginated ``LIMIT/OFFSET`` slice and exact total row count via DuckDB SQL."""
-    with _pinned_table_source(pinned, table_name, connection=connection) as source:
+    with (
+        trace_span(
+            SPAN_DUCKDB_QUERY,
+            {
+                "db.system": "duckdb",
+                "db.operation": "read_page",
+                "db.table": table_name,
+                "db.limit": limit,
+                "db.offset": offset,
+            },
+        ),
+        _pinned_table_source(pinned, table_name, connection=connection) as source,
+    ):
         if source is None:
             return pl.DataFrame(schema=schema), 0
         con, source_sql, source_params = source
