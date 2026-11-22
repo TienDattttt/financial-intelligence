@@ -120,8 +120,16 @@ export const apiClient = {
   getMetaDictionary: () =>
     requestJson<MetaDictionaryResponse>("/api/v2/meta/dictionary"),
 
-  getModelCard: () =>
-    requestJson<ModelCardResponse>("/api/v2/meta/model-card"),
+  getModelCard: async (): Promise<ModelCardResponse | null> => {
+    try {
+      return await requestJson<ModelCardResponse>("/api/v2/meta/model-card");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        return null;
+      }
+      throw err;
+    }
+  },
 
   getCompanyProfile: (
     ticker: string,

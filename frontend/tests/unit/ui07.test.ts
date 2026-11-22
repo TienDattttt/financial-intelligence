@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError, apiClient } from "@/lib/api-client";
 import {
   buildTierReliabilityData,
   buildWalkForwardComparisonData,
@@ -251,5 +252,71 @@ describe("UI-07 Credit Trio (R1–R5 TTC + Top X% PIT + 1Y PD × nền) & Domain
     expect(tierRows.map((r) => r.tier)).toEqual(["R1", "R5"]);
     expect(tierRows[0].empiricalRatePct).toBeCloseTo(0.4, 5);
     expect(tierRows[1].predictedPdPct).toBeCloseTo(25, 5);
+  });
+
+  describe("getModelCard & /methodology tab gating", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("returns null on HTTP 404 without throwing so /methodology renders clean EmptyState", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          new Response(JSON.stringify({ detail: "Model card metadata was not found in active snapshot." }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+
+      const result = await apiClient.getModelCard();
+      expect(result).toBeNull();
+    });
+
+    it("still throws ApiError for non-404 HTTP errors in getModelCard", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          new Response(JSON.stringify({ detail: "Internal server failure" }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+
+      await expect(apiClient.getModelCard()).rejects.toMatchObject({
+        name: "ApiError",
+        status: 500,
+      } satisfies Partial<ApiError>);
+    });
+
+    it("returns ModelCardResponse payload on HTTP 200", async () => {
+      const mockCard = {
+        snapshot_id: "snap_v2",
+        model_version: "2.1.0",
+        model_role: "EARLY_WARNING_QUANT_SIGNAL",
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          new Response(JSON.stringify(mockCard), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+
+      const result = await apiClient.getModelCard();
+      expect(result).toEqual(mockCard);
+    });
+
+    it("gates useModelCard by activeTab === 'models' in methodology page", () => {
+      const source = fs.readFileSync(
+        path.join(WORKSPACE_FRONTEND_ROOT, "src/app/methodology/page.tsx"),
+        "utf8",
+      );
+      expect(source).toMatch(/useModelCard\([^)]*enabled:\s*activeTab\s*===\s*"models"/);
+    });
   });
 });

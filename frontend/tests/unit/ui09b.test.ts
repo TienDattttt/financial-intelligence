@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildPriceOverlayOption,
@@ -5,6 +7,7 @@ import {
   extractWarningDrawdownSummary,
   formatLatestValuationCards,
   formatPctFromPercentValue,
+  PRICE_OVERLAY_CHART_SUBTITLE,
 } from "@/components/charts/PriceRiskOverlayChart";
 import { DARK_CHART_PALETTE, LIGHT_CHART_PALETTE } from "@/lib/echarts-theme";
 import type {
@@ -254,5 +257,16 @@ describe("UI-09b PIT Market Valuation & Price Risk Overlay Chart", () => {
     expect(rows).toHaveLength(3);
     expect(rows[0][0]).toBe("20/11/2026");
     expect(rows[0][4]).toBe("N/A");
+  });
+
+  it("uses clean Vietnamese terminology without raw close_adj column name in chart subtitle", () => {
+    expect(PRICE_OVERLAY_CHART_SUBTITLE).not.toContain("close_adj");
+    expect(PRICE_OVERLAY_CHART_SUBTITLE).toContain("Đường giá điều chỉnh chia tách/cổ tức");
+
+    const chartSource = fs.readFileSync(
+      path.resolve(__dirname, "../../src/components/charts/PriceRiskOverlayChart.tsx"),
+      "utf8",
+    );
+    expect(chartSource).not.toContain("Đường giá từ close_adj");
   });
 });

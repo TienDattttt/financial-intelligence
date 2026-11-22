@@ -601,6 +601,9 @@ export function PitValuationStrip({
   );
 }
 
+export const PRICE_OVERLAY_CHART_SUBTITLE =
+  "Đường giá điều chỉnh chia tách/cổ tức · Định giá P/E, P/B, Vốn hóa từ giá thực tế PIT (0% look-ahead)";
+
 export function PriceRiskOverlayChart({
   ticker,
   overlay,
@@ -657,7 +660,7 @@ export function PriceRiskOverlayChart({
     <div className="space-y-3">
       <EChartBox
         title={chartTitle}
-        subtitle="Đường giá từ close_adj · Định giá P/E, P/B, Vốn hóa từ giá thực tế PIT (0% look-ahead)"
+        subtitle={PRICE_OVERLAY_CHART_SUBTITLE}
         sourceCaption="Nguồn: Dữ liệu giá giao dịch cuối ngày (EOD), BCTC công bố & Sổ sự kiện pháp lý · FinIntel"
         option={option}
         height={360}

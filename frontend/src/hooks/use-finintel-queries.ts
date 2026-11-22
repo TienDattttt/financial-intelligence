@@ -5,7 +5,7 @@ import {
   useQueries,
   useQuery,
 } from "@tanstack/react-query";
-import { apiClient } from "@/lib/api-client";
+import { ApiError, apiClient } from "@/lib/api-client";
 import type {
   IssuerItem,
   PeriodType,
@@ -50,10 +50,20 @@ export function useMetaDictionary(snapshotId?: string | null) {
   });
 }
 
-export function useModelCard(snapshotId?: string | null) {
+export function useModelCard(
+  snapshotId?: string | null,
+  options?: { enabled?: boolean },
+) {
   return useQuery({
     queryKey: ["model-card", snapshotId ?? "latest"],
     queryFn: apiClient.getModelCard,
+    enabled: options?.enabled ?? true,
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) {
+        return false;
+      }
+      return failureCount < 1;
+    },
     staleTime: SNAPSHOT_STALE_MS,
   });
 }

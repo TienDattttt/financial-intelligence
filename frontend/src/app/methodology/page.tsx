@@ -71,7 +71,9 @@ function MethodologyContent() {
   const [quarOffset, setQuarOffset] = React.useState(0);
 
   const dictQuery = useMetaDictionary(snapshotId);
-  const modelCardQuery = useModelCard(snapshotId);
+  const modelCardQuery = useModelCard(snapshotId, {
+    enabled: activeTab === "models",
+  });
   const overviewQuery = useSnapshotOverview(snapshotId);
   const summaryQuery = useQualitySummary(25, qOffset, snapshotId);
   const quarantineQuery = useQualityQuarantine(25, quarOffset, snapshotId);
