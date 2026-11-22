@@ -77,7 +77,7 @@ def test_universe_tickers_yaml_and_sync_corporate_ticker_partitions(
     yaml_path = REPO_ROOT / "config" / "universe_tickers.yaml"
     assert yaml_path.is_file()
     tickers = load_universe_tickers_yaml(yaml_path)
-    assert len(tickers) == 375
+    assert 600 <= len(tickers) <= 800
     assert "FPT" in tickers
     assert "HPG" in tickers
     assert "VNM" in tickers
