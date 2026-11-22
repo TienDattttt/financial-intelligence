@@ -109,22 +109,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const navItems = React.useMemo(
     () => [
-      { href: "/", label: "Tổng quan", icon: LayoutDashboard },
-      { href: "/screener", label: "Sàng lọc DN", icon: Filter },
+      { id: "overview", href: "/", label: "Tổng quan", icon: LayoutDashboard },
+      { id: "screener", href: "/screener", label: "Sàng lọc DN", icon: Filter },
       {
+        id: "company-profile",
         href: companyProfileHref,
         label: "Hồ sơ DN",
         icon: Building2,
         matchPrefix: "/companies/",
       },
       {
+        id: "watchlist",
         href: "/watchlist",
         label: `Theo dõi (${watchlist.length})`,
         icon: Bookmark,
       },
-      { href: "/compare", label: "So sánh", icon: GitCompare },
-      { href: "/stress-test", label: "Kịch bản sốc", icon: Activity },
-      { href: "/methodology", label: "Dữ liệu & Phương pháp", icon: BookOpen },
+      { id: "compare", href: "/compare", label: "So sánh", icon: GitCompare },
+      { id: "stress-test", href: "/stress-test", label: "Kịch bản sốc", icon: Activity },
+      { id: "methodology", href: "/methodology", label: "Dữ liệu & Phương pháp", icon: BookOpen },
     ],
     [companyProfileHref, watchlist.length],
   );
@@ -179,7 +181,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             const active = isActive(item.href, item.matchPrefix);
             return (
               <Link
-                key={item.href}
+                key={item.id}
                 href={item.href}
                 title={collapsed ? item.label : undefined}
                 className={cn(
@@ -242,7 +244,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 const active = isActive(item.href, item.matchPrefix);
                 return (
                   <Link
-                    key={item.href}
+                    key={item.id}
                     href={item.href}
                     onClick={() => setMobileMenuOpen(false)}
                     className={cn(

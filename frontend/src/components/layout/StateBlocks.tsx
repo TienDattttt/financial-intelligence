@@ -8,7 +8,12 @@ import { Skeleton } from "@/components/ui/primitives";
 
 export function PageSkeleton() {
   return (
-    <div className="space-y-4" aria-busy="true" aria-label="Đang tải dữ liệu">
+    <div
+      role="status"
+      className="space-y-4"
+      aria-busy="true"
+      aria-label="Đang tải dữ liệu"
+    >
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <Card key={i}>
@@ -32,7 +37,12 @@ export function PageSkeleton() {
 
 export function TableSkeleton({ rows = 8 }: { rows?: number }) {
   return (
-    <div className="space-y-2 p-4" aria-busy="true" aria-label="Đang tải bảng">
+    <div
+      role="status"
+      className="space-y-2 p-4"
+      aria-busy="true"
+      aria-label="Đang tải bảng"
+    >
       {Array.from({ length: rows }).map((_, i) => (
         <Skeleton key={i} className="h-8 w-full" />
       ))}
