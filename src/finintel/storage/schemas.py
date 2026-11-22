@@ -26,6 +26,7 @@ ML_SCORES_TABLE = "ml_scores_and_explanations.parquet"
 QUALITY_SUMMARY_TABLE = "quality_summary.parquet"
 AUDIT_QUARANTINE_TABLE = "audit_quarantine.parquet"
 FILINGS_MANIFEST_TABLE = "filings_manifest.parquet"
+MODEL_CARD_META_TABLE = "model_card_meta.parquet"
 REGULATORY_EVENTS_TABLE = "regulatory_events.parquet"
 MARKET_PRICES_TABLE = "market_prices.parquet"
 EXTENSION_PORT_TABLES: frozenset[str] = frozenset(
@@ -272,6 +273,24 @@ FILINGS_MANIFEST_SCHEMA = pl.Schema(
         "payload_file_sha256": pl.String,
     }
 )
+MODEL_CARD_META_KEY = ("model_card_id",)
+MODEL_CARD_META_SCHEMA = pl.Schema(
+    {
+        "model_card_id": pl.String,
+        "schema_version": pl.Int32,
+        "run_id": pl.String,
+        "model_version": pl.String,
+        "feature_set": pl.String,
+        "feature_count": pl.Int32,
+        "target_mode": pl.String,
+        "statement_scope": pl.String,
+        "peer_standardization_mode": pl.String,
+        "trained_as_of": pl.Date,
+        "artifact_sha256": pl.String,
+        "model_card_json": pl.String,
+        "generated_at": pl.String,
+    }
+)
 
 # A snapshot may contain zero peers, alerts, quarantine rows or unmapped metrics.
 OPTIONAL_ANALYTICS_SCHEMAS = {
@@ -311,6 +330,7 @@ OPTIONAL_ANALYTICS_SCHEMAS = {
     QUALITY_SUMMARY_TABLE: QUALITY_SUMMARY_SCHEMA,
     AUDIT_QUARANTINE_TABLE: AUDIT_QUARANTINE_SCHEMA,
     FILINGS_MANIFEST_TABLE: FILINGS_MANIFEST_SCHEMA,
+    MODEL_CARD_META_TABLE: MODEL_CARD_META_SCHEMA,
 }
 ANALYTICS_SCHEMAS = {
     RATIOS_TABLE: FINANCIAL_RATIOS_SCHEMA,
@@ -324,6 +344,7 @@ ANALYTICS_KEYS = {
     QUALITY_SUMMARY_TABLE: QUALITY_SUMMARY_KEY,
     AUDIT_QUARANTINE_TABLE: AUDIT_QUARANTINE_KEY,
     FILINGS_MANIFEST_TABLE: FILINGS_MANIFEST_KEY,
+    MODEL_CARD_META_TABLE: MODEL_CARD_META_KEY,
 }
 
 

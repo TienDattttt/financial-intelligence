@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import pickle
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -57,6 +58,7 @@ from finintel.storage.schemas import (
     ML_SCORES_KEY,
     ML_SCORES_SCHEMA,
     ML_SCORES_TABLE,
+    MODEL_CARD_META_SCHEMA,
     RATIO_INTERMEDIATES,
     RATIO_KEY,
     RED_FLAGS_TABLE,
@@ -109,6 +111,7 @@ class MLTransformConfig:
     min_unique_positive_issuers: int = 3
     mode: Literal["disabled", "incremental_score", "retrain"] | None = None
     model_artifact_dir: Path | None = None
+    model_run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +132,8 @@ class PersistedMLArtifactBundle:
     training: Any
     evaluation_report: dict[str, Any]
     run_manifest: dict[str, Any]
+    model_card: dict[str, Any] | None = None
+    artifact_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +177,7 @@ class TransformBundle:
     evaluation_report: dict[str, Any] | None = None
     ml_run_manifest: dict[str, Any] | None = None
     ml_artifact_payload: PersistedMLArtifactBundle | None = None
+    model_card_meta: pl.DataFrame | None = None
 
 
 def _resolve_ml_mode(
@@ -659,24 +665,171 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> Path:
     return path
 
 
+def _safe_run_id_segment(run_id: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", run_id.strip())
+    if not cleaned or cleaned in {".", ".."}:
+        raise ContractViolationError(
+            f"Invalid ML run_id for artifact storage: {run_id!r}"
+        )
+    return cleaned
+
+
+def _export_preprocessor_spec(artifact: PersistedMLArtifactBundle) -> dict[str, Any]:
+    prep = artifact.training.preprocessor
+    bounds_json: dict[str, list[float | None]] = {}
+    for fname, pair in getattr(prep, "_bounds", {}).items():
+        lo, hi = pair
+        bounds_json[str(fname)] = [
+            float(lo) if lo is not None else None,
+            float(hi) if hi is not None else None,
+        ]
+    medians_json = {
+        str(k): (float(v) if v is not None else None)
+        for k, v in getattr(prep, "_medians", {}).items()
+    }
+    scaler = getattr(prep, "_scaler", None)
+    scaler_center = (
+        [float(v) for v in scaler.center_]
+        if scaler is not None and getattr(scaler, "center_", None) is not None
+        else None
+    )
+    scaler_scale = (
+        [float(v) for v in scaler.scale_]
+        if scaler is not None and getattr(scaler, "scale_", None) is not None
+        else None
+    )
+    return {
+        "features": list(getattr(prep, "features", ())),
+        "indicators": list(getattr(prep, "indicators", ())),
+        "clip_range": list(prep.clip_range)
+        if getattr(prep, "clip_range", None) is not None
+        else None,
+        "p95_interest_coverage": float(prep._p95)
+        if getattr(prep, "_p95", None) is not None
+        else None,
+        "bounds": bounds_json,
+        "medians": medians_json,
+        "scaler_center": scaler_center,
+        "scaler_scale": scaler_scale,
+        "archetypes": list(getattr(artifact.archetypes, "_archetypes", ())),
+    }
+
+
 def write_ml_artifact_bundle(
     artifact_dir: Path,
     artifact: PersistedMLArtifactBundle,
 ) -> Path:
-    """Atomically persist trained ML models and SHA-256 verified manifest."""
+    """Atomically persist versioned ML artifacts (XGBoost JSON, Preprocessor, Calibrator, R1-R5 cutoffs, SHA-256)."""
+    from finintel.ml.supervised.train import (
+        export_calibrator_spec,
+        export_risk_tier_cutoffs_spec,
+    )
+
     resolved_dir = artifact_dir.resolve()
     resolved_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = resolved_dir / ML_ARTIFACT_FILENAME
     manifest_path = resolved_dir / ML_MANIFEST_FILENAME
 
+    safe_run_id = _safe_run_id_segment(artifact.trained_run_id)
+    versioned_rel = f"runs/{safe_run_id}"
+    run_dir = resolved_dir / "runs" / safe_run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. XGBoost model native JSON
+    with NamedTemporaryFile(
+        dir=run_dir, prefix=".xgb_", suffix=".json", delete=False
+    ) as tmp_xgb:
+        tmp_xgb_path = Path(tmp_xgb.name)
+    try:
+        artifact.training.classifier.save_model(str(tmp_xgb_path))
+        xgb_bytes = tmp_xgb_path.read_bytes()
+    finally:
+        tmp_xgb_path.unlink(missing_ok=True)
+
+    # 2. Preprocessor (pickle + human-readable spec JSON)
+    prep_bytes = pickle.dumps(
+        {
+            "supervised": artifact.training.preprocessor,
+            "logit": artifact.training.logit_preprocessor,
+            "archetypes": artifact.archetypes,
+        },
+        protocol=pickle.HIGHEST_PROTOCOL,
+    )
+    prep_spec_bytes = json.dumps(
+        _export_preprocessor_spec(artifact),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+
+    # 3. Calibrator & R1-R5 TTC cutoffs JSON
+    calibrator_bytes = json.dumps(
+        export_calibrator_spec(artifact.training),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    cutoffs_spec = export_risk_tier_cutoffs_spec(artifact.training)
+    cutoffs_bytes = json.dumps(
+        cutoffs_spec, ensure_ascii=False, indent=2, sort_keys=True
+    ).encode("utf-8")
+
+    # 4. Full bundle pickle (atomic latest + versioned copy)
     payload_bytes = pickle.dumps(artifact, protocol=pickle.HIGHEST_PROTOCOL)
     payload_sha256 = hashlib.sha256(payload_bytes).hexdigest()
-    _atomic_write_bytes(bundle_path, payload_bytes)
 
+    versioned_files: dict[str, bytes] = {
+        "xgboost_model.json": xgb_bytes,
+        "preprocessor.pkl": prep_bytes,
+        "preprocessor_spec.json": prep_spec_bytes,
+        "calibrator.json": calibrator_bytes,
+        "risk_tier_cutoffs.json": cutoffs_bytes,
+        "bundle.pkl": payload_bytes,
+    }
+    files_manifest: dict[str, dict[str, object]] = {}
+    component_sha256s: dict[str, str] = {}
+    for fname, raw_bytes in versioned_files.items():
+        _atomic_write_bytes(run_dir / fname, raw_bytes)
+        fsha = hashlib.sha256(raw_bytes).hexdigest()
+        component_sha256s[fname] = fsha
+        files_manifest[fname] = {
+            "sha256": fsha,
+            "size_bytes": len(raw_bytes),
+        }
+
+    run_manifest_payload: dict[str, object] = {
+        "schema_version": ML_ARTIFACT_SCHEMA_VERSION,
+        "run_id": artifact.trained_run_id,
+        "model_version": artifact.model_version,
+        "feature_set": artifact.feature_set,
+        "statement_scope": artifact.statement_scope,
+        "taxonomy_version": artifact.taxonomy_version,
+        "scored_taxonomies": list(artifact.scored_taxonomies),
+        "target_mode": artifact.target_mode,
+        "require_exact_filing": artifact.require_exact_filing,
+        "peer_standardization_mode": artifact.peer_standardization_mode,
+        "trained_as_of": artifact.trained_as_of,
+        "artifact_sha256": artifact.artifact_sha256 or payload_sha256,
+        "risk_tier_cutoffs": cutoffs_spec,
+        "files": files_manifest,
+    }
+    _atomic_write_bytes(
+        run_dir / "artifact_manifest.json",
+        json.dumps(
+            run_manifest_payload, ensure_ascii=False, indent=2, sort_keys=True
+        ).encode("utf-8"),
+    )
+
+    _atomic_write_bytes(bundle_path, payload_bytes)
     manifest: dict[str, object] = {
         "schema_version": ML_ARTIFACT_SCHEMA_VERSION,
         "payload_filename": ML_ARTIFACT_FILENAME,
         "payload_sha256": payload_sha256,
+        "artifact_sha256": artifact.artifact_sha256 or payload_sha256,
+        "run_id": artifact.trained_run_id,
+        "versioned_dir": versioned_rel,
+        "component_sha256s": component_sha256s,
+        "risk_tier_cutoffs": cutoffs_spec,
         "model_version": artifact.model_version,
         "feature_set": artifact.feature_set,
         "statement_scope": artifact.statement_scope,
@@ -697,9 +850,74 @@ def write_ml_artifact_bundle(
     return resolved_dir
 
 
-def load_ml_artifact_bundle(artifact_dir: Path) -> PersistedMLArtifactBundle | None:
-    """Load persisted ML artifact bundle if present and SHA-256 verified."""
+def _verify_versioned_component_files(
+    run_dir: Path, component_hashes: Mapping[str, object]
+) -> bool:
+    for fname, expected in component_hashes.items():
+        if not isinstance(fname, str):
+            return False
+        expected_sha = (
+            expected.get("sha256") if isinstance(expected, Mapping) else expected
+        )
+        if not isinstance(expected_sha, str) or not expected_sha:
+            return False
+        target = run_dir / fname
+        if target.is_symlink():
+            raise ContractViolationError("ML artifact files cannot be symbolic links.")
+        if not target.is_file():
+            return False
+        actual_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+        if actual_sha != expected_sha:
+            logger.warning(
+                "Persisted ML component SHA-256 mismatch; ignoring artifact.",
+                extra={
+                    "event": "ml_artifact_checksum_mismatch",
+                    "details": {"component": fname},
+                },
+            )
+            return False
+    return True
+
+
+def load_ml_artifact_bundle(
+    artifact_dir: Path,
+    *,
+    run_id: str | None = None,
+) -> PersistedMLArtifactBundle | None:
+    """Load persisted ML artifact bundle (latest or specific ``run_id``) if SHA-256 verified."""
     resolved_dir = artifact_dir.resolve()
+    if run_id is not None:
+        safe_run_id = _safe_run_id_segment(run_id)
+        run_dir = resolved_dir / "runs" / safe_run_id
+        run_manifest_path = run_dir / "artifact_manifest.json"
+        bundle_path = run_dir / "bundle.pkl"
+        if not (run_manifest_path.is_file() and bundle_path.is_file()):
+            return None
+        if run_manifest_path.is_symlink() or bundle_path.is_symlink():
+            raise ContractViolationError("ML artifact files cannot be symbolic links.")
+        try:
+            run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(run_manifest, Mapping):
+                return None
+            if run_manifest.get("schema_version") != ML_ARTIFACT_SCHEMA_VERSION:
+                return None
+            if run_manifest.get("run_id") != run_id:
+                return None
+            files_map = run_manifest.get("files")
+            if not isinstance(files_map, Mapping) or "bundle.pkl" not in files_map:
+                return None
+            if not _verify_versioned_component_files(run_dir, files_map):
+                return None
+            loaded = pickle.loads(bundle_path.read_bytes())
+        except (OSError, ValueError, pickle.PickleError, EOFError):
+            logger.warning(
+                "Unable to load versioned ML artifact bundle for run_id=%s.",
+                run_id,
+                extra={"event": "ml_artifact_unreadable"},
+            )
+            return None
+        return loaded if isinstance(loaded, PersistedMLArtifactBundle) else None
+
     bundle_path = resolved_dir / ML_ARTIFACT_FILENAME
     manifest_path = resolved_dir / ML_MANIFEST_FILENAME
     if not (bundle_path.is_file() and manifest_path.is_file()):
@@ -723,6 +941,14 @@ def load_ml_artifact_bundle(artifact_dir: Path) -> PersistedMLArtifactBundle | N
                 extra={"event": "ml_artifact_checksum_mismatch"},
             )
             return None
+        versioned_dir_raw = manifest.get("versioned_dir")
+        component_hashes = manifest.get("component_sha256s")
+        if isinstance(versioned_dir_raw, str) and isinstance(component_hashes, Mapping):
+            ver_dir = (resolved_dir / versioned_dir_raw).resolve()
+            if not ver_dir.is_relative_to(
+                resolved_dir
+            ) or not _verify_versioned_component_files(ver_dir, component_hashes):
+                return None
         loaded = pickle.loads(payload_bytes)
     except (OSError, ValueError, pickle.PickleError, EOFError):
         logger.warning(
@@ -852,6 +1078,7 @@ def _train_ml_with_bundle(
     dict[str, Any],
     dict[str, Any],
     PersistedMLArtifactBundle,
+    pl.DataFrame,
 ]:
     from datetime import UTC, datetime
 
@@ -870,7 +1097,12 @@ def _train_ml_with_bundle(
         score_distress_model,
         train_distress_model,
     )
-    from finintel.ml.tables import _installed_versions
+    from finintel.ml.tables import (
+        _compute_training_artifact_sha256,
+        _installed_versions,
+        build_model_card_meta_table,
+        build_model_card_payload,
+    )
     from finintel.ml.unsupervised import FinancialArchetypes
 
     assert ml_config.validation_start is not None
@@ -1011,6 +1243,29 @@ def _train_ml_with_bundle(
         },
         "package_versions": _installed_versions(),
     }
+    artifact_sha256 = _compute_training_artifact_sha256(training)
+    model_card = build_model_card_payload(
+        training=training,
+        evaluation_report=evaluation_report,
+        facts=clean_facts,
+        issuers=issuers,
+        eligible_scored_quarters=eligible,
+        scores_table=scores_table,
+        as_of=as_of,
+        run_id=run_id,
+        feature_set=ml_config.feature_set,
+        selected_features=selected_features,
+        statement_scope=ml_config.statement_scope,
+        taxonomy_version=ml_config.taxonomy_version,
+        target_mode=ml_config.target_mode,
+        peer_standardization_mode=peer_standardization_mode,
+        require_exact_filing=ml_config.require_exact_filing,
+        regulatory_events=ml_config.regulatory_events,
+        min_unique_positive_issuers=ml_config.min_unique_positive_issuers,
+        precomputed_as_of_scored=classical_as_of,
+        artifact_sha256=artifact_sha256,
+    )
+    model_card_meta = build_model_card_meta_table(model_card)
     bundle = PersistedMLArtifactBundle(
         model_version=MODEL_VERSION,
         feature_set=ml_config.feature_set,
@@ -1026,8 +1281,10 @@ def _train_ml_with_bundle(
         training=training,
         evaluation_report=evaluation_report,
         run_manifest=run_manifest,
+        model_card=model_card,
+        artifact_sha256=artifact_sha256,
     )
-    return scores_table, evaluation_report, run_manifest, bundle
+    return scores_table, evaluation_report, run_manifest, bundle, model_card_meta
 
 
 def _score_ml_with_bundle(
@@ -1101,6 +1358,7 @@ def run_incremental_analytics_transform(
     previous_benchmarks: pl.DataFrame | None = None,
     previous_red_flags: pl.DataFrame | None = None,
     previous_ml_scores: pl.DataFrame | None = None,
+    previous_model_card_meta: pl.DataFrame | None = None,
     previous_state: Mapping[str, object] | None = None,
     previous_snapshot_id: str | None = None,
     state_path: Path | None = None,
@@ -1129,7 +1387,10 @@ def run_incremental_analytics_transform(
     if effective_ml.model_artifact_dir is not None and not (
         effective_ml.enabled or effective_ml.mode == "retrain"
     ):
-        loaded_artifact = load_ml_artifact_bundle(effective_ml.model_artifact_dir)
+        loaded_artifact = load_ml_artifact_bundle(
+            effective_ml.model_artifact_dir,
+            run_id=effective_ml.model_run_id,
+        )
 
     effective_ml_mode = _resolve_ml_mode(
         effective_ml,
@@ -1345,6 +1606,7 @@ def run_incremental_analytics_transform(
     evaluation_report: dict[str, Any] | None = None
     ml_run_manifest: dict[str, Any] | None = None
     ml_artifact_payload: PersistedMLArtifactBundle | None = None
+    model_card_meta: pl.DataFrame | None = None
     if effective_ml_mode == "retrain":
         assert effective_ml.validation_start is not None
         assert effective_ml.test_start is not None
@@ -1354,6 +1616,7 @@ def run_incremental_analytics_transform(
                 evaluation_report,
                 ml_run_manifest,
                 ml_artifact_payload,
+                model_card_meta,
             ) = _train_ml_with_bundle(
                 qg1.clean_facts,
                 issuers,
@@ -1387,10 +1650,12 @@ def run_incremental_analytics_transform(
                 facts_sha256=diff.facts_sha256,
                 issuers_sha256=diff.issuers_metadata_sha256,
                 precomputed_ratios_as_of=precomputed_ml_ratios,
+                run_id=run_id,
             )
             ml_scores = ml_artifacts.scores_table
             evaluation_report = ml_artifacts.evaluation_report
             ml_run_manifest = ml_artifacts.run_manifest
+            model_card_meta = ml_artifacts.model_card_meta
     elif effective_ml_mode == "incremental_score":
         ml_usable = (
             previous_ml_scores is not None
@@ -1454,11 +1719,26 @@ def run_incremental_analytics_transform(
                     industry_benchmarks=industry_benchmarks,
                 )
             validate_analytics_table(ML_SCORES_TABLE, ml_scores)
+            if loaded_artifact.model_card is not None:
+                from finintel.ml.tables import build_model_card_meta_table
+
+                model_card_meta = build_model_card_meta_table(
+                    loaded_artifact.model_card
+                )
+            elif (
+                previous_model_card_meta is not None
+                and _schema_matches(previous_model_card_meta, MODEL_CARD_META_SCHEMA)
+                and not previous_model_card_meta.is_empty()
+            ):
+                model_card_meta = previous_model_card_meta.select(
+                    MODEL_CARD_META_SCHEMA.names()
+                )
             ml_run_manifest = {
                 "cadence_mode": "incremental_score",
                 "retrained": False,
                 "model_version": loaded_artifact.model_version,
                 "trained_run_id": loaded_artifact.trained_run_id,
+                "artifact_sha256": loaded_artifact.artifact_sha256,
                 "scored_issuers": scored_issuers,
                 "scored_issuers_count": len(scored_issuers),
                 "total_ml_rows": int(ml_scores.height),
@@ -1489,6 +1769,14 @@ def run_incremental_analytics_transform(
                 pl.concat([kept_ml, new_ml], how="vertical")
             ).sort(list(ML_SCORES_KEY))
             validate_analytics_table(ML_SCORES_TABLE, ml_scores)
+            if (
+                previous_model_card_meta is not None
+                and _schema_matches(previous_model_card_meta, MODEL_CARD_META_SCHEMA)
+                and not previous_model_card_meta.is_empty()
+            ):
+                model_card_meta = previous_model_card_meta.select(
+                    MODEL_CARD_META_SCHEMA.names()
+                )
             ml_run_manifest = {
                 "cadence_mode": "incremental_score_preserve_prior",
                 "retrained": False,
@@ -1562,4 +1850,5 @@ def run_incremental_analytics_transform(
         evaluation_report=evaluation_report,
         ml_run_manifest=ml_run_manifest,
         ml_artifact_payload=ml_artifact_payload,
+        model_card_meta=model_card_meta,
     )

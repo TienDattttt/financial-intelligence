@@ -46,6 +46,7 @@ from finintel.storage.ducklake_store import (
     ensure_ducklake_attached,
     validate_sql_identifier,
 )
+from finintel.storage.schemas import MODEL_CARD_META_TABLE
 from finintel.storage.snapshot_publisher import (
     KNOWN_TABLES,
     snapshot_read_lock,
@@ -139,6 +140,7 @@ _IN_MEMORY_CACHEABLE_TABLES: frozenset[str] = frozenset(
         "financial_ratios.parquet",
         "accounting_red_flags.parquet",
         "ml_scores_and_explanations.parquet",
+        MODEL_CARD_META_TABLE,
         "quality_summary.parquet",
         "audit_quarantine.parquet",
     }

@@ -54,6 +54,7 @@ from finintel.storage.schemas import (
     EXTENSION_PORT_TABLES,
     FILINGS_MANIFEST_TABLE,
     ML_SCORES_TABLE,
+    MODEL_CARD_META_TABLE,
     QUALITY_SUMMARY_TABLE,
     RATIOS_TABLE,
     RED_FLAGS_TABLE,
@@ -92,7 +93,9 @@ MANAGED_MART_TABLES: frozenset[str] = frozenset(
         AUDIT_QUARANTINE_TABLE,
     }
 )
-OPTIONAL_MANAGED_MART_TABLES: frozenset[str] = frozenset({"unmapped_metrics.parquet"})
+OPTIONAL_MANAGED_MART_TABLES: frozenset[str] = frozenset(
+    {"unmapped_metrics.parquet", MODEL_CARD_META_TABLE}
+)
 MANAGED_MART_CATALOG_TABLES: frozenset[str] = frozenset(
     name.removesuffix(".parquet")
     for name in (MANAGED_MART_TABLES | OPTIONAL_MANAGED_MART_TABLES)

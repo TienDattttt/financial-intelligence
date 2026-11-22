@@ -46,6 +46,7 @@ from finintel.storage.schemas import (
     FILINGS_MANIFEST_TABLE,
     ISSUERS_SCHEMA,
     ML_SCORES_TABLE,
+    MODEL_CARD_META_TABLE,
     OPTIONAL_ANALYTICS_SCHEMAS,
     QUALITY_SUMMARY_TABLE,
     RATIOS_TABLE,
@@ -134,6 +135,10 @@ TABLE_PHYSICAL_LAYOUT: Mapping[str, TablePhysicalLayout] = {
     FILINGS_MANIFEST_TABLE: TablePhysicalLayout(
         sort_by=("filing_id",),
         row_group_size=25_000,
+    ),
+    MODEL_CARD_META_TABLE: TablePhysicalLayout(
+        sort_by=("model_card_id",),
+        row_group_size=100,
     ),
     "issuers.parquet": TablePhysicalLayout(
         sort_by=("ticker", "issuer_id"),

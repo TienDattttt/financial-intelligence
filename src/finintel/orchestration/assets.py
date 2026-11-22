@@ -86,6 +86,7 @@ from finintel.storage.schemas import (
     BENCHMARKS_TABLE,
     FILINGS_MANIFEST_TABLE,
     ML_SCORES_TABLE,
+    MODEL_CARD_META_TABLE,
     QUALITY_SUMMARY_TABLE,
     RATIOS_TABLE,
     RED_FLAGS_TABLE,
@@ -144,6 +145,7 @@ class PublishMartsConfig(dg.Config):
     ml_enabled: bool = False
     ml_mode: str = "incremental_score"
     ml_model_dir: str | None = None
+    ml_model_run_id: str | None = None
     ml_validation_start: str | None = None
     ml_test_start: str | None = None
     ml_approved_target: bool = False
@@ -487,12 +489,18 @@ def _resolve_ml_config(
     else:
         effective_mode = "incremental_score"
     artifact_dir = _resolve_model_artifact_dir(config, paths=paths)
+    model_run_id = (
+        config.ml_model_run_id.strip()
+        if isinstance(config.ml_model_run_id, str) and config.ml_model_run_id.strip()
+        else None
+    )
 
     if effective_mode != "retrain":
         return MLTransformConfig(
             enabled=False,
             mode=effective_mode,
             model_artifact_dir=artifact_dir,
+            model_run_id=model_run_id,
             target_mode=effective_target_mode,
         )
     val_start: date | None = None
@@ -1032,6 +1040,7 @@ def published_financial_marts(
             previous_benchmarks: pl.DataFrame | None = None
             previous_red_flags: pl.DataFrame | None = None
             previous_ml_scores: pl.DataFrame | None = None
+            previous_model_card_meta: pl.DataFrame | None = None
             if (
                 previous_state is not None
                 and previous_snapshot_id is not None
@@ -1052,11 +1061,15 @@ def published_financial_marts(
                         previous_ml_scores = _read_optional_snapshot_table(
                             pinned, ML_SCORES_TABLE
                         )
+                        previous_model_card_meta = _read_optional_snapshot_table(
+                            pinned, MODEL_CARD_META_TABLE
+                        )
                 except (FileNotFoundError, ContractViolationError):
                     previous_ratios = None
                     previous_benchmarks = None
                     previous_red_flags = None
                     previous_ml_scores = None
+                    previous_model_card_meta = None
 
             bundle = run_incremental_analytics_transform(
                 facts_df,
@@ -1067,6 +1080,7 @@ def published_financial_marts(
                 previous_benchmarks=previous_benchmarks,
                 previous_red_flags=previous_red_flags,
                 previous_ml_scores=previous_ml_scores,
+                previous_model_card_meta=previous_model_card_meta,
                 previous_state=previous_state,
                 previous_snapshot_id=previous_snapshot_id,
                 state_path=transform_state_path,
@@ -1100,6 +1114,8 @@ def published_financial_marts(
                 QUALITY_SUMMARY_TABLE: updated_quality_summary,
                 AUDIT_QUARANTINE_TABLE: bundle.audit_quarantine,
             }
+            if bundle.model_card_meta is not None:
+                tables[MODEL_CARD_META_TABLE] = bundle.model_card_meta
             if storage_cfg.publish_unmapped:
                 unmapped_candidate = facts_path.with_name("unmapped_metrics.parquet")
                 if unmapped_candidate.is_file():

@@ -1747,19 +1747,33 @@ def run_expanding_walk_forward_evaluation(
     n_bootstrap: int = 1000,
     seed: int = 42,
     precomputed_as_of_scored: pl.DataFrame | None = None,
+    strict_years: bool = True,
+    tier_cutoffs: tuple[float, float, float, float] | None = None,
 ) -> dict[str, Any]:
     """Execute 2-Way Purged Expanding Walk-Forward (2021..2025) with Cluster Bootstrap CI & Unseen Issuers."""
-    splits_by_year = build_expanding_walk_forward_splits(
-        facts,
-        issuers,
-        test_years=test_years,
-        as_of=as_of,
-        require_exact_filing=require_exact_filing,
-        statement_scope=statement_scope,
-        taxonomy_version=taxonomy_version,
-        target_mode=target_mode,
-        regulatory_events=regulatory_events,
-        precomputed_as_of_scored=precomputed_as_of_scored,
+    requested_years = [int(y) for y in test_years]
+    if strict_years:
+        candidate_years = requested_years
+        skipped_years: list[int] = []
+    else:
+        candidate_years = [y for y in requested_years if date(y, 1, 1) <= as_of]
+        skipped_years = [y for y in requested_years if y not in candidate_years]
+
+    splits_by_year = (
+        build_expanding_walk_forward_splits(
+            facts,
+            issuers,
+            test_years=candidate_years,
+            as_of=as_of,
+            require_exact_filing=require_exact_filing,
+            statement_scope=statement_scope,
+            taxonomy_version=taxonomy_version,
+            target_mode=target_mode,
+            regulatory_events=regulatory_events,
+            precomputed_as_of_scored=precomputed_as_of_scored,
+        )
+        if candidate_years
+        else {}
     )
     model_names = ("Baseline_1_AltmanZ", "Baseline_2_Logit", "XGBoost")
     metric_keys = (
@@ -1772,6 +1786,10 @@ def run_expanding_walk_forward_evaluation(
     )
 
     per_year: dict[str, Any] = {}
+    evaluated_years: list[int] = []
+    last_cutoffs: tuple[float, float, float, float] = (
+        tier_cutoffs if tier_cutoffs is not None else DEFAULT_RISK_TIER_CUTOFFS
+    )
     pooled_y: list[NDArray[np.int8]] = []
     pooled_iss: list[NDArray[Any]] = []
     pooled_ref_prevs: list[NDArray[np.float64]] = []
@@ -1781,16 +1799,34 @@ def run_expanding_walk_forward_evaluation(
     unseen_ref_prevs: list[NDArray[np.float64]] = []
     unseen_scores: dict[str, list[NDArray[np.float64]]] = {m: [] for m in model_names}
 
-    for year in test_years:
-        fold_pair = splits_by_year[int(year)]
+    for year in candidate_years:
+        fold_pair = splits_by_year[year]
         tr_df = fold_pair["train"]
         te_df = fold_pair["test"]
-        trained = train_distress_model(
-            tr_df,
-            validation=None,
-            features=features,
-            min_unique_positive_issuers=min_unique_positive_issuers,
-        )
+        if not strict_years:
+            if tr_df.is_empty() or te_df.is_empty():
+                skipped_years.append(year)
+                continue
+            try:
+                trained = train_distress_model(
+                    tr_df,
+                    validation=None,
+                    features=features,
+                    min_unique_positive_issuers=min_unique_positive_issuers,
+                )
+            except (InsufficientModelData, ContractViolationError):
+                skipped_years.append(year)
+                continue
+        else:
+            trained = train_distress_model(
+                tr_df,
+                validation=None,
+                features=features,
+                min_unique_positive_issuers=min_unique_positive_issuers,
+            )
+        if tier_cutoffs is None:
+            last_cutoffs = trained.risk_tier_cutoffs
+        evaluated_years.append(year)
         tr_prepared = _prepare_eval_fold(tr_df, target="distress_target")
         te_prepared = _prepare_eval_fold(te_df, target="distress_target")
         train_eval = evaluate_distress_models(
@@ -1880,7 +1916,7 @@ def run_expanding_walk_forward_evaluation(
             for k in metric_keys:
                 vals = [
                     float(per_year[str(yr)][section_key]["models"][m][k])
-                    for yr in test_years
+                    for yr in evaluated_years
                     if per_year[str(yr)][section_key]["models"][m].get(k) is not None
                 ]
                 if vals:
@@ -1898,9 +1934,14 @@ def run_expanding_walk_forward_evaluation(
         float(np.mean(pooled_ref_vec)) if pooled_ref_vec is not None else None
     )
     pooled_bootstrap: dict[str, Any] = {}
+    pooled_reliability: dict[str, Any] | None = None
     if pooled_y:
         all_y = np.concatenate(pooled_y)
         all_iss = np.concatenate(pooled_iss)
+        pooled_xgb = np.concatenate(pooled_scores["XGBoost"])
+        pooled_reliability = evaluate_risk_tier_reliability(
+            all_y, pooled_xgb, last_cutoffs
+        )
         for m in model_names:
             pooled_bootstrap[m] = cluster_bootstrap_metrics(
                 all_y,
@@ -1927,14 +1968,47 @@ def run_expanding_walk_forward_evaluation(
             )
 
     return {
-        "test_years": [int(y) for y in test_years],
+        "test_years": requested_years,
+        "evaluated_years": evaluated_years,
+        "skipped_years": sorted(skipped_years),
         "require_exact_filing": require_exact_filing,
         "per_year": per_year,
         "yearly_summary_all_oos": _summarize_yearly("test"),
         "yearly_summary_true_unseen": _summarize_yearly("true_unseen_issuers"),
         "pooled_oos_cluster_bootstrap": pooled_bootstrap,
         "pooled_true_unseen_cluster_bootstrap": unseen_bootstrap,
+        "pooled_oos_risk_tier_reliability": pooled_reliability,
         "pooled_reference_train_prevalence": pooled_ref_prev,
+    }
+
+
+def export_calibrator_spec(result: TrainingResult) -> dict[str, Any]:
+    """Export JSON-serializable Platt calibration & operating threshold parameters."""
+    return {
+        "platt_slope": float(result.platt_slope),
+        "platt_intercept": float(result.platt_intercept),
+        "altman_platt_slope": float(result.altman_platt_slope),
+        "altman_platt_intercept": float(result.altman_platt_intercept),
+        "logit_platt_slope": float(result.logit_platt_slope),
+        "logit_platt_intercept": float(result.logit_platt_intercept),
+        "oof_strategy": result.oof_strategy,
+        "oof_sample_count": int(result.oof_sample_count),
+        "oof_positive_count": int(result.oof_positive_count),
+        "train_prevalence": float(result.train_prevalence),
+        "f2_thresholds": {k: float(v) for k, v in result.f2_thresholds.items()},
+    }
+
+
+def export_risk_tier_cutoffs_spec(result: TrainingResult) -> dict[str, Any]:
+    """Export JSON-serializable Through-the-Cycle R1..R5 PD cutoffs."""
+    c1, c2, c3, c4 = result.risk_tier_cutoffs
+    return {
+        "tier_labels": list(RISK_TIER_LABELS),
+        "quantiles": list(RISK_TIER_QUANTILES),
+        "R2_min_pd": float(c1),
+        "R3_min_pd": float(c2),
+        "R4_min_pd": float(c3),
+        "R5_min_pd": float(c4),
     }
 
 
