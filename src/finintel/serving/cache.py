@@ -22,6 +22,8 @@ from typing import Any
 
 import orjson
 
+from finintel.serving.observability import SPAN_VALKEY_CACHE, trace_span
+
 logger = logging.getLogger("finintel.serving.cache")
 
 DEFAULT_VALKEY_TTL_SECONDS = 3600
@@ -148,14 +150,23 @@ class ValkeyResponseCache:
     def get_bytes(self, key: str) -> bytes | None:
         if self._client is None or self._is_circuit_open():
             return None
-        try:
-            raw = self._client.get(key)
-        except Exception as exc:
-            self._trip_circuit(exc)
+        with trace_span(
+            SPAN_VALKEY_CACHE,
+            {"cache.system": "valkey", "cache.operation": "get"},
+        ) as span:
+            try:
+                raw = self._client.get(key)
+            except Exception as exc:
+                self._trip_circuit(exc)
+                if span is not None:
+                    span.set_attribute("cache.error", type(exc).__name__)
+                return None
+            hit = isinstance(raw, (bytes, bytearray))
+            if span is not None:
+                span.set_attribute("cache.hit", hit)
+            if hit:
+                return bytes(raw)
             return None
-        if isinstance(raw, (bytes, bytearray)):
-            return bytes(raw)
-        return None
 
     def set_bytes(
         self,
@@ -167,12 +178,23 @@ class ValkeyResponseCache:
         if self._client is None or self._is_circuit_open():
             return False
         ttl = self._ttl_seconds if ttl_seconds is None else max(1, int(ttl_seconds))
-        try:
-            self._client.setex(key, ttl, payload)
-            return True
-        except Exception as exc:
-            self._trip_circuit(exc)
-            return False
+        with trace_span(
+            SPAN_VALKEY_CACHE,
+            {
+                "cache.system": "valkey",
+                "cache.operation": "set",
+                "cache.payload_bytes": len(payload),
+                "cache.ttl_seconds": ttl,
+            },
+        ) as span:
+            try:
+                self._client.setex(key, ttl, payload)
+                return True
+            except Exception as exc:
+                self._trip_circuit(exc)
+                if span is not None:
+                    span.set_attribute("cache.error", type(exc).__name__)
+                return False
 
     def close(self) -> None:
         if self._client is not None:
