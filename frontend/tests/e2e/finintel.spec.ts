@@ -613,4 +613,129 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
       await expect(page.getByText(/9 quy tắc phát hiện bất thường kế toán/i)).toBeVisible();
     }
   });
+
+  test("Wave 7B UI-08b (/companies/HBC): Điều tra Thuyết minh (PDF) Split-View, red-flag jump button, zero leaks & axe Light/Dark", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+
+    await page.goto("/companies/HBC", { waitUntil: "networkidle" });
+    await expect(page.getByText("HBC", { exact: false }).first()).toBeVisible();
+    const docTabBtn = page.getByRole("button", {
+      name: "Điều tra Thuyết minh (PDF)",
+    });
+    await expect(docTabBtn).toBeVisible();
+
+    // Navigate to Quality & Red Flags tab and test jump button on RF_03/RF_07/RF_09 when active
+    await page.getByRole("button", { name: "Chất lượng LN & Cờ đỏ" }).click();
+    const listPromise = page.waitForResponse((res) =>
+      res.url().includes("/api/v2/documents/HBC/list"),
+    );
+
+    const jumpBtn = page
+      .getByRole("button", { name: /Kiểm tra Thuyết minh gốc/i })
+      .first();
+    let jumpedFromRedFlag = false;
+    if (await jumpBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
+      jumpedFromRedFlag = true;
+      await jumpBtn.click();
+      await expect(page).toHaveURL(/tab=documents/);
+    } else {
+      await docTabBtn.click();
+    }
+
+    const listRes = await listPromise;
+    expect([200, 503]).toContain(listRes.status());
+
+    if (listRes.status() === 200) {
+      const listJson = (await listRes.json()) as {
+        total_documents: number;
+      };
+      if (listJson.total_documents > 0) {
+        await expect(
+          page.getByText("Truy vấn & Tổng hợp có trích dẫn"),
+        ).toBeVisible();
+        await expect(
+          page.getByText("Bằng chứng PDF Gốc — Nguyên văn đoạn trích"),
+        ).toBeVisible();
+        await expect(page.locator("#rag-fiscal-year")).toBeVisible();
+
+        const rf09Btn = page.getByRole("button", {
+          name: /RF_09 Ý kiến kiểm toán & Hoạt động liên tục/i,
+        });
+        await expect(rf09Btn).toBeVisible();
+        await expect(
+          page.getByRole("button", { name: /RF_03 Phải thu & Dòng tiền/i }),
+        ).toBeVisible();
+        await expect(
+          page.getByRole("button", { name: /RF_07 Vay nợ & Thanh khoản/i }),
+        ).toBeVisible();
+
+        const questionInput = page.locator("#rag-question-input");
+        await expect(questionInput).toBeVisible();
+        if (jumpedFromRedFlag) {
+          await expect(questionInput).not.toHaveValue("");
+        } else {
+          const invPromise = page.waitForResponse(
+            (res) =>
+              res.url().includes("/api/v2/documents/HBC/investigate") &&
+              res.request().method() === "POST",
+          );
+          await rf09Btn.click();
+          const invRes = await invPromise;
+          expect([200, 503]).toContain(invRes.status());
+          if (invRes.status() === 200) {
+            const invJson = (await invRes.json()) as {
+              abstained: boolean;
+              citations: Array<{ page_no: number }>;
+            };
+            await expect(page.getByText(/Valkey (HIT|MISS)/)).toBeVisible({
+              timeout: 15_000,
+            });
+            if (!invJson.abstained && invJson.citations.length > 0) {
+              const firstBadge = page
+                .getByRole("button", { name: /^\[1\]/ })
+                .first();
+              await expect(firstBadge).toBeVisible();
+              await firstBadge.click();
+            }
+          }
+        }
+      }
+    }
+
+    // Verify zero leaks, zero AI-slop, zero horizontal overflow, zero critical axe errors in Light & Dark Mode
+    const bodyText = await page.evaluate(() => document.body.innerText ?? "");
+    expect(bodyText).not.toContain("✨");
+    for (const pattern of FORBIDDEN_TECHNICAL_LEAKS) {
+      expect(pattern.test(bodyText)).toBe(false);
+    }
+
+    const overflowLight = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(overflowLight.scrollWidth).toBeLessThanOrEqual(
+      overflowLight.clientWidth + 2,
+    );
+
+    const axeLight = await new AxeBuilder({ page }).analyze();
+    expect(axeLight.violations.filter((v) => v.impact === "critical")).toEqual(
+      [],
+    );
+
+    await page.getByRole("button", { name: "Giao diện Tối" }).click();
+    await expect(page.locator("html")).toHaveClass(/\bdark\b/);
+    const axeDark = await new AxeBuilder({ page }).analyze();
+    expect(axeDark.violations.filter((v) => v.impact === "critical")).toEqual(
+      [],
+    );
+    await page.getByRole("button", { name: "Giao diện Sáng" }).click();
+
+    expect(pageErrors).toEqual([]);
+  });
 });

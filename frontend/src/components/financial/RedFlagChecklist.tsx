@@ -1,5 +1,7 @@
-import { CheckCircle2, ShieldAlert } from "lucide-react";
+import { CheckCircle2, FileSearch, ShieldAlert } from "lucide-react";
 import { RiskBadge } from "@/components/financial/RiskBadge";
+import { getRedFlagPresetQuestion } from "@/components/rag/DocumentInvestigationPanel";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   AUDIT_OPINION_LABELS,
@@ -66,10 +68,12 @@ export function RedFlagChecklist({
   dictionary,
   triggeredFlags,
   latestPeriodEndDate,
+  onInvestigateRedFlag,
 }: {
   dictionary: readonly RedFlagDictionaryItem[];
   triggeredFlags: readonly RedFlagItem[];
   latestPeriodEndDate?: string | null;
+  onInvestigateRedFlag?: (flagCode: string, presetQuestion: string) => void;
 }) {
   const activeForLatest = latestPeriodEndDate
     ? triggeredFlags.filter((f) => f.period_end_date === latestPeriodEndDate)
@@ -107,6 +111,7 @@ export function RedFlagChecklist({
                 (rule) => rule.flag_code === flag.flag_code,
               );
               const shortCode = flag.flag_code.split("_").slice(0, 2).join("_");
+              const presetQuestion = getRedFlagPresetQuestion(shortCode);
               return (
                 <Card
                   key={`${flag.flag_code}-${flag.period_end_date}`}
@@ -143,9 +148,24 @@ export function RedFlagChecklist({
                         ))}
                       </div>
                     ) : null}
-                    <p className="text-[11px] text-ink-subtle">
-                      Kỳ phát hiện: {formatDateVi(flag.period_end_date)}
-                    </p>
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                      <p className="text-[11px] text-ink-subtle">
+                        Kỳ phát hiện: {formatDateVi(flag.period_end_date)}
+                      </p>
+                      {presetQuestion && onInvestigateRedFlag ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="xs"
+                          onClick={() =>
+                            onInvestigateRedFlag(shortCode, presetQuestion)
+                          }
+                        >
+                          <FileSearch className="size-3" aria-hidden="true" />
+                          <span>Kiểm tra Thuyết minh gốc</span>
+                        </Button>
+                      ) : null}
+                    </div>
                   </CardContent>
                 </Card>
               );

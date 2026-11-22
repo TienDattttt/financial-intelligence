@@ -6,7 +6,10 @@ import type {
   CompanyFilingsResponse,
   CompanyProfileResponse,
   CompanyStatementsResponse,
+  DocumentListResponse,
   HealthResponse,
+  InvestigateRequest,
+  InvestigateResponse,
   IssuersPageResponse,
   MarketChangesResponse,
   MetaDictionaryResponse,
@@ -47,9 +50,9 @@ function sanitizeClientMessage(raw: string, status: number): string {
   if (/not found/i.test(cleaned) || status === 404) {
     return "Không tìm thấy dữ liệu cho yêu cầu này trong kỳ hiện hành.";
   }
-  if (!cleaned || INTERNAL_LEAK_RE.test(cleaned)) {
+    if (!cleaned || INTERNAL_LEAK_RE.test(cleaned)) {
     if (status === 422) return "Tham số truy vấn không hợp lệ.";
-    if (status === 503) return "Hệ thống đang xử lý mô phỏng, vui lòng thử lại sau giây lát.";
+    if (status === 503) return "Dịch vụ tra cứu hiện tạm thời chưa sẵn sàng, vui lòng thử lại sau giây lát.";
     return "Không thể tải dữ liệu từ máy chủ phân tích.";
   }
   return cleaned.slice(0, 200);
@@ -225,6 +228,45 @@ export const apiClient = {
         as_of: asOf,
       }),
     ),
+
+  getCompanyDocuments: (ticker: string) =>
+    requestJson<DocumentListResponse>(
+      `/api/v2/documents/${encodeURIComponent(ticker.trim().toUpperCase())}/list`,
+    ),
+
+  postCompanyInvestigate: async (
+    ticker: string,
+    payload: InvestigateRequest,
+    signal?: AbortSignal,
+  ): Promise<InvestigateResponse> => {
+    const res = await fetch(
+      `/api/v2/documents/${encodeURIComponent(ticker.trim().toUpperCase())}/investigate`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal,
+      },
+    );
+
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const errBody = (await res.json()) as { detail?: unknown };
+        if (typeof errBody.detail === "string") {
+          detail = errBody.detail;
+        }
+      } catch {
+        detail = "";
+      }
+      throw new ApiError(res.status, sanitizeClientMessage(detail, res.status));
+    }
+
+    return (await res.json()) as InvestigateResponse;
+  },
 
   getRatioLineage: (
     ticker: string,
