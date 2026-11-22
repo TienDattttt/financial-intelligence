@@ -29,7 +29,8 @@ import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateB
 import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input, Select } from "@/components/ui/primitives";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
+import { Input } from "@/components/ui/primitives";
 import { useScreener } from "@/hooks/use-finintel-queries";
 import {
   ALTMAN_ZONE_META,
@@ -582,6 +583,52 @@ function ScreenerContent() {
     return Number.isFinite(n) ? String(Math.round(n * 1000) / 10) : "";
   };
 
+  const sectorOptions = React.useMemo<ComboboxOption[]>(
+    () => [
+      { value: "", label: "Tất cả các ngành" },
+      ...sectorsLevel2.map((sec) => ({
+        value: sec.icb_code_level2,
+        label: sec.icb_name_level2,
+        hint: `(${sec.issuer_count})`,
+      })),
+    ],
+    [sectorsLevel2],
+  );
+
+  const altmanOptions = React.useMemo<ComboboxOption[]>(
+    () => [
+      { value: "", label: "Tất cả" },
+      { value: "SAFE_ZONE", label: "An toàn (Z″ > 2,60)" },
+      { value: "GREY_ZONE", label: "Vùng xám (1,10–2,60)" },
+      { value: "DISTRESS_ZONE", label: "Nguy cơ kiệt quệ (Z″ < 1,10)" },
+    ],
+    [],
+  );
+
+  const beneishOptions = React.useMemo<ComboboxOption[]>(
+    () => [
+      { value: "", label: "Tất cả" },
+      {
+        value: "HIGH_MANIPULATION_RISK_SCREEN",
+        label: "Nghi vấn điều chỉnh LN (> −1,78)",
+      },
+      { value: "VALID", label: "Bình thường" },
+      { value: "MIXED_TAXONOMY", label: "Chuyển chuẩn mực (TT200→TT99)" },
+    ],
+    [],
+  );
+
+  const fScoreOptions = React.useMemo<ComboboxOption[]>(
+    () => [
+      { value: "", label: "Không giới hạn" },
+      ...[3, 4, 5, 6, 7, 8].map((v) => ({
+        value: String(v),
+        label: `Từ ${v}/9 trở lên`,
+      })),
+    ],
+    [],
+  );
+
   const activeFilterCount = React.useMemo(
     () =>
       [
@@ -765,82 +812,68 @@ function ScreenerContent() {
               <label htmlFor="scr-sector" className="font-semibold text-ink">
                 Ngành ICB cấp 2
               </label>
-              <Select
+              <Combobox
                 id="scr-sector"
+                options={sectorOptions}
                 value={sectorParam}
-                onChange={(e) =>
-                  updateParams({ icb_code_level2: e.target.value || null })
+                onValueChange={(next) =>
+                  updateParams({ icb_code_level2: next || null })
                 }
-                className="w-full"
-              >
-                <option value="">Tất cả các ngành</option>
-                {sectorsLevel2.map((sec) => (
-                  <option key={sec.icb_code_level2} value={sec.icb_code_level2}>
-                    {sec.icb_name_level2} ({sec.issuer_count})
-                  </option>
-                ))}
-              </Select>
+                placeholder="Tất cả các ngành"
+                searchPlaceholder="Tìm ngành (VD: thep, dien)..."
+                ariaLabel="Ngành ICB cấp 2"
+              />
             </div>
 
             <div className="space-y-1">
               <label htmlFor="scr-altman" className="font-semibold text-ink">
                 Phân vùng Altman Z″
               </label>
-              <Select
+              <Combobox
                 id="scr-altman"
+                options={altmanOptions}
                 value={altmanParam}
-                onChange={(e) =>
-                  updateParams({ altman_zone: e.target.value || null })
+                onValueChange={(next) =>
+                  updateParams({ altman_zone: next || null })
                 }
-                className="w-full"
-              >
-                <option value="">Tất cả</option>
-                <option value="SAFE_ZONE">An toàn (Z″ &gt; 2,60)</option>
-                <option value="GREY_ZONE">Vùng xám (1,10–2,60)</option>
-                <option value="DISTRESS_ZONE">Nguy cơ kiệt quệ (Z″ &lt; 1,10)</option>
-              </Select>
+                placeholder="Tất cả"
+                searchPlaceholder="Tìm phân vùng Altman..."
+                ariaLabel="Phân vùng Altman Z″"
+              />
             </div>
 
             <div className="space-y-1">
               <label htmlFor="scr-beneish" className="font-semibold text-ink">
                 Beneish M-Score
               </label>
-              <Select
+              <Combobox
                 id="scr-beneish"
+                options={beneishOptions}
                 value={beneishParam}
-                onChange={(e) =>
-                  updateParams({ beneish_flag: e.target.value || null })
+                onValueChange={(next) =>
+                  updateParams({ beneish_flag: next || null })
                 }
-                className="w-full"
-              >
-                <option value="">Tất cả</option>
-                <option value="HIGH_MANIPULATION_RISK_SCREEN">
-                  Nghi vấn điều chỉnh LN (&gt; −1,78)
-                </option>
-                <option value="VALID">Bình thường</option>
-                <option value="MIXED_TAXONOMY">Chuyển chuẩn mực (TT200→TT99)</option>
-              </Select>
+                placeholder="Tất cả"
+                searchPlaceholder="Tìm trạng thái Beneish..."
+                ariaLabel="Beneish M-Score"
+              />
             </div>
 
             <div className="space-y-1">
               <label htmlFor="scr-fscore" className="font-semibold text-ink">
                 Piotroski F-Score tối thiểu
               </label>
-              <Select
+              <Combobox
                 id="scr-fscore"
+                options={fScoreOptions}
                 value={minFParam}
-                onChange={(e) =>
-                  updateParams({ min_f_score: e.target.value || null })
+                onValueChange={(next) =>
+                  updateParams({ min_f_score: next || null })
                 }
-                className="w-full"
-              >
-                <option value="">Không giới hạn</option>
-                {[3, 4, 5, 6, 7, 8].map((v) => (
-                  <option key={v} value={String(v)}>
-                    Từ {v}/9 trở lên
-                  </option>
-                ))}
-              </Select>
+                placeholder="Không giới hạn"
+                searchPlaceholder="Chọn ngưỡng F-Score..."
+                ariaLabel="Piotroski F-Score tối thiểu"
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
