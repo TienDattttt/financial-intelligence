@@ -41,6 +41,10 @@ from finintel.normalization.periods import (
     compute_ttm,
     derive_quarters,
 )
+from finintel.ports.market_prices import (
+    align_events_to_market_prices_pit,
+    validate_market_prices,
+)
 from finintel.storage.schemas import canonicalize_financial_facts
 
 ASSETS = "BS_TOTAL_ASSETS"
@@ -501,7 +505,10 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
     Add the magnitude of the regime-specific borrowing cost to EBT.
     For positive EBT, sum both signed tax lines before dividing and clipping.
     For nonpositive EBT, ETR is 20%. Subtract the reported CAPEX magnitude
-    from CFO. Require explicit zero treasury stock to estimate shares from par.
+    from CFO. Treat null treasury shares as zero for par-based share count
+    (B-06) with fallback to ``shares_outstanding_market`` and explicit
+    ``shares_source`` provenance, while preserving explicit-zero treasury
+    semantics for ``_eps_shares`` / ``eps_estimate_basis``.
     Parent equity is consolidated BS_TOTAL_EQUITY less BS_MINORITY_INTEREST,
     or BS_TOTAL_EQUITY directly when the statement is separate.
     Preserve SIGNED_EXPENSE sign on IS_SELLING_EXPENSES and IS_ADMINISTRATIVE_EXPENSES.
@@ -530,6 +537,22 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
     )
     tax_inputs = (EBT, CURRENT_TAX, DEFERRED_TAX)
     implied_shares = c(PARENT_EARNINGS) / c(EPS)
+    par_shares = pl.when(
+        (c(SHARES) > 0) & (c(TREASURY_SHARES).fill_null(0.0) == 0.0)
+    ).then(c(SHARES) / 10000.0)
+    explicit_zero_treasury_shares = pl.when(
+        (c(SHARES) > 0) & (c(TREASURY_SHARES) == 0)
+    ).then(c(SHARES) / 10000.0)
+    market_shares = (
+        pl.when(
+            c("shares_outstanding_market").is_finite()
+            & (c("shares_outstanding_market") > 0)
+        )
+        .then(c("shares_outstanding_market").cast(pl.Float64))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+        if "shares_outstanding_market" in frame.columns
+        else pl.lit(None, dtype=pl.Float64)
+    )
     result = frame.with_columns(
         pl.when(CORPORATE & ~input_has("mixed", *DEBT_INPUTS))
         .then(debt)
@@ -572,21 +595,27 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         pl.when(CORPORATE & ~input_has("mixed", *FCF_INPUTS))
         .then(c(CFO) - c(CAPEX).abs())
         .alias("fcf_ttm"),
-        pl.when((c(SHARES) > 0) & (c(TREASURY_SHARES) == 0))
-        .then(c(SHARES) / 10000.0)
-        .alias("estimated_shares_outstanding"),
+        pl.coalesce(par_shares, market_shares).alias("estimated_shares_outstanding"),
+        pl.when(par_shares.is_not_null() & c(TREASURY_SHARES).is_not_null())
+        .then(pl.lit("BS_ORDINARY_SHARES_EXPLICIT_ZERO_TREASURY"))
+        .when(par_shares.is_not_null() & c(TREASURY_SHARES).is_null())
+        .then(pl.lit("BS_ORDINARY_SHARES_NULL_TREASURY_ASSUMED_ZERO"))
+        .when(market_shares.is_not_null())
+        .then(pl.lit("SHARES_OUTSTANDING_MARKET"))
+        .otherwise(pl.lit("MISSING_SHARES"))
+        .alias("shares_source"),
         pl.when(annual & (implied_shares > 0) & implied_shares.is_finite())
         .then(implied_shares)
         .alias("implied_weighted_shares"),
         pl.when(annual).then(c(EPS)).alias("eps_basic_reported"),
     )
     return result.with_columns(
-        pl.coalesce("implied_weighted_shares", "estimated_shares_outstanding").alias(
+        pl.coalesce("implied_weighted_shares", explicit_zero_treasury_shares).alias(
             "_eps_shares"
         ),
         pl.when(c("implied_weighted_shares").is_not_null())
         .then(pl.lit("IMPLIED_ANNUAL_WEIGHTED"))
-        .when(c("estimated_shares_outstanding").is_not_null())
+        .when(explicit_zero_treasury_shares.is_not_null())
         .then(pl.lit("NO_TREASURY_AT_PERIOD_END"))
         .alias("eps_estimate_basis"),
         (c("total_debt") - c("total_cash_and_st_investments")).alias("net_debt"),
@@ -1051,12 +1080,44 @@ def _attach_ml_candidate_features(
     )
 
 
+def _attach_market_shares_pit(
+    periods: pl.DataFrame,
+    market_prices: pl.DataFrame,
+    *,
+    as_of: date,
+) -> pl.DataFrame:
+    """Attach PIT-aligned ``shares_outstanding_market`` from Port 3 EOD prices."""
+    validated_prices = validate_market_prices(market_prices).filter(
+        pl.col("trade_date") <= as_of
+    )
+    if periods.is_empty() or validated_prices.is_empty():
+        return periods.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("shares_outstanding_market")
+        )
+    alignable = periods.filter(pl.col("_amounts_available_at").is_not_null()).select(
+        *PERIOD, "_amounts_available_at"
+    )
+    if alignable.is_empty():
+        return periods.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("shares_outstanding_market")
+        )
+    aligned = align_events_to_market_prices_pit(
+        alignable,
+        validated_prices,
+        event_date_col="_amounts_available_at",
+    ).select(*PERIOD, "shares_outstanding_market")
+    return periods.join(
+        aligned, on=PERIOD, how="left", nulls_equal=True, validate="1:1"
+    )
+
+
 def prepare_periods(
     facts: pl.DataFrame,
     issuers: pl.DataFrame,
     *,
     as_of: date,
     include_ml_inputs: bool = False,
+    market_prices: pl.DataFrame | None = None,
     _precanonicalized: bool = False,
 ) -> pl.DataFrame:
     """Build annual and TTM inputs from reports available by the PIT cut-off.
@@ -1127,6 +1188,8 @@ def prepare_periods(
         raise ContractViolationError(
             "Multiple period ends occupy the same fiscal slot."
         )
+    if market_prices is not None:
+        periods = _attach_market_shares_pit(periods, market_prices, as_of=as_of)
     result = with_prior_year(
         _aggregates(periods),
         "taxonomy_version",
