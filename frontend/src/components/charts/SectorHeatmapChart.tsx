@@ -3,6 +3,7 @@
 import * as React from "react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
 import { Select } from "@/components/ui/primitives";
+import { useChartTheme } from "@/lib/echarts-theme";
 import { formatNumber, formatPercent } from "@/lib/format";
 import type { SectorRiskItem } from "@/types/api";
 
@@ -16,6 +17,7 @@ export function SectorHeatmapChart({
   onSelectSector: (icbCodeLevel2: string) => void;
 }) {
   const [metric, setMetric] = React.useState<HeatmapMetric>("distress_prob");
+  const { palette } = useChartTheme();
 
   const sorted = React.useMemo(() => {
     const getVal = (s: SectorRiskItem) => {
@@ -32,19 +34,19 @@ export function SectorHeatmapChart({
     const getBarColor = (s: SectorRiskItem) => {
       if (metric === "distress_prob") {
         const p = s.median_distress_prob ?? 0;
-        if (p >= 0.08) return "#A61B1B";
-        if (p >= 0.03) return "#B7791F";
-        return "#2E7D5B";
+        if (p >= 0.08) return palette.riskHigh;
+        if (p >= 0.03) return palette.riskMid;
+        return palette.riskLow;
       }
       if (metric === "distress_zone_pct") {
         const share = s.issuer_count > 0 ? s.distress_zone_count / s.issuer_count : 0;
-        if (share >= 0.25) return "#A61B1B";
-        if (share >= 0.1) return "#B7791F";
-        return "#2E7D5B";
+        if (share >= 0.25) return palette.riskHigh;
+        if (share >= 0.1) return palette.riskMid;
+        return palette.riskLow;
       }
-      if (s.avg_red_flags >= 1.5) return "#A61B1B";
-      if (s.avg_red_flags >= 0.7) return "#B7791F";
-      return "#2E7D5B";
+      if (s.avg_red_flags >= 1.5) return palette.riskHigh;
+      if (s.avg_red_flags >= 0.7) return palette.riskMid;
+      return palette.riskLow;
     };
 
     const categories = sorted.map(
@@ -62,21 +64,17 @@ export function SectorHeatmapChart({
       }
       return {
         value: Number(val.toFixed(2)),
-        itemStyle: { color: getBarColor(s), borderRadius: [0, 2, 2, 0] },
+        itemStyle: { color: getBarColor(s), borderRadius: [0, 4, 4, 0] },
       };
     });
 
     const axisUnit = metric === "avg_red_flags" ? "" : "%";
 
     return {
-      animation: false,
       grid: { left: 190, right: 48, top: 14, bottom: 28 },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
-        backgroundColor: "#FFFFFF",
-        borderColor: "#DAD7D0",
-        textStyle: { color: "#1A1D21", fontSize: 12 },
         formatter: (raw: unknown) => {
           const list = Array.isArray(raw) ? raw : [raw];
           const first = list[0] as { dataIndex?: number } | undefined;
@@ -90,16 +88,13 @@ export function SectorHeatmapChart({
             `<div>Xác suất kiệt quệ (TV): <b>${formatPercent(s.median_distress_prob)}</b></div>`,
             `<div>Tỷ lệ vùng nguy cơ (Z″ &lt; 1,10): <b>${formatPercent(zoneShare)}</b> (${s.distress_zone_count} DN)</div>`,
             `<div>Cờ đỏ trung bình: <b>${formatNumber(s.avg_red_flags, 2)}</b> / DN</div>`,
-            `<div style="color:#1F4E79;font-size:11px;margin-top:4px">Nhấp để mở bộ lọc ngành này →</div>`,
+            `<div style="color:${palette.company};font-size:11px;margin-top:4px">Nhấp để mở bộ lọc ngành này →</div>`,
           ].join("");
         },
       },
       xAxis: {
         type: "value",
-        splitLine: { lineStyle: { color: "#EFEDE8" } },
         axisLabel: {
-          color: "#5B6068",
-          fontSize: 11,
           formatter: `{value}${axisUnit}`,
         },
       },
@@ -107,8 +102,7 @@ export function SectorHeatmapChart({
         type: "category",
         inverse: true,
         data: categories,
-        axisLine: { lineStyle: { color: "#DAD7D0" } },
-        axisLabel: { color: "#1A1D21", fontSize: 11, width: 176, overflow: "truncate" },
+        axisLabel: { color: palette.ink, fontSize: 11, width: 176, overflow: "truncate" },
       },
       series: [
         {
@@ -120,7 +114,7 @@ export function SectorHeatmapChart({
             show: true,
             position: "right",
             fontSize: 11,
-            color: "#5B6068",
+            color: palette.inkMuted,
             formatter: (params: { value?: unknown }) => {
               const num = typeof params.value === "number" ? params.value : 0;
               return metric === "avg_red_flags"
@@ -131,7 +125,7 @@ export function SectorHeatmapChart({
         },
       ],
     };
-  }, [metric, sorted]);
+  }, [metric, palette, sorted]);
 
   const chartHeight = Math.min(540, Math.max(280, sorted.length * 26 + 56));
 
@@ -172,7 +166,7 @@ export function SectorHeatmapChart({
           aria-label="Chọn chỉ tiêu biểu đồ ngành"
           value={metric}
           onChange={(e) => setMetric(e.target.value as HeatmapMetric)}
-          className="h-7 text-xs"
+          className="h-7 rounded-md text-xs"
         >
           <option value="distress_prob">Xác suất kiệt quệ (trung vị)</option>
           <option value="distress_zone_pct">Tỷ lệ DN vùng nguy cơ (%)</option>

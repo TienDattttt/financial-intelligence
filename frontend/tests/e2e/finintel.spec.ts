@@ -101,7 +101,64 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     });
   }
 
-  test("interactive flows: live screener, FPT profile, and live stress-test POST", async ({
+  test("supports Light / Dark / System toggle persistence and passes axe checks in Dark Mode", async ({
+    page,
+  }) => {
+    for (const vp of VIEWPORTS) {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await page.goto("/", { waitUntil: "networkidle" });
+
+      const darkBtn = page.getByRole("button", { name: "Giao diện Tối" });
+      await expect(darkBtn).toBeVisible();
+      await darkBtn.click();
+
+      await expect(page.locator("html")).toHaveClass(/\bdark\b/);
+      const bg = await page.evaluate(
+        () => window.getComputedStyle(document.body).backgroundColor,
+      );
+      expect(bg).toBe("rgb(11, 15, 20)");
+
+      // Reload persists dark mode immediately (no FOUC reset)
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expect(page.locator("html")).toHaveClass(/\bdark\b/);
+      await page.waitForLoadState("networkidle");
+
+      for (const routePath of ["/", "/screener", "/companies/FPT", "/compare"]) {
+        await page.goto(routePath, { waitUntil: "networkidle" });
+        await page.waitForTimeout(300);
+
+        const overflow = await page.evaluate(() => ({
+          scrollWidth: document.documentElement.scrollWidth,
+          clientWidth: document.documentElement.clientWidth,
+        }));
+        expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 2);
+
+        if (vp.name === "1440x900" || routePath === "/" || routePath === "/companies/FPT") {
+          const axeResults = await new AxeBuilder({ page }).analyze();
+          const critical = axeResults.violations.filter(
+            (v) => v.impact === "critical",
+          );
+          expect(
+            critical,
+            `Dark mode critical axe violations on ${routePath} @ ${vp.name}: ${critical.map((c) => c.id).join(", ")}`,
+          ).toEqual([]);
+        }
+      }
+
+      // Verify System mode & Light mode toggle
+      await page.emulateMedia({ colorScheme: "light" });
+      await page.getByRole("button", { name: "Theo hệ thống" }).click();
+      await expect(page.locator("html")).not.toHaveClass(/\bdark\b/);
+
+      await page.emulateMedia({ colorScheme: "dark" });
+      await expect(page.locator("html")).toHaveClass(/\bdark\b/);
+
+      await page.getByRole("button", { name: "Giao diện Sáng" }).click();
+      await expect(page.locator("html")).not.toHaveClass(/\bdark\b/);
+    }
+  });
+
+  test("interactive flows: live screener, FPT profile + split Model tab charts, and live stress-test POST", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -112,9 +169,16 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     const rowCount = await page.locator("tbody tr").count();
     expect(rowCount).toBeGreaterThan(5);
 
-    // 2. Live Company Profile (/companies/FPT) renders real KPIs
+    // 2. Live Company Profile (/companies/FPT) renders real KPIs and 2 separate single-axis charts in Model tab
     await page.goto("/companies/FPT", { waitUntil: "networkidle" });
     await expect(page.getByText("FPT", { exact: false }).first()).toBeVisible();
+    await page.getByRole("button", { name: "Mô hình & SHAP" }).click();
+    await expect(
+      page.getByText("Diễn biến lịch sử điểm Altman Z″ (EM)"),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Diễn biến lịch sử Xác suất kiệt quệ mô hình"),
+    ).toBeVisible();
 
     // 3. Live Stress-Test triggers real POST /api/v1/stress-test
     const stressPromise = page.waitForResponse(

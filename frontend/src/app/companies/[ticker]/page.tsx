@@ -53,6 +53,7 @@ import {
   STATEMENT_SCOPE_LABELS,
   TAXONOMY_LABELS,
 } from "@/lib/domain-labels";
+import { useChartTheme } from "@/lib/echarts-theme";
 import {
   formatDateVi,
   formatMultiple,
@@ -129,6 +130,7 @@ function CompanyProfileContent() {
     snapshotId,
     openSourceDrawer,
   } = useAppState();
+  const { palette } = useChartTheme();
 
   const watchlist = React.useSyncExternalStore(
     subscribePreferences,
@@ -301,59 +303,97 @@ function CompanyProfileContent() {
     return table[table.length - 1] ?? null;
   }, [periodEndDate, profileQuery.data?.ratios_table]);
 
-  // Historical ML Trend option for `model` tab
-  const mlTrendOption = React.useMemo<EChartsOption>(() => {
+  // Historical ML Trend options for `model` tab — strictly single-Y-axis per chart (no mixed units)
+  const mlAltmanOption = React.useMemo<EChartsOption>(() => {
     const labels = sortedMl.map((m) => formatPeriodLabel(m.period_end_date, periodType));
     return {
-      animation: false,
-      grid: { left: 48, right: 48, top: 36, bottom: 32 },
-      legend: { top: 4, right: 12, textStyle: { color: "#5B6068", fontSize: 11 } },
+      grid: { left: 52, right: 24, top: 28, bottom: 32 },
       tooltip: {
         trigger: "axis",
-        backgroundColor: "#FFFFFF",
-        borderColor: "#DAD7D0",
-        textStyle: { color: "#1A1D21", fontSize: 12 },
+        formatter: (raw: unknown) => {
+          const list = Array.isArray(raw) ? raw : [raw];
+          const first = list[0] as { dataIndex?: number } | undefined;
+          const m = sortedMl[first?.dataIndex ?? -1];
+          if (!m) return "";
+          return [
+            `<div style="font-weight:600;margin-bottom:4px">${formatPeriodLabel(m.period_end_date, periodType)}</div>`,
+            `<div>Altman Z″ (EM): <b>${formatNumber(m.altman_z_double_prime, 2)}</b></div>`,
+          ].join("");
+        },
       },
       xAxis: {
         type: "category",
         data: labels,
-        axisLine: { lineStyle: { color: "#DAD7D0" } },
-        axisLabel: { color: "#5B6068", fontSize: 11 },
       },
-      yAxis: [
-        {
-          type: "value",
-          name: "Altman Z″",
-          nameTextStyle: { color: "#1F4E79", fontSize: 11 },
-          splitLine: { lineStyle: { color: "#EFEDE8" } },
-          axisLabel: { color: "#5B6068", fontSize: 11 },
-        },
-        {
-          type: "value",
-          name: "XS kiệt quệ (%)",
-          nameTextStyle: { color: "#A61B1B", fontSize: 11 },
-          min: 0,
-          splitLine: { show: false },
-          axisLabel: { color: "#5B6068", fontSize: 11, formatter: "{value}%" },
-        },
-      ],
+      yAxis: {
+        type: "value",
+        name: "Altman Z″",
+      },
       series: [
         {
           name: "Altman Z″",
           type: "line",
-          yAxisIndex: 0,
           symbolSize: 5,
-          lineStyle: { color: "#1F4E79", width: 2 },
-          itemStyle: { color: "#1F4E79" },
+          lineStyle: { color: palette.company, width: 2 },
+          itemStyle: { color: palette.company },
           data: sortedMl.map((m) => m.altman_z_double_prime ?? null),
+          markLine: {
+            silent: true,
+            symbol: "none",
+            lineStyle: { type: "dashed", width: 1 },
+            label: { fontSize: 10 },
+            data: [
+              {
+                yAxis: 1.1,
+                lineStyle: { color: palette.riskHigh },
+                label: { formatter: "1,10 (Nguy cơ)", color: palette.riskHigh, position: "insideEndTop" },
+              },
+              {
+                yAxis: 2.6,
+                lineStyle: { color: palette.riskLow },
+                label: { formatter: "2,60 (An toàn)", color: palette.riskLow, position: "insideEndTop" },
+              },
+            ],
+          },
         },
+      ],
+    };
+  }, [palette.company, palette.riskHigh, palette.riskLow, periodType, sortedMl]);
+
+  const mlDistressProbOption = React.useMemo<EChartsOption>(() => {
+    const labels = sortedMl.map((m) => formatPeriodLabel(m.period_end_date, periodType));
+    return {
+      grid: { left: 52, right: 20, top: 28, bottom: 32 },
+      tooltip: {
+        trigger: "axis",
+        formatter: (raw: unknown) => {
+          const list = Array.isArray(raw) ? raw : [raw];
+          const first = list[0] as { dataIndex?: number } | undefined;
+          const m = sortedMl[first?.dataIndex ?? -1];
+          if (!m) return "";
+          return [
+            `<div style="font-weight:600;margin-bottom:4px">${formatPeriodLabel(m.period_end_date, periodType)}</div>`,
+            `<div>XS kiệt quệ mô hình: <b style="color:${palette.riskHigh}">${formatPercent(m.calibrated_distress_prob)}</b></div>`,
+          ].join("");
+        },
+      },
+      xAxis: {
+        type: "category",
+        data: labels,
+      },
+      yAxis: {
+        type: "value",
+        name: "XS kiệt quệ (%)",
+        min: 0,
+        axisLabel: { formatter: "{value}%" },
+      },
+      series: [
         {
           name: "XS kiệt quệ (%)",
           type: "line",
-          yAxisIndex: 1,
           symbolSize: 5,
-          lineStyle: { color: "#A61B1B", width: 2 },
-          itemStyle: { color: "#A61B1B" },
+          lineStyle: { color: palette.riskHigh, width: 2 },
+          itemStyle: { color: palette.riskHigh },
           data: sortedMl.map((m) =>
             m.calibrated_distress_prob !== null && m.calibrated_distress_prob !== undefined
               ? Number((m.calibrated_distress_prob * 100).toFixed(2))
@@ -362,7 +402,7 @@ function CompanyProfileContent() {
         },
       ],
     };
-  }, [periodType, sortedMl]);
+  }, [palette.riskHigh, periodType, sortedMl]);
 
   if (profileQuery.isLoading) {
     return <PageSkeleton />;
@@ -458,11 +498,11 @@ function CompanyProfileContent() {
   return (
     <div className="space-y-4">
       {/* Sticky Company Header */}
-      <Card className="md:sticky md:top-[52px] md:z-20 bg-surface shadow-xs">
+      <Card className="rounded-lg md:sticky md:top-[52px] md:z-20 bg-surface shadow-xs">
         <CardContent className="flex flex-col justify-between gap-3 p-4 lg:flex-row lg:items-center">
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded bg-accent-ink px-2 py-0.5 font-mono text-sm font-semibold text-white">
+              <span className="rounded-md bg-primary px-2 py-0.5 font-mono text-sm font-semibold text-primary-foreground">
                 {profile.ticker}
               </span>
               <h1 className="truncate text-lg font-semibold text-ink">
@@ -786,14 +826,14 @@ function CompanyProfileContent() {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <div className="inline-flex rounded border border-border bg-canvas p-0.5 text-xs">
+                <div className="inline-flex rounded-lg border border-border bg-canvas p-0.5 text-xs">
                   <button
                     type="button"
                     onClick={() => setShowAll38(false)}
                     className={cn(
-                      "rounded px-2 py-1 font-medium",
+                      "rounded-md px-2 py-1 font-medium transition-colors duration-150",
                       !showAll38
-                        ? "bg-accent-ink text-white"
+                        ? "bg-primary text-primary-foreground shadow-xs"
                         : "text-ink-muted hover:text-ink",
                     )}
                   >
@@ -803,9 +843,9 @@ function CompanyProfileContent() {
                     type="button"
                     onClick={() => setShowAll38(true)}
                     className={cn(
-                      "rounded px-2 py-1 font-medium",
+                      "rounded-md px-2 py-1 font-medium transition-colors duration-150",
                       showAll38
-                        ? "bg-accent-ink text-white"
+                        ? "bg-primary text-primary-foreground shadow-xs"
                         : "text-ink-muted hover:text-ink",
                     )}
                   >
@@ -813,14 +853,14 @@ function CompanyProfileContent() {
                   </button>
                 </div>
 
-                <div className="inline-flex rounded border border-border bg-canvas p-0.5 text-xs">
+                <div className="inline-flex rounded-lg border border-border bg-canvas p-0.5 text-xs">
                   <button
                     type="button"
                     onClick={() => setTrafficMode("VALUE")}
                     className={cn(
-                      "rounded px-2 py-1 font-medium",
+                      "rounded-md px-2 py-1 font-medium transition-colors duration-150",
                       trafficMode === "VALUE"
-                        ? "bg-accent-ink text-white"
+                        ? "bg-primary text-primary-foreground shadow-xs"
                         : "text-ink-muted hover:text-ink",
                     )}
                   >
@@ -830,9 +870,9 @@ function CompanyProfileContent() {
                     type="button"
                     onClick={() => setTrafficMode("PERCENTILE")}
                     className={cn(
-                      "rounded px-2 py-1 font-medium",
+                      "rounded-md px-2 py-1 font-medium transition-colors duration-150",
                       trafficMode === "PERCENTILE"
-                        ? "bg-accent-ink text-white"
+                        ? "bg-primary text-primary-foreground shadow-xs"
                         : "text-ink-muted hover:text-ink",
                     )}
                   >
@@ -991,7 +1031,7 @@ function CompanyProfileContent() {
       ) : activeTab === "statements" ? (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="inline-flex rounded border border-border bg-surface p-0.5 text-xs">
+            <div className="inline-flex rounded-lg border border-border bg-surface p-0.5 text-xs">
               {(
                 [
                   ["INCOME_STATEMENT", "Kết quả kinh doanh"],
@@ -1004,9 +1044,9 @@ function CompanyProfileContent() {
                   type="button"
                   onClick={() => setStatementType(st)}
                   className={cn(
-                    "rounded px-2.5 py-1.5 font-medium",
+                    "rounded-md px-2.5 py-1.5 font-medium transition-colors duration-150",
                     statementType === st
-                      ? "bg-accent-ink text-white"
+                      ? "bg-primary text-primary-foreground shadow-xs"
                       : "text-ink-muted hover:text-ink",
                   )}
                 >
@@ -1433,23 +1473,41 @@ function CompanyProfileContent() {
         </div>
       ) : activeTab === "model" ? (
         <div className="space-y-4">
-          <EChartBox
-            title="Diễn biến lịch sử Altman Z″ và Xác suất kiệt quệ mô hình"
-            subtitle="Theo dõi xu hướng điểm rủi ro qua các kỳ công bố liên tiếp"
-            option={mlTrendOption}
-            height={300}
-            isEmpty={sortedMl.length === 0}
-            tableHeaders={["Kỳ", "Altman Z″", "F-Score", "Beneish M", "XS kiệt quệ"]}
-            tableRows={sortedMl.map((m) => [
-              formatPeriodLabel(m.period_end_date, periodType),
-              formatNumber(m.altman_z_double_prime, 2),
-              m.piotroski_f_score !== null && m.piotroski_f_score !== undefined
-                ? `${m.piotroski_f_score}/9`
-                : "N/A",
-              formatNumber(m.beneish_m8_score, 2),
-              formatPercent(m.calibrated_distress_prob),
-            ])}
-          />
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <EChartBox
+              title="Diễn biến lịch sử điểm Altman Z″ (EM)"
+              subtitle="Đơn vị: điểm Z″ · Ngưỡng < 1,10 Nguy cơ · > 2,60 An toàn"
+              option={mlAltmanOption}
+              height={290}
+              isEmpty={sortedMl.length === 0}
+              tableHeaders={["Kỳ", "Altman Z″", "F-Score", "Beneish M"]}
+              tableRows={sortedMl.map((m) => [
+                formatPeriodLabel(m.period_end_date, periodType),
+                formatNumber(m.altman_z_double_prime, 2),
+                m.piotroski_f_score !== null && m.piotroski_f_score !== undefined
+                  ? `${m.piotroski_f_score}/9`
+                  : "N/A",
+                formatNumber(m.beneish_m8_score, 2),
+              ])}
+            />
+
+            <EChartBox
+              title="Diễn biến lịch sử Xác suất kiệt quệ mô hình"
+              subtitle="Đơn vị: phần trăm (%) · Xác suất kiệt quệ đã hiệu chỉnh"
+              option={mlDistressProbOption}
+              height={290}
+              isEmpty={sortedMl.length === 0}
+              tableHeaders={["Kỳ", "XS kiệt quệ", "F-Score", "Beneish M"]}
+              tableRows={sortedMl.map((m) => [
+                formatPeriodLabel(m.period_end_date, periodType),
+                formatPercent(m.calibrated_distress_prob),
+                m.piotroski_f_score !== null && m.piotroski_f_score !== undefined
+                  ? `${m.piotroski_f_score}/9`
+                  : "N/A",
+                formatNumber(m.beneish_m8_score, 2),
+              ])}
+            />
+          </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
             <Card className="lg:col-span-7">
