@@ -13,7 +13,7 @@ from finintel.rag.embedder import BgeM3Embedder
 from finintel.rag.store import PgVectorRagStore
 
 DEFAULT_RRF_K = 60
-DEFAULT_CANDIDATE_K = 25
+DEFAULT_CANDIDATE_K = 50
 
 _FTS_TOKEN_RE = re.compile(r"[0-9A-Za-zÀ-ỹ]+")
 _EXACT_VIETNAMESE_STOPWORDS: frozenset[str] = frozenset({"tại"})
@@ -127,6 +127,42 @@ def build_or_tsquery_expression(query: str, *, max_terms: int = 24) -> str:
     return " | ".join(filtered)
 
 
+def _build_phrase_tsquery_expression(
+    query: str,
+    *,
+    excluded_terms: frozenset[str] = frozenset(),
+    max_phrases: int = 12,
+) -> str:
+    """Build adjacent-bigram ``<->`` tsquery clauses to boost exact Vietnamese accounting phrases."""
+    raw_tokens = [tok.lower() for tok in _FTS_TOKEN_RE.findall(query)]
+    phrases: list[str] = []
+    seen: set[str] = set()
+    general_stop = _VIETNAMESE_STOPWORDS - {"kiem", "toan"}
+    for left, right in zip(raw_tokens, raw_tokens[1:], strict=False):
+        l_un = _strip_vietnamese_diacritics(left)
+        r_un = _strip_vietnamese_diacritics(right)
+        if not l_un or not r_un:
+            continue
+        if l_un in excluded_terms or r_un in excluded_terms:
+            continue
+        if left in _EXACT_VIETNAMESE_STOPWORDS or right in _EXACT_VIETNAMESE_STOPWORDS:
+            continue
+        # Keep short "ý" when paired in "ý kiến", otherwise require >= 2 chars.
+        if (len(l_un) < 2 and l_un != "y") or len(r_un) < 2:
+            continue
+        if l_un in general_stop or r_un in general_stop:
+            continue
+        pair = f"{left} <-> {right}"
+        pair_key = f"{l_un}<->{r_un}"
+        if pair_key in seen:
+            continue
+        seen.add(pair_key)
+        phrases.append(pair)
+        if len(phrases) >= max_phrases:
+            break
+    return " | ".join(phrases)
+
+
 class HybridPgVectorRetriever:
     """Port 2 ``DocumentRetriever`` implementation combining ``pgvector`` HNSW + ``unaccent`` FTS via RRF."""
 
@@ -172,7 +208,19 @@ class HybridPgVectorRetriever:
                 )
 
         query_vec = self.embedder.embed_query(clean_query)
-        or_expr = build_or_tsquery_expression(clean_query)
+        excluded_fts_terms: set[str] = {clean_issuer.lower()}
+        if fiscal_year is not None:
+            excluded_fts_terms.add(str(int(fiscal_year)))
+        raw_or_expr = build_or_tsquery_expression(clean_query)
+        or_terms = [
+            tok
+            for tok in raw_or_expr.split(" | ")
+            if tok and _strip_vietnamese_diacritics(tok) not in excluded_fts_terms
+        ]
+        or_expr = " | ".join(or_terms) if or_terms else raw_or_expr
+        phrase_expr = _build_phrase_tsquery_expression(
+            clean_query, excluded_terms=frozenset(excluded_fts_terms)
+        )
 
         where_clauses = ["c.ticker = %s"]
         base_params: list[Any] = [clean_issuer]
@@ -191,7 +239,13 @@ class HybridPgVectorRetriever:
         fts_rows: list[tuple[Any, ...]] = []
 
         with self.store._connect() as conn:
+            is_psycopg_conn = type(conn).__module__.startswith("psycopg")
             with conn.cursor() as cur:
+                if is_psycopg_conn:
+                    try:
+                        cur.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
+                    except Exception:
+                        pass
                 # 1. Dense vector search (pgvector HNSW cosine distance)
                 cur.execute(
                     f"""
@@ -219,7 +273,7 @@ class HybridPgVectorRetriever:
                 )
                 vec_rows = list(cur.fetchall())
 
-                # 2. Full-Text Search with unaccent (strict plainto_tsquery first, OR fallback)
+                # 2. Full-Text Search with unaccent (strict plainto_tsquery first, OR+phrase fallback)
                 cur.execute(
                     f"""
                     SELECT
@@ -235,7 +289,7 @@ class HybridPgVectorRetriever:
                         c.unit_scale,
                         c.text_content,
                         f.source_title,
-                        ts_rank_cd(c.search_tsv, plainto_tsquery('simple', unaccent(%s))) AS fts_score
+                        ts_rank_cd(c.search_tsv, plainto_tsquery('simple', unaccent(%s)), 32) AS fts_score
                     FROM document_chunks c
                     JOIN document_files f ON f.filing_id = c.filing_id
                     WHERE {where_sql}
@@ -248,6 +302,27 @@ class HybridPgVectorRetriever:
                 fts_rows = list(cur.fetchall())
 
                 if not fts_rows and or_expr:
+                    if phrase_expr:
+                        rank_sql = (
+                            "ts_rank_cd(c.search_tsv, to_tsquery('simple', unaccent(%s)), 32) "
+                            "+ 2.5 * ts_rank_cd(c.search_tsv, to_tsquery('simple', unaccent(%s)), 32)"
+                        )
+                        match_sql = f"({or_expr}) | ({phrase_expr})"
+                        fts_params: tuple[Any, ...] = (
+                            or_expr,
+                            phrase_expr,
+                            *base_params,
+                            match_sql,
+                            self.candidate_k,
+                        )
+                    else:
+                        rank_sql = "ts_rank_cd(c.search_tsv, to_tsquery('simple', unaccent(%s)), 32)"
+                        fts_params = (
+                            or_expr,
+                            *base_params,
+                            or_expr,
+                            self.candidate_k,
+                        )
                     cur.execute(
                         f"""
                         SELECT
@@ -263,7 +338,7 @@ class HybridPgVectorRetriever:
                             c.unit_scale,
                             c.text_content,
                             f.source_title,
-                            ts_rank_cd(c.search_tsv, to_tsquery('simple', unaccent(%s))) AS fts_score
+                            {rank_sql} AS fts_score
                         FROM document_chunks c
                         JOIN document_files f ON f.filing_id = c.filing_id
                         WHERE {where_sql}
@@ -271,7 +346,7 @@ class HybridPgVectorRetriever:
                         ORDER BY fts_score DESC
                         LIMIT %s
                         """,
-                        (or_expr, *base_params, or_expr, self.candidate_k),
+                        fts_params,
                     )
                     fts_rows = list(cur.fetchall())
 
