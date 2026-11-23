@@ -8,12 +8,15 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from fastapi.routing import APIRoute
-from fastapi.testclient import TestClient
 
-from finintel.analytics.tables import build_analytics_tables
-from finintel.pipeline.state_store import StateStore
-from finintel.serving.api import create_app
+pytest.importorskip("fastapi")
+
+from fastapi.routing import APIRoute  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from finintel.analytics.tables import build_analytics_tables  # noqa: E402
+from finintel.pipeline.state_store import StateStore  # noqa: E402
+from finintel.serving.api import create_app  # noqa: E402
 from finintel.serving.dictionary import (
     OVERVIEW_CORE_RATIOS,
     RATIO_DICTIONARY_META,

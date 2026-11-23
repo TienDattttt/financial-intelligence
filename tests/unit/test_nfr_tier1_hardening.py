@@ -8,16 +8,20 @@ from datetime import date
 from pathlib import Path
 
 import polars as pl
-from fastapi.testclient import TestClient
+import pytest
 
-from finintel.pipeline.state_store import StateStore
-from finintel.serving.api import create_app
-from finintel.serving.cache import (
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from finintel.pipeline.state_store import StateStore  # noqa: E402
+from finintel.serving.api import create_app  # noqa: E402
+from finintel.serving.cache import (  # noqa: E402
     ValkeyResponseCache,
     build_snapshot_cache_key,
 )
-from finintel.storage import repository as repo_mod
-from finintel.storage.repository import ParquetRepository, clear_repository_caches
+from finintel.storage import repository as repo_mod  # noqa: E402
+from finintel.storage.repository import ParquetRepository, clear_repository_caches  # noqa: E402
 
 
 def _make_minimal_snapshot(root: Path, snapshot_id: str) -> Path:

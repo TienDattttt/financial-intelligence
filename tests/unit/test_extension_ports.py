@@ -14,9 +14,11 @@ import duckdb
 import polars as pl
 import pytest
 
-from finintel.exceptions import ContractViolationError
-from finintel.orchestration.assets import PublishMartsConfig, _resolve_ml_config
-from finintel.orchestration.resources import FinIntelPathsResource
+pytest.importorskip("dagster")
+
+from finintel.exceptions import ContractViolationError  # noqa: E402
+from finintel.orchestration.assets import PublishMartsConfig, _resolve_ml_config  # noqa: E402
+from finintel.orchestration.resources import FinIntelPathsResource  # noqa: E402
 from finintel.pipeline.state_store import StateStore
 from finintel.ports import (
     DOCUMENT_CHUNKS_CONTRACT,

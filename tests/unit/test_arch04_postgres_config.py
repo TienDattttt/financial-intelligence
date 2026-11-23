@@ -10,30 +10,34 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import dagster as dg
 import duckdb
 import pytest
 import yaml  # type: ignore[import-untyped]
-from dagster._config import validate_config
-from dagster._core.instance.config import dagster_instance_config_schema
-from fastapi.testclient import TestClient
 
-from finintel.config import FinIntelRuntimeConfig, resolve_runtime_config
-from finintel.orchestration.partitions import (
+pytest.importorskip("dagster")
+pytest.importorskip("fastapi")
+
+import dagster as dg  # noqa: E402
+from dagster._config import validate_config  # noqa: E402
+from dagster._core.instance.config import dagster_instance_config_schema  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from finintel.config import FinIntelRuntimeConfig, resolve_runtime_config  # noqa: E402
+from finintel.orchestration.partitions import (  # noqa: E402
     CORPORATE_TICKERS_PARTITION_NAME,
     FHSC_API_POOL,
     PUBLIC_DISCLOSURE_POOL,
 )
-from finintel.orchestration.resources import (
+from finintel.orchestration.resources import (  # noqa: E402
     FinIntelPathsResource,
     StorageResource,
     bootstrap_dagster_instance,
     main as bootstrap_main,
 )
-from finintel.pipeline.state_store import StateStore
-from finintel.serving.api import create_app
-from finintel.storage.ducklake_store import DuckLakeStore, ensure_ducklake_attached
-from tests.unit.test_layer5_fastapi_serving import _build_synthetic_v2_tables
+from finintel.pipeline.state_store import StateStore  # noqa: E402
+from finintel.serving.api import create_app  # noqa: E402
+from finintel.storage.ducklake_store import DuckLakeStore, ensure_ducklake_attached  # noqa: E402
+from tests.unit.test_layer5_fastapi_serving import _build_synthetic_v2_tables  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

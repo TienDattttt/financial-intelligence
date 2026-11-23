@@ -8,10 +8,14 @@ from datetime import date
 from pathlib import Path
 
 import polars as pl
-from fastapi.testclient import TestClient
+import pytest
 
-from finintel.pipeline.state_store import StateStore
-from finintel.serving.api import _sanitize_csv_cell, create_app
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from finintel.pipeline.state_store import StateStore  # noqa: E402
+from finintel.serving.api import _sanitize_csv_cell, create_app  # noqa: E402
 from finintel.storage.schemas import (
     FINANCIAL_RATIOS_SCHEMA,
     ISSUERS_SCHEMA,

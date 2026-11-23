@@ -7,13 +7,16 @@ from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 
-import dagster as dg
 import polars as pl
 import pytest
 import yaml  # type: ignore[import-untyped]
 
-from finintel.exceptions import ContractViolationError
-from finintel.orchestration.assets import (
+pytest.importorskip("dagster")
+
+import dagster as dg  # noqa: E402
+
+from finintel.exceptions import ContractViolationError  # noqa: E402
+from finintel.orchestration.assets import (  # noqa: E402
     PublishMartsConfig,
     _resolve_ml_config,
     downstream_publish_job,
@@ -26,14 +29,14 @@ from finintel.orchestration.assets import (
     raw_fhsc_filings,
     seasonal_ingestion_schedule,
 )
-from finintel.orchestration.checks import ALL_ASSET_CHECKS
-from finintel.orchestration.definitions import build_default_resources, defs
-from finintel.orchestration.partitions import (
+from finintel.orchestration.checks import ALL_ASSET_CHECKS  # noqa: E402
+from finintel.orchestration.definitions import build_default_resources, defs  # noqa: E402
+from finintel.orchestration.partitions import (  # noqa: E402
     CORPORATE_TICKERS_PARTITION_NAME,
     load_universe_tickers_yaml,
     sync_corporate_ticker_partitions,
 )
-from finintel.orchestration.resources import (
+from finintel.orchestration.resources import (  # noqa: E402
     FinIntelPathsResource,
     StateStoreResource,
     StorageResource,

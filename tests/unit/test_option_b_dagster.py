@@ -23,25 +23,28 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-import dagster as dg
 import httpx
 import polars as pl
 import pytest
 import yaml  # type: ignore[import-untyped]
-from dagster._core.errors import DagsterAssetCheckFailedError
-from dagster._core.storage.tags import (
+from filelock import FileLock, Timeout
+
+pytest.importorskip("dagster")
+
+import dagster as dg  # noqa: E402
+from dagster._core.errors import DagsterAssetCheckFailedError  # noqa: E402
+from dagster._core.storage.tags import (  # noqa: E402
     ASSET_PARTITION_RANGE_END_TAG,
     ASSET_PARTITION_RANGE_START_TAG,
 )
-from filelock import FileLock, Timeout
 
-from finintel.exceptions import (
+from finintel.exceptions import (  # noqa: E402
     ContractViolationError,
     CriticalDataQualityError,
     RateLimitOrCircuitOpenError,
 )
-from finintel.ingestion import fhsc_oapi_adapter
-from finintel.orchestration import (
+from finintel.ingestion import fhsc_oapi_adapter  # noqa: E402
+from finintel.orchestration import (  # noqa: E402
     ALL_ASSET_CHECKS,
     ALL_ASSETS,
     CORPORATE_TICKERS,
