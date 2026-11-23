@@ -249,7 +249,7 @@ def _build_overlay_fixture_tables() -> tuple[
     ratios_df = analytics[RATIOS_TABLE]
 
     hbc_tiers = {
-        date(2022, 9, 30): ("R2", 0.02, 45.0, 0.8),
+        date(2022, 9, 30): ("R5", 0.40, 99.0, 16.0),
         date(2022, 12, 31): ("R4", 0.14, 91.0, 5.6),
         date(2023, 3, 31): ("R4", 0.16, 93.0, 6.4),
         date(2023, 6, 30): ("R5", 0.35, 98.0, 14.0),
@@ -263,6 +263,11 @@ def _build_overlay_fixture_tables() -> tuple[
         tier, prob, pct, lift = ("R1", 0.01, 15.0, 0.4)
         if issuer == "HBC" and pend in hbc_tiers:
             tier, prob, pct, lift = hbc_tiers[pend]
+        role = (
+            "IN_SAMPLE_TRAIN"
+            if pend < date(2022, 12, 31)
+            else "OUT_OF_SAMPLE_WALK_FORWARD"
+        )
         ml_rows.append(
             {
                 "issuer_id": issuer,
@@ -270,7 +275,7 @@ def _build_overlay_fixture_tables() -> tuple[
                 "period_type": "QUARTER",
                 "period_end_date": pend,
                 "filing_id": str(rec["filing_id"]),
-                "model_role": "PRIMARY_CORPORATE",
+                "model_role": role,
                 "altman_z_double_prime": 1.2 if issuer == "HBC" else 4.2,
                 "altman_em_score": 3.0 if issuer == "HBC" else 6.5,
                 "altman_zone": "DISTRESS_ZONE" if issuer == "HBC" else "SAFE_ZONE",
