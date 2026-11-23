@@ -922,6 +922,7 @@ def test_expand_script_fhsc_bs_scope_guard_and_audit_rendering(
     tmp_path: Path,
 ) -> None:
     """Verify parent-only SEPARATE rejection, real snapshot_date, YAML round-trip, and audit report."""
+    pytest.importorskip("dagster")
     from finintel.orchestration.partitions import load_universe_tickers_yaml
     from scripts import expand_universe_ml03b as exp
 

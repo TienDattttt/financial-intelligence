@@ -1118,8 +1118,8 @@ def test_ml_disabled_vs_enabled_guardrails_and_pit_artifacts() -> None:
             ),
         )
 
-    # 4. Missing split boundary dates rejected
-    with pytest.raises(ContractViolationError, match="validation_start"):
+    # 4. Missing test_start split boundary rejected
+    with pytest.raises(ContractViolationError, match="test_start"):
         run_incremental_analytics_transform(
             facts,
             issuers,
@@ -1130,9 +1130,28 @@ def test_ml_disabled_vs_enabled_guardrails_and_pit_artifacts() -> None:
                 approved_target=True,
                 require_exact_filing=True,
                 validation_start=None,
-                test_start=date(2023, 3, 1),
+                test_start=None,
             ),
         )
+
+    # 4b. TWO_WAY_PURGED_OOF with validation_start=None succeeds cleanly (P1-1)
+    bundle_two_way = run_incremental_analytics_transform(
+        facts,
+        issuers,
+        as_of=as_of,
+        run_id="ml-two-way",
+        ml_config=MLTransformConfig(
+            enabled=True,
+            approved_target=True,
+            require_exact_filing=True,
+            validation_start=None,
+            test_start=date(2023, 3, 1),
+        ),
+    )
+    assert bundle_two_way.ml_scores.height > 0
+    assert bundle_two_way.ml_scores.schema == ML_SCORES_SCHEMA
+    assert bundle_two_way.ml_run_manifest is not None
+    assert bundle_two_way.ml_run_manifest["split_mode"] == "TWO_WAY_PURGED_OOF"
 
     # 5. Valid enabled ML run produces validated scores, evaluation report & provenance manifest
     bundle_on = run_incremental_analytics_transform(
