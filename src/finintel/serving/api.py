@@ -430,6 +430,149 @@ class StressBulkheadMiddleware:
             async_sem.release()
 
 
+_RAG_UNAVAILABLE_DETAIL = (
+    "Dịch vụ tra cứu Thuyết minh PDF hiện tạm thời chưa sẵn sàng. Vui lòng thử lại sau."
+)
+
+
+def _is_rag_unavailable_error(exc: Exception) -> bool:
+    """Return True when a RAG dependency, vector DB, or LLM backend is unavailable."""
+    if isinstance(
+        exc,
+        (ImportError, OSError, TimeoutError, ConnectionError, RuntimeError),
+    ):
+        return True
+    mod_name = type(exc).__module__ or ""
+    return mod_name.startswith(
+        (
+            "psycopg",
+            "pgvector",
+            "redis",
+            "httpx",
+            "google",
+            "torch",
+            "sentence_transformers",
+        )
+    )
+
+
+def _rag_unavailable_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"detail": _RAG_UNAVAILABLE_DETAIL},
+        headers={
+            "Cache-Control": STRESS_CACHE_CONTROL_HEADER,
+            "Retry-After": "5",
+        },
+    )
+
+
+class RagAvailabilityMiddleware:
+    """Pure ASGI guard converting missing optional deps / unreachable Postgres into HTTP 503 on ``/api/v2/documents/*``."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = str(scope.get("path", ""))
+        if not path.startswith("/api/v2/documents/"):
+            await self.app(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        except Exception as exc:
+            if not _is_rag_unavailable_error(exc):
+                raise
+            logger.warning(
+                "RAG endpoint unavailable (%s): %s",
+                type(exc).__name__,
+                path,
+            )
+            resp = _rag_unavailable_response()
+            await resp(scope, receive, send)
+
+
+def _mount_rag_router(
+    api: FastAPI,
+    *,
+    valkey_url: str | None = None,
+    rag_store: Any | None = None,
+    rag_investigator: Any | None = None,
+) -> None:
+    """Mount Port 2 Document RAG routes lazily without importing optional ML/DB deps at boot."""
+    rag_lock = threading.Lock()
+    api.state._rag_store = rag_store
+    api.state._rag_investigator = rag_investigator
+
+    def _get_store() -> Any:
+        existing = getattr(api.state, "_rag_store", None)
+        if existing is not None:
+            return existing
+        with rag_lock:
+            existing = getattr(api.state, "_rag_store", None)
+            if existing is not None:
+                return existing
+            from finintel.rag.store import PgVectorRagStore, resolve_rag_pg_dsn
+
+            dsn = resolve_rag_pg_dsn()
+            if "connect_timeout=" not in dsn and "://" in dsn:
+                sep = "&" if "?" in dsn else "?"
+                dsn = f"{dsn}{sep}connect_timeout=3"
+            store = PgVectorRagStore(dsn=dsn)
+            api.state._rag_store = store
+            return store
+
+    def _get_investigator() -> Any:
+        existing = getattr(api.state, "_rag_investigator", None)
+        if existing is not None:
+            return existing
+        with rag_lock:
+            existing = getattr(api.state, "_rag_investigator", None)
+            if existing is not None:
+                return existing
+            from finintel.rag.embedder import BgeM3Embedder
+            from finintel.rag.investigator import GroundedDocumentInvestigator
+            from finintel.rag.retriever import HybridPgVectorRetriever
+
+            store = _get_store()
+            embedder = BgeM3Embedder()
+            retriever = HybridPgVectorRetriever(store=store, embedder=embedder)
+            investigator = GroundedDocumentInvestigator(
+                retriever=retriever,
+                valkey_url=valkey_url,
+            )
+            api.state._rag_investigator = investigator
+            return investigator
+
+    try:
+        from finintel.rag.router import create_rag_router
+
+        api.include_router(
+            create_rag_router(
+                get_store=_get_store,
+                get_investigator=_get_investigator,
+            )
+        )
+    except ImportError as exc:
+        logger.warning(
+            "Port 2 RAG router mounted in 503 fallback mode (%s).",
+            type(exc).__name__,
+        )
+
+        @api.get("/api/v2/documents/{ticker}/list", tags=["documents-rag"])
+        async def _rag_list_unavailable(ticker: str) -> JSONResponse:
+            _ = ticker
+            return _rag_unavailable_response()
+
+        @api.post("/api/v2/documents/{ticker}/investigate", tags=["documents-rag"])
+        async def _rag_investigate_unavailable(ticker: str) -> JSONResponse:
+            _ = ticker
+            return _rag_unavailable_response()
+
+
 def create_app(
     data_root: Path | None = None,
     *,
@@ -440,6 +583,8 @@ def create_app(
     stress_max_concurrency: int = DEFAULT_STRESS_MAX_CONCURRENCY,
     stress_semaphore_timeout: float = DEFAULT_STRESS_SEMAPHORE_TIMEOUT,
     valkey_url: str | None = None,
+    rag_store: Any | None = None,
+    rag_investigator: Any | None = None,
 ) -> FastAPI:
     """Create a configured read-only analytical FastAPI application."""
     allowed_origins = resolve_cors_origins(cors_origins)
@@ -464,6 +609,7 @@ def create_app(
     )
 
     api.add_middleware(StressBulkheadMiddleware)
+    api.add_middleware(RagAvailabilityMiddleware)
     attach_observability(api)
 
     # Deny-by-default CORS: only attach CORSMiddleware when explicit origins are configured.
@@ -496,8 +642,10 @@ def create_app(
 
     @api.exception_handler(FileNotFoundError)
     def _handle_file_not_found(
-        _request: Request, _exc: FileNotFoundError
+        request: Request, _exc: FileNotFoundError
     ) -> JSONResponse:
+        if request.url.path.startswith("/api/v2/documents/"):
+            return _rag_unavailable_response()
         return JSONResponse(
             status_code=404,
             content={
@@ -527,7 +675,16 @@ def create_app(
         return JSONResponse(status_code=422, content={"detail": detail})
 
     @api.exception_handler(Exception)
-    def _handle_unexpected(_request: Request, exc: Exception) -> JSONResponse:
+    def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
+        if request.url.path.startswith(
+            "/api/v2/documents/"
+        ) and _is_rag_unavailable_error(exc):
+            logger.warning(
+                "RAG endpoint unavailable (%s): %s",
+                type(exc).__name__,
+                request.url.path,
+            )
+            return _rag_unavailable_response()
         logger.exception(
             "Unhandled error while serving API request: %s", type(exc).__name__
         )
@@ -2087,6 +2244,13 @@ def create_app(
             items=[MarketChangeItem(**item) for item in items],  # type: ignore[arg-type]
         )
         return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
+
+    _mount_rag_router(
+        api,
+        valkey_url=valkey_url,
+        rag_store=rag_store,
+        rag_investigator=rag_investigator,
+    )
 
     return api
 

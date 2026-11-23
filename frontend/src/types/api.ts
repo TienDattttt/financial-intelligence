@@ -67,6 +67,17 @@ export type RegulatoryEventMarkerItem = Schema["RegulatoryEventMarkerItem"];
 export type PriceOverlayPointItem = Schema["PriceOverlayPointItem"];
 export type WarningSummaryItem = Schema["WarningSummaryItem"];
 export type CompanyMarketOverlayResponse = Schema["CompanyMarketOverlayResponse"];
+export type DocumentFileItem = Schema["DocumentFileItem"];
+export type DocumentListResponse = Schema["DocumentListResponse"];
+export type CitationItem = Schema["CitationItem"];
+export type InvestigateResponse = Schema["InvestigateResponse"];
+export interface InvestigateRequest {
+  question: string;
+  fiscal_year?: number | null;
+  statement_scope?: string | null;
+  top_k?: number;
+  use_cache?: boolean;
+}
 
 export type StatementScope = CompanyBenchmarksResponse["statement_scope"];
 export type PeriodType = CompanyBenchmarksResponse["period_type"];

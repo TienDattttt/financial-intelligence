@@ -378,6 +378,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/documents/{ticker}/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Company Documents */
+        get: operations["list_company_documents_api_v2_documents__ticker__list_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/documents/{ticker}/investigate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Investigate Company Documents */
+        post: operations["investigate_company_documents_api_v2_documents__ticker__investigate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -520,6 +554,29 @@ export interface components {
             BS_TOTAL_LIABILITIES?: number | null;
             /** Total Debt */
             total_debt?: number | null;
+        };
+        /** CitationItem */
+        CitationItem: {
+            /** Filing Id */
+            filing_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Fiscal Year */
+            fiscal_year: number;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Page No */
+            page_no: number;
+            /** Section Title */
+            section_title: string;
+            /** Unit Scale */
+            unit_scale: string;
+            /** Verbatim Excerpt */
+            verbatim_excerpt: string;
+            /** Vector Similarity */
+            vector_similarity: number;
+            /** Rrf Score */
+            rrf_score: number;
         };
         /**
          * CompanyBenchmarksResponse
@@ -795,6 +852,50 @@ export interface components {
             /** Core To Ebt Ratio Flag */
             core_to_ebt_ratio_flag?: string | null;
         };
+        /** DocumentFileItem */
+        DocumentFileItem: {
+            /** Filing Id */
+            filing_id: string;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Fiscal Year */
+            fiscal_year: number;
+            /** Fiscal Quarter */
+            fiscal_quarter: number | null;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Doc Type */
+            doc_type: string;
+            /** Cohort */
+            cohort: string;
+            /** Source Title */
+            source_title: string;
+            /** Source Url */
+            source_url: string;
+            /** Pdf Sha256 */
+            pdf_sha256: string;
+            /** File Size Bytes */
+            file_size_bytes: number;
+            /** Total Pages */
+            total_pages: number;
+            /** Digital Pages */
+            digital_pages: number;
+            /** Ocr Pages */
+            ocr_pages: number;
+            /** Chunk Count */
+            chunk_count: number;
+        };
+        /** DocumentListResponse */
+        DocumentListResponse: {
+            /** Ticker */
+            ticker: string;
+            /** Total Documents */
+            total_documents: number;
+            /** Documents */
+            documents: components["schemas"]["DocumentFileItem"][];
+        };
         /**
          * DrawdownWindowMetricsItem
          * @description Peak/trough prices and percentage drawdowns over a post-warning window (UI-09b).
@@ -979,6 +1080,33 @@ export interface components {
             peak_period_end_date?: string | null;
             /** Top 3 Shap Drivers */
             top_3_shap_drivers?: components["schemas"]["ShapDriverItem"][];
+        };
+        /** InvestigateResponse */
+        InvestigateResponse: {
+            /** Ticker */
+            ticker: string;
+            /** Question */
+            question: string;
+            /** Answer */
+            answer: string;
+            /** Abstained */
+            abstained: boolean;
+            /** Abstention Reason */
+            abstention_reason: string | null;
+            /** Citations */
+            citations: components["schemas"]["CitationItem"][];
+            /** Retrieved Chunks Count */
+            retrieved_chunks_count: number;
+            /** Top Vector Similarity */
+            top_vector_similarity: number;
+            /** Cached */
+            cached: boolean;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Model Used */
+            model_used: string | null;
+            /** Disclaimer */
+            disclaimer: string;
         };
         /**
          * IssuerItem
@@ -3173,6 +3301,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MarketChangesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_company_documents_api_v2_documents__ticker__list_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    investigate_company_documents_api_v2_documents__ticker__investigate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigateResponse"];
                 };
             };
             /** @description Validation Error */

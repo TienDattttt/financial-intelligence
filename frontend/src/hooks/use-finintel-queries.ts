@@ -261,6 +261,28 @@ export function useCompanyMarketOverlay(
   });
 }
 
+export function useCompanyDocuments(
+  ticker: string,
+  options?: { enabled?: boolean },
+) {
+  const cleanTicker = ticker.trim().toUpperCase();
+  return useQuery({
+    queryKey: ["company-documents", cleanTicker],
+    queryFn: () => apiClient.getCompanyDocuments(cleanTicker),
+    enabled: (options?.enabled ?? true) && cleanTicker.length > 0,
+    retry: (failureCount, error) => {
+      if (
+        error instanceof ApiError &&
+        (error.status === 404 || error.status === 422 || error.status === 503)
+      ) {
+        return false;
+      }
+      return failureCount < 1;
+    },
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}
+
 export function useRatioLineage(
   opts: {
     ticker: string;

@@ -10,7 +10,8 @@ import logging
 import os
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -19,6 +20,18 @@ from finintel.rag._gemini import (
     create_verified_gemini_bundle,
 )
 from finintel.rag.retriever import HybridPgVectorRetriever, RetrievalHit
+
+SPAN_RAG_INVESTIGATE = "rag.investigate"
+
+
+def trace_span(
+    name: str, attributes: Mapping[str, Any] | None = None
+) -> AbstractContextManager[Any]:
+    """Lazily delegate to ``finintel.serving.observability.trace_span`` to avoid circular imports."""
+    from finintel.serving.observability import trace_span as _obs_trace_span
+
+    return _obs_trace_span(name, attributes)
+
 
 logger = logging.getLogger("finintel.rag.investigator")
 
@@ -458,126 +471,158 @@ class GroundedDocumentInvestigator:
         clean_ticker = ticker.strip().upper()
         clean_question = sanitize_user_question(question)
 
-        cache_key = build_rag_cache_key(
-            ticker=clean_ticker,
-            question=clean_question,
-            statement_scope=statement_scope,
-            fiscal_year=fiscal_year,
-            top_k=top_k,
-        )
-        if use_cache:
-            cached_payload = self._cache.get(cache_key)
-            if cached_payload is not None:
-                elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
-                citations = tuple(
-                    CitationEvidence(**c) for c in cached_payload.get("citations", [])
-                )
-                return InvestigationResult(
-                    ticker=str(cached_payload["ticker"]),
-                    question=str(cached_payload["question"]),
-                    answer=str(cached_payload["answer"]),
-                    abstained=bool(cached_payload["abstained"]),
-                    abstention_reason=cached_payload.get("abstention_reason"),
-                    citations=citations,
-                    retrieved_chunks_count=int(
-                        cached_payload.get("retrieved_chunks_count", 0)
-                    ),
-                    top_vector_similarity=float(
-                        cached_payload.get("top_vector_similarity", 0.0)
-                    ),
-                    cached=True,
-                    latency_ms=elapsed_ms,
-                    model_used=cached_payload.get("model_used"),
-                )
-
-        async with self._semaphore:
-            hits = await asyncio.to_thread(
-                self.retriever.retrieve_hits,
-                issuer_id=clean_ticker,
-                query=clean_question,
-                statement_scope=statement_scope,
-                fiscal_year=fiscal_year,
-                limit=top_k,
-            )
-
-            top_vec_sim = max((h.vector_similarity for h in hits), default=0.0)
-            has_fts_hit = any(h.fts_rank > 0.0 for h in hits)
-
-            if not hits or (
-                top_vec_sim < self.min_vector_similarity and not has_fts_hit
-            ):
-                elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
-                reason = (
-                    "Không có tài liệu PDF nào được nạp cho mã/kỳ này."
-                    if not hits
-                    else (
-                        f"Độ tương đồng truy xuất tối đa ({top_vec_sim:.3f}) "
-                        f"thấp hơn ngưỡng an toàn ({self.min_vector_similarity:.2f})."
-                    )
-                )
-                result = InvestigationResult(
-                    ticker=clean_ticker,
-                    question=clean_question,
-                    answer=ABSTENTION_FALLBACK_VN,
-                    abstained=True,
-                    abstention_reason=reason,
-                    citations=(),
-                    retrieved_chunks_count=len(hits),
-                    top_vector_similarity=round(top_vec_sim, 4),
-                    cached=False,
-                    latency_ms=elapsed_ms,
-                    model_used=None,
-                )
-                if use_cache:
-                    self._cache.set(cache_key, result.to_dict())
-                return result
-
-            prompt = _build_grounded_user_prompt(
+        with trace_span(
+            SPAN_RAG_INVESTIGATE,
+            {
+                "rag.ticker": clean_ticker,
+                "rag.statement_scope": statement_scope or "ALL",
+                "rag.fiscal_year": fiscal_year,
+                "rag.top_k": top_k,
+                "rag.use_cache": use_cache,
+            },
+        ) as span:
+            cache_key = build_rag_cache_key(
                 ticker=clean_ticker,
                 question=clean_question,
-                hits=hits,
+                statement_scope=statement_scope,
+                fiscal_year=fiscal_year,
+                top_k=top_k,
             )
-            llm_payload, model_used = await asyncio.to_thread(
-                self._call_llm_sync, prompt
+            if use_cache:
+                cached_payload = self._cache.get(cache_key)
+                if cached_payload is not None:
+                    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+                    citations = tuple(
+                        CitationEvidence(**c)
+                        for c in cached_payload.get("citations", [])
+                    )
+                    cached_result = InvestigationResult(
+                        ticker=str(cached_payload["ticker"]),
+                        question=str(cached_payload["question"]),
+                        answer=str(cached_payload["answer"]),
+                        abstained=bool(cached_payload["abstained"]),
+                        abstention_reason=cached_payload.get("abstention_reason"),
+                        citations=citations,
+                        retrieved_chunks_count=int(
+                            cached_payload.get("retrieved_chunks_count", 0)
+                        ),
+                        top_vector_similarity=float(
+                            cached_payload.get("top_vector_similarity", 0.0)
+                        ),
+                        cached=True,
+                        latency_ms=elapsed_ms,
+                        model_used=cached_payload.get("model_used"),
+                    )
+                    self._record_span_outcome(span, cached_result)
+                    return cached_result
+
+            async with self._semaphore:
+                hits = await asyncio.to_thread(
+                    self.retriever.retrieve_hits,
+                    issuer_id=clean_ticker,
+                    query=clean_question,
+                    statement_scope=statement_scope,
+                    fiscal_year=fiscal_year,
+                    limit=top_k,
+                )
+
+                top_vec_sim = max((h.vector_similarity for h in hits), default=0.0)
+                has_fts_hit = any(h.fts_rank > 0.0 for h in hits)
+
+                if not hits or (
+                    top_vec_sim < self.min_vector_similarity and not has_fts_hit
+                ):
+                    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+                    reason = (
+                        "Không có tài liệu PDF nào được nạp cho mã/kỳ này."
+                        if not hits
+                        else (
+                            f"Độ tương đồng truy xuất tối đa ({top_vec_sim:.3f}) "
+                            f"thấp hơn ngưỡng an toàn ({self.min_vector_similarity:.2f})."
+                        )
+                    )
+                    result = InvestigationResult(
+                        ticker=clean_ticker,
+                        question=clean_question,
+                        answer=ABSTENTION_FALLBACK_VN,
+                        abstained=True,
+                        abstention_reason=reason,
+                        citations=(),
+                        retrieved_chunks_count=len(hits),
+                        top_vector_similarity=round(top_vec_sim, 4),
+                        cached=False,
+                        latency_ms=elapsed_ms,
+                        model_used=None,
+                    )
+                    if use_cache:
+                        self._cache.set(cache_key, result.to_dict())
+                    self._record_span_outcome(span, result)
+                    return result
+
+                prompt = _build_grounded_user_prompt(
+                    ticker=clean_ticker,
+                    question=clean_question,
+                    hits=hits,
+                )
+                llm_payload, model_used = await asyncio.to_thread(
+                    self._call_llm_sync, prompt
+                )
+
+            abstained = bool(llm_payload.get("abstained", False))
+            abstention_reason = (
+                str(llm_payload["abstention_reason"]).strip()
+                if llm_payload.get("abstention_reason")
+                else None
+            )
+            answer = str(llm_payload.get("answer") or "").strip()
+            verified_citations = self._reconcile_citations(
+                llm_payload.get("citations"), hits
             )
 
-        abstained = bool(llm_payload.get("abstained", False))
-        abstention_reason = (
-            str(llm_payload["abstention_reason"]).strip()
-            if llm_payload.get("abstention_reason")
-            else None
-        )
-        answer = str(llm_payload.get("answer") or "").strip()
-        verified_citations = self._reconcile_citations(
-            llm_payload.get("citations"), hits
-        )
+            # Hard Citation Law: refuse if the model claimed an answer without any verifiable verbatim excerpt.
+            if not abstained and not verified_citations:
+                abstained = True
+                abstention_reason = "Câu trả lời không vượt qua kiểm chứng trích dẫn nguyên văn (verbatim grounding check)."
+                answer = ABSTENTION_FALLBACK_VN
 
-        # Hard Citation Law: refuse if the model claimed an answer without any verifiable verbatim excerpt.
-        if not abstained and not verified_citations:
-            abstained = True
-            abstention_reason = "Câu trả lời không vượt qua kiểm chứng trích dẫn nguyên văn (verbatim grounding check)."
-            answer = ABSTENTION_FALLBACK_VN
+            if abstained and not answer:
+                answer = ABSTENTION_FALLBACK_VN
 
-        if abstained and not answer:
-            answer = ABSTENTION_FALLBACK_VN
+            elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+            result = InvestigationResult(
+                ticker=clean_ticker,
+                question=clean_question,
+                answer=answer,
+                abstained=abstained,
+                abstention_reason=abstention_reason,
+                citations=tuple(verified_citations),
+                retrieved_chunks_count=len(hits),
+                top_vector_similarity=round(top_vec_sim, 4),
+                cached=False,
+                latency_ms=elapsed_ms,
+                model_used=model_used,
+            )
+            if use_cache:
+                self._cache.set(cache_key, result.to_dict())
+            self._record_span_outcome(span, result)
+            return result
 
-        elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
-        result = InvestigationResult(
-            ticker=clean_ticker,
-            question=clean_question,
-            answer=answer,
-            abstained=abstained,
-            abstention_reason=abstention_reason,
-            citations=tuple(verified_citations),
-            retrieved_chunks_count=len(hits),
-            top_vector_similarity=round(top_vec_sim, 4),
-            cached=False,
-            latency_ms=elapsed_ms,
-            model_used=model_used,
-        )
-        if use_cache:
-            self._cache.set(cache_key, result.to_dict())
-        return result
+    @staticmethod
+    def _record_span_outcome(span: Any, result: InvestigationResult) -> None:
+        if span is None:
+            return
+        try:
+            span.set_attribute("rag.cached", result.cached)
+            span.set_attribute("rag.abstained", result.abstained)
+            span.set_attribute("rag.citations_count", len(result.citations))
+            span.set_attribute(
+                "rag.retrieved_chunks_count", result.retrieved_chunks_count
+            )
+            span.set_attribute(
+                "rag.top_vector_similarity", result.top_vector_similarity
+            )
+        except Exception:
+            pass
 
     async def prewarm_red_flag_queries(
         self,

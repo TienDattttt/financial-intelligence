@@ -10,6 +10,7 @@ import {
   ArrowUpDown,
   Bookmark,
   CheckCircle2,
+  FileSearch,
   GitCompare,
   Link2,
   Printer,
@@ -43,6 +44,11 @@ import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
 import { ScoreDots } from "@/components/financial/ScoreDots";
 import { SparklineSvg } from "@/components/financial/SparklineSvg";
 import { VerdictCard } from "@/components/financial/VerdictCard";
+import {
+  DocumentInvestigationPanel,
+  type DocumentInvestigationPreset,
+  getRedFlagPresetQuestion,
+} from "@/components/rag/DocumentInvestigationPanel";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
@@ -107,6 +113,7 @@ type CompanyTab =
   | "ratios"
   | "quality"
   | "model"
+  | "documents"
   | "lineage";
 
 const TABS: { id: CompanyTab; label: string }[] = [
@@ -115,6 +122,7 @@ const TABS: { id: CompanyTab; label: string }[] = [
   { id: "ratios", label: "Tỷ số & Ngành" },
   { id: "quality", label: "Chất lượng LN & Cờ đỏ" },
   { id: "model", label: "Mô hình & SHAP" },
+  { id: "documents", label: "Điều tra Thuyết minh (PDF)" },
   { id: "lineage", label: "Nguồn dữ liệu" },
 ];
 
@@ -198,6 +206,8 @@ function CompanyProfileContent() {
     React.useState<StatementType>("INCOME_STATEMENT");
   const [periodsLimit, setPeriodsLimit] = React.useState<number>(12);
   const [lineageFilter, setLineageFilter] = React.useState("");
+  const [ragPreset, setRagPreset] =
+    React.useState<DocumentInvestigationPreset | null>(null);
 
   const effectiveGrowthView = periodType === "ANNUAL" ? "Annual" : growthLocalView;
 
@@ -285,6 +295,18 @@ function CompanyProfileContent() {
       });
     },
     [router, searchParams, ticker],
+  );
+
+  const handleInvestigateRedFlag = React.useCallback(
+    (flagCode: string, presetQuestion: string) => {
+      setRagPreset({
+        flagCode,
+        question: presetQuestion,
+        requestNonce: Date.now(),
+      });
+      setTabAndParams("documents");
+    },
+    [setTabAndParams],
   );
 
   const issuerMeta = React.useMemo(
@@ -955,6 +977,8 @@ function CompanyProfileContent() {
                     <ul className="space-y-2">
                       {activeRedFlags.slice(0, 4).map((rf) => {
                         const sev = SEVERITY_META[rf.severity] ?? SEVERITY_META.MEDIUM;
+                        const shortCode = rf.flag_code.split("_").slice(0, 2).join("_");
+                        const presetQ = getRedFlagPresetQuestion(shortCode);
                         return (
                           <li
                             key={`${rf.flag_code}-${rf.period_end_date}`}
@@ -970,6 +994,21 @@ function CompanyProfileContent() {
                               <p className="mt-1 text-[11px] leading-4 text-ink-muted">
                                 {rf.explanation_text_vn}
                               </p>
+                            ) : null}
+                            {presetQ ? (
+                              <div className="mt-2">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="xs"
+                                  onClick={() =>
+                                    handleInvestigateRedFlag(shortCode, presetQ)
+                                  }
+                                >
+                                  <FileSearch className="size-3" aria-hidden="true" />
+                                  <span>Kiểm tra Thuyết minh gốc</span>
+                                </Button>
+                              </div>
                             ) : null}
                           </li>
                         );
@@ -1930,6 +1969,7 @@ function CompanyProfileContent() {
             dictionary={dictQuery.data?.red_flags ?? []}
             triggeredFlags={profile.red_flags}
             latestPeriodEndDate={activePeriodEnd}
+            onInvestigateRedFlag={handleInvestigateRedFlag}
           />
 
           <Card>
@@ -2184,8 +2224,17 @@ function CompanyProfileContent() {
             </Card>
           </div>
         </div>
+      ) : activeTab === "documents" ? (
+        <DocumentInvestigationPanel
+          key={`${profile.ticker}-${ragPreset?.requestNonce ?? 0}`}
+          ticker={profile.ticker}
+          companyName={
+            profile.company_name_vn ?? issuerMeta?.company_name_vn ?? null
+          }
+          initialPreset={ragPreset}
+        />
       ) : (
-        /* TAB 6: LINEAGE REGISTRY */
+        /* TAB 7: LINEAGE REGISTRY */
         <Card>
           <CardHeader className="flex-wrap gap-2 py-2.5">
             <div>
