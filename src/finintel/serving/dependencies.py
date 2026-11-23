@@ -17,6 +17,7 @@ Verified Sources:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
@@ -30,9 +31,12 @@ from fastapi import FastAPI, Request
 
 from finintel.config import parse_cors_origins, resolve_runtime_config
 from finintel.serving.cache import ValkeyResponseCache
+from finintel.serving.observability import mark_current_process_dead
 from finintel.serving.queries import DashboardQueryService
 from finintel.storage.ducklake_store import ensure_ducklake_attached
 from finintel.storage.repository import ParquetRepository
+
+logger = logging.getLogger("finintel.serving.dependencies")
 
 DEFAULT_API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8000
@@ -158,6 +162,24 @@ def build_lifespan(
             duckdb_conn.execute(f"SET threads = {threads};")
             duckdb_conn.execute(f"SET memory_limit = '{memory_limit}';")
             _attach_ducklake_read_only_if_applicable(duckdb_conn, repo)
+            try:
+                snap_meta = repo.get_snapshot_metadata(connection=duckdb_conn)
+                active_sid = snap_meta.get("snapshot_id")
+            except Exception as exc:
+                logger.warning(
+                    "Boot guard: unable to verify active_snapshot under data_root=%s (%s). "
+                    "If launching the 685-issuer demo, set FININTEL_DATA_ROOT=data/universe_600_800.",
+                    repo._source,
+                    type(exc).__name__,
+                )
+            else:
+                if not isinstance(active_sid, str) or not active_sid.strip():
+                    logger.warning(
+                        "Boot guard: active_snapshot is empty under data_root=%s; API will serve "
+                        "empty datasets until a snapshot is published or FININTEL_DATA_ROOT is set "
+                        "(e.g., FININTEL_DATA_ROOT=data/universe_600_800).",
+                        repo._source,
+                    )
 
             app.state.duckdb_conn = duckdb_conn
             app.state.duckdb_threads = threads
@@ -170,6 +192,7 @@ def build_lifespan(
             app.state.stress_semaphore_timeout = float(stress_semaphore_timeout)
             yield
         finally:
+            mark_current_process_dead(getattr(app.state, "_prometheus_live_gauges", ()))
             response_cache.close()
             duckdb_conn.close()
 

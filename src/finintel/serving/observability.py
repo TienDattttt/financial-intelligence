@@ -25,7 +25,7 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -220,13 +220,39 @@ def _resolve_multiproc_dir() -> Path | None:
 def generate_metrics_payload(registry: CollectorRegistry) -> bytes:
     """Render Prometheus exposition bytes, aggregating across workers when configured (M-01)."""
     multiproc_dir = _resolve_multiproc_dir()
-    if multiproc_dir is not None:
+    if multiproc_dir is not None and any(multiproc_dir.glob("*.db")):
         from prometheus_client import multiprocess
 
         mp_registry = CollectorRegistry()
         multiprocess.MultiProcessCollector(mp_registry, path=str(multiproc_dir))  # type: ignore[no-untyped-call]
-        return bytes(generate_latest(mp_registry))
+        rendered = bytes(generate_latest(mp_registry))
+        if rendered:
+            return rendered
     return bytes(generate_latest(registry))
+
+
+def mark_current_process_dead(live_gauges: Sequence[Any] = ()) -> None:
+    """Mark the current worker PID dead for Prometheus multiprocess live gauges (P2-8)."""
+    multiproc_dir = _resolve_multiproc_dir()
+    if multiproc_dir is None:
+        return
+    for gauge in live_gauges:
+        value_obj = getattr(gauge, "_value", None)
+        mmap_file = getattr(value_obj, "_file", None)
+        close_fn = getattr(mmap_file, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
+    try:
+        from prometheus_client import multiprocess
+
+        multiprocess.mark_process_dead(os.getpid())  # type: ignore[no-untyped-call]
+    except OSError as exc:
+        _logger.debug("Prometheus mark_process_dead skipped (%s).", type(exc).__name__)
+    except Exception as exc:
+        _logger.warning("Prometheus mark_process_dead failed (%s).", type(exc).__name__)
 
 
 class RequestCorrelationMiddleware:
@@ -314,7 +340,15 @@ class RequestCorrelationMiddleware:
             if track_metrics:
                 if self._requests_in_progress is not None:
                     self._requests_in_progress.dec()
-                handler = _normalize_metric_path(path)
+                matched_route = scope.get("route")
+                if matched_route is None and status_code in (404, 405):
+                    handler = "unmatched"
+                elif matched_route is not None and isinstance(
+                    getattr(matched_route, "path", None), str
+                ):
+                    handler = str(matched_route.path)
+                else:
+                    handler = _normalize_metric_path(path)
                 if self._requests_total is not None:
                     self._requests_total.labels(
                         method=method, handler=handler, status=str(status_code)
@@ -397,6 +431,8 @@ def attach_observability(api: FastAPI) -> None:
                 content=generate_metrics_payload(registry),
                 media_type=CONTENT_TYPE_LATEST,
             )
+
+        api.state._prometheus_live_gauges = (requests_in_progress,)
 
     api.add_middleware(
         RequestCorrelationMiddleware,
