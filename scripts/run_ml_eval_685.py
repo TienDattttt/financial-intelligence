@@ -81,7 +81,6 @@ from finintel.ports.market_prices import validate_market_prices
 from finintel.ports.regulatory import validate_regulatory_events
 from finintel.quality.gate import evaluate_quality_gate
 from finintel.quality.rules import QualityGateConfig
-from finintel.serving.queries import DashboardQueryService
 from finintel.storage.ducklake_store import (
     EXTENSION_PORT_CATALOG_TABLES,
     DuckLakeStore,
@@ -1312,6 +1311,8 @@ def publish_production_685_snapshot(
         con_check.close()
 
     # Verify direct read-back via ParquetRepository + DashboardQueryService
+    from finintel.serving.queries import DashboardQueryService
+
     repo = ParquetRepository(data_root=publish_root, backend="ducklake")
     svc = DashboardQueryService(repo)
     read_issuers = repo.read_table("issuers.parquet")
