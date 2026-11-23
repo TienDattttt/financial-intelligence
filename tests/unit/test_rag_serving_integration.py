@@ -13,6 +13,8 @@ from typing import Any
 
 import polars as pl
 import pytest
+
+pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from finintel.analytics.tables import build_analytics_tables

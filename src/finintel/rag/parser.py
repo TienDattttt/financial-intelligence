@@ -30,9 +30,8 @@ DEFAULT_MIN_DIGITAL_ALNUM_CHARS = 100
 DEFAULT_OCR_CONCURRENCY = 8
 DEFAULT_OCR_BATCH_SIZE = 5
 DEFAULT_OCR_MAX_RETRIES = 4
-DEFAULT_PARSED_CACHE_DIR = Path(
-    "d:/KiCuoiCung/DATN/financial-intelligence/data/curated_pdfs/parsed_cache"
-)
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_PARSED_CACHE_DIR = _REPO_ROOT / "data" / "curated_pdfs" / "parsed_cache"
 
 _LEGACY_FONT_MARKERS: tuple[str, ...] = (
     "vni-",
@@ -81,6 +80,13 @@ _UNIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"đvt\s*[:\-]?\s*(vnđ|vnd|đồng)", re.IGNORECASE), "VND"),
 )
 
+_NOTES_SECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?:bản\s*)?thuyết\s*minh\s*báo\s*cáo\s*tài\s*chính(?:\s*hợp\s*nhất)?",
+        re.IGNORECASE,
+    ),
+    re.compile(r"mẫu\s*số\s*b\s*09\b", re.IGNORECASE),
+)
 _SECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"báo\s*cáo\s*kiểm\s*toán\s*độc\s*lập", re.IGNORECASE),
@@ -103,7 +109,7 @@ _SECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(
-            r"thuyết\s*minh\s*báo\s*cáo\s*tài\s*chính\s*hợp\s*nhất", re.IGNORECASE
+            r"thuyết\s*minh\s*báo\s*cáo\s*tài\s*chính(?:\s*hợp\s*nhất)?", re.IGNORECASE
         ),
         "Thuyết minh Báo cáo tài chính hợp nhất",
     ),
@@ -116,9 +122,53 @@ _SECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 _NOTE_HEADING_RE = re.compile(
-    r"^\s*(?:thuyết\s*minh\s*)?(\d{1,2}(?:\.\d{1,2})?)\s*[\.\-\)]\s*([A-ZÀ-Ỹ][^\n]{4,95})$",
+    r"^\s*(?:thuyết\s*minh\s*)?((?:[IVX]{1,4}\.\d{1,2}|\d{1,2}(?:\.\d{1,2})?))\s*[\.\-\)]\s*([A-ZÀ-Ỹ][^\n]{4,95})$",
     re.MULTILINE,
 )
+_PRIMARY_STATEMENT_CONTINUATION_CUES: dict[
+    str, tuple[re.Pattern[str], re.Pattern[str]]
+] = {
+    "Bảng cân đối kế toán hợp nhất": (
+        re.compile(
+            r"(?:nguồn\s*vốn|tài\s*sản\s*ngắn\s*hạn|tài\s*sản\s*dài\s*hạn|tổng\s*cộng\s*nguồn\s*vốn|nợ\s*phải\s*trả|vốn\s*chủ\s*sở\s*hữu|\|\s*(?:270|300|400|440)\s*\|)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:doanh\s*thu\s*bán\s*hàng|doanh\s*thu\s*cung\s*cấp\s*dịch\s*vụ|thuyết\s*minh|chính\s*sách\s*kế\s*toán|mẫu\s*số\s*b\s*09)",
+            re.IGNORECASE,
+        ),
+    ),
+    "Báo cáo kết quả hoạt động kinh doanh hợp nhất": (
+        re.compile(
+            r"(?:doanh\s*thu\s*thuần|lợi\s*nhuận\s*gộp|lợi\s*nhuận\s*sau\s*thuế|lãi\s*cơ\s*bản\s*trên\s*cổ\s*phiếu)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:thuyết\s*minh|chính\s*sách\s*kế\s*toán|mẫu\s*số\s*b\s*09|chi\s*tiết\s*doanh\s*thu)",
+            re.IGNORECASE,
+        ),
+    ),
+    "Báo cáo lưu chuyển tiền tệ hợp nhất": (
+        re.compile(
+            r"(?:lưu\s*chuyển\s*tiền|hoạt\s*động\s*kinh\s*doanh|hoạt\s*động\s*đầu\s*tư|hoạt\s*động\s*tài\s*chính|tiền\s*và\s*tương\s*đương\s*tiền\s*cuối\s*kỳ)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:thuyết\s*minh|chính\s*sách\s*kế\s*toán|mẫu\s*số\s*b\s*09)",
+            re.IGNORECASE,
+        ),
+    ),
+    "Báo cáo kiểm toán độc lập": (
+        re.compile(
+            r"(?:ý\s*kiến\s*(?:của\s*)?kiểm\s*toán|trách\s*nhiệm\s*của|vấn\s*đề\s*cần\s*nhấn\s*mạnh|cơ\s*sở\s*của\s*ý\s*kiến|kiểm\s*toán\s*viên)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:thuyết\s*minh\s*báo\s*cáo\s*tài\s*chính|chính\s*sách\s*kế\s*toán|mẫu\s*số\s*b\s*09)",
+            re.IGNORECASE,
+        ),
+    ),
+}
 
 _VISION_OCR_PROMPT = (
     "Bạn là chuyên gia số hóa Báo cáo tài chính kiểm toán Việt Nam (chuẩn VAS TT200/TT99).\n"
@@ -193,16 +243,41 @@ def detect_unit_scale(text: str, default: str = "VND") -> str:
     return default
 
 
+def _strip_markdown_line_markers(line: str) -> str:
+    stripped = line.strip()
+    stripped = re.sub(r"^[#>*\s]+", "", stripped)
+    stripped = re.sub(r"[*\s]+$", "", stripped)
+    return stripped.strip()
+
+
 def detect_section_title(
     text: str, previous_section: str = "Báo cáo tài chính hợp nhất"
 ) -> str:
     """Detect VAS financial report section or footnote heading from page text."""
-    head = text[:1500]
-    for pattern, label in _SECTION_PATTERNS:
-        if pattern.search(head):
-            return label
+    head = text[:1800]
+    cleaned_lines = [
+        _strip_markdown_line_markers(raw)
+        for raw in head.splitlines()[:25]
+        if _strip_markdown_line_markers(raw)
+    ]
 
-    note_match = _NOTE_HEADING_RE.search(head)
+    # 1. Explicit footnote / notes header takes priority over incidental prose references.
+    top_slice = "\n".join(cleaned_lines[:10])
+    for notes_pat in _NOTES_SECTION_PATTERNS:
+        if notes_pat.search(top_slice):
+            return "Thuyết minh Báo cáo tài chính hợp nhất"
+
+    # 2. Match explicit section headings on standalone heading lines (avoid mid-sentence prose).
+    for line in cleaned_lines[:12]:
+        if len(line) > 110:
+            continue
+        for pattern, label in _SECTION_PATTERNS:
+            if pattern.search(line):
+                return label
+
+    # 3. Match numbered / Roman-numeral footnote subheadings (including Markdown headings).
+    normalized_head = "\n".join(cleaned_lines)
+    note_match = _NOTE_HEADING_RE.search(normalized_head)
     if note_match:
         note_num = note_match.group(1).strip()
         note_title = " ".join(note_match.group(2).strip().split())
@@ -211,6 +286,13 @@ def detect_section_title(
             and not note_title.replace(".", "").replace(",", "").isdigit()
         ):
             return f"Thuyết minh {note_num}. {note_title[:90]}"
+
+    # 4. Continuation guard: short primary statements must not bleed onto footnote/note pages.
+    cues = _PRIMARY_STATEMENT_CONTINUATION_CUES.get(previous_section)
+    if cues is not None:
+        positive_cue, negative_cue = cues
+        if negative_cue.search(head) or not positive_cue.search(text):
+            return "Thuyết minh Báo cáo tài chính hợp nhất"
 
     return previous_section
 

@@ -12,6 +12,7 @@ from finintel.rag.chunker import ChunkedDocumentSegment
 from finintel.rag.embedder import EMBEDDING_DIMENSION
 
 DEFAULT_RAG_PG_DSN = "postgresql://finintel:finintel_dev@127.0.0.1:5432/finintel_rag"
+DEFAULT_PG_CONNECT_TIMEOUT = 3
 
 
 def resolve_rag_pg_dsn(explicit: str | None = None) -> str:
@@ -130,14 +131,25 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
 class PgVectorRagStore:
     """PostgreSQL ``pgvector`` + ``unaccent`` FTS storage adapter for Port 2 documents."""
 
-    def __init__(self, dsn: str | None = None) -> None:
+    def __init__(
+        self,
+        dsn: str | None = None,
+        *,
+        connect_timeout: int = DEFAULT_PG_CONNECT_TIMEOUT,
+    ) -> None:
         self.dsn = resolve_rag_pg_dsn(dsn)
+        self.connect_timeout = max(1, int(connect_timeout))
+
+    def _connect_kwargs(self) -> dict[str, Any]:
+        if "connect_timeout" in self.dsn:
+            return {}
+        return {"connect_timeout": self.connect_timeout}
 
     def _connect(self) -> Any:
         psycopg: Any = importlib.import_module("psycopg")  # Lazy import (M-03)
         pgvector_psycopg: Any = importlib.import_module("pgvector.psycopg")
 
-        conn = psycopg.connect(self.dsn)
+        conn = psycopg.connect(self.dsn, **self._connect_kwargs())
         pgvector_psycopg.register_vector(conn)
         return conn
 
@@ -145,7 +157,9 @@ class PgVectorRagStore:
         """Idempotently create ``vector``/``unaccent`` extensions, tables, HNSW & GIN indexes."""
         psycopg: Any = importlib.import_module("psycopg")  # Lazy import (M-03)
 
-        with psycopg.connect(self.dsn, autocommit=True) as conn:
+        with psycopg.connect(
+            self.dsn, autocommit=True, **self._connect_kwargs()
+        ) as conn:
             with conn.cursor() as cur:
                 for stmt in _SCHEMA_STATEMENTS:
                     cur.execute(stmt)
