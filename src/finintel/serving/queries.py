@@ -5192,6 +5192,7 @@ class DashboardQueryService:
                         "calibrated_distress_prob",
                         "risk_market_percentile",
                         "relative_risk_lift",
+                        "model_role",
                         "available_at",
                         "published_at",
                         "effective_available_at",
