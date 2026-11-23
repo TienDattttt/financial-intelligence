@@ -528,7 +528,23 @@ class GroundedDocumentInvestigator:
         return self._gemini_bundle
 
     def _call_llm_sync(self, prompt: str) -> tuple[dict[str, Any], str]:
-        types: Any = importlib.import_module("google.genai.types")  # Lazy import (M-03)
+        try:
+            types: Any = importlib.import_module(
+                "google.genai.types"
+            )  # Lazy import (M-03)
+            gen_config: Any = types.GenerateContentConfig(
+                system_instruction=_INVESTIGATOR_SYSTEM_PROMPT,
+                temperature=0.0,
+                response_mime_type="application/json",
+            )
+        except ModuleNotFoundError:
+            if self._gemini_bundle is None:
+                raise
+            gen_config = {
+                "system_instruction": _INVESTIGATOR_SYSTEM_PROMPT,
+                "temperature": 0.0,
+                "response_mime_type": "application/json",
+            }
 
         from finintel.rag._gemini import FALLBACK_GEMINI_MODELS
 
@@ -541,11 +557,7 @@ class GroundedDocumentInvestigator:
                     response = bundle.client.models.generate_content(
                         model=model_name,
                         contents=prompt,
-                        config=types.GenerateContentConfig(
-                            system_instruction=_INVESTIGATOR_SYSTEM_PROMPT,
-                            temperature=0.0,
-                            response_mime_type="application/json",
-                        ),
+                        config=gen_config,
                     )
                     raw_text = str(getattr(response, "text", "") or "").strip()
                     return _extract_json_object(raw_text), model_name
