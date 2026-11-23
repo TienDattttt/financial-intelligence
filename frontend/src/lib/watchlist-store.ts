@@ -2,17 +2,21 @@ import { z } from "zod";
 
 const WATCHLIST_KEY = "finintel:watchlist:v1";
 const DENSITY_KEY = "finintel:density:v1";
+const LAST_TICKER_KEY = "finintel:last-ticker:v1";
 const MAX_WATCHLIST_SIZE = 50;
 
 export type TableDensity = "compact" | "comfortable";
 
-const WatchlistSchema = z.array(z.string().regex(/^[A-Z0-9]{1,10}$/)).max(MAX_WATCHLIST_SIZE);
+const TickerSchema = z.string().regex(/^[A-Z0-9]{1,10}$/);
+const WatchlistSchema = z.array(TickerSchema).max(MAX_WATCHLIST_SIZE);
 
 const listeners = new Set<() => void>();
 let cachedWatchlist: string[] = [];
 let watchlistHydrated = false;
 let cachedDensity: TableDensity = "compact";
 let densityHydrated = false;
+let cachedLastTicker: string | null = null;
+let lastTickerHydrated = false;
 
 function notify() {
   for (const fn of listeners) fn();
@@ -41,8 +45,10 @@ export function getWatchlistSnapshot(): string[] {
   return cachedWatchlist;
 }
 
+const EMPTY_WATCHLIST: string[] = [];
+
 export function getWatchlistServerSnapshot(): string[] {
-  return [];
+  return EMPTY_WATCHLIST;
 }
 
 function saveWatchlist(next: string[]) {
@@ -135,6 +141,44 @@ export function setTableDensity(density: TableDensity): void {
   if (typeof window !== "undefined") {
     try {
       window.localStorage.setItem(DENSITY_KEY, density);
+    } catch {
+      // Ignore storage errors
+    }
+  }
+  notify();
+}
+
+export function getLastViewedTickerSnapshot(): string | null {
+  if (typeof window === "undefined") return null;
+  if (lastTickerHydrated) return cachedLastTicker;
+  try {
+    const raw = window.localStorage.getItem(LAST_TICKER_KEY);
+    if (raw) {
+      const clean = raw.trim().toUpperCase();
+      if (TickerSchema.safeParse(clean).success) {
+        cachedLastTicker = clean;
+      }
+    }
+  } catch {
+    cachedLastTicker = null;
+  }
+  lastTickerHydrated = true;
+  return cachedLastTicker;
+}
+
+export function getLastViewedTickerServerSnapshot(): string | null {
+  return null;
+}
+
+export function setLastViewedTicker(ticker: string): void {
+  const clean = ticker.trim().toUpperCase();
+  if (!TickerSchema.safeParse(clean).success) return;
+  if (cachedLastTicker === clean && lastTickerHydrated) return;
+  cachedLastTicker = clean;
+  lastTickerHydrated = true;
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(LAST_TICKER_KEY, clean);
     } catch {
       // Ignore storage errors
     }

@@ -1,4 +1,10 @@
-"""Command-line entry point for orchestration and operational health checks.
+"""Thin local/dev CLI entry point sharing the unified DBSP transform flow with Dagster.
+
+Production orchestration runs via Dagster (``finintel.orchestration``). This CLI
+serves as a thin local development and operational health-check runner whose
+``ANALYTICS`` stage delegates directly to the same DBSP incremental transform
+engine (``run_incremental_analytics_transform``) and storage schemas as Dagster
+``published_financial_marts`` (ARCH-07b).
 
 Verified Sources:
 - Python argparse & PyYAML ``safe_load``: https://docs.python.org/3/library/argparse.html
@@ -247,7 +253,10 @@ def main(
                     store, config_dir, settings.analytics, settings.quality
                 ),
                 Stage.ANALYTICS: AnalyticsHandler(
-                    store, config_dir, settings.analytics
+                    store,
+                    config_dir,
+                    settings.analytics,
+                    quality_settings=settings.quality,
                 ),
                 Stage.QUALITY_GATE_2: QualityGate2Handler(
                     store, config_dir, settings.analytics

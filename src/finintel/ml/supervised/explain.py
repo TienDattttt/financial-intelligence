@@ -19,6 +19,7 @@ import shap  # type: ignore[import-untyped]
 from numpy.typing import NDArray
 
 from finintel.exceptions import ContractViolationError
+from finintel.ml.supervised.temporal_split import PeerStandardizationMode
 from finintel.ml.supervised.train import TrainingResult
 from finintel.storage.schemas import ML_SCORES_KEY
 
@@ -28,8 +29,13 @@ _FEATURE_DISPLAY_NAME_VN: dict[str, str] = {
     "asset_turnover": "Vòng quay tổng tài sản",
     "cash_conversion_cycle": "Chu kỳ chuyển đổi tiền mặt (CCC)",
     "cash_ratio": "Tỷ số thanh khoản tiền mặt",
+    "consecutive_loss_quarters": "Số quý lỗ ròng liên tiếp",
+    "cross_sectional_asset_size_pct": "Phân vị quy mô tổng tài sản theo quý",
     "current_ratio": "Tỷ số thanh khoản hiện hành",
     "debt_to_equity": "Nợ vay trên vốn chủ sở hữu (D/E)",
+    "delta_current_ratio_4q": "Biến động thanh khoản hiện hành (Δ4Q)",
+    "delta_liabilities_to_assets_4q": "Biến động nợ phải trả trên tài sản (Δ4Q)",
+    "delta_roa_4q": "Biến động ROA 4 quý (Δ4Q)",
     "ebit_margin": "Biên lợi nhuận EBIT",
     "fcf_to_revenue": "Dòng tiền tự do trên doanh thu",
     "financial_debt_to_assets": "Nợ vay trên tổng tài sản",
@@ -37,6 +43,7 @@ _FEATURE_DISPLAY_NAME_VN: dict[str, str] = {
     "liabilities_to_assets": "Nợ phải trả trên tổng tài sản",
     "net_debt_to_ebitda": "Nợ vay ròng trên EBITDA",
     "ocf_to_current_liabilities": "Dòng tiền HĐKD trên nợ ngắn hạn",
+    "overdue_or_late_count_4q": "Số quý nộp trễ hoặc quá hạn công bố BCTC (4Q)",
     "piotroski_f_score": "Điểm Piotroski F-Score",
     "quick_ratio": "Tỷ số thanh khoản nhanh",
     "revenue_growth_yoy": "Tăng trưởng doanh thu thuần YoY",
@@ -48,6 +55,27 @@ _FEATURE_DISPLAY_NAME_VN: dict[str, str] = {
     "sector_z_debt_to_equity": "Đòn bẩy D/E chuẩn hóa ngành (Z-Score)",
     "sector_z_ebit_margin": "Biên EBIT chuẩn hóa ngành (Z-Score)",
 }
+
+_SECTOR_Z_MARKET_DISPLAY_NAME_VN: dict[str, str] = {
+    "sector_z_asset_turnover": "Vòng quay tài sản chuẩn hóa toàn thị trường (Z-Score)",
+    "sector_z_cash_conversion_cycle": "Chu kỳ tiền mặt chuẩn hóa toàn thị trường (Z-Score)",
+    "sector_z_debt_to_equity": "Đòn bẩy D/E chuẩn hóa toàn thị trường (Z-Score)",
+    "sector_z_ebit_margin": "Biên EBIT chuẩn hóa toàn thị trường (Z-Score)",
+}
+
+
+def get_feature_display_names(
+    peer_standardization_mode: PeerStandardizationMode = "PIT_REGIME_SYMMETRIC",
+) -> dict[str, str]:
+    """Return Vietnamese SHAP feature labels tailored to the active standardization mode."""
+    if peer_standardization_mode == "PIT_ICB":
+        return dict(_FEATURE_DISPLAY_NAME_VN)
+    if peer_standardization_mode == "PIT_REGIME_SYMMETRIC":
+        return {**_FEATURE_DISPLAY_NAME_VN, **_SECTOR_Z_MARKET_DISPLAY_NAME_VN}
+    raise ContractViolationError(
+        f"Unsupported peer_standardization_mode {peer_standardization_mode!r}."
+    )
+
 
 _DRIVER_LIST_DTYPE = pl.List(
     pl.Struct(
@@ -178,8 +206,10 @@ def explain_distress(
     frame: pl.DataFrame,
     *,
     peer_medians: pl.DataFrame | None = None,
+    peer_standardization_mode: PeerStandardizationMode = "PIT_REGIME_SYMMETRIC",
 ) -> pl.DataFrame:
     """Return vectorized JSON contributions whose base + top drivers + other_features_delta reproduces raw margin."""
+    display_names = get_feature_display_names(peer_standardization_mode)
     present_keys = [name for name in ML_SCORES_KEY if name in frame.columns]
     if frame.is_empty():
         empty_json = pl.DataFrame(schema={"shap_top_drivers_json": pl.String})
@@ -230,7 +260,7 @@ def explain_distress(
             "_row_id",
             "feature",
             pl.col("feature")
-            .replace_strict(_FEATURE_DISPLAY_NAME_VN, default=pl.col("feature"))
+            .replace_strict(display_names, default=pl.col("feature"))
             .cast(pl.String)
             .alias("display_name_vn"),
             pl.col("value").cast(pl.Float64),

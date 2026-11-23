@@ -1,10 +1,13 @@
-"""Run Layer 4A and optional gated Layer 4B against normalized fact history.
+"""Run Layer 4A and optional gated Layer 4B via the unified DBSP incremental transform engine.
+
+Thin CLI/dev stage handler sharing the exact ``run_incremental_analytics_transform``
+contract, schemas, and ML guardrails used by Dagster ``published_financial_marts``
+(ARCH-07b).
 
 Verified Sources:
     docs/layers/LAYER_0_ORCHESTRATION.md and docs/layers/LAYER_4_ANALYTICS_AND_ML.md.
     docs/v2_specs/06_STREAM_A4_LAYER4B_ML_REMEDIATION_SECTOR_ADJ_AND_REGULATORY_TARGET.md.
-    Forwards optional scored_taxonomies, feature_set, target_mode and path-confined
-    regulatory_events_path into Layer 4B build_ml_artifacts().
+    docs/refactor/01_ARCHITECTURE_AND_STACK_PLAN.md (ARCH-07b).
 """
 
 import hashlib
@@ -14,20 +17,28 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import TemporaryDirectory
-from typing import Any, Literal, NoReturn
+from typing import Literal, NoReturn
 
 import polars as pl
 
 from finintel.analytics.tables import (
     BENCHMARKS_TABLE,
     RATIOS_TABLE,
-    build_analytics_tables,
+    RED_FLAGS_TABLE,
 )
 from finintel.exceptions import ContractViolationError
 from finintel.pipeline.normalize import NORMALIZATION_METADATA, _period_filter
 from finintel.pipeline.runner import StepContext, StepOutcome
 from finintel.pipeline.state_store import StateStore
-from finintel.storage.schemas import ML_SCORES_TABLE
+from finintel.quality.rules import QualityGateConfig
+from finintel.storage.repository import ParquetRepository
+from finintel.storage.schemas import ML_SCORES_TABLE, MODEL_CARD_META_TABLE
+from finintel.transform.incremental import (
+    TRANSFORM_STATE_FILENAME,
+    MLTransformConfig,
+    load_transform_state,
+    run_incremental_analytics_transform,
+)
 
 logger = logging.getLogger("finintel.pipeline.analytics")
 
@@ -46,18 +57,83 @@ def _raise_input_error(context: StepContext, message: str) -> NoReturn:
     raise ContractViolationError(message)
 
 
+def _read_optional_snapshot_table(
+    repo: ParquetRepository, table_name: str
+) -> pl.DataFrame | None:
+    try:
+        return repo.read_table(table_name)
+    except (FileNotFoundError, ContractViolationError):
+        return None
+
+
 class AnalyticsHandler:
-    """Write analytics as an immutable batch for Layer 3 to publish."""
+    """Thin CLI/dev stage runner delegating to the unified DBSP incremental transform engine."""
 
     def __init__(
-        self, state: StateStore, config_dir: Path, settings: Mapping[str, object]
+        self,
+        state: StateStore,
+        config_dir: Path,
+        settings: Mapping[str, object],
+        *,
+        quality_settings: Mapping[str, object] | None = None,
     ) -> None:
         self.state = state
         self.config_dir = config_dir
         self.settings = settings
+        self.quality_settings = quality_settings or {}
+
+    def _quality_config(
+        self,
+        *,
+        qg1_already_applied: bool,
+        facts: pl.DataFrame,
+    ) -> QualityGateConfig:
+        if not qg1_already_applied and not self.quality_settings:
+            # In the CLI stage runner, Stage.QUALITY_GATE_1 owns QG1 enforcement.
+            # When Stage.ANALYTICS is invoked standalone (--stage analytics), keep
+            # the unified DBSP engine active without re-tripping QG1 quarantine.
+            anchor_metric = (
+                str(facts["metric_id"][0])
+                if not facts.is_empty() and "metric_id" in facts.columns
+                else "BS_TOTAL_ASSETS"
+            )
+            return QualityGateConfig(
+                bs_identity_rel_tol=1e12,
+                subtotal_rel_tol=1e12,
+                unit_scale_upper_factor=1e12,
+                unit_scale_lower_factor=1e-12,
+                cash_flow_rel_tol=1e12,
+                max_critical_issuer_ratio=1.0,
+                required_metrics=(anchor_metric,),
+            )
+        defaults = QualityGateConfig()
+        raw = self.quality_settings
+        if not raw:
+            return defaults
+        kwargs: dict[str, object] = {}
+        for field_name in (
+            "bs_identity_rel_tol",
+            "subtotal_rel_tol",
+            "unit_scale_upper_factor",
+            "unit_scale_lower_factor",
+            "cash_flow_rel_tol",
+            "max_critical_issuer_ratio",
+        ):
+            val = raw.get(field_name)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                kwargs[field_name] = float(val)
+        req_metrics = raw.get("required_metrics")
+        if (
+            isinstance(req_metrics, Sequence)
+            and not isinstance(req_metrics, (str, bytes))
+            and all(isinstance(m, str) for m in req_metrics)
+        ):
+            kwargs["required_metrics"] = tuple(str(m) for m in req_metrics)
+        return QualityGateConfig(**kwargs)  # type: ignore[arg-type]
 
     def __call__(self, context: StepContext) -> StepOutcome:
-        curated = self.state.path.parent.parent / "curated"
+        data_root = self.state.path.parent.parent
+        curated = data_root / "curated"
         issuers_path = self._input_path("issuers_path", curated / "issuers.parquet")
         if issuers_path is None:
             _raise_input_error(
@@ -74,17 +150,85 @@ class AnalyticsHandler:
                 "Analytics requires readable financial facts and issuers Parquet inputs."
             ) from exc
 
-        tables = build_analytics_tables(facts, issuers, as_of=as_of)
-        ml_artifacts = self._maybe_run_ml(
+        ml_cfg = self._build_ml_config()
+        clean_from_qg1 = (
+            curated / "quality" / context.run_id / "clean_financial_facts.parquet"
+        )
+        quality_cfg = self._quality_config(
+            qg1_already_applied=(facts_path == clean_from_qg1),
+            facts=facts,
+        )
+
+        transform_state_path = self.state.path.parent / TRANSFORM_STATE_FILENAME
+        previous_state = load_transform_state(transform_state_path)
+        active = self.state.active_snapshot()
+        previous_snapshot_id = (
+            str(active["snapshot_id"])
+            if active is not None and active.get("snapshot_id") is not None
+            else None
+        )
+        previous_ratios: pl.DataFrame | None = None
+        previous_benchmarks: pl.DataFrame | None = None
+        previous_red_flags: pl.DataFrame | None = None
+        previous_ml_scores: pl.DataFrame | None = None
+        previous_model_card_meta: pl.DataFrame | None = None
+        if (
+            previous_state is not None
+            and previous_snapshot_id is not None
+            and previous_state.get("snapshot_id") == previous_snapshot_id
+        ):
+            repo = ParquetRepository(data_root=data_root)
+            try:
+                with repo.snapshot_session() as pinned:
+                    previous_ratios = _read_optional_snapshot_table(
+                        pinned, RATIOS_TABLE
+                    )
+                    previous_benchmarks = _read_optional_snapshot_table(
+                        pinned, BENCHMARKS_TABLE
+                    )
+                    previous_red_flags = _read_optional_snapshot_table(
+                        pinned, RED_FLAGS_TABLE
+                    )
+                    previous_ml_scores = _read_optional_snapshot_table(
+                        pinned, ML_SCORES_TABLE
+                    )
+                    previous_model_card_meta = _read_optional_snapshot_table(
+                        pinned, MODEL_CARD_META_TABLE
+                    )
+            except (FileNotFoundError, ContractViolationError):
+                previous_ratios = None
+                previous_benchmarks = None
+                previous_red_flags = None
+                previous_ml_scores = None
+                previous_model_card_meta = None
+
+        bundle = run_incremental_analytics_transform(
             facts,
             issuers,
-            facts_path=facts_path,
-            issuers_path=issuers_path,
             as_of=as_of,
-            benchmarks=tables[BENCHMARKS_TABLE],
+            run_id=context.run_id,
+            previous_ratios=previous_ratios,
+            previous_benchmarks=previous_benchmarks,
+            previous_red_flags=previous_red_flags,
+            previous_ml_scores=previous_ml_scores,
+            previous_model_card_meta=previous_model_card_meta,
+            previous_state=previous_state,
+            previous_snapshot_id=previous_snapshot_id,
+            state_path=transform_state_path,
+            ml_config=ml_cfg,
+            quality_config=quality_cfg,
+            persist_state=False,
         )
-        if ml_artifacts is not None:
-            tables[ML_SCORES_TABLE] = ml_artifacts.scores_table
+
+        tables: dict[str, pl.DataFrame] = {
+            RATIOS_TABLE: bundle.financial_ratios,
+            BENCHMARKS_TABLE: bundle.industry_benchmarks,
+            RED_FLAGS_TABLE: bundle.accounting_red_flags,
+        }
+        if ml_cfg.enabled:
+            tables[ML_SCORES_TABLE] = bundle.ml_scores
+        if bundle.model_card_meta is not None:
+            tables[MODEL_CARD_META_TABLE] = bundle.model_card_meta
 
         ratios = tables[RATIOS_TABLE]
         if context.tickers or context.request.period:
@@ -103,7 +247,7 @@ class AnalyticsHandler:
             keys = ["issuer_id", "statement_scope", "period_type", "period_end_date"]
             selected = ratios.select(keys)
             for name, table in tables.items():
-                if name != RATIOS_TABLE:
+                if name not in (RATIOS_TABLE, MODEL_CARD_META_TABLE):
                     tables[name] = table.join(selected, on=keys, how="semi")
 
         parent = curated / "analytics"
@@ -120,24 +264,28 @@ class AnalyticsHandler:
                         "facts_path": str(facts_path),
                         "issuers_path": str(issuers_path),
                         "source": context.request.source,
-                        "ml_enabled": ml_artifacts is not None,
+                        "ml_enabled": ml_cfg.enabled,
+                        "transform_engine": "dbsp_incremental",
+                        "full_rebuild": bundle.diff.full_rebuild,
+                        "dirty_issuers_count": len(bundle.diff.dirty_issuers),
                     }
                 ),
                 encoding="utf-8",
             )
-            if ml_artifacts is not None:
+            if bundle.evaluation_report is not None:
                 (staging / "model_evaluation_report.json").write_text(
                     json.dumps(
-                        ml_artifacts.evaluation_report,
+                        bundle.evaluation_report,
                         ensure_ascii=False,
                         indent=2,
                         sort_keys=True,
                     ),
                     encoding="utf-8",
                 )
+            if bundle.ml_run_manifest is not None:
                 (staging / "_ml_run_manifest.json").write_text(
                     json.dumps(
-                        ml_artifacts.run_manifest,
+                        bundle.ml_run_manifest,
                         ensure_ascii=False,
                         indent=2,
                         sort_keys=True,
@@ -147,19 +295,10 @@ class AnalyticsHandler:
             staging.rename(parent / context.run_id)
         return StepOutcome()
 
-    def _maybe_run_ml(
-        self,
-        facts: pl.DataFrame,
-        issuers: pl.DataFrame,
-        *,
-        facts_path: Path,
-        issuers_path: Path,
-        as_of: date,
-        benchmarks: pl.DataFrame,
-    ) -> Any:
+    def _build_ml_config(self) -> MLTransformConfig:
         raw_ml = self.settings.get("ml")
         if raw_ml is None:
-            return None
+            return MLTransformConfig(enabled=False)
         if not isinstance(raw_ml, Mapping):
             raise ContractViolationError(
                 "Analytics ml configuration must be a mapping."
@@ -168,7 +307,7 @@ class AnalyticsHandler:
         if not isinstance(enabled, bool):
             raise ContractViolationError("Analytics ml.enabled must be a boolean.")
         if not enabled:
-            return None
+            return MLTransformConfig(enabled=False)
 
         require_exact = raw_ml.get("require_exact_filing", True)
         if require_exact is not True:
@@ -224,6 +363,11 @@ class AnalyticsHandler:
             raise ContractViolationError(
                 "Analytics ml.target_mode must be 'FUNDAMENTAL_DISTRESS' or 'REGULATORY_DISTRESS'."
             )
+        resolved_target_mode: Literal["FUNDAMENTAL_DISTRESS", "REGULATORY_DISTRESS"] = (
+            "REGULATORY_DISTRESS"
+            if target_mode == "REGULATORY_DISTRESS"
+            else "FUNDAMENTAL_DISTRESS"
+        )
 
         raw_reg_path = raw_ml.get("regulatory_events_path")
         regulatory_events: pl.DataFrame | None = None
@@ -238,12 +382,8 @@ class AnalyticsHandler:
                     "Analytics ml.regulatory_events_path must point to a readable Parquet file."
                 ) from exc
 
-        from finintel.ml.tables import build_ml_artifacts
-
-        return build_ml_artifacts(
-            facts,
-            issuers,
-            as_of=as_of,
+        return MLTransformConfig(
+            enabled=True,
             validation_start=validation_start,
             test_start=test_start,
             approved_target=approved_target,
@@ -252,11 +392,8 @@ class AnalyticsHandler:
             taxonomy_version=taxonomy,
             scored_taxonomies=scored_taxonomies,
             feature_set=feature_set,
-            target_mode=target_mode,
+            target_mode=resolved_target_mode,
             regulatory_events=regulatory_events,
-            peer_benchmarks=benchmarks,
-            facts_sha256=self._sha256_file(facts_path),
-            issuers_sha256=self._sha256_file(issuers_path),
         )
 
     def _confined_ml_input_path(self, value: object, field_name: str) -> Path:

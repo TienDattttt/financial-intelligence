@@ -1,4 +1,4 @@
-"""Read-only analytical FastAPI service (10 HTTP routes under ``/api/v1``).
+"""Read-only analytical FastAPI service (``/api/v1`` and ``/api/v2`` routes).
 
 Verified Sources:
 - FastAPI Official Documentation (Lifespan, Sync Threadpool Concurrency, CORS):
@@ -21,12 +21,16 @@ Verified Sources:
 from __future__ import annotations
 
 import asyncio
+import csv
+import importlib
+import io
 import logging
 import math
 import os
 import re
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
@@ -61,7 +65,11 @@ from finintel.serving.dependencies import (
     get_stress_semaphore,
     resolve_cors_origins,
 )
-from finintel.serving.observability import attach_observability
+from finintel.serving.observability import (
+    SPAN_ANALYTICS_STRESS_TEST,
+    attach_observability,
+    trace_span,
+)
 from finintel.serving.dictionary import (
     RATIO_DICTIONARY_META,
     RED_FLAG_DICTIONARY,
@@ -74,6 +82,7 @@ from finintel.serving.queries import (
     DashboardQueryService,
     PeriodType,
     PeriodView,
+    RiskTier,
     StatementScope,
 )
 from finintel.serving.schemas import (
@@ -85,6 +94,7 @@ from finintel.serving.schemas import (
     CompanyBenchmarksSummaryResponse,
     CompanyFilingItem,
     CompanyFilingsResponse,
+    CompanyMarketOverlayResponse,
     CompanyProfileResponse,
     CompanyStatementsResponse,
     CoreEarningsPoint,
@@ -100,6 +110,7 @@ from finintel.serving.schemas import (
     MetaDictionaryResponse,
     MetaPeriodsResponse,
     MLScoreItem,
+    ModelCardResponse,
     PeerBandHistoryPoint,
     PeerRankingItem,
     QualitySummaryItem,
@@ -225,6 +236,37 @@ def _frame_to_records(df: pl.DataFrame) -> list[dict[str, Any]]:
     return _finite_frame(df).to_dicts()
 
 
+_CSV_FORMULA_PREFIXES: tuple[str, ...] = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _sanitize_csv_cell(value: object) -> str | int | float:
+    """Apply OWASP CSV formula injection guard while preserving numeric negatives."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else ""
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value)
+    if text.startswith(_CSV_FORMULA_PREFIXES):
+        return f"'{text}"
+    return text
+
+
+def _dataframe_to_safe_csv_bytes(df: pl.DataFrame) -> bytes:
+    """Serialize a Polars DataFrame to UTF-8 BOM CSV with OWASP formula sanitization."""
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerow(df.columns)
+    for row in df.rows():
+        writer.writerow([_sanitize_csv_cell(cell) for cell in row])
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")
+
+
 def _extract_snapshot_id(meta: dict[str, object]) -> str | None:
     raw = meta.get("snapshot_id")
     return str(raw) if isinstance(raw, str) and raw else None
@@ -252,6 +294,8 @@ def _cached_json_response(
     snap_id: str | None,
     route: str,
     params: Mapping[str, Any] | None = None,
+    *,
+    cache_control: str = CACHE_CONTROL_HEADER,
 ) -> tuple[str | None, Response | None]:
     if not cache.enabled or snap_id is None:
         return None, None
@@ -263,7 +307,7 @@ def _cached_json_response(
         content=raw,
         media_type="application/json",
         headers={
-            "Cache-Control": CACHE_CONTROL_HEADER,
+            "Cache-Control": cache_control,
             "ETag": _format_etag(snap_id),
             "X-Cache": "HIT",
         },
@@ -280,6 +324,7 @@ def _store_cached_model(
     model: _ModelT,
     *,
     snap_id: str | None = None,
+    cache_control: str = CACHE_CONTROL_HEADER,
 ) -> _ModelT | Response:
     if cache_key is None or not cache.enabled:
         return model
@@ -288,7 +333,7 @@ def _store_cached_model(
         raw = cast(Any, model).model_dump_json().encode("utf-8")
         cache.set_bytes(cache_key, raw)
         headers = {
-            "Cache-Control": CACHE_CONTROL_HEADER,
+            "Cache-Control": cache_control,
             "X-Cache": "MISS",
         }
         if snap_id is not None:
@@ -387,6 +432,215 @@ class StressBulkheadMiddleware:
             async_sem.release()
 
 
+_RAG_UNAVAILABLE_DETAIL = (
+    "Dịch vụ tra cứu Thuyết minh PDF hiện tạm thời chưa sẵn sàng. Vui lòng thử lại sau."
+)
+
+
+def _is_rag_unavailable_error(exc: Exception) -> bool:
+    """Return True when a RAG dependency, vector DB, or LLM backend is unavailable."""
+    if isinstance(
+        exc,
+        (ImportError, OSError, TimeoutError, ConnectionError, RuntimeError),
+    ):
+        return True
+    mod_name = type(exc).__module__ or ""
+    return mod_name.startswith(
+        (
+            "psycopg",
+            "pgvector",
+            "redis",
+            "httpx",
+            "google",
+            "torch",
+            "sentence_transformers",
+        )
+    )
+
+
+def _rag_unavailable_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"detail": _RAG_UNAVAILABLE_DETAIL},
+        headers={
+            "Cache-Control": STRESS_CACHE_CONTROL_HEADER,
+            "Retry-After": "5",
+        },
+    )
+
+
+class RagAvailabilityMiddleware:
+    """Pure ASGI guard converting missing optional deps / unreachable Postgres into HTTP 503 on ``/api/v2/documents/*``."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = str(scope.get("path", ""))
+        if not path.startswith("/api/v2/documents/"):
+            await self.app(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        except Exception as exc:
+            if not _is_rag_unavailable_error(exc):
+                raise
+            logger.warning(
+                "RAG endpoint unavailable (%s): %s",
+                type(exc).__name__,
+                path,
+            )
+            resp = _rag_unavailable_response()
+            await resp(scope, receive, send)
+
+
+def _mount_rag_router(
+    api: FastAPI,
+    *,
+    valkey_url: str | None = None,
+    rag_store: Any | None = None,
+    rag_investigator: Any | None = None,
+) -> None:
+    """Mount Port 2 Document RAG routes lazily without importing optional ML/DB deps at boot."""
+    store_lock = threading.Lock()
+    investigator_lock = threading.Lock()
+    api.state._rag_store = rag_store
+    api.state._rag_investigator = rag_investigator
+
+    def _get_store() -> Any:
+        existing = getattr(api.state, "_rag_store", None)
+        if existing is not None:
+            return existing
+        with store_lock:
+            existing = getattr(api.state, "_rag_store", None)
+            if existing is not None:
+                return existing
+            from finintel.rag.store import PgVectorRagStore, resolve_rag_pg_dsn
+
+            dsn = resolve_rag_pg_dsn()
+            if "connect_timeout=" not in dsn and "://" in dsn:
+                sep = "&" if "?" in dsn else "?"
+                dsn = f"{dsn}{sep}connect_timeout=3"
+            store = PgVectorRagStore(dsn=dsn)
+            api.state._rag_store = store
+            return store
+
+    def _build_investigator_sync(*, warm_models: bool = False) -> Any:
+        from finintel.rag.embedder import BgeM3Embedder
+        from finintel.rag.investigator import GroundedDocumentInvestigator
+        from finintel.rag.retriever import HybridPgVectorRetriever
+
+        store = _get_store()
+        embedder = BgeM3Embedder()
+        if warm_models:
+            embedder._ensure_loaded()
+        retriever = HybridPgVectorRetriever(store=store, embedder=embedder)
+        gemini_bundle: Any | None = None
+        if warm_models:
+            try:
+                from finintel.rag._gemini import create_verified_gemini_bundle
+
+                gemini_bundle = create_verified_gemini_bundle()
+            except Exception as exc:
+                logger.warning(
+                    "RAG Gemini pre-warm skipped (%s); will probe lazily.",
+                    type(exc).__name__,
+                )
+        return GroundedDocumentInvestigator(
+            retriever=retriever,
+            gemini_bundle=gemini_bundle,
+            valkey_url=valkey_url,
+        )
+
+    def _get_investigator() -> Any:
+        existing = getattr(api.state, "_rag_investigator", None)
+        if existing is not None:
+            return existing
+        with investigator_lock:
+            existing = getattr(api.state, "_rag_investigator", None)
+            if existing is not None:
+                return existing
+            investigator = _build_investigator_sync(warm_models=False)
+            api.state._rag_investigator = investigator
+            return investigator
+
+    def _prewarm_rag_worker() -> None:
+        dsn = os.getenv("FININTEL_RAG_PG_DSN", "").strip()
+        if not dsn:
+            return
+        try:
+            psycopg_mod: Any = importlib.import_module("psycopg")
+            check_dsn = dsn
+            if "connect_timeout=" not in check_dsn and "://" in check_dsn:
+                sep = "&" if "?" in check_dsn else "?"
+                check_dsn = f"{check_dsn}{sep}connect_timeout=1"
+            with psycopg_mod.connect(check_dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+        except Exception as exc:
+            logger.info(
+                "RAG pre-warm skipped (Postgres unreachable or deps absent: %s).",
+                type(exc).__name__,
+            )
+            return
+
+        with investigator_lock:
+            if getattr(api.state, "_rag_investigator", None) is not None:
+                return
+            try:
+                api.state._rag_investigator = _build_investigator_sync(warm_models=True)
+                logger.info("RAG embedder and Gemini bundle pre-warmed successfully.")
+            except Exception as exc:
+                logger.warning("RAG pre-warm failed (%s).", type(exc).__name__)
+
+    def _schedule_rag_prewarm() -> None:
+        if rag_store is not None or rag_investigator is not None:
+            return
+        if not os.getenv("FININTEL_RAG_PG_DSN", "").strip():
+            return
+        if os.getenv("PYTEST_CURRENT_TEST") and not os.getenv(
+            "FININTEL_RAG_PREWARM_IN_TEST"
+        ):
+            return
+        thread = threading.Thread(
+            target=_prewarm_rag_worker,
+            name="finintel-rag-prewarm",
+            daemon=True,
+        )
+        thread.start()
+
+    api.state._rag_prewarm_fn = _schedule_rag_prewarm
+    api.state._rag_prewarm_worker = _prewarm_rag_worker
+
+    try:
+        from finintel.rag.router import create_rag_router
+
+        api.include_router(
+            create_rag_router(
+                get_store=_get_store,
+                get_investigator=_get_investigator,
+            )
+        )
+    except ImportError as exc:
+        logger.warning(
+            "Port 2 RAG router mounted in 503 fallback mode (%s).",
+            type(exc).__name__,
+        )
+
+        @api.get("/api/v2/documents/{ticker}/list", tags=["documents-rag"])
+        async def _rag_list_unavailable(ticker: str) -> JSONResponse:
+            _ = ticker
+            return _rag_unavailable_response()
+
+        @api.post("/api/v2/documents/{ticker}/investigate", tags=["documents-rag"])
+        async def _rag_investigate_unavailable(ticker: str) -> JSONResponse:
+            _ = ticker
+            return _rag_unavailable_response()
+
+
 def create_app(
     data_root: Path | None = None,
     *,
@@ -397,10 +651,12 @@ def create_app(
     stress_max_concurrency: int = DEFAULT_STRESS_MAX_CONCURRENCY,
     stress_semaphore_timeout: float = DEFAULT_STRESS_SEMAPHORE_TIMEOUT,
     valkey_url: str | None = None,
+    rag_store: Any | None = None,
+    rag_investigator: Any | None = None,
 ) -> FastAPI:
     """Create a configured read-only analytical FastAPI application."""
     allowed_origins = resolve_cors_origins(cors_origins)
-    app_lifespan = build_lifespan(
+    base_lifespan = build_lifespan(
         data_root=data_root,
         repository=repository,
         duckdb_threads=duckdb_threads,
@@ -409,6 +665,14 @@ def create_app(
         stress_semaphore_timeout=stress_semaphore_timeout,
         valkey_url=valkey_url,
     )
+
+    @asynccontextmanager
+    async def app_lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
+        async with base_lifespan(app_instance):
+            prewarm_fn = getattr(app_instance.state, "_rag_prewarm_fn", None)
+            if callable(prewarm_fn):
+                prewarm_fn()
+            yield
 
     api = FastAPI(
         title="finintel Read-Only Analytical API",
@@ -421,6 +685,7 @@ def create_app(
     )
 
     api.add_middleware(StressBulkheadMiddleware)
+    api.add_middleware(RagAvailabilityMiddleware)
     attach_observability(api)
 
     # Deny-by-default CORS: only attach CORSMiddleware when explicit origins are configured.
@@ -436,6 +701,8 @@ def create_app(
                 "Cache-Control",
                 "X-Request-ID",
                 "X-Snapshot-ID",
+                "X-Dagster-Run-ID",
+                "X-Git-Commit-SHA",
                 "X-Cache",
             ],
         )
@@ -451,8 +718,10 @@ def create_app(
 
     @api.exception_handler(FileNotFoundError)
     def _handle_file_not_found(
-        _request: Request, _exc: FileNotFoundError
+        request: Request, _exc: FileNotFoundError
     ) -> JSONResponse:
+        if request.url.path.startswith("/api/v2/documents/"):
+            return _rag_unavailable_response()
         return JSONResponse(
             status_code=404,
             content={
@@ -482,7 +751,16 @@ def create_app(
         return JSONResponse(status_code=422, content={"detail": detail})
 
     @api.exception_handler(Exception)
-    def _handle_unexpected(_request: Request, exc: Exception) -> JSONResponse:
+    def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
+        if request.url.path.startswith(
+            "/api/v2/documents/"
+        ) and _is_rag_unavailable_error(exc):
+            logger.warning(
+                "RAG endpoint unavailable (%s): %s",
+                type(exc).__name__,
+                request.url.path,
+            )
+            return _rag_unavailable_response()
         logger.exception(
             "Unhandled error while serving API request: %s", type(exc).__name__
         )
@@ -652,19 +930,31 @@ def create_app(
         tags=["issuers"],
     )
     def list_issuers(
+        request: Request,
         response: Response,
         limit: int = Query(200, ge=1, le=200),
         offset: int = Query(0, ge=0),
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> IssuersPageResponse | Response:
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
             snap_id = _extract_snapshot_id(meta)
             not_modified = _conditional_not_modified(if_none_match, snap_id)
             if not_modified is not None:
                 return not_modified
+
+            cache_key, hit = _cached_json_response(
+                cache,
+                snap_id,
+                "v1/issuers",
+                {"limit": limit, "offset": offset},
+            )
+            if hit is not None:
+                return hit
 
             pinned_svc = DashboardQueryService(pinned)
             total = pinned_svc.count_issuers(connection=cursor)
@@ -674,13 +964,14 @@ def create_app(
 
         items = [IssuerItem(**row) for row in _frame_to_records(page_df)]
         _apply_cache_headers(response, snap_id)
-        return IssuersPageResponse(
+        body = IssuersPageResponse(
             snapshot_id=snap_id,
             total=total,
             limit=limit,
             offset=offset,
             items=items,
         )
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     # ------------------------------------------------------------------
     # Route 4: GET /api/v1/companies/{ticker}/profile
@@ -1056,6 +1347,7 @@ def create_app(
         icb_code_level2: str | None = Query(None, pattern=_ICB_CODE_PATTERN),
         min_f_score: int | None = Query(None, ge=0, le=9),
         altman_zone: AltmanZone | None = Query(None),
+        risk_tier: RiskTier | None = Query(None),
         beneish_flag: BeneishFlag | None = Query(None),
         max_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
         min_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
@@ -1094,6 +1386,7 @@ def create_app(
                     "icb_code_level2": icb_code_level2,
                     "min_f_score": min_f_score,
                     "altman_zone": altman_zone,
+                    "risk_tier": risk_tier,
                     "beneish_flag": beneish_flag,
                     "max_distress_prob": max_distress_prob,
                     "min_distress_prob": min_distress_prob,
@@ -1117,6 +1410,7 @@ def create_app(
                 icb_code_level2=icb_code_level2,
                 min_f_score=min_f_score,
                 altman_zone=altman_zone,
+                risk_tier=risk_tier,
                 beneish_flag=beneish_flag,
                 max_distress_prob=max_distress_prob,
                 min_distress_prob=min_distress_prob,
@@ -1157,6 +1451,80 @@ def create_app(
         return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     # ------------------------------------------------------------------
+    # Route 7b: GET /api/v1/screener/export (UI-05a full CSV export)
+    # ------------------------------------------------------------------
+    @api.get(
+        "/api/v1/screener/export",
+        tags=["screener"],
+        responses={
+            200: {
+                "content": {"text/csv; charset=utf-8": {}},
+                "description": "Full filtered screener dataset as UTF-8 BOM CSV.",
+            }
+        },
+    )
+    def export_screener_csv(
+        request: Request,
+        period_type: PeriodType = Query("QUARTER"),
+        period_end_date: date | None = Query(None),
+        statement_scope: StatementScope = Query("CONSOLIDATED"),
+        icb_code_level2: str | None = Query(None, pattern=_ICB_CODE_PATTERN),
+        min_f_score: int | None = Query(None, ge=0, le=9),
+        altman_zone: AltmanZone | None = Query(None),
+        risk_tier: RiskTier | None = Query(None),
+        beneish_flag: BeneishFlag | None = Query(None),
+        max_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
+        min_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
+        max_red_flags: int | None = Query(None, ge=0),
+        min_red_flags: int | None = Query(None, ge=0),
+        q: str | None = Query(None, max_length=80),
+        sort_by: ScreenerSortField = Query("calibrated_distress_prob"),
+        sort_dir: SortDirection = Query("desc"),
+        if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+        cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
+        service: DashboardQueryService = Depends(get_query_service),
+    ) -> Response:
+        with service.repository.snapshot_session(connection=cursor) as pinned:
+            meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
+            snap_id = _extract_snapshot_id(meta)
+            not_modified = _conditional_not_modified(if_none_match, snap_id)
+            if not_modified is not None:
+                return not_modified
+
+            full_df = DashboardQueryService(pinned).export_screener(
+                period_type=period_type,
+                period_end_date=period_end_date,
+                statement_scope=statement_scope,
+                icb_code_level2=icb_code_level2,
+                min_f_score=min_f_score,
+                altman_zone=altman_zone,
+                risk_tier=risk_tier,
+                beneish_flag=beneish_flag,
+                max_distress_prob=max_distress_prob,
+                min_distress_prob=min_distress_prob,
+                max_red_flags=max_red_flags,
+                min_red_flags=min_red_flags,
+                q=q,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                connection=cursor,
+            )
+
+        csv_bytes = _dataframe_to_safe_csv_bytes(full_df)
+        headers: dict[str, str] = {
+            "Content-Disposition": 'attachment; filename="finintel-screener.csv"',
+            "Cache-Control": CACHE_CONTROL_HEADER,
+        }
+        if snap_id is not None:
+            headers["ETag"] = _format_etag(snap_id)
+        return Response(
+            content=csv_bytes,
+            media_type="text/csv; charset=utf-8",
+            headers=headers,
+        )
+
+    # ------------------------------------------------------------------
     # Route 8: POST /api/v1/stress-test (event-loop bulkhead via StressBulkheadMiddleware)
     # ------------------------------------------------------------------
     @api.post(
@@ -1171,7 +1539,8 @@ def create_app(
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
         sem_cfg: tuple[threading.Semaphore, float] = Depends(get_stress_semaphore),
-    ) -> StressTestResponse:
+        cache: ValkeyResponseCache = Depends(get_response_cache),
+    ) -> StressTestResponse | Response:
         semaphore, sem_timeout = sem_cfg
         already_held = bool(getattr(request.state, "_stress_permit_held", False))
         if not already_held:
@@ -1186,11 +1555,22 @@ def create_app(
                 meta = pinned.get_snapshot_metadata(connection=cursor)
                 _attach_lineage_state(request, meta)
                 snap_id = _extract_snapshot_id(meta)
+                cache_key, hit = _cached_json_response(
+                    cache,
+                    snap_id,
+                    "v1/stress-test",
+                    payload.model_dump(mode="json"),
+                    cache_control=STRESS_CACHE_CONTROL_HEADER,
+                )
+                if hit is not None:
+                    return hit
+
                 pinned_svc = DashboardQueryService(pinned)
                 inputs_df = pinned_svc.get_stress_test_snapshot_inputs(
                     statement_scope=payload.statement_scope,
                     period_type=payload.period_type,
                     period_end_date=payload.period_end_date,
+                    tickers=payload.tickers,
                     connection=cursor,
                 )
 
@@ -1208,7 +1588,7 @@ def create_app(
             )
 
             if inputs_df.is_empty():
-                return StressTestResponse(
+                empty_body = StressTestResponse(
                     snapshot_id=snap_id,
                     scenario_name=scenario.name,
                     statement_scope=payload.statement_scope,
@@ -1223,16 +1603,33 @@ def create_app(
                     newly_distressed_issuers=[],
                     top_stressed_issuers=[],
                 )
+                return _store_cached_model(
+                    cache,
+                    cache_key,
+                    response,
+                    empty_body,
+                    snap_id=snap_id,
+                    cache_control=STRESS_CACHE_CONTROL_HEADER,
+                )
 
             resolved_end = inputs_df["period_end_date"][0]
-            stressed_df = simulate_financial_stress(inputs_df, scenario)
-            sector_df = summarize_stress_by_sector(stressed_df)
-            market_df = summarize_stress_by_sector(
-                stressed_df.with_columns(
-                    pl.lit("MARKET").alias("icb_code_level2"),
-                    pl.lit("MARKET").alias("icb_name_level2"),
+            with trace_span(
+                SPAN_ANALYTICS_STRESS_TEST,
+                {
+                    "stress.scenario_name": scenario.name,
+                    "stress.statement_scope": payload.statement_scope,
+                    "stress.period_type": payload.period_type,
+                    "stress.issuer_count": inputs_df.height,
+                },
+            ):
+                stressed_df = simulate_financial_stress(inputs_df, scenario)
+                sector_df = summarize_stress_by_sector(stressed_df)
+                market_df = summarize_stress_by_sector(
+                    stressed_df.with_columns(
+                        pl.lit("MARKET").alias("icb_code_level2"),
+                        pl.lit("MARKET").alias("icb_name_level2"),
+                    )
                 )
-            )
             market_row = market_df.row(0, named=True)
 
             issuer_cols = [
@@ -1280,7 +1677,7 @@ def create_app(
                 .head(payload.top_n)
             )
 
-            return StressTestResponse(
+            body = StressTestResponse(
                 snapshot_id=snap_id,
                 scenario_name=scenario.name,
                 statement_scope=payload.statement_scope,
@@ -1310,6 +1707,14 @@ def create_app(
                     StressIssuerItem(**row) for row in _frame_to_records(top_df)
                 ],
             )
+            return _store_cached_model(
+                cache,
+                cache_key,
+                response,
+                body,
+                snap_id=snap_id,
+                cache_control=STRESS_CACHE_CONTROL_HEADER,
+            )
         finally:
             if not already_held:
                 semaphore.release()
@@ -1323,32 +1728,45 @@ def create_app(
         tags=["quality"],
     )
     def get_quality_summary(
+        request: Request,
         response: Response,
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> QualitySummaryPageResponse | Response:
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
             snap_id = _extract_snapshot_id(meta)
             not_modified = _conditional_not_modified(if_none_match, snap_id)
             if not_modified is not None:
                 return not_modified
+
+            cache_key, hit = _cached_json_response(
+                cache,
+                snap_id,
+                "v1/quality/summary",
+                {"limit": limit, "offset": offset},
+            )
+            if hit is not None:
+                return hit
 
             page_df, total = DashboardQueryService(pinned).get_quality_summary_page(
                 limit=limit, offset=offset, connection=cursor
             )
 
         _apply_cache_headers(response, snap_id)
-        return QualitySummaryPageResponse(
+        body = QualitySummaryPageResponse(
             snapshot_id=snap_id,
             total=total,
             limit=limit,
             offset=offset,
             items=[QualitySummaryItem(**row) for row in _frame_to_records(page_df)],
         )
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     # ------------------------------------------------------------------
     # Route 10: GET /api/v1/quality/quarantine
@@ -1359,32 +1777,45 @@ def create_app(
         tags=["quality"],
     )
     def get_quality_quarantine(
+        request: Request,
         response: Response,
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> AuditQuarantinePageResponse | Response:
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
             snap_id = _extract_snapshot_id(meta)
             not_modified = _conditional_not_modified(if_none_match, snap_id)
             if not_modified is not None:
                 return not_modified
+
+            cache_key, hit = _cached_json_response(
+                cache,
+                snap_id,
+                "v1/quality/quarantine",
+                {"limit": limit, "offset": offset},
+            )
+            if hit is not None:
+                return hit
 
             page_df, total = DashboardQueryService(pinned).get_audit_quarantine_page(
                 limit=limit, offset=offset, connection=cursor
             )
 
         _apply_cache_headers(response, snap_id)
-        return AuditQuarantinePageResponse(
+        body = AuditQuarantinePageResponse(
             snapshot_id=snap_id,
             total=total,
             limit=limit,
             offset=offset,
             items=[AuditQuarantineItem(**row) for row in _frame_to_records(page_df)],
         )
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     # ------------------------------------------------------------------
     # V2 Read-Only UI Extension Routes (/api/v2/*)
@@ -1395,24 +1826,31 @@ def create_app(
         tags=["v2-meta"],
     )
     def get_v2_meta_periods(
+        request: Request,
         response: Response,
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> MetaPeriodsResponse | Response:
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
             snap_id = _extract_snapshot_id(meta)
             not_modified = _conditional_not_modified(if_none_match, snap_id)
             if not_modified is not None:
                 return not_modified
+
+            cache_key, hit = _cached_json_response(cache, snap_id, "v2/meta/periods")
+            if hit is not None:
+                return hit
 
             published_at, available_periods, sectors = DashboardQueryService(
                 pinned
             ).get_meta_periods_and_sectors(connection=cursor)
 
         _apply_cache_headers(response, snap_id)
-        return MetaPeriodsResponse(
+        body = MetaPeriodsResponse(
             snapshot_id=snap_id,
             published_at=published_at,
             available_periods=available_periods,
@@ -1425,6 +1863,7 @@ def create_app(
                 for s in sectors
             ],
         )
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     @api.get(
         "/api/v2/meta/dictionary",
@@ -1432,17 +1871,24 @@ def create_app(
         tags=["v2-meta"],
     )
     def get_v2_meta_dictionary(
+        request: Request,
         response: Response,
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> MetaDictionaryResponse | Response:
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
             snap_id = _extract_snapshot_id(meta)
             not_modified = _conditional_not_modified(if_none_match, snap_id)
             if not_modified is not None:
                 return not_modified
+
+            cache_key, hit = _cached_json_response(cache, snap_id, "v2/meta/dictionary")
+            if hit is not None:
+                return hit
 
         _apply_cache_headers(response, snap_id)
         ratios = [
@@ -1469,7 +1915,41 @@ def create_app(
             )
             for rf in RED_FLAG_DICTIONARY
         ]
-        return MetaDictionaryResponse(ratios=ratios, red_flags=red_flags)
+        body = MetaDictionaryResponse(ratios=ratios, red_flags=red_flags)
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
+
+    @api.get(
+        "/api/v2/meta/model-card",
+        response_model=ModelCardResponse,
+        tags=["v2-meta"],
+    )
+    def get_v2_meta_model_card(
+        request: Request,
+        response: Response,
+        if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+        cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
+        service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
+    ) -> ModelCardResponse | Response:
+        with service.repository.snapshot_session(connection=cursor) as pinned:
+            meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
+            snap_id = _extract_snapshot_id(meta)
+            not_modified = _conditional_not_modified(if_none_match, snap_id)
+            if not_modified is not None:
+                return not_modified
+
+            cache_key, hit = _cached_json_response(cache, snap_id, "v2/meta/model-card")
+            if hit is not None:
+                return hit
+
+            card_payload = DashboardQueryService(pinned).get_model_card(
+                connection=cursor
+            )
+
+        _apply_cache_headers(response, snap_id)
+        body = ModelCardResponse(snapshot_id=snap_id, **card_payload)
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     @api.get(
         "/api/v2/companies/{ticker}/benchmarks/summary",
@@ -1477,6 +1957,7 @@ def create_app(
         tags=["v2-companies"],
     )
     def get_v2_company_benchmarks_summary(
+        request: Request,
         response: Response,
         ticker: str = PathParam(..., pattern=_TICKER_PATTERN),
         statement_scope: StatementScope = Query("CONSOLIDATED"),
@@ -1486,13 +1967,34 @@ def create_app(
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> CompanyBenchmarksSummaryResponse | Response:
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
             snap_id = _extract_snapshot_id(meta)
             not_modified = _conditional_not_modified(if_none_match, snap_id)
             if not_modified is not None:
                 return not_modified
+
+            cache_key, hit = _cached_json_response(
+                cache,
+                snap_id,
+                "v2/companies/benchmarks/summary",
+                {
+                    "ticker": ticker.strip().upper(),
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                    "period_end_date": (
+                        period_end_date.isoformat()
+                        if period_end_date is not None
+                        else None
+                    ),
+                    "metrics": list(metrics) if metrics is not None else None,
+                },
+            )
+            if hit is not None:
+                return hit
 
             issuer_id, resolved_end, raw_items = DashboardQueryService(
                 pinned
@@ -1506,7 +2008,7 @@ def create_app(
             )
 
         _apply_cache_headers(response, snap_id)
-        return CompanyBenchmarksSummaryResponse(
+        body = CompanyBenchmarksSummaryResponse(
             snapshot_id=snap_id,
             ticker=ticker.strip().upper(),
             issuer_id=issuer_id,
@@ -1515,6 +2017,7 @@ def create_app(
             period_end_date=resolved_end,
             items=[BenchmarkSummaryItem(**item) for item in raw_items],  # type: ignore[arg-type]
         )
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     @api.get(
         "/api/v2/companies/{ticker}/statements",
@@ -1522,6 +2025,7 @@ def create_app(
         tags=["v2-companies"],
     )
     def get_v2_company_statements(
+        request: Request,
         response: Response,
         ticker: str = PathParam(..., pattern=_TICKER_PATTERN),
         statement_type: StatementType = Query("INCOME_STATEMENT"),
@@ -1531,13 +2035,30 @@ def create_app(
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> CompanyStatementsResponse | Response:
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
             snap_id = _extract_snapshot_id(meta)
             not_modified = _conditional_not_modified(if_none_match, snap_id)
             if not_modified is not None:
                 return not_modified
+
+            cache_key, hit = _cached_json_response(
+                cache,
+                snap_id,
+                "v2/companies/statements",
+                {
+                    "ticker": ticker.strip().upper(),
+                    "statement_type": statement_type,
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                    "periods_limit": periods_limit,
+                },
+            )
+            if hit is not None:
+                return hit
 
             issuer_id, periods, rows = DashboardQueryService(
                 pinned
@@ -1551,7 +2072,7 @@ def create_app(
             )
 
         _apply_cache_headers(response, snap_id)
-        return CompanyStatementsResponse(
+        body = CompanyStatementsResponse(
             snapshot_id=snap_id,
             ticker=ticker.strip().upper(),
             issuer_id=issuer_id,
@@ -1561,6 +2082,7 @@ def create_app(
             periods=[StatementPeriodItem(**p) for p in periods],  # type: ignore[arg-type]
             rows=[StatementRowItem(**r) for r in rows],  # type: ignore[arg-type]
         )
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     @api.get(
         "/api/v2/companies/{ticker}/filings",
@@ -1568,6 +2090,7 @@ def create_app(
         tags=["v2-companies"],
     )
     def get_v2_company_filings(
+        request: Request,
         response: Response,
         ticker: str = PathParam(..., pattern=_TICKER_PATTERN),
         statement_scope: StatementScope | None = Query(None),
@@ -1575,13 +2098,28 @@ def create_app(
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> CompanyFilingsResponse | Response:
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
             snap_id = _extract_snapshot_id(meta)
             not_modified = _conditional_not_modified(if_none_match, snap_id)
             if not_modified is not None:
                 return not_modified
+
+            cache_key, hit = _cached_json_response(
+                cache,
+                snap_id,
+                "v2/companies/filings",
+                {
+                    "ticker": ticker.strip().upper(),
+                    "statement_scope": statement_scope,
+                    "limit": limit,
+                },
+            )
+            if hit is not None:
+                return hit
 
             issuer_id, items = DashboardQueryService(pinned).get_company_filings(
                 ticker,
@@ -1591,12 +2129,63 @@ def create_app(
             )
 
         _apply_cache_headers(response, snap_id)
-        return CompanyFilingsResponse(
+        body = CompanyFilingsResponse(
             snapshot_id=snap_id,
             ticker=ticker.strip().upper(),
             issuer_id=issuer_id,
             items=[CompanyFilingItem(**item) for item in items],  # type: ignore[arg-type]
         )
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
+
+    @api.get(
+        "/api/v2/companies/{ticker}/market-overlay",
+        response_model=CompanyMarketOverlayResponse,
+        tags=["v2-companies"],
+    )
+    def get_v2_company_market_overlay(
+        request: Request,
+        response: Response,
+        ticker: str = PathParam(..., pattern=_TICKER_PATTERN),
+        statement_scope: StatementScope = Query("CONSOLIDATED"),
+        as_of: date | None = Query(None),
+        if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+        cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
+        service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
+    ) -> CompanyMarketOverlayResponse | Response:
+        clean_ticker = ticker.strip().upper()
+        with service.repository.snapshot_session(connection=cursor) as pinned:
+            meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
+            snap_id = _extract_snapshot_id(meta)
+            not_modified = _conditional_not_modified(if_none_match, snap_id)
+            if not_modified is not None:
+                return not_modified
+
+            cache_key, hit = _cached_json_response(
+                cache,
+                snap_id,
+                "v2/companies/market-overlay",
+                {
+                    "ticker": clean_ticker,
+                    "statement_scope": statement_scope,
+                    "as_of": as_of.isoformat() if as_of is not None else None,
+                },
+            )
+            if hit is not None:
+                return hit
+
+            overlay_payload = DashboardQueryService(pinned).get_company_market_overlay(
+                clean_ticker,
+                statement_scope=statement_scope,
+                as_of=as_of,
+                port_data_root=service.repository._source,
+                connection=cursor,
+            )
+
+        _apply_cache_headers(response, snap_id)
+        body = CompanyMarketOverlayResponse(snapshot_id=snap_id, **overlay_payload)
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     @api.get(
         "/api/v2/sectors/risk-summary",
@@ -1604,6 +2193,7 @@ def create_app(
         tags=["v2-market"],
     )
     def get_v2_sector_risk_summary(
+        request: Request,
         response: Response,
         statement_scope: StatementScope = Query("CONSOLIDATED"),
         period_type: PeriodType = Query("QUARTER"),
@@ -1611,13 +2201,32 @@ def create_app(
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> SectorRiskSummaryResponse | Response:
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
             snap_id = _extract_snapshot_id(meta)
             not_modified = _conditional_not_modified(if_none_match, snap_id)
             if not_modified is not None:
                 return not_modified
+
+            cache_key, hit = _cached_json_response(
+                cache,
+                snap_id,
+                "v2/sectors/risk-summary",
+                {
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                    "period_end_date": (
+                        period_end_date.isoformat()
+                        if period_end_date is not None
+                        else None
+                    ),
+                },
+            )
+            if hit is not None:
+                return hit
 
             summary = DashboardQueryService(pinned).get_sector_risk_summary(
                 statement_scope=statement_scope,
@@ -1627,7 +2236,7 @@ def create_app(
             )
 
         _apply_cache_headers(response, snap_id)
-        return SectorRiskSummaryResponse(
+        body = SectorRiskSummaryResponse(
             snapshot_id=snap_id,
             statement_scope=statement_scope,
             period_type=period_type,
@@ -1644,6 +2253,7 @@ def create_app(
                 for item in summary["top_deteriorating"]
             ],
         )
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     @api.get(
         "/api/v2/market/changes",
@@ -1651,6 +2261,7 @@ def create_app(
         tags=["v2-market"],
     )
     def get_v2_market_changes(
+        request: Request,
         response: Response,
         tickers: str | None = Query(None, max_length=600),
         statement_scope: StatementScope = Query("CONSOLIDATED"),
@@ -1659,6 +2270,7 @@ def create_app(
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
+        cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> MarketChangesResponse | Response:
         parsed_tickers: list[str] | None = None
         if tickers is not None and tickers.strip():
@@ -1672,10 +2284,25 @@ def create_app(
 
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
+            _attach_lineage_state(request, meta)
             snap_id = _extract_snapshot_id(meta)
             not_modified = _conditional_not_modified(if_none_match, snap_id)
             if not_modified is not None:
                 return not_modified
+
+            cache_key, hit = _cached_json_response(
+                cache,
+                snap_id,
+                "v2/market/changes",
+                {
+                    "tickers": parsed_tickers,
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                    "limit": limit,
+                },
+            )
+            if hit is not None:
+                return hit
 
             items = DashboardQueryService(pinned).get_market_changes(
                 tickers=parsed_tickers,
@@ -1686,12 +2313,20 @@ def create_app(
             )
 
         _apply_cache_headers(response, snap_id)
-        return MarketChangesResponse(
+        body = MarketChangesResponse(
             snapshot_id=snap_id,
             statement_scope=statement_scope,
             period_type=period_type,
             items=[MarketChangeItem(**item) for item in items],  # type: ignore[arg-type]
         )
+        return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
+
+    _mount_rag_router(
+        api,
+        valkey_url=valkey_url,
+        rag_store=rag_store,
+        rag_investigator=rag_investigator,
+    )
 
     return api
 

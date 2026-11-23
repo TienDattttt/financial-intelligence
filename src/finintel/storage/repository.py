@@ -25,6 +25,7 @@ import os
 import sqlite3
 import stat
 import threading
+import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping, Sequence
@@ -32,7 +33,7 @@ from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import duckdb
 import polars as pl
@@ -43,13 +44,19 @@ from finintel.storage.ducklake_store import (
     DEFAULT_POSTGRES_DSN_ENV,
     SNAPSHOT_AUDIT_TABLE,
     CatalogDriver,
+    PostgresActiveSnapshotPointer,
     ensure_ducklake_attached,
+    read_postgres_active_snapshot,
     validate_sql_identifier,
 )
+from finintel.storage.schemas import MODEL_CARD_META_TABLE
 from finintel.storage.snapshot_publisher import (
     KNOWN_TABLES,
     snapshot_read_lock,
 )
+
+if TYPE_CHECKING:
+    from finintel.config import FinIntelRuntimeConfig
 
 _SCALAR_FILTER_TYPES = (str, bytes, bool, int, float, date, datetime)
 _COLLECTION_FILTER_TYPES = (list, tuple, set, frozenset)
@@ -125,6 +132,7 @@ _MAX_BINDING_CACHE_SIZE = 128
 _MAX_TABLE_META_CACHE_SIZE = 512
 _MAX_PARQUET_SCHEMA_CACHE_SIZE = 512
 _MAX_TABLE_DATA_CACHE_SIZE = 12
+POSTGRES_POINTER_CACHE_TTL_SECONDS = 0.5
 
 # Only small serving tables are eligible for process-local L1 Polars caching.
 # Large tables (financial_facts, latest_facts, industry_benchmarks, filings_manifest)
@@ -134,9 +142,9 @@ _IN_MEMORY_CACHEABLE_TABLES: frozenset[str] = frozenset(
     {
         "issuers.parquet",
         "financial_ratios.parquet",
-        "industry_benchmarks.parquet",
         "accounting_red_flags.parquet",
         "ml_scores_and_explanations.parquet",
+        MODEL_CARD_META_TABLE,
         "quality_summary.parquet",
         "audit_quarantine.parquet",
     }
@@ -162,6 +170,9 @@ _VALIDATED_IDENTIFIERS: set[str] = set()
 
 _ACTIVE_SNAPSHOT_POINTER_CACHE: OrderedDict[
     _StateSqliteSigKey, tuple[str, str | None] | None
+] = OrderedDict()
+_POSTGRES_POINTER_CACHE: OrderedDict[
+    tuple[str, str], tuple[float, PostgresActiveSnapshotPointer | None]
 ] = OrderedDict()
 _DUCKLAKE_BINDING_CACHE: OrderedDict[_DuckLakeBindingKey, _DuckLakeBinding] = (
     OrderedDict()
@@ -263,6 +274,34 @@ def _read_active_snapshot_pointer(state_path: Path) -> tuple[str, str | None] | 
             while len(_ACTIVE_SNAPSHOT_POINTER_CACHE) > _MAX_BINDING_CACHE_SIZE:
                 _ACTIVE_SNAPSHOT_POINTER_CACHE.popitem(last=False)
     return result
+
+
+def _read_postgres_active_snapshot_pointer_cached(
+    postgres_dsn_env: str,
+    catalog_alias: str,
+    *,
+    ttl_seconds: float = POSTGRES_POINTER_CACHE_TTL_SECONDS,
+) -> PostgresActiveSnapshotPointer | None:
+    """Read ``public.finintel_active_snapshot`` with a bounded 500 ms TTL cache (ARCH-08)."""
+    cache_key = (postgres_dsn_env, catalog_alias)
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        cached = _POSTGRES_POINTER_CACHE.get(cache_key)
+        if cached is not None and now < cached[0]:
+            _POSTGRES_POINTER_CACHE.move_to_end(cache_key)
+            return cached[1]
+
+    pointer = read_postgres_active_snapshot(
+        postgres_dsn_env=postgres_dsn_env,
+        catalog_alias=catalog_alias,
+    )
+    expires_at = time.monotonic() + ttl_seconds
+    with _CACHE_LOCK:
+        _POSTGRES_POINTER_CACHE[cache_key] = (expires_at, pointer)
+        _POSTGRES_POINTER_CACHE.move_to_end(cache_key)
+        while len(_POSTGRES_POINTER_CACHE) > _MAX_BINDING_CACHE_SIZE:
+            _POSTGRES_POINTER_CACHE.popitem(last=False)
+    return pointer
 
 
 def _catalog_file_identity(path: Path) -> int:
@@ -759,44 +798,65 @@ class ParquetRepository:
         self._session_connection = _session_connection
         self._cached_located_catalog: tuple[Path, Path, Path] | None = None
 
+    @classmethod
+    def from_runtime_config(
+        cls,
+        config: FinIntelRuntimeConfig,
+    ) -> ParquetRepository:
+        """Construct a ``ParquetRepository`` from unified ``FinIntelRuntimeConfig``."""
+        return cls(
+            data_root=config.data_root,
+            catalog_path=config.catalog_sqlite_path,
+            lakehouse_data_path=config.lakehouse_data_path,
+            catalog_alias=config.catalog_alias,
+            catalog_driver=config.catalog_driver,
+            postgres_dsn_env=config.postgres_dsn_env,
+            backend=config.backend,
+        )
+
     def _find_ducklake_catalog(self) -> tuple[Path, Path, Path] | None:
         """Return ``(catalog_path, state_path, lake_data_path)`` if DuckLake is configured or present."""
         cached_loc = self._cached_located_catalog
         if cached_loc is not None:
-            cat_c, state_c, _ = cached_loc
-            if (self._catalog_driver == "postgres" and state_c.exists()) or (
-                self._catalog_driver != "postgres" and cat_c.is_file()
-            ):
+            cat_c, _state_c, _ = cached_loc
+            if self._catalog_driver == "postgres" or cat_c.is_file():
                 return cached_loc
             self._cached_located_catalog = None
 
         if self._catalog_driver == "postgres":
-            state_candidates = (
-                (self._catalog_path.parent / "state.sqlite",)
-                if self._catalog_path is not None
-                else (
+            # ARCH-08: Postgres serving does NOT require local state.sqlite or data/metadata/.
+            raw_candidates: list[Path] = []
+            if self._catalog_path is not None:
+                raw_candidates.append(self._catalog_path.parent / "state.sqlite")
+            raw_candidates.extend(
+                [
                     self._source / "metadata" / "state.sqlite",
                     self._source / "data" / "metadata" / "state.sqlite",
-                )
+                ]
             )
-            for state_path in state_candidates:
-                if state_path.exists():
-                    meta_dir = state_path.parent
-                    data_root = meta_dir.parent
-                    cat_path = self._catalog_path or (
-                        meta_dir / "ducklake_catalog.sqlite"
-                    )
-                    lake_data = self._lakehouse_data_path or (
-                        data_root / "lakehouse" / "data"
-                    )
-                    resolved_loc = (
-                        cat_path.resolve(),
-                        state_path.resolve(),
-                        lake_data.resolve(),
-                    )
-                    self._cached_located_catalog = resolved_loc
-                    return resolved_loc
-            return None
+            state_candidates = tuple(dict.fromkeys(raw_candidates))
+            state_path = next(
+                (p for p in state_candidates if p.exists()),
+                state_candidates[0],
+            )
+            meta_dir = state_path.parent
+            data_root = meta_dir.parent
+            cat_path = self._catalog_path or (meta_dir / "ducklake_catalog.sqlite")
+            if self._lakehouse_data_path is not None:
+                lake_data = self._lakehouse_data_path
+            elif (self._source / "lakehouse" / "data").exists():
+                lake_data = self._source / "lakehouse" / "data"
+            elif (self._source / "data" / "lakehouse" / "data").exists():
+                lake_data = self._source / "data" / "lakehouse" / "data"
+            else:
+                lake_data = data_root / "lakehouse" / "data"
+            resolved_loc = (
+                cat_path.resolve(),
+                state_path.resolve(),
+                lake_data.resolve(),
+            )
+            self._cached_located_catalog = resolved_loc
+            return resolved_loc
 
         if self._catalog_path is not None:
             if not self._catalog_path.is_file():
@@ -904,13 +964,42 @@ class ParquetRepository:
         if located is None:
             return None
         cat_path, state_path, lake_data = located
-        if not state_path.exists():
-            return None
-
-        pointer = _read_active_snapshot_pointer(state_path)
-        if pointer is None:
-            return None
-        snapshot_id, state_published_at = pointer
+        expected_pg_version: int | None = None
+        if self._catalog_driver == "postgres":
+            pg_dsn_present = bool(os.environ.get(self._postgres_dsn_env, "").strip())
+            if pg_dsn_present:
+                pg_pointer = _read_postgres_active_snapshot_pointer_cached(
+                    self._postgres_dsn_env, self._catalog_alias
+                )
+                if pg_pointer is not None:
+                    snapshot_id = pg_pointer.snapshot_id
+                    state_published_at = pg_pointer.published_at
+                    expected_pg_version = pg_pointer.ducklake_version
+                elif state_path.exists():
+                    pointer = _read_active_snapshot_pointer(state_path)
+                    if pointer is None:
+                        return None
+                    snapshot_id, state_published_at = pointer
+                else:
+                    return None
+            elif state_path.exists():
+                pointer = _read_active_snapshot_pointer(state_path)
+                if pointer is None:
+                    return None
+                snapshot_id, state_published_at = pointer
+            elif self._backend == "ducklake":
+                raise ContractViolationError(
+                    f"Environment variable {self._postgres_dsn_env} is not set for PostgreSQL DuckLake catalog."
+                )
+            else:
+                return None
+        else:
+            if not state_path.exists():
+                return None
+            pointer = _read_active_snapshot_pointer(state_path)
+            if pointer is None:
+                return None
+            snapshot_id, state_published_at = pointer
 
         cat_id = (
             _catalog_file_identity(cat_path) if self._catalog_driver == "sqlite" else 0
@@ -924,12 +1013,30 @@ class ParquetRepository:
         with _CACHE_LOCK:
             cached_binding = _DUCKLAKE_BINDING_CACHE.get(cache_key)
             if cached_binding is not None:
+                if (
+                    expected_pg_version is not None
+                    and cached_binding.ducklake_version != expected_pg_version
+                ):
+                    raise ContractViolationError(
+                        f"Split-brain detected: Postgres pointer version {expected_pg_version} "
+                        f"does not match DuckLake audit version {cached_binding.ducklake_version} "
+                        f"for snapshot {snapshot_id!r}."
+                    )
                 return cached_binding
 
         with _CATALOG_DISCOVERY_LOCK:
             with _CACHE_LOCK:
                 cached_binding = _DUCKLAKE_BINDING_CACHE.get(cache_key)
                 if cached_binding is not None:
+                    if (
+                        expected_pg_version is not None
+                        and cached_binding.ducklake_version != expected_pg_version
+                    ):
+                        raise ContractViolationError(
+                            f"Split-brain detected: Postgres pointer version {expected_pg_version} "
+                            f"does not match DuckLake audit version {cached_binding.ducklake_version} "
+                            f"for snapshot {snapshot_id!r}."
+                        )
                     _DUCKLAKE_BINDING_CACHE.move_to_end(cache_key)
                     return cached_binding
 
@@ -992,11 +1099,19 @@ class ParquetRepository:
                     con.close()
 
             if audit_row is None:
-                if self._backend == "ducklake":
+                if self._backend == "ducklake" or expected_pg_version is not None:
                     raise ContractViolationError(
                         f"Active snapshot {snapshot_id!r} is missing from DuckLake audit table."
                     )
                 return None
+
+            audit_version = int(audit_row[0])
+            if expected_pg_version is not None and audit_version != expected_pg_version:
+                raise ContractViolationError(
+                    f"Split-brain detected: Postgres pointer version {expected_pg_version} "
+                    f"does not match DuckLake audit version {audit_version} "
+                    f"for snapshot {snapshot_id!r}."
+                )
 
             dagster_run_id: str | None = None
             git_commit_sha: str | None = None
@@ -2177,6 +2292,7 @@ def clear_repository_caches() -> None:
     """Clear all thread-safe repository metadata, schema, and snapshot table caches."""
     with _CACHE_LOCK:
         _ACTIVE_SNAPSHOT_POINTER_CACHE.clear()
+        _POSTGRES_POINTER_CACHE.clear()
         _DUCKLAKE_BINDING_CACHE.clear()
         _DUCKLAKE_TABLE_CACHE.clear()
         _PARQUET_SCHEMA_CACHE.clear()

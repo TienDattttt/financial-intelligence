@@ -4,8 +4,8 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Plus, ShieldAlert } from "lucide-react";
-import { SectorHeatmapChart } from "@/components/charts/SectorHeatmapChart";
-import { RiskBadge } from "@/components/financial/RiskBadge";
+import { SectorTreemapChart } from "@/components/charts/SectorTreemapChart";
+import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,8 @@ import {
 } from "@/hooks/use-finintel-queries";
 import {
   ALTMAN_ZONE_META,
-  getDistressRiskBadge,
+  formatCreditTrio,
+  getRiskTierMeta,
   PERIOD_TYPE_LABELS,
   STATEMENT_SCOPE_LABELS,
 } from "@/lib/domain-labels";
@@ -27,6 +28,7 @@ import {
   formatPercent,
   formatPercentPoints,
   formatPeriodLabel,
+  MINUS_SIGN,
 } from "@/lib/format";
 import {
   addWatchlistTicker,
@@ -39,7 +41,8 @@ const PREFERRED_SUGGESTIONS = ["HPG", "FPT", "VNM", "MWG", "GAS"];
 
 export default function MarketOverviewPage() {
   const router = useRouter();
-  const { statementScope, periodType, periodEndDate, snapshotId } = useAppState();
+  const { statementScope, periodType, periodEndDate, availableDates, snapshotId } =
+    useAppState();
 
   const watchlist = React.useSyncExternalStore(
     subscribePreferences,
@@ -51,6 +54,24 @@ export default function MarketOverviewPage() {
     { statementScope, periodType, periodEndDate },
     snapshotId,
   );
+  const currentPeriodDate =
+    sectorSummary.data?.period_end_date ?? periodEndDate ?? availableDates[0] ?? null;
+
+  const prevPeriodDate = React.useMemo(() => {
+    if (!currentPeriodDate || availableDates.length === 0) return null;
+    const desc = [...availableDates].sort((a, b) => b.localeCompare(a));
+    return desc.find((d) => d < currentPeriodDate) ?? null;
+  }, [availableDates, currentPeriodDate]);
+
+  const prevSectorSummary = useSectorRiskSummary(
+    {
+      statementScope,
+      periodType,
+      periodEndDate: prevPeriodDate ?? periodEndDate,
+    },
+    snapshotId,
+  );
+  const prevData = prevPeriodDate ? prevSectorSummary.data ?? null : null;
   const watchlistChanges = useMarketChanges(
     {
       tickers: watchlist,
@@ -86,11 +107,63 @@ export default function MarketOverviewPage() {
     const beneishShare = total > 0 ? data.beneish_flagged_count / total : 0;
     const redFlagShare = total > 0 ? data.high_red_flag_count / total : 0;
 
+    const prevTotal = prevData?.total_issuers ?? 0;
+    const hasPrev = Boolean(prevData && prevTotal > 0);
+    const prevLabel = prevData?.period_end_date
+      ? formatPeriodLabel(prevData.period_end_date, data.period_type)
+      : "kỳ trước";
+
+    const formatCountDelta = (
+      currCount: number,
+      prevCount: number | null,
+      currShare: number,
+      prevShare: number | null,
+      higherIsWorse: boolean,
+    ): { text: string; toneClass: string } | null => {
+      if (!hasPrev || prevCount === null) return null;
+      const diff = currCount - prevCount;
+      const sign = diff > 0 ? "+" : diff < 0 ? MINUS_SIGN : "";
+      const countPart =
+        diff === 0 ? "0 DN" : `${sign}${formatNumber(Math.abs(diff), 0)} DN`;
+      const ppPart =
+        prevShare !== null ? ` (${formatPercentPoints(currShare - prevShare, 1)})` : "";
+      const toneClass =
+        diff === 0
+          ? "text-ink-subtle"
+          : higherIsWorse
+            ? diff > 0
+              ? "text-risk-high"
+              : "text-risk-low"
+            : diff > 0
+              ? "text-up"
+              : "text-down";
+      return {
+        text: `${countPart}${ppPart} so với ${prevLabel}`,
+        toneClass,
+      };
+    };
+
+    const totalDelta = hasPrev
+      ? (() => {
+          const diff = total - prevTotal;
+          const sign = diff > 0 ? "+" : diff < 0 ? MINUS_SIGN : "";
+          return {
+            text:
+              diff === 0
+                ? `Không đổi so với ${prevLabel}`
+                : `${sign}${formatNumber(Math.abs(diff), 0)} DN so với ${prevLabel}`,
+            toneClass:
+              diff > 0 ? "text-up" : diff < 0 ? "text-down" : "text-ink-subtle",
+          };
+        })()
+      : null;
+
     return [
       {
         title: "Doanh nghiệp được đánh giá",
         value: formatNumber(total, 0),
         sub: `${data.safe_zone_count} An toàn · ${data.grey_zone_count} Vùng xám`,
+        delta: totalDelta,
         href: "/screener",
         toneClass: "text-ink",
       },
@@ -98,6 +171,13 @@ export default function MarketOverviewPage() {
         title: "Vùng nguy cơ kiệt quệ (Z″ < 1,10)",
         value: formatNumber(data.distress_zone_count, 0),
         sub: `${formatPercent(distressShare)} số DN trong lát cắt`,
+        delta: formatCountDelta(
+          data.distress_zone_count,
+          prevData?.distress_zone_count ?? null,
+          distressShare,
+          prevData && prevTotal > 0 ? prevData.distress_zone_count / prevTotal : null,
+          true,
+        ),
         href: "/screener?altman_zone=DISTRESS_ZONE",
         toneClass: "text-risk-high",
       },
@@ -105,6 +185,13 @@ export default function MarketOverviewPage() {
         title: "Nghi vấn điều chỉnh LN (M-Score)",
         value: formatNumber(data.beneish_flagged_count, 0),
         sub: `${formatPercent(beneishShare)} vượt ngưỡng Beneish > −1,78`,
+        delta: formatCountDelta(
+          data.beneish_flagged_count,
+          prevData?.beneish_flagged_count ?? null,
+          beneishShare,
+          prevData && prevTotal > 0 ? prevData.beneish_flagged_count / prevTotal : null,
+          true,
+        ),
         href: "/screener?beneish_flag=HIGH_MANIPULATION_RISK_SCREEN",
         toneClass: "text-risk-mid",
       },
@@ -112,11 +199,18 @@ export default function MarketOverviewPage() {
         title: "Cảnh báo ≥ 2 cờ đỏ kế toán",
         value: formatNumber(data.high_red_flag_count, 0),
         sub: `${formatPercent(redFlagShare)} DN có nhiều tín hiệu bất thường`,
+        delta: formatCountDelta(
+          data.high_red_flag_count,
+          prevData?.high_red_flag_count ?? null,
+          redFlagShare,
+          prevData && prevTotal > 0 ? prevData.high_red_flag_count / prevTotal : null,
+          true,
+        ),
         href: "/screener?min_red_flags=2",
         toneClass: "text-risk-high",
       },
     ];
-  }, [data]);
+  }, [data, prevData]);
 
   if (sectorSummary.isLoading) {
     return <PageSkeleton />;
@@ -180,7 +274,7 @@ export default function MarketOverviewPage() {
           <Link
             key={kpi.title}
             href={kpi.href}
-            className="group block rounded border border-border bg-surface p-3.5 transition-colors hover:border-accent-ink/60"
+            className="group block rounded-lg border border-border bg-surface p-3.5 shadow-xs transition-colors duration-150 hover:border-accent-ink/60"
           >
             <p className="text-xs font-medium text-ink-muted group-hover:text-accent-ink">
               {kpi.title}
@@ -189,11 +283,16 @@ export default function MarketOverviewPage() {
               {kpi.value}
             </p>
             <p className="num mt-1.5 text-[11px] text-ink-muted">{kpi.sub}</p>
+            {kpi.delta ? (
+              <p className={`num mt-1 text-[11px] font-medium ${kpi.delta.toneClass}`}>
+                {kpi.delta.text}
+              </p>
+            ) : null}
           </Link>
         ))}
       </section>
 
-      <SectorHeatmapChart
+      <SectorTreemapChart
         sectors={data.sectors}
         onSelectSector={(code) =>
           router.push(`/screener?icb_code_level2=${encodeURIComponent(code)}`)
@@ -236,10 +335,13 @@ export default function MarketOverviewPage() {
                         Ngành
                       </th>
                       <th scope="col" className="px-3 py-2 text-left font-semibold">
+                        Bậc tín nhiệm
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">
                         Chuyển vùng Altman
                       </th>
                       <th scope="col" className="px-3 py-2 text-right font-semibold">
-                        Biến động XS kiệt quệ
+                        1Y PD (Biến động)
                       </th>
                       <th scope="col" className="px-3 py-2 text-right font-semibold">
                         Cờ đỏ mới
@@ -254,6 +356,14 @@ export default function MarketOverviewPage() {
                       const currMeta = row.altman_zone_curr
                         ? ALTMAN_ZONE_META[row.altman_zone_curr]
                         : null;
+                      const prevTier = getRiskTierMeta(row.risk_tier_prev);
+                      const trio = formatCreditTrio({
+                        risk_tier: row.risk_tier_curr,
+                        risk_market_percentile: row.risk_market_percentile_curr,
+                        calibrated_distress_prob: row.distress_prob_curr,
+                        relative_risk_lift: row.relative_risk_lift_curr,
+                        market_base_rate: row.market_base_rate_curr,
+                      });
                       return (
                         <tr
                           key={row.issuer_id}
@@ -267,8 +377,23 @@ export default function MarketOverviewPage() {
                               {row.ticker}
                             </Link>
                           </td>
-                          <td className="max-w-[160px] truncate px-3 py-2 text-ink-muted">
+                          <td className="max-w-[140px] truncate px-3 py-2 text-ink-muted">
                             {row.icb_name_level2 ?? "—"}
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex flex-wrap items-center gap-1">
+                              {prevTier.tier ? (
+                                <span className="font-mono text-[11px] text-ink-muted">
+                                  {prevTier.badgeText} →
+                                </span>
+                              ) : null}
+                              <RiskTierBadge riskTier={row.risk_tier_curr} compact />
+                            </div>
+                            {trio.topPercent !== null ? (
+                              <div className="mt-0.5 text-[10px] text-ink-subtle">
+                                {trio.topPercentLabel}
+                              </div>
+                            ) : null}
                           </td>
                           <td className="px-3 py-2">
                             <div className="flex flex-wrap items-center gap-1">
@@ -282,18 +407,23 @@ export default function MarketOverviewPage() {
                             </div>
                           </td>
                           <td className="num px-3 py-2 text-right">
-                            <span
-                              className={
-                                (row.distress_prob_delta ?? 0) > 0.005
-                                  ? "font-medium text-risk-high"
-                                  : "text-ink"
-                              }
-                            >
-                              {formatPercentPoints(row.distress_prob_delta, 1)}
-                            </span>
-                            <span className="ml-1 text-[11px] text-ink-subtle">
-                              ({formatPercent(row.distress_prob_curr)})
-                            </span>
+                            <div>
+                              <span
+                                className={
+                                  (row.distress_prob_delta ?? 0) > 0.005
+                                    ? "font-medium text-risk-high"
+                                    : "text-ink"
+                                }
+                              >
+                                {formatPercent(row.distress_prob_curr)}
+                              </span>
+                              <span className="ml-1 text-[11px] text-ink-subtle">
+                                ({formatPercentPoints(row.distress_prob_delta, 1)})
+                              </span>
+                            </div>
+                            {trio.liftLabel ? (
+                              <div className="text-[10px] text-ink-muted">{trio.liftLabel}</div>
+                            ) : null}
                           </td>
                           <td className="num px-3 py-2 text-right">
                             {row.new_red_flag_codes.length > 0 ? (
@@ -370,10 +500,10 @@ export default function MarketOverviewPage() {
                         Mã
                       </th>
                       <th scope="col" className="px-2.5 py-2 text-left font-semibold">
-                        Mức độ rủi ro
+                        Bậc &amp; Vị thế
                       </th>
                       <th scope="col" className="px-2.5 py-2 text-right font-semibold">
-                        XS kiệt quệ
+                        1Y PD (× nền)
                       </th>
                       <th scope="col" className="px-2.5 py-2 text-right font-semibold">
                         Cờ đỏ
@@ -382,7 +512,13 @@ export default function MarketOverviewPage() {
                   </thead>
                   <tbody>
                     {(watchlistChanges.data?.items ?? []).map((item) => {
-                      const badge = getDistressRiskBadge(item.distress_prob_curr);
+                      const trio = formatCreditTrio({
+                        risk_tier: item.risk_tier_curr,
+                        risk_market_percentile: item.risk_market_percentile_curr,
+                        calibrated_distress_prob: item.distress_prob_curr,
+                        relative_risk_lift: item.relative_risk_lift_curr,
+                        market_base_rate: item.market_base_rate_curr,
+                      });
                       return (
                         <tr
                           key={item.ticker}
@@ -397,10 +533,20 @@ export default function MarketOverviewPage() {
                             </Link>
                           </td>
                           <td className="px-2.5 py-2">
-                            <RiskBadge tone={badge.tone} label={badge.shortLabel} />
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <RiskTierBadge riskTier={item.risk_tier_curr} compact />
+                              {trio.topPercent !== null ? (
+                                <span className="text-[11px] text-ink-muted">
+                                  {trio.topPercentLabel}
+                                </span>
+                              ) : null}
+                            </div>
                           </td>
                           <td className="num px-2.5 py-2 text-right">
-                            {formatPercent(item.distress_prob_curr)}
+                            <div className="font-medium text-ink">{trio.pdLabel}</div>
+                            {trio.liftLabel ? (
+                              <div className="text-[10px] text-ink-muted">{trio.liftLabel}</div>
+                            ) : null}
                           </td>
                           <td className="num px-2.5 py-2 text-right">
                             {item.red_flag_count_curr}

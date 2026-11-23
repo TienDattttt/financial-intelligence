@@ -29,7 +29,6 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-import dashboard.queries as legacy_queries
 from finintel.analytics.stress_test import (
     StressScenario,
     simulate_financial_stress,
@@ -46,6 +45,10 @@ from finintel.serving.queries import (
     RATIO_LINEAGE_CATALOG,
     SCREENER_SCHEMA,
     DashboardQueryService,
+    pagination_offset,
+    pagination_total_pages,
+    pagination_window,
+    percent_to_decimal,
 )
 from finintel.storage.ducklake_store import DuckLakeStore
 from finintel.storage.repository import ParquetRepository
@@ -429,6 +432,20 @@ def _build_synthetic_v2_tables() -> dict[str, pl.DataFrame]:
                 if (is_q and iid == "FPT")
                 else (0.85 if is_q else None),
                 "calibrated_distress_prob": prob,
+                "risk_tier": (
+                    "R1" if iid == "FPT" else ("R3" if iid == "CMG" else "R5")
+                )
+                if is_q
+                else None,
+                "risk_market_percentile": (
+                    33.33 if iid == "FPT" else (66.67 if iid == "CMG" else 100.0)
+                )
+                if is_q
+                else None,
+                "market_base_rate": 0.025 if is_q else None,
+                "relative_risk_lift": (prob / 0.025)
+                if (is_q and prob is not None)
+                else None,
                 "model_version": "xgboost-layer4b-v2" if is_q else None,
                 "shap_top_drivers_json": shap_str,
             }
@@ -953,7 +970,7 @@ def test_20_threads_200_concurrent_requests_and_shutdown_close(
         for r in app.routes
         if isinstance(r, APIRoute) and r.path.startswith("/api/v1/")
     ]
-    assert len(api_routes) == 10
+    assert len(api_routes) == 11
     for route in api_routes:
         assert not inspect.iscoroutinefunction(route.endpoint), (
             f"Route {route.path} must be sync def for DuckDB cursor threadpool safety"
@@ -1148,28 +1165,26 @@ def test_pushdown_and_overview_efficiency_spy(
             assert flt.get("issuer_id") == "FPT", f"Missing issuer_id pushdown on {tbl}"
 
 
-def test_dashboard_queries_shim_and_zero_anti_patterns() -> None:
-    # Backwards-compatible shim exports identical canonical objects and UI helpers.
-    assert legacy_queries.DashboardQueryService is DashboardQueryService
-    assert legacy_queries.ALL_RATIOS is ALL_RATIOS
-    assert legacy_queries.RATIO_LINEAGE_CATALOG is RATIO_LINEAGE_CATALOG
-    assert len(legacy_queries.ALL_RATIOS) == 38
-    assert legacy_queries.StressScenario is StressScenario
-    assert legacy_queries.simulate_financial_stress is simulate_financial_stress
-    assert legacy_queries.summarize_stress_by_sector is summarize_stress_by_sector
+def test_serving_queries_helpers_and_zero_anti_patterns() -> None:
+    # Canonical catalog and UI conversion/pagination helpers exposed via serving.queries.
+    assert len(ALL_RATIOS) == 38
+    assert len(RATIO_LINEAGE_CATALOG) == 38
+    assert DashboardQueryService is not None
+    assert StressScenario is not None
+    assert simulate_financial_stress is not None
+    assert summarize_stress_by_sector is not None
 
-    # Verify UI conversion & pagination helpers exposed via serving facade.
-    assert legacy_queries.percent_to_decimal(-25.0) == pytest.approx(-0.25)
-    assert legacy_queries.percent_to_decimal(0.0) == pytest.approx(0.0)
+    assert percent_to_decimal(-25.0) == pytest.approx(-0.25)
+    assert percent_to_decimal(0.0) == pytest.approx(0.0)
     with pytest.raises(ValueError):
-        legacy_queries.percent_to_decimal(float("nan"))
-    assert legacy_queries.pagination_offset(1, 50) == 0
-    assert legacy_queries.pagination_offset(3, 50) == 100
-    assert legacy_queries.pagination_total_pages(0, 50) == 1
-    assert legacy_queries.pagination_total_pages(101, 50) == 3
-    assert legacy_queries.pagination_window(0, 50, 120) == (1, 1, 50)
-    assert legacy_queries.pagination_window(100, 50, 120) == (3, 101, 120)
-    assert legacy_queries.pagination_window(0, 50, 0) == (1, 0, 0)
+        percent_to_decimal(float("nan"))
+    assert pagination_offset(1, 50) == 0
+    assert pagination_offset(3, 50) == 100
+    assert pagination_total_pages(0, 50) == 1
+    assert pagination_total_pages(101, 50) == 3
+    assert pagination_window(0, 50, 120) == (1, 1, 50)
+    assert pagination_window(100, 50, 120) == (3, 101, 120)
+    assert pagination_window(0, 50, 0) == (1, 0, 0)
 
     # Verify zero iter_rows(), zero blind .fill_null(0), zero streamlit/dashboard imports in serving/.
     serving_dir = Path(__file__).resolve().parents[2] / "src" / "finintel" / "serving"
@@ -1301,6 +1316,94 @@ def test_snapshot_without_ml_table_serves_profile_and_screener_200(
         assert body["total"] == 3
         assert all(item["altman_zone"] is None for item in body["items"])
         assert all(item["calibrated_distress_prob"] is None for item in body["items"])
+
+
+def test_sector_risk_summary_high_red_flag_count_matches_screener_min_2(
+    tmp_path: Path, synthetic_tables: dict[str, pl.DataFrame]
+) -> None:
+    data_root = tmp_path / "data_rf_threshold"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    run_id = "run_test_rf2_001"
+    snapshot_id = "snap_test_rf2_001"
+    state.start_run(run_id, "MANUAL", {"source": "test"}, None)
+
+    red_flags_df = pl.DataFrame(
+        [
+            {
+                "issuer_id": "HPG",
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": date(2025, 12, 31),
+                "flag_code": "RF_05_DEBT_SERVICE_DISTRESS",
+                "severity": "CRITICAL",
+                "flag_title_vn": "Áp lực trả nợ",
+                "explanation_text_vn": "Test RF 1",
+                "evidence_json": "{}",
+                "filing_id": "FIL_HPG_2025_Q4",
+            },
+            {
+                "issuer_id": "HPG",
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": date(2025, 12, 31),
+                "flag_code": "RF_08_NON_CORE_EARNINGS_DEPENDENCE",
+                "severity": "HIGH",
+                "flag_title_vn": "Phụ thuộc lợi nhuận phi cốt lõi",
+                "explanation_text_vn": "Test RF 2",
+                "evidence_json": "{}",
+                "filing_id": "FIL_HPG_2025_Q4",
+            },
+            {
+                "issuer_id": "CMG",
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": date(2025, 12, 31),
+                "flag_code": "RF_02_RECEIVABLES_SURGE",
+                "severity": "MEDIUM",
+                "flag_title_vn": "Phải thu tăng nhanh",
+                "explanation_text_vn": "Test RF 3",
+                "evidence_json": "{}",
+                "filing_id": "FIL_CMG_2025_Q4",
+            },
+        ],
+        schema=synthetic_tables[RED_FLAGS_TABLE].schema,
+    )
+    tables = {**synthetic_tables, RED_FLAGS_TABLE: red_flags_df}
+    publisher = SnapshotPublisher(
+        data_root / "published" / "snapshots", state_store=state
+    )
+    publisher.publish(snapshot_id, tables, run_id=run_id)
+    state.finish_run(run_id, "SUCCEEDED", snapshot_id)
+
+    app = create_app(data_root=data_root)
+    with TestClient(app) as client:
+        r_sum = client.get(
+            "/api/v2/sectors/risk-summary",
+            params={
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": "2025-12-31",
+            },
+        )
+        assert r_sum.status_code == 200
+        summary = r_sum.json()
+
+        r_scr = client.get(
+            "/api/v1/screener",
+            params={
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": "2025-12-31",
+                "min_red_flags": 2,
+            },
+        )
+        assert r_scr.status_code == 200
+        screener = r_scr.json()
+
+        assert summary["high_red_flag_count"] == 1
+        assert screener["total"] == 1
+        assert summary["high_red_flag_count"] == screener["total"]
 
 
 # ==============================================================================
@@ -1644,3 +1747,267 @@ class TestEmpiricalRealSnapshotServing:
                 codes = list(pool.map(_run, range(200)))
             assert len(codes) == 200
             assert all(code == 200 for code in codes)
+
+
+def test_ml07a_serving_exposes_credit_risk_triad_and_supports_legacy_snapshots(
+    published_parquet_root: tuple[Path, str],
+    synthetic_tables: dict[str, pl.DataFrame],
+    tmp_path: Path,
+) -> None:
+    """Verify ML-07a additive fields across /profile, /screener, /market/changes + legacy fallback."""
+    data_root, _ = published_parquet_root
+    app = create_app(data_root=data_root)
+    with TestClient(app) as client:
+        # 1. /api/v1/companies/HPG/profile exposes risk_tier, risk_market_percentile, market_base_rate, relative_risk_lift
+        prof = client.get("/api/v1/companies/HPG/profile")
+        assert prof.status_code == 200
+        ml_rows = prof.json()["ml_scores"]
+        q_ml = [r for r in ml_rows if r["period_type"] == "QUARTER"]
+        assert q_ml
+        latest_q = q_ml[-1]
+        assert latest_q["risk_tier"] == "R5"
+        assert latest_q["risk_market_percentile"] == pytest.approx(100.0)
+        assert latest_q["market_base_rate"] == pytest.approx(0.025)
+        assert latest_q["relative_risk_lift"] == pytest.approx(
+            latest_q["calibrated_distress_prob"] / 0.025
+        )
+
+        # 2. /api/v1/screener returns triad fields and supports optional risk_tier filter
+        scr_all = client.get("/api/v1/screener", params={"period_type": "QUARTER"})
+        assert scr_all.status_code == 200
+        items_all = scr_all.json()["items"]
+        assert any(it["risk_tier"] == "R5" for it in items_all)
+        assert any(it["risk_tier"] == "R1" for it in items_all)
+
+        scr_r5 = client.get(
+            "/api/v1/screener", params={"period_type": "QUARTER", "risk_tier": "R5"}
+        )
+        assert scr_r5.status_code == 200
+        items_r5 = scr_r5.json()["items"]
+        assert len(items_r5) >= 1
+        assert all(it["risk_tier"] == "R5" for it in items_r5)
+
+        scr_bad_tier = client.get(
+            "/api/v1/screener",
+            params={"period_type": "QUARTER", "risk_tier": "INVALID"},
+        )
+        assert scr_bad_tier.status_code == 422
+
+        # 3. /api/v2/market/changes exposes risk_tier_prev/curr, risk_market_percentile_curr, market_base_rate_curr, relative_risk_lift_curr
+        chg = client.get("/api/v2/market/changes", params={"period_type": "QUARTER"})
+        assert chg.status_code == 200
+        chg_items = chg.json()["items"]
+        hpg_chg = [it for it in chg_items if it["ticker"] == "HPG"]
+        assert hpg_chg
+        assert hpg_chg[0]["risk_tier_curr"] == "R5"
+        assert hpg_chg[0]["risk_market_percentile_curr"] == pytest.approx(100.0)
+        assert hpg_chg[0]["market_base_rate_curr"] == pytest.approx(0.025)
+        assert hpg_chg[0]["relative_risk_lift_curr"] is not None
+
+    # 4. Backward compatibility: legacy snapshot parquet WITHOUT the 4 ML-07a columns still serves 200 OK
+    legacy_root = tmp_path / "legacy_data"
+    state = StateStore(legacy_root / "metadata" / "state.sqlite")
+    state.initialize()
+    state.start_run("run_legacy", "MANUAL", {"source": "test"}, None)
+    publisher = SnapshotPublisher(
+        legacy_root / "published" / "snapshots", state_store=state
+    )
+    snap_dir = publisher.publish(
+        "snap_legacy_pre_ml07a", synthetic_tables, run_id="run_legacy"
+    )
+    state.finish_run("run_legacy", "SUCCEEDED", "snap_legacy_pre_ml07a")
+    legacy_ml = synthetic_tables[ML_SCORES_TABLE].drop(
+        [
+            "risk_tier",
+            "risk_market_percentile",
+            "market_base_rate",
+            "relative_risk_lift",
+        ]
+    )
+    legacy_ml.write_parquet(snap_dir / ML_SCORES_TABLE)
+
+    legacy_app = create_app(data_root=legacy_root)
+    with TestClient(legacy_app) as legacy_client:
+        r_prof = legacy_client.get("/api/v1/companies/HPG/profile")
+        assert r_prof.status_code == 200
+        assert r_prof.json()["ml_scores"][-1]["risk_tier"] is None
+        r_scr = legacy_client.get("/api/v1/screener", params={"period_type": "QUARTER"})
+        assert r_scr.status_code == 200
+        assert all(it["risk_tier"] is None for it in r_scr.json()["items"])
+        r_scr_r5 = legacy_client.get(
+            "/api/v1/screener", params={"period_type": "QUARTER", "risk_tier": "R5"}
+        )
+        assert r_scr_r5.status_code == 200
+        assert r_scr_r5.json()["total"] == 0
+        assert r_scr_r5.json()["items"] == []
+        r_chg = legacy_client.get(
+            "/api/v2/market/changes", params={"period_type": "QUARTER"}
+        )
+        assert r_chg.status_code == 200
+        assert all(it["risk_tier_curr"] is None for it in r_chg.json()["items"])
+        assert all(it["market_base_rate_curr"] is None for it in r_chg.json()["items"])
+
+
+def test_arch03b_valkey_l2_lineage_headers_and_cors_across_all_17_routes(
+    tmp_path: Path,
+    synthetic_tables: dict[str, pl.DataFrame],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ARCH-03b: Valkey L2 MISS->HIT, lineage headers on 17/17 routes & M-02 CORS expose_headers."""
+    data_root = tmp_path / "lake_arch03b"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    run_id = "run_arch03b_001"
+    snapshot_id = "snap_arch03b_001"
+    expected_git_sha = "0123456789abcdef0123456789abcdef01234567"
+    state.start_run(run_id, "MANUAL", {"backend": "ducklake"}, expected_git_sha)
+
+    store = DuckLakeStore(
+        catalog_path=data_root / "metadata" / "ducklake_catalog.sqlite",
+        data_path=data_root / "lakehouse" / "data",
+        state_store=state,
+    )
+    try:
+        store.publish_snapshot(
+            snapshot_id,
+            synthetic_tables,
+            run_id=run_id,
+            metadata={"dagster_run_id": run_id, "git_commit_sha": expected_git_sha},
+        )
+    except duckdb.Error as exc:
+        pytest.skip(f"DuckLake extension unavailable in this environment: {exc}")
+    state.finish_run(run_id, "SUCCEEDED", snapshot_id)
+
+    # In-memory Redis/Valkey wire store exercising real ValkeyResponseCache serialization & keys.
+    kv_store: dict[str, bytes] = {}
+
+    class _InMemoryRedisClient:
+        def ping(self) -> bool:
+            return True
+
+        def get(self, key: str) -> bytes | None:
+            return kv_store.get(key)
+
+        def setex(self, key: str, _ttl: int, payload: bytes) -> bool:
+            kv_store[key] = bytes(payload)
+            return True
+
+        def close(self) -> None:
+            return None
+
+    import sys
+    from types import SimpleNamespace
+
+    try:
+        import redis
+
+        monkeypatch.setattr(
+            redis.Redis,
+            "from_url",
+            classmethod(lambda _cls, *_args, **_kwargs: _InMemoryRedisClient()),
+        )
+    except ImportError:
+
+        class _StubRedis:
+            @classmethod
+            def from_url(
+                cls, *_args: object, **_kwargs: object
+            ) -> _InMemoryRedisClient:
+                return _InMemoryRedisClient()
+
+        monkeypatch.setitem(sys.modules, "redis", SimpleNamespace(Redis=_StubRedis))
+
+    repo = ParquetRepository(data_root=data_root, backend="ducklake")
+    app = create_app(
+        repository=repo,
+        cors_origins=["http://localhost:3000"],
+        valkey_url="redis://127.0.0.1:6379/0",
+    )
+
+    # All 17 /api/* routes (10 v1 + 7 v2)
+    get_data_routes = [
+        "/api/v1/snapshot/overview",
+        "/api/v1/issuers",
+        "/api/v1/companies/FPT/profile",
+        "/api/v1/companies/FPT/benchmarks?metric_name=roe_total",
+        "/api/v1/companies/FPT/lineage?ratio_name=roe_total&period_end_date=2025-12-31",
+        "/api/v1/screener",
+        "/api/v1/quality/summary",
+        "/api/v1/quality/quarantine",
+        "/api/v2/meta/periods",
+        "/api/v2/meta/dictionary",
+        "/api/v2/companies/FPT/benchmarks/summary",
+        "/api/v2/companies/FPT/statements",
+        "/api/v2/companies/FPT/filings",
+        "/api/v2/sectors/risk-summary",
+        "/api/v2/market/changes",
+    ]
+    stress_payload = {"scenario_name": "ARCH03b Cache Test", "revenue_shock_pct": -0.1}
+
+    with TestClient(app) as client:
+        # 1. Verify /api/v1/health lineage + M-02 CORS expose_headers
+        r_health = client.get(
+            "/api/v1/health",
+            headers={"Origin": "http://localhost:3000"},
+        )
+        assert r_health.status_code == 200
+        assert r_health.headers.get("X-Snapshot-ID") == snapshot_id
+        assert r_health.headers.get("X-Dagster-Run-ID") == run_id
+        assert r_health.headers.get("X-Git-Commit-SHA") == expected_git_sha
+        exposed = {
+            h.strip()
+            for h in r_health.headers.get("access-control-expose-headers", "").split(
+                ","
+            )
+            if h.strip()
+        }
+        assert {
+            "ETag",
+            "Cache-Control",
+            "X-Request-ID",
+            "X-Snapshot-ID",
+            "X-Dagster-Run-ID",
+            "X-Git-Commit-SHA",
+            "X-Cache",
+        }.issubset(exposed)
+
+        # 2. Verify all 15 GET data routes emit MISS -> HIT + identical JSON + lineage headers
+        for url in get_data_routes:
+            r1 = client.get(url, headers={"Origin": "http://localhost:3000"})
+            assert r1.status_code == 200, f"GET {url} failed: {r1.text}"
+            assert r1.headers.get("X-Cache") == "MISS", f"Expected MISS on {url}"
+            assert r1.headers.get("X-Snapshot-ID") == snapshot_id
+            assert r1.headers.get("X-Dagster-Run-ID") == run_id
+            assert r1.headers.get("X-Git-Commit-SHA") == expected_git_sha
+
+            r2 = client.get(url, headers={"Origin": "http://localhost:3000"})
+            assert r2.status_code == 200
+            assert r2.headers.get("X-Cache") == "HIT", f"Expected HIT on {url}"
+            assert r2.headers.get("X-Snapshot-ID") == snapshot_id
+            assert r2.headers.get("X-Dagster-Run-ID") == run_id
+            assert r2.headers.get("X-Git-Commit-SHA") == expected_git_sha
+            assert r2.json() == r1.json()
+
+        # 3. Verify POST /api/v1/stress-test emits MISS -> HIT, preserves no-store & lineage headers
+        rs1 = client.post(
+            "/api/v1/stress-test",
+            json=stress_payload,
+            headers={"Origin": "http://localhost:3000"},
+        )
+        assert rs1.status_code == 200
+        assert rs1.headers.get("X-Cache") == "MISS"
+        assert rs1.headers.get("Cache-Control") == "private, no-store"
+        assert rs1.headers.get("X-Snapshot-ID") == snapshot_id
+        assert rs1.headers.get("X-Dagster-Run-ID") == run_id
+        assert rs1.headers.get("X-Git-Commit-SHA") == expected_git_sha
+
+        rs2 = client.post(
+            "/api/v1/stress-test",
+            json=stress_payload,
+            headers={"Origin": "http://localhost:3000"},
+        )
+        assert rs2.status_code == 200
+        assert rs2.headers.get("X-Cache") == "HIT"
+        assert rs2.headers.get("Cache-Control") == "private, no-store"
+        assert rs2.json() == rs1.json()
+        assert len(kv_store) == 16

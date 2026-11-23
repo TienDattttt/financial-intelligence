@@ -20,6 +20,7 @@ export function ScoreDots({
   return (
     <div className="flex items-center justify-between gap-2">
       <div
+        role="img"
         className="flex items-center gap-1"
         aria-label={`Điểm ${score} trên ${max}`}
       >

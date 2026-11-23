@@ -27,6 +27,7 @@ Architectural invariants:
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import threading
@@ -36,11 +37,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 import duckdb
 import polars as pl
 
+from finintel.analytics.intermediates import prepare_periods
+from finintel.analytics.market_valuation import (
+    build_price_risk_overlay,
+    compute_pit_valuation_series,
+)
 from finintel.analytics.stress_test import (
     REQUIRED_STRESS_COLUMNS,
     StressScenario as StressScenario,
@@ -53,6 +59,7 @@ from finintel.serving.dictionary import (
     RATIO_DICTIONARY_META,
     load_statement_metric_catalog,
 )
+from finintel.serving.observability import SPAN_DUCKDB_QUERY, trace_span
 from finintel.storage.ducklake_store import ensure_ducklake_attached
 from finintel.storage.repository import ParquetRepository, _normalize_table_name
 from finintel.storage.schemas import (
@@ -67,6 +74,7 @@ from finintel.storage.schemas import (
     ISSUERS_SCHEMA,
     ML_SCORES_SCHEMA,
     ML_SCORES_TABLE,
+    MODEL_CARD_META_TABLE,
     QUALITY_SUMMARY_SCHEMA,
     QUALITY_SUMMARY_TABLE,
     RATIOS_TABLE,
@@ -81,6 +89,7 @@ PeriodView = Literal["TTM", "Quarterly", "Annual"]
 StatementScope = Literal["CONSOLIDATED", "SEPARATE"]
 PeriodType = Literal["QUARTER", "ANNUAL"]
 AltmanZone = Literal["SAFE_ZONE", "GREY_ZONE", "DISTRESS_ZONE"]
+RiskTier = Literal["R1", "R2", "R3", "R4", "R5"]
 BeneishFlag = Literal[
     "VALID",
     "HIGH_MANIPULATION_RISK_SCREEN",
@@ -95,6 +104,7 @@ STATEMENT_SCOPES: tuple[str, ...] = ("CONSOLIDATED", "SEPARATE")
 PERIOD_TYPES: tuple[str, ...] = ("QUARTER", "ANNUAL")
 PERIOD_VIEWS: tuple[str, ...] = ("TTM", "Quarterly", "Annual")
 ALTMAN_ZONES: tuple[str, ...] = ("SAFE_ZONE", "GREY_ZONE", "DISTRESS_ZONE")
+RISK_TIERS_ORDERED: tuple[str, ...] = ("R1", "R2", "R3", "R4", "R5")
 BENEISH_FLAGS: tuple[str, ...] = (
     "VALID",
     "HIGH_MANIPULATION_RISK_SCREEN",
@@ -162,6 +172,13 @@ _ALTMAN_SEVERITY_RANK: dict[str, int] = {
     "GREY_ZONE": 1,
     "DISTRESS_ZONE": 2,
 }
+_RISK_TIER_SEVERITY_RANK: dict[str, int] = {
+    "R1": 0,
+    "R2": 1,
+    "R3": 2,
+    "R4": 3,
+    "R5": 4,
+}
 
 PEER_BAND_HISTORY_SCHEMA = pl.Schema(
     {
@@ -214,6 +231,10 @@ SCREENER_SCHEMA = pl.Schema(
         "anomaly_flag": pl.String,
         "distress_risk_score": pl.Float64,
         "calibrated_distress_prob": pl.Float64,
+        "risk_tier": pl.String,
+        "risk_market_percentile": pl.Float64,
+        "market_base_rate": pl.Float64,
+        "relative_risk_lift": pl.Float64,
         "model_role": pl.String,
         "model_version": pl.String,
     }
@@ -829,6 +850,75 @@ _SCREENER_CACHE: OrderedDict[tuple[object, ...], tuple[pl.DataFrame, int]] = (
 _COHORT_PEER_RANKING_CACHE: OrderedDict[tuple[object, ...], pl.DataFrame] = (
     OrderedDict()
 )
+_ALL_L1B_CACHES: tuple[OrderedDict[tuple[object, ...], Any], ...] = (
+    _SNAPSHOT_OVERVIEW_CACHE,
+    _LATEST_RATIO_PERIOD_CACHE,
+    _STRESS_INPUTS_CACHE,
+    _COMPANY_PROFILE_CACHE,
+    _INDUSTRY_COMPARISON_CACHE,
+    _PEER_BAND_HISTORY_CACHE,
+    _RATIO_PERIODS_CACHE,
+    _RATIO_LINEAGE_CACHE,
+    _SCREENER_CACHE,
+    _COHORT_PEER_RANKING_CACHE,
+)
+_ACTIVE_L1B_SNAPSHOT_BY_ROOT: dict[tuple[object, ...], object] = {}
+
+
+def _l1b_root_and_snapshot(
+    cache_key: tuple[object, ...],
+) -> tuple[tuple[object, ...], object] | None:
+    """Extract ``(root_identity, snapshot_token)`` from an L1B cache key."""
+    if not cache_key:
+        return None
+    kind = cache_key[0]
+    if kind == "ducklake" and len(cache_key) >= 9:
+        # ("ducklake", cat_path, cat_id, lake_data, alias, driver, dsn_env, snap_id, ver, ...)
+        root = (
+            "ducklake",
+            cache_key[1],
+            cache_key[3],
+            cache_key[4],
+            cache_key[5],
+            cache_key[6],
+        )
+        return (root, (cache_key[2], cache_key[7], cache_key[8]))
+    if kind == "parquet_dir" and len(cache_key) >= 3 and isinstance(cache_key[1], str):
+        return (("parquet_dir", str(Path(cache_key[1]).parent)), cache_key[2])
+    if kind == "parquet_snap" and len(cache_key) >= 3:
+        return (("parquet_snap", cache_key[1]), cache_key[2])
+    return None
+
+
+def _evict_stale_l1b_caches_locked(snap_key: tuple[object, ...] | None) -> None:
+    """Evict prior-snapshot L1B entries for the same data root (caller holds ``_QUERY_CACHE_LOCK``)."""
+    if snap_key is None:
+        return
+    parsed = _l1b_root_and_snapshot(snap_key)
+    if parsed is None:
+        return
+    target_root, target_snap = parsed
+    if _ACTIVE_L1B_SNAPSHOT_BY_ROOT.get(target_root) == target_snap:
+        return
+    _ACTIVE_L1B_SNAPSHOT_BY_ROOT[target_root] = target_snap
+    for cache in _ALL_L1B_CACHES:
+        stale_keys = [
+            existing
+            for existing in cache
+            if (ep := _l1b_root_and_snapshot(existing)) is not None
+            and ep[0] == target_root
+            and ep[1] != target_snap
+        ]
+        for stale_key in stale_keys:
+            cache.pop(stale_key, None)
+
+
+def clear_query_caches() -> None:
+    """Clear all L1B query result caches and tracked active snapshot tokens."""
+    with _QUERY_CACHE_LOCK:
+        for cache in _ALL_L1B_CACHES:
+            cache.clear()
+        _ACTIVE_L1B_SNAPSHOT_BY_ROOT.clear()
 
 
 def _can_use_query_result_cache(repo: ParquetRepository) -> bool:
@@ -927,7 +1017,17 @@ def _sql_count_rows(
     connection: duckdb.DuckDBPyConnection | None = None,
 ) -> int:
     """Count rows in a pinned snapshot table via DuckDB SQL ``COUNT(*)``."""
-    with _pinned_table_source(pinned, table_name, connection=connection) as source:
+    with (
+        trace_span(
+            SPAN_DUCKDB_QUERY,
+            {
+                "db.system": "duckdb",
+                "db.operation": "count_rows",
+                "db.table": table_name,
+            },
+        ),
+        _pinned_table_source(pinned, table_name, connection=connection) as source,
+    ):
         if source is None:
             return 0
         con, source_sql, source_params = source
@@ -954,9 +1054,19 @@ def _sql_count_quality_statuses(
     connection: duckdb.DuckDBPyConnection | None = None,
 ) -> tuple[int, int]:
     """Count PASS and WARNING periods via DuckDB SQL ``COUNT(*) FILTER (...)``."""
-    with _pinned_table_source(
-        pinned, QUALITY_SUMMARY_TABLE, connection=connection
-    ) as source:
+    with (
+        trace_span(
+            SPAN_DUCKDB_QUERY,
+            {
+                "db.system": "duckdb",
+                "db.operation": "count_quality_statuses",
+                "db.table": QUALITY_SUMMARY_TABLE,
+            },
+        ),
+        _pinned_table_source(
+            pinned, QUALITY_SUMMARY_TABLE, connection=connection
+        ) as source,
+    ):
         if source is None:
             return (0, 0)
         con, source_sql, source_params = source
@@ -996,7 +1106,19 @@ def _sql_read_page(
     connection: duckdb.DuckDBPyConnection | None = None,
 ) -> tuple[pl.DataFrame, int]:
     """Read a paginated ``LIMIT/OFFSET`` slice and exact total row count via DuckDB SQL."""
-    with _pinned_table_source(pinned, table_name, connection=connection) as source:
+    with (
+        trace_span(
+            SPAN_DUCKDB_QUERY,
+            {
+                "db.system": "duckdb",
+                "db.operation": "read_page",
+                "db.table": table_name,
+                "db.limit": limit,
+                "db.offset": offset,
+            },
+        ),
+        _pinned_table_source(pinned, table_name, connection=connection) as source,
+    ):
         if source is None:
             return pl.DataFrame(schema=schema), 0
         con, source_sql, source_params = source
@@ -1229,6 +1351,7 @@ class DashboardQueryService:
             snap_key = pinned._snapshot_cache_key()
             if snap_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_overview = _SNAPSHOT_OVERVIEW_CACHE.get(snap_key)
                     if cached_overview is not None:
                         _SNAPSHOT_OVERVIEW_CACHE.move_to_end(snap_key)
@@ -1258,6 +1381,7 @@ class DashboardQueryService:
             )
             if snap_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _SNAPSHOT_OVERVIEW_CACHE[snap_key] = overview
                     while len(_SNAPSHOT_OVERVIEW_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _SNAPSHOT_OVERVIEW_CACHE.popitem(last=False)
@@ -1383,6 +1507,7 @@ class DashboardQueryService:
             )
             if profile_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_profile = _COMPANY_PROFILE_CACHE.get(profile_cache_key)
                     if cached_profile is not None:
                         _COMPANY_PROFILE_CACHE.move_to_end(profile_cache_key)
@@ -1622,6 +1747,7 @@ class DashboardQueryService:
             )
             if profile_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _COMPANY_PROFILE_CACHE[profile_cache_key] = profile_result
                     while len(_COMPANY_PROFILE_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _COMPANY_PROFILE_CACHE.popitem(last=False)
@@ -1659,6 +1785,7 @@ class DashboardQueryService:
             )
             if comp_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_comp = _INDUSTRY_COMPARISON_CACHE.get(comp_cache_key)
                     if cached_comp is not None:
                         _INDUSTRY_COMPARISON_CACHE.move_to_end(comp_cache_key)
@@ -1786,6 +1913,7 @@ class DashboardQueryService:
             peer_ranking: pl.DataFrame | None = None
             if cohort_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     peer_ranking = _COHORT_PEER_RANKING_CACHE.get(cohort_cache_key)
                     if peer_ranking is not None:
                         _COHORT_PEER_RANKING_CACHE.move_to_end(cohort_cache_key)
@@ -1848,6 +1976,7 @@ class DashboardQueryService:
                 )
                 if cohort_cache_key is not None:
                     with _QUERY_CACHE_LOCK:
+                        _evict_stale_l1b_caches_locked(snap_key)
                         _COHORT_PEER_RANKING_CACHE[cohort_cache_key] = peer_ranking
                         while len(_COHORT_PEER_RANKING_CACHE) > _MAX_QUERY_CACHE_SIZE:
                             _COHORT_PEER_RANKING_CACHE.popitem(last=False)
@@ -1874,6 +2003,7 @@ class DashboardQueryService:
             )
             if comp_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _INDUSTRY_COMPARISON_CACHE[comp_cache_key] = comp_result
                     while len(_INDUSTRY_COMPARISON_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _INDUSTRY_COMPARISON_CACHE.popitem(last=False)
@@ -1903,6 +2033,7 @@ class DashboardQueryService:
             )
             if hist_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_hist = _PEER_BAND_HISTORY_CACHE.get(hist_cache_key)
                     if cached_hist is not None:
                         _PEER_BAND_HISTORY_CACHE.move_to_end(hist_cache_key)
@@ -1944,6 +2075,7 @@ class DashboardQueryService:
             )
             if hist_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _PEER_BAND_HISTORY_CACHE[hist_cache_key] = hist_res
                     while len(_PEER_BAND_HISTORY_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _PEER_BAND_HISTORY_CACHE.popitem(last=False)
@@ -2046,6 +2178,7 @@ class DashboardQueryService:
             )
             if rp_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_rp = _RATIO_PERIODS_CACHE.get(rp_cache_key)
                     if cached_rp is not None:
                         _RATIO_PERIODS_CACHE.move_to_end(rp_cache_key)
@@ -2075,6 +2208,7 @@ class DashboardQueryService:
             )
             if rp_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _RATIO_PERIODS_CACHE[rp_cache_key] = rp_result
                     while len(_RATIO_PERIODS_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _RATIO_PERIODS_CACHE.popitem(last=False)
@@ -2152,6 +2286,7 @@ class DashboardQueryService:
             )
             if lineage_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_lineage = _RATIO_LINEAGE_CACHE.get(lineage_cache_key)
                     if cached_lineage is not None:
                         _RATIO_LINEAGE_CACHE.move_to_end(lineage_cache_key)
@@ -2470,42 +2605,33 @@ class DashboardQueryService:
             )
             if lineage_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _RATIO_LINEAGE_CACHE[lineage_cache_key] = lineage_result
                     while len(_RATIO_LINEAGE_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _RATIO_LINEAGE_CACHE.popitem(last=False)
             return lineage_result
 
-    def screen_market(
-        self,
+    @staticmethod
+    def _validate_screener_filters(
         *,
-        period_type: str = "QUARTER",
-        period_end_date: date | None = None,
-        statement_scope: str = "CONSOLIDATED",
-        icb_code_level2: str | None = None,
-        min_f_score: int | None = None,
-        altman_zone: str | None = None,
-        beneish_flag: str | None = None,
-        max_distress_prob: float | None = None,
-        min_distress_prob: float | None = None,
-        max_red_flags: int | None = None,
-        min_red_flags: int | None = None,
-        q: str | None = None,
-        sort_by: str = "calibrated_distress_prob",
-        sort_dir: Literal["asc", "desc"] = "desc",
-        limit: int = 50,
-        offset: int = 0,
-        connection: duckdb.DuckDBPyConnection | None = None,
-    ) -> tuple[pl.DataFrame, int]:
-        """Historical cross-sectional market screener over the latest published snapshot.
-
-        Uses ``LEFT JOIN`` onto ``ml_scores_and_explanations`` and ``accounting_red_flags``
-        so screening degrades cleanly when a snapshot has no ML or red-flag tables.
-        """
+        period_type: str,
+        statement_scope: str,
+        min_f_score: int | None,
+        altman_zone: str | None,
+        risk_tier: str | None,
+        beneish_flag: str | None,
+        max_distress_prob: float | None,
+        min_distress_prob: float | None,
+        max_red_flags: int | None,
+        min_red_flags: int | None,
+        q: str | None,
+        sort_by: str,
+        sort_dir: Literal["asc", "desc"],
+    ) -> str | None:
         if statement_scope not in STATEMENT_SCOPES:
             raise ValueError(f"Unsupported statement_scope: {statement_scope!r}")
         if period_type not in PERIOD_TYPES:
             raise ValueError(f"Unsupported period_type: {period_type!r}")
-        _validate_pagination(limit, offset, max_limit=200)
         if min_f_score is not None and (
             isinstance(min_f_score, bool)
             or not isinstance(min_f_score, int)
@@ -2514,6 +2640,8 @@ class DashboardQueryService:
             raise ValueError("min_f_score must be an integer between 0 and 9.")
         if altman_zone is not None and altman_zone not in ALTMAN_ZONES:
             raise ValueError(f"Unsupported altman_zone: {altman_zone!r}")
+        if risk_tier is not None and risk_tier not in RISK_TIERS_ORDERED:
+            raise ValueError(f"Unsupported risk_tier: {risk_tier!r}")
         if beneish_flag is not None and beneish_flag not in BENEISH_FLAGS:
             raise ValueError(f"Unsupported beneish_flag: {beneish_flag!r}")
         for label, prob in (
@@ -2541,7 +2669,346 @@ class DashboardQueryService:
             raise ValueError(f"Unsupported sort_by: {sort_by!r}")
         if sort_dir not in ("asc", "desc"):
             raise ValueError(f"Unsupported sort_dir: {sort_dir!r}")
-        clean_q = q.strip().lower() if q and q.strip() else None
+        return q.strip().lower() if q and q.strip() else None
+
+    @staticmethod
+    def _resolve_screener_period_date(
+        pinned: ParquetRepository,
+        *,
+        period_end_date: date | None,
+        statement_scope: str,
+        period_type: str,
+        snap_key: tuple[object, ...] | None,
+        connection: duckdb.DuckDBPyConnection | None,
+    ) -> date | None:
+        resolved_date = period_end_date
+        if resolved_date is not None:
+            return resolved_date
+        period_cache_key = (
+            (*snap_key, statement_scope, period_type) if snap_key is not None else None
+        )
+        if period_cache_key is not None:
+            with _QUERY_CACHE_LOCK:
+                _evict_stale_l1b_caches_locked(snap_key)
+                resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
+                if resolved_date is not None:
+                    _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
+        if resolved_date is None:
+            dates_df = pinned.read_table(
+                RATIOS_TABLE,
+                columns=["period_end_date"],
+                filters={
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                },
+                connection=connection,
+            )
+            if dates_df.is_empty():
+                return None
+            raw_max = dates_df.get_column("period_end_date").max()
+            if not isinstance(raw_max, date):
+                return None
+            resolved_date = raw_max
+            if period_cache_key is not None:
+                with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
+                    _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
+                    while len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                        _LATEST_RATIO_PERIOD_CACHE.popitem(last=False)
+        return resolved_date
+
+    @staticmethod
+    def _build_screener_frame(
+        pinned: ParquetRepository,
+        *,
+        avail_ratio_cols: set[str],
+        resolved_date: date,
+        period_type: str,
+        statement_scope: str,
+        icb_code_level2: str | None,
+        min_f_score: int | None,
+        altman_zone: str | None,
+        risk_tier: str | None,
+        beneish_flag: str | None,
+        max_distress_prob: float | None,
+        min_distress_prob: float | None,
+        max_red_flags: int | None,
+        min_red_flags: int | None,
+        clean_q: str | None,
+        sort_by: str,
+        sort_dir: Literal["asc", "desc"],
+        connection: duckdb.DuckDBPyConnection | None,
+    ) -> pl.DataFrame:
+        issuer_cols = [
+            "issuer_id",
+            "ticker",
+            "company_name_vn",
+            "exchange",
+            "accounting_regime",
+            "icb_code_level2",
+            "icb_name_level2",
+            "icb_code_level3",
+            "icb_name_level3",
+        ]
+        issuer_filters: dict[str, object] | None = (
+            {"icb_code_level2": icb_code_level2}
+            if icb_code_level2 is not None
+            else None
+        )
+        issuers = pinned.read_table(
+            "issuers.parquet",
+            columns=issuer_cols,
+            filters=issuer_filters,
+            connection=connection,
+        )
+        if issuers.is_empty():
+            return pl.DataFrame(schema=SCREENER_SCHEMA)
+
+        ratio_desired = (
+            "issuer_id",
+            "statement_scope",
+            "period_type",
+            "period_end_date",
+            "taxonomy_version",
+            "roe_total",
+            "roa",
+            "ebit_margin",
+            "debt_to_equity",
+            "interest_coverage",
+            "accruals_to_assets",
+            "core_operating_margin",
+            "non_core_distortion_to_assets",
+            "core_to_ebt_ratio",
+        )
+        ratio_cols = _select_existing_columns(ratio_desired, avail_ratio_cols)
+        ratio_filters: dict[str, object] = {
+            "statement_scope": statement_scope,
+            "period_type": period_type,
+            "period_end_date": resolved_date,
+        }
+        if icb_code_level2 is not None:
+            ratio_filters["issuer_id"] = issuers["issuer_id"].unique().to_list()
+        ratios = pinned.read_table(
+            RATIOS_TABLE,
+            columns=ratio_cols,
+            filters=ratio_filters,
+            connection=connection,
+        )
+        if ratios.is_empty():
+            return pl.DataFrame(schema=SCREENER_SCHEMA)
+
+        for forensic_col in (
+            "core_operating_margin",
+            "non_core_distortion_to_assets",
+            "core_to_ebt_ratio",
+        ):
+            if forensic_col not in ratios.columns:
+                ratios = ratios.with_columns(
+                    pl.lit(None, dtype=pl.Float64).alias(forensic_col)
+                )
+
+        avail_rf_cols = _available_table_columns(
+            pinned, RED_FLAGS_TABLE, connection=connection
+        )
+        if avail_rf_cols:
+            rf_slice = pinned.read_table(
+                RED_FLAGS_TABLE,
+                columns=["issuer_id", "severity"],
+                filters={
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                    "period_end_date": resolved_date,
+                },
+                connection=connection,
+            )
+            if rf_slice.is_empty():
+                rf_counts = pl.DataFrame(
+                    schema={
+                        "issuer_id": pl.String,
+                        "red_flag_count": pl.Int64,
+                        "critical_red_flag_count": pl.Int64,
+                    }
+                )
+            else:
+                rf_counts = rf_slice.group_by("issuer_id").agg(
+                    pl.len().cast(pl.Int64).alias("red_flag_count"),
+                    (pl.col("severity") == "CRITICAL")
+                    .sum()
+                    .cast(pl.Int64)
+                    .alias("critical_red_flag_count"),
+                )
+        else:
+            rf_counts = pl.DataFrame(
+                schema={
+                    "issuer_id": pl.String,
+                    "red_flag_count": pl.Int64,
+                    "critical_red_flag_count": pl.Int64,
+                }
+            )
+
+        ml_desired = (
+            "issuer_id",
+            "filing_id",
+            "altman_z_double_prime",
+            "altman_em_score",
+            "altman_zone",
+            "piotroski_f_score",
+            "beneish_m8_score",
+            "beneish_flag",
+            "cluster_id",
+            "cluster_archetype_name",
+            "anomaly_flag",
+            "distress_risk_score",
+            "calibrated_distress_prob",
+            "risk_tier",
+            "risk_market_percentile",
+            "market_base_rate",
+            "relative_risk_lift",
+            "model_role",
+            "model_version",
+        )
+        ml_join_schema = pl.Schema(
+            {name: ML_SCORES_SCHEMA[name] for name in ml_desired if name != "filing_id"}
+        )
+        avail_ml_cols = _available_table_columns(
+            pinned, ML_SCORES_TABLE, connection=connection
+        )
+        if avail_ml_cols:
+            ml_cols = _select_existing_columns(ml_desired, avail_ml_cols)
+            ml_raw = pinned.read_table(
+                ML_SCORES_TABLE,
+                columns=ml_cols,
+                filters={
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                    "period_end_date": resolved_date,
+                },
+                connection=connection,
+            )
+            if ml_raw.is_empty():
+                ml_slice = pl.DataFrame(schema=ml_join_schema)
+            else:
+                sort_ml = (
+                    ["issuer_id", "filing_id"]
+                    if "filing_id" in ml_raw.columns
+                    else ["issuer_id"]
+                )
+                ml_dedup = ml_raw.sort(sort_ml).unique(
+                    subset=["issuer_id"], keep="last"
+                )
+                ml_slice = _pad_schema_columns(ml_dedup, ml_join_schema)
+        else:
+            ml_slice = pl.DataFrame(schema=ml_join_schema)
+
+        joined = (
+            ratios.join(issuers, on="issuer_id", how="inner")
+            .join(rf_counts, on="issuer_id", how="left")
+            .join(ml_slice, on="issuer_id", how="left")
+            .with_columns(
+                # Triggered alert counts from LEFT JOIN (0 alerts triggered, not a financial metric).
+                pl.coalesce(pl.col("red_flag_count"), pl.lit(0, dtype=pl.Int64)).alias(
+                    "red_flag_count"
+                ),
+                pl.coalesce(
+                    pl.col("critical_red_flag_count"), pl.lit(0, dtype=pl.Int64)
+                ).alias("critical_red_flag_count"),
+            )
+        )
+
+        if min_f_score is not None:
+            joined = joined.filter(
+                pl.col("piotroski_f_score").is_not_null()
+                & (pl.col("piotroski_f_score") >= min_f_score)
+            )
+        if altman_zone is not None:
+            joined = joined.filter(pl.col("altman_zone") == altman_zone)
+        if risk_tier is not None:
+            joined = joined.filter(pl.col("risk_tier") == risk_tier)
+        if beneish_flag is not None:
+            joined = joined.filter(pl.col("beneish_flag") == beneish_flag)
+        if max_distress_prob is not None:
+            joined = joined.filter(
+                pl.col("calibrated_distress_prob").is_not_null()
+                & (pl.col("calibrated_distress_prob") <= float(max_distress_prob))
+            )
+        if min_distress_prob is not None:
+            joined = joined.filter(
+                pl.col("calibrated_distress_prob").is_not_null()
+                & (pl.col("calibrated_distress_prob") >= float(min_distress_prob))
+            )
+        if max_red_flags is not None:
+            joined = joined.filter(pl.col("red_flag_count") <= max_red_flags)
+        if min_red_flags is not None:
+            joined = joined.filter(pl.col("red_flag_count") >= min_red_flags)
+        if clean_q is not None:
+            joined = joined.filter(
+                pl.col("ticker").str.to_lowercase().str.contains(clean_q, literal=True)
+                | pl.col("company_name_vn")
+                .fill_null("")
+                .str.to_lowercase()
+                .str.contains(clean_q, literal=True)
+            )
+
+        desc_flag = sort_dir == "desc"
+        if sort_by == "calibrated_distress_prob" and desc_flag:
+            sort_cols = ["calibrated_distress_prob", "red_flag_count", "ticker"]
+            sort_desc = [True, True, False]
+        elif sort_by == "ticker":
+            sort_cols = ["ticker"]
+            sort_desc = [desc_flag]
+        else:
+            sort_cols = [sort_by, "ticker"]
+            sort_desc = [desc_flag, False]
+
+        return _pad_schema_columns(joined, SCREENER_SCHEMA).sort(
+            sort_cols,
+            descending=sort_desc,
+            nulls_last=True,
+        )
+
+    def screen_market(
+        self,
+        *,
+        period_type: str = "QUARTER",
+        period_end_date: date | None = None,
+        statement_scope: str = "CONSOLIDATED",
+        icb_code_level2: str | None = None,
+        min_f_score: int | None = None,
+        altman_zone: str | None = None,
+        risk_tier: str | None = None,
+        beneish_flag: str | None = None,
+        max_distress_prob: float | None = None,
+        min_distress_prob: float | None = None,
+        max_red_flags: int | None = None,
+        min_red_flags: int | None = None,
+        q: str | None = None,
+        sort_by: str = "calibrated_distress_prob",
+        sort_dir: Literal["asc", "desc"] = "desc",
+        limit: int = 50,
+        offset: int = 0,
+        connection: duckdb.DuckDBPyConnection | None = None,
+    ) -> tuple[pl.DataFrame, int]:
+        """Historical cross-sectional market screener over the latest published snapshot.
+
+        Uses ``LEFT JOIN`` onto ``ml_scores_and_explanations`` and ``accounting_red_flags``
+        so screening degrades cleanly when a snapshot has no ML or red-flag tables.
+        """
+        _validate_pagination(limit, offset, max_limit=200)
+        clean_q = self._validate_screener_filters(
+            period_type=period_type,
+            statement_scope=statement_scope,
+            min_f_score=min_f_score,
+            altman_zone=altman_zone,
+            risk_tier=risk_tier,
+            beneish_flag=beneish_flag,
+            max_distress_prob=max_distress_prob,
+            min_distress_prob=min_distress_prob,
+            max_red_flags=max_red_flags,
+            min_red_flags=min_red_flags,
+            q=q,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
 
         with self.repository.snapshot_session(connection=connection) as pinned:
             avail_ratio_cols = _available_table_columns(
@@ -2551,41 +3018,16 @@ class DashboardQueryService:
                 return pl.DataFrame(schema=SCREENER_SCHEMA), 0
 
             snap_key = pinned._snapshot_cache_key()
-            resolved_date = period_end_date
+            resolved_date = self._resolve_screener_period_date(
+                pinned,
+                period_end_date=period_end_date,
+                statement_scope=statement_scope,
+                period_type=period_type,
+                snap_key=snap_key,
+                connection=connection,
+            )
             if resolved_date is None:
-                period_cache_key = (
-                    (*snap_key, statement_scope, period_type)
-                    if snap_key is not None
-                    else None
-                )
-                if period_cache_key is not None:
-                    with _QUERY_CACHE_LOCK:
-                        resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
-                        if resolved_date is not None:
-                            _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
-                if resolved_date is None:
-                    dates_df = pinned.read_table(
-                        RATIOS_TABLE,
-                        columns=["period_end_date"],
-                        filters={
-                            "statement_scope": statement_scope,
-                            "period_type": period_type,
-                        },
-                        connection=connection,
-                    )
-                    if dates_df.is_empty():
-                        return pl.DataFrame(schema=SCREENER_SCHEMA), 0
-                    raw_max = dates_df.get_column("period_end_date").max()
-                    if not isinstance(raw_max, date):
-                        return pl.DataFrame(schema=SCREENER_SCHEMA), 0
-                    resolved_date = raw_max
-                    if period_cache_key is not None:
-                        with _QUERY_CACHE_LOCK:
-                            _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
-                            while (
-                                len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE
-                            ):
-                                _LATEST_RATIO_PERIOD_CACHE.popitem(last=False)
+                return pl.DataFrame(schema=SCREENER_SCHEMA), 0
 
             screener_cache_key = (
                 (
@@ -2596,6 +3038,7 @@ class DashboardQueryService:
                     icb_code_level2,
                     min_f_score,
                     altman_zone,
+                    risk_tier,
                     beneish_flag,
                     float(max_distress_prob) if max_distress_prob is not None else None,
                     float(min_distress_prob) if min_distress_prob is not None else None,
@@ -2612,245 +3055,118 @@ class DashboardQueryService:
             )
             if screener_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_screener = _SCREENER_CACHE.get(screener_cache_key)
                     if cached_screener is not None:
                         _SCREENER_CACHE.move_to_end(screener_cache_key)
                         return cached_screener[0], cached_screener[1]
 
-            issuer_cols = [
-                "issuer_id",
-                "ticker",
-                "company_name_vn",
-                "exchange",
-                "accounting_regime",
-                "icb_code_level2",
-                "icb_name_level2",
-                "icb_code_level3",
-                "icb_name_level3",
-            ]
-            issuer_filters: dict[str, object] | None = (
-                {"icb_code_level2": icb_code_level2}
-                if icb_code_level2 is not None
-                else None
-            )
-            issuers = pinned.read_table(
-                "issuers.parquet",
-                columns=issuer_cols,
-                filters=issuer_filters,
+            projected = self._build_screener_frame(
+                pinned,
+                avail_ratio_cols=avail_ratio_cols,
+                resolved_date=resolved_date,
+                period_type=period_type,
+                statement_scope=statement_scope,
+                icb_code_level2=icb_code_level2,
+                min_f_score=min_f_score,
+                altman_zone=altman_zone,
+                risk_tier=risk_tier,
+                beneish_flag=beneish_flag,
+                max_distress_prob=max_distress_prob,
+                min_distress_prob=min_distress_prob,
+                max_red_flags=max_red_flags,
+                min_red_flags=min_red_flags,
+                clean_q=clean_q,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
                 connection=connection,
-            )
-            if issuers.is_empty():
-                return pl.DataFrame(schema=SCREENER_SCHEMA), 0
-
-            ratio_desired = (
-                "issuer_id",
-                "statement_scope",
-                "period_type",
-                "period_end_date",
-                "taxonomy_version",
-                "roe_total",
-                "roa",
-                "ebit_margin",
-                "debt_to_equity",
-                "interest_coverage",
-                "accruals_to_assets",
-                "core_operating_margin",
-                "non_core_distortion_to_assets",
-                "core_to_ebt_ratio",
-            )
-            ratio_cols = _select_existing_columns(ratio_desired, avail_ratio_cols)
-            ratio_filters: dict[str, object] = {
-                "statement_scope": statement_scope,
-                "period_type": period_type,
-                "period_end_date": resolved_date,
-            }
-            if icb_code_level2 is not None:
-                ratio_filters["issuer_id"] = issuers["issuer_id"].unique().to_list()
-            ratios = pinned.read_table(
-                RATIOS_TABLE,
-                columns=ratio_cols,
-                filters=ratio_filters,
-                connection=connection,
-            )
-            if ratios.is_empty():
-                return pl.DataFrame(schema=SCREENER_SCHEMA), 0
-
-            for forensic_col in (
-                "core_operating_margin",
-                "non_core_distortion_to_assets",
-                "core_to_ebt_ratio",
-            ):
-                if forensic_col not in ratios.columns:
-                    ratios = ratios.with_columns(
-                        pl.lit(None, dtype=pl.Float64).alias(forensic_col)
-                    )
-
-            avail_rf_cols = _available_table_columns(
-                pinned, RED_FLAGS_TABLE, connection=connection
-            )
-            if avail_rf_cols:
-                rf_slice = pinned.read_table(
-                    RED_FLAGS_TABLE,
-                    columns=["issuer_id", "severity"],
-                    filters={
-                        "statement_scope": statement_scope,
-                        "period_type": period_type,
-                        "period_end_date": resolved_date,
-                    },
-                    connection=connection,
-                )
-                if rf_slice.is_empty():
-                    rf_counts = pl.DataFrame(
-                        schema={
-                            "issuer_id": pl.String,
-                            "red_flag_count": pl.Int64,
-                            "critical_red_flag_count": pl.Int64,
-                        }
-                    )
-                else:
-                    rf_counts = rf_slice.group_by("issuer_id").agg(
-                        pl.len().cast(pl.Int64).alias("red_flag_count"),
-                        (pl.col("severity") == "CRITICAL")
-                        .sum()
-                        .cast(pl.Int64)
-                        .alias("critical_red_flag_count"),
-                    )
-            else:
-                rf_counts = pl.DataFrame(
-                    schema={
-                        "issuer_id": pl.String,
-                        "red_flag_count": pl.Int64,
-                        "critical_red_flag_count": pl.Int64,
-                    }
-                )
-
-            ml_desired = (
-                "issuer_id",
-                "filing_id",
-                "altman_z_double_prime",
-                "altman_em_score",
-                "altman_zone",
-                "piotroski_f_score",
-                "beneish_m8_score",
-                "beneish_flag",
-                "cluster_id",
-                "cluster_archetype_name",
-                "anomaly_flag",
-                "distress_risk_score",
-                "calibrated_distress_prob",
-                "model_role",
-                "model_version",
-            )
-            ml_join_schema = pl.Schema(
-                {
-                    name: ML_SCORES_SCHEMA[name]
-                    for name in ml_desired
-                    if name != "filing_id"
-                }
-            )
-            avail_ml_cols = _available_table_columns(
-                pinned, ML_SCORES_TABLE, connection=connection
-            )
-            if avail_ml_cols:
-                ml_cols = _select_existing_columns(ml_desired, avail_ml_cols)
-                ml_raw = pinned.read_table(
-                    ML_SCORES_TABLE,
-                    columns=ml_cols,
-                    filters={
-                        "statement_scope": statement_scope,
-                        "period_type": period_type,
-                        "period_end_date": resolved_date,
-                    },
-                    connection=connection,
-                )
-                if ml_raw.is_empty():
-                    ml_slice = pl.DataFrame(schema=ml_join_schema)
-                else:
-                    sort_ml = (
-                        ["issuer_id", "filing_id"]
-                        if "filing_id" in ml_raw.columns
-                        else ["issuer_id"]
-                    )
-                    ml_dedup = ml_raw.sort(sort_ml).unique(
-                        subset=["issuer_id"], keep="last"
-                    )
-                    ml_slice = _pad_schema_columns(ml_dedup, ml_join_schema)
-            else:
-                ml_slice = pl.DataFrame(schema=ml_join_schema)
-
-            joined = (
-                ratios.join(issuers, on="issuer_id", how="inner")
-                .join(rf_counts, on="issuer_id", how="left")
-                .join(ml_slice, on="issuer_id", how="left")
-                .with_columns(
-                    # Triggered alert counts from LEFT JOIN (0 alerts triggered, not a financial metric).
-                    pl.coalesce(
-                        pl.col("red_flag_count"), pl.lit(0, dtype=pl.Int64)
-                    ).alias("red_flag_count"),
-                    pl.coalesce(
-                        pl.col("critical_red_flag_count"), pl.lit(0, dtype=pl.Int64)
-                    ).alias("critical_red_flag_count"),
-                )
-            )
-
-            if min_f_score is not None:
-                joined = joined.filter(
-                    pl.col("piotroski_f_score").is_not_null()
-                    & (pl.col("piotroski_f_score") >= min_f_score)
-                )
-            if altman_zone is not None:
-                joined = joined.filter(pl.col("altman_zone") == altman_zone)
-            if beneish_flag is not None:
-                joined = joined.filter(pl.col("beneish_flag") == beneish_flag)
-            if max_distress_prob is not None:
-                joined = joined.filter(
-                    pl.col("calibrated_distress_prob").is_not_null()
-                    & (pl.col("calibrated_distress_prob") <= float(max_distress_prob))
-                )
-            if min_distress_prob is not None:
-                joined = joined.filter(
-                    pl.col("calibrated_distress_prob").is_not_null()
-                    & (pl.col("calibrated_distress_prob") >= float(min_distress_prob))
-                )
-            if max_red_flags is not None:
-                joined = joined.filter(pl.col("red_flag_count") <= max_red_flags)
-            if min_red_flags is not None:
-                joined = joined.filter(pl.col("red_flag_count") >= min_red_flags)
-            if clean_q is not None:
-                joined = joined.filter(
-                    pl.col("ticker")
-                    .str.to_lowercase()
-                    .str.contains(clean_q, literal=True)
-                    | pl.col("company_name_vn")
-                    .fill_null("")
-                    .str.to_lowercase()
-                    .str.contains(clean_q, literal=True)
-                )
-
-            desc_flag = sort_dir == "desc"
-            if sort_by == "calibrated_distress_prob" and desc_flag:
-                sort_cols = ["calibrated_distress_prob", "red_flag_count", "ticker"]
-                sort_desc = [True, True, False]
-            elif sort_by == "ticker":
-                sort_cols = ["ticker"]
-                sort_desc = [desc_flag]
-            else:
-                sort_cols = [sort_by, "ticker"]
-                sort_desc = [desc_flag, False]
-
-            projected = _pad_schema_columns(joined, SCREENER_SCHEMA).sort(
-                sort_cols,
-                descending=sort_desc,
-                nulls_last=True,
             )
             total_count = projected.height
             sliced = _wrap_cached_dicts_df(projected.slice(offset, limit))
             if screener_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _SCREENER_CACHE[screener_cache_key] = (sliced, total_count)
                     while len(_SCREENER_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _SCREENER_CACHE.popitem(last=False)
             return sliced, total_count
+
+    def export_screener(
+        self,
+        *,
+        period_type: str = "QUARTER",
+        period_end_date: date | None = None,
+        statement_scope: str = "CONSOLIDATED",
+        icb_code_level2: str | None = None,
+        min_f_score: int | None = None,
+        altman_zone: str | None = None,
+        risk_tier: str | None = None,
+        beneish_flag: str | None = None,
+        max_distress_prob: float | None = None,
+        min_distress_prob: float | None = None,
+        max_red_flags: int | None = None,
+        min_red_flags: int | None = None,
+        q: str | None = None,
+        sort_by: str = "calibrated_distress_prob",
+        sort_dir: Literal["asc", "desc"] = "desc",
+        connection: duckdb.DuckDBPyConnection | None = None,
+    ) -> pl.DataFrame:
+        """Return 100% of filtered & sorted screener rows without pagination cap (UI-05a)."""
+        clean_q = self._validate_screener_filters(
+            period_type=period_type,
+            statement_scope=statement_scope,
+            min_f_score=min_f_score,
+            altman_zone=altman_zone,
+            risk_tier=risk_tier,
+            beneish_flag=beneish_flag,
+            max_distress_prob=max_distress_prob,
+            min_distress_prob=min_distress_prob,
+            max_red_flags=max_red_flags,
+            min_red_flags=min_red_flags,
+            q=q,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
+
+        with self.repository.snapshot_session(connection=connection) as pinned:
+            avail_ratio_cols = _available_table_columns(
+                pinned, RATIOS_TABLE, connection=connection
+            )
+            if not avail_ratio_cols:
+                return pl.DataFrame(schema=SCREENER_SCHEMA)
+
+            snap_key = pinned._snapshot_cache_key()
+            resolved_date = self._resolve_screener_period_date(
+                pinned,
+                period_end_date=period_end_date,
+                statement_scope=statement_scope,
+                period_type=period_type,
+                snap_key=snap_key,
+                connection=connection,
+            )
+            if resolved_date is None:
+                return pl.DataFrame(schema=SCREENER_SCHEMA)
+
+            return self._build_screener_frame(
+                pinned,
+                avail_ratio_cols=avail_ratio_cols,
+                resolved_date=resolved_date,
+                period_type=period_type,
+                statement_scope=statement_scope,
+                icb_code_level2=icb_code_level2,
+                min_f_score=min_f_score,
+                altman_zone=altman_zone,
+                risk_tier=risk_tier,
+                beneish_flag=beneish_flag,
+                max_distress_prob=max_distress_prob,
+                min_distress_prob=min_distress_prob,
+                max_red_flags=max_red_flags,
+                min_red_flags=min_red_flags,
+                clean_q=clean_q,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                connection=connection,
+            )
 
     def get_stress_test_snapshot_inputs(
         self,
@@ -2858,6 +3174,7 @@ class DashboardQueryService:
         period_type: str = "QUARTER",
         period_end_date: date | None = None,
         *,
+        tickers: Sequence[str] | None = None,
         connection: duckdb.DuckDBPyConnection | None = None,
     ) -> pl.DataFrame:
         """Read exact required stress-test inputs and ICB Level 2 sector metadata for one period slice."""
@@ -2865,6 +3182,24 @@ class DashboardQueryService:
             raise ValueError(f"Unsupported statement_scope: {statement_scope!r}")
         if period_type not in PERIOD_TYPES:
             raise ValueError(f"Unsupported period_type: {period_type!r}")
+        target_tickers: tuple[str, ...] | None = (
+            tuple(
+                dict.fromkeys(
+                    t.strip().upper()
+                    for t in tickers
+                    if isinstance(t, str) and t.strip()
+                )
+            )
+            if tickers is not None
+            else None
+        )
+
+        def _filter_tickers(frame: pl.DataFrame) -> pl.DataFrame:
+            if target_tickers is None:
+                return frame
+            if not target_tickers or frame.is_empty():
+                return frame.clear()
+            return frame.filter(pl.col("ticker").is_in(list(target_tickers)))
 
         with self.repository.snapshot_session(connection=connection) as pinned:
             avail_ratio_cols = _available_table_columns(
@@ -2894,6 +3229,7 @@ class DashboardQueryService:
                 )
                 if period_cache_key is not None:
                     with _QUERY_CACHE_LOCK:
+                        _evict_stale_l1b_caches_locked(snap_key)
                         resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
                         if resolved_date is not None:
                             _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
@@ -2929,6 +3265,7 @@ class DashboardQueryService:
                     resolved_date = raw_max
                     if period_cache_key is not None:
                         with _QUERY_CACHE_LOCK:
+                            _evict_stale_l1b_caches_locked(snap_key)
                             _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
                             while (
                                 len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE
@@ -2942,10 +3279,11 @@ class DashboardQueryService:
             )
             if stress_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     cached_inputs = _STRESS_INPUTS_CACHE.get(stress_cache_key)
                     if cached_inputs is not None:
                         _STRESS_INPUTS_CACHE.move_to_end(stress_cache_key)
-                        return cached_inputs.clone()
+                        return _filter_tickers(cached_inputs.clone())
 
             stress_ratio_cols = list(
                 dict.fromkeys(("issuer_id", "ticker", *REQUIRED_STRESS_COLUMNS))
@@ -2961,10 +3299,12 @@ class DashboardQueryService:
                 connection=connection,
             )
             if ratios.is_empty():
-                return ratios.with_columns(
-                    pl.lit(None, dtype=pl.String).alias("company_name_vn"),
-                    pl.lit(None, dtype=pl.String).alias("icb_code_level2"),
-                    pl.lit(None, dtype=pl.String).alias("icb_name_level2"),
+                return _filter_tickers(
+                    ratios.with_columns(
+                        pl.lit(None, dtype=pl.String).alias("company_name_vn"),
+                        pl.lit(None, dtype=pl.String).alias("icb_code_level2"),
+                        pl.lit(None, dtype=pl.String).alias("icb_name_level2"),
+                    )
                 )
 
             issuers = pinned.read_table(
@@ -2981,10 +3321,11 @@ class DashboardQueryService:
             result = ratios.join(issuers, on="issuer_id", how="left").sort("ticker")
             if stress_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
+                    _evict_stale_l1b_caches_locked(snap_key)
                     _STRESS_INPUTS_CACHE[stress_cache_key] = result
                     while len(_STRESS_INPUTS_CACHE) > _MAX_QUERY_CACHE_SIZE:
                         _STRESS_INPUTS_CACHE.popitem(last=False)
-            return result.clone()
+            return _filter_tickers(result.clone())
 
     def get_meta_periods_and_sectors(
         self, *, connection: duckdb.DuckDBPyConnection | None = None
@@ -3013,19 +3354,30 @@ class DashboardQueryService:
                         connection=connection,
                     )
                     .drop_nulls(["statement_scope", "period_type", "period_end_date"])
+                    .filter(
+                        pl.col("statement_scope").is_in(STATEMENT_SCOPES)
+                        & pl.col("period_type").is_in(PERIOD_TYPES)
+                    )
                     .unique()
                     .sort("period_end_date", descending=True)
                 )
-                for row in periods_df.to_dicts():
-                    scope = str(row["statement_scope"])
-                    ptype = str(row["period_type"])
-                    pdate = row["period_end_date"]
-                    if (
-                        scope in available_periods
-                        and ptype in available_periods[scope]
-                        and isinstance(pdate, date)
-                    ):
-                        available_periods[scope][ptype].append(pdate)
+                if not periods_df.is_empty():
+                    for key_tuple, sub in periods_df.partition_by(
+                        ["statement_scope", "period_type"],
+                        as_dict=True,
+                        maintain_order=True,
+                    ).items():
+                        scope = str(key_tuple[0])
+                        ptype = str(key_tuple[1])
+                        if (
+                            scope in available_periods
+                            and ptype in available_periods[scope]
+                        ):
+                            available_periods[scope][ptype] = [
+                                pdate
+                                for pdate in sub.get_column("period_end_date").to_list()
+                                if isinstance(pdate, date)
+                            ]
 
             avail_iss = _available_table_columns(
                 pinned, "issuers.parquet", connection=connection
@@ -3047,18 +3399,31 @@ class DashboardQueryService:
                             .alias("icb_name_level2"),
                             pl.len().cast(pl.Int64).alias("issuer_count"),
                         )
+                        .with_columns(
+                            pl.col("icb_code_level2").cast(pl.String),
+                            pl.when(
+                                pl.col("icb_name_level2").is_not_null()
+                                & (pl.col("icb_name_level2").cast(pl.String) != "")
+                            )
+                            .then(pl.col("icb_name_level2").cast(pl.String))
+                            .otherwise(pl.col("icb_code_level2").cast(pl.String))
+                            .alias("icb_name_level2"),
+                        )
                         .sort(["icb_name_level2", "icb_code_level2"])
                     )
-                    for row in grouped.to_dicts():
-                        code = str(row["icb_code_level2"])
-                        name = str(row["icb_name_level2"] or code)
-                        sectors.append(
-                            {
-                                "icb_code_level2": code,
-                                "icb_name_level2": name,
-                                "issuer_count": int(row["issuer_count"]),
-                            }
+                    sectors = [
+                        {
+                            "icb_code_level2": str(code),
+                            "icb_name_level2": str(name),
+                            "issuer_count": int(cnt),
+                        }
+                        for code, name, cnt in zip(
+                            grouped.get_column("icb_code_level2").to_list(),
+                            grouped.get_column("icb_name_level2").to_list(),
+                            grouped.get_column("issuer_count").to_list(),
+                            strict=True,
                         )
+                    ]
         return published_at, available_periods, sectors
 
     def get_company_benchmarks_summary(
@@ -3169,8 +3534,11 @@ class DashboardQueryService:
                     },
                     connection=connection,
                 )
-                for row in bench_df.to_dicts():
-                    bench_by_metric[str(row["metric_or_ratio_name"])] = row
+                if not bench_df.is_empty():
+                    for key_tuple, sub in bench_df.partition_by(
+                        "metric_or_ratio_name", as_dict=True
+                    ).items():
+                        bench_by_metric[str(key_tuple[0])] = sub.row(0, named=True)
 
             def _opt_finite(raw: object) -> float | None:
                 if raw is None or isinstance(raw, bool):
@@ -3180,17 +3548,27 @@ class DashboardQueryService:
                     return val if math.isfinite(val) else None
                 return None
 
+            spark_cols = [m for m in selected_metrics if m in hist_window.columns]
+            cleaned_hist = (
+                hist_window.select(
+                    pl.when(pl.col(c).cast(pl.Float64, strict=False).is_finite())
+                    .then(pl.col(c).cast(pl.Float64, strict=False))
+                    .otherwise(None)
+                    .alias(c)
+                    for c in spark_cols
+                )
+                if spark_cols
+                else pl.DataFrame()
+            )
+
             items: list[dict[str, object]] = []
             for metric_name in selected_metrics:
                 spec = RATIO_LINEAGE_CATALOG[metric_name]
                 meta = RATIO_DICTIONARY_META[metric_name]
                 b_row = bench_by_metric.get(metric_name, {})
                 sparkline: list[float | None] = (
-                    [
-                        _opt_finite(v)
-                        for v in hist_window.get_column(metric_name).to_list()
-                    ]
-                    if metric_name in hist_window.columns
+                    cleaned_hist.get_column(metric_name).to_list()
+                    if metric_name in cleaned_hist.columns
                     else []
                 )
                 company_val = _opt_finite(b_row.get("value"))
@@ -3331,81 +3709,122 @@ class DashboardQueryService:
                 .get_column("period_end_date")
                 .to_list()
             )
-            facts = facts.filter(pl.col("period_end_date").is_in(recent_dates))
+            valid_facts = facts.filter(
+                pl.col("period_end_date").is_in(recent_dates)
+                & pl.col("period_end_date").is_not_null()
+            )
+            if valid_facts.is_empty():
+                return issuer_id, [], []
 
-            periods_by_date: dict[date, dict[str, object]] = {}
-            rows_map: dict[str, dict[str, float | None]] = {}
-            units_seen: dict[str, str] = {}
-            comparable_seen: dict[str, bool] = {}
-
-            for rec in facts.to_dicts():
-                pdate = rec.get("period_end_date")
-                if not isinstance(pdate, date):
-                    continue
-                if pdate not in periods_by_date:
-                    fy = rec.get("fiscal_year")
-                    fq = rec.get("fiscal_quarter")
-                    fy_int = int(fy) if isinstance(fy, int) else pdate.year
-                    fq_int = int(fq) if isinstance(fq, int) else None
-                    label = (
-                        f"Năm {fy_int}"
-                        if period_type == "ANNUAL"
-                        else f"Q{fq_int or ((pdate.month - 1) // 3 + 1)}/{fy_int}"
-                    )
-                    periods_by_date[pdate] = {
-                        "period_end_date": pdate,
-                        "fiscal_year": fy_int,
-                        "fiscal_quarter": fq_int,
-                        "label": label,
-                        "taxonomy_version": (
-                            str(rec["taxonomy_version"])
-                            if rec.get("taxonomy_version") is not None
-                            else None
-                        ),
-                        "audit_status": (
-                            str(rec["audit_status"])
-                            if rec.get("audit_status") is not None
-                            else None
-                        ),
-                    }
-
-                mid = str(rec["metric_id"])
-                raw_val = rec.get("value")
-                val = (
-                    float(raw_val)
-                    if isinstance(raw_val, (int, float))
-                    and not isinstance(raw_val, bool)
-                    and math.isfinite(float(raw_val))
-                    else None
+            fy_expr = (
+                pl.coalesce(
+                    pl.col("fiscal_year").cast(pl.Int64, strict=False),
+                    pl.col("period_end_date").dt.year().cast(pl.Int64),
                 )
-                rows_map.setdefault(mid, {})[pdate.isoformat()] = val
-                if mid not in units_seen and rec.get("unit") is not None:
-                    units_seen[mid] = str(rec["unit"])
-                if (
-                    mid not in comparable_seen
-                    and rec.get("comparable_across_taxonomy") is not None
-                ):
-                    comparable_seen[mid] = bool(rec["comparable_across_taxonomy"])
+                if "fiscal_year" in valid_facts.columns
+                else pl.col("period_end_date").dt.year().cast(pl.Int64)
+            )
+            fq_expr = (
+                pl.col("fiscal_quarter").cast(pl.Int64, strict=False)
+                if "fiscal_quarter" in valid_facts.columns
+                else pl.lit(None, dtype=pl.Int64)
+            )
+            derived_fq = (
+                (pl.col("period_end_date").dt.month().cast(pl.Int64) - 1) // 3
+            ) + 1
+            label_expr = (
+                (pl.lit("Năm ") + fy_expr.cast(pl.String))
+                if period_type == "ANNUAL"
+                else (
+                    pl.lit("Q")
+                    + pl.coalesce(
+                        pl.when(fq_expr != 0).then(fq_expr).otherwise(None),
+                        derived_fq,
+                    ).cast(pl.String)
+                    + pl.lit("/")
+                    + fy_expr.cast(pl.String)
+                )
+            )
+            periods_df = (
+                valid_facts.unique(subset=["period_end_date"], keep="first")
+                .select(
+                    pl.col("period_end_date"),
+                    fy_expr.alias("fiscal_year"),
+                    fq_expr.alias("fiscal_quarter"),
+                    label_expr.alias("label"),
+                    (
+                        pl.col("taxonomy_version").cast(pl.String)
+                        if "taxonomy_version" in valid_facts.columns
+                        else pl.lit(None, dtype=pl.String)
+                    ).alias("taxonomy_version"),
+                    (
+                        pl.col("audit_status").cast(pl.String)
+                        if "audit_status" in valid_facts.columns
+                        else pl.lit(None, dtype=pl.String)
+                    ).alias("audit_status"),
+                )
+                .sort("period_end_date", descending=True)
+            )
+            periods_out = cast(list[dict[str, object]], periods_df.to_dicts())
 
-            periods_out = [
-                periods_by_date[d] for d in recent_dates if d in periods_by_date
-            ]
+            val_f64 = pl.col("value").cast(pl.Float64, strict=False)
+            clean_facts = valid_facts.select(
+                pl.col("metric_id").cast(pl.String).alias("metric_id"),
+                pl.col("period_end_date").dt.strftime("%Y-%m-%d").alias("period_iso"),
+                pl.when(val_f64.is_finite())
+                .then(val_f64)
+                .otherwise(None)
+                .alias("value"),
+                (
+                    pl.col("unit").cast(pl.String)
+                    if "unit" in valid_facts.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("unit"),
+                (
+                    pl.col("comparable_across_taxonomy").cast(pl.Boolean, strict=False)
+                    if "comparable_across_taxonomy" in valid_facts.columns
+                    else pl.lit(None, dtype=pl.Boolean)
+                ).alias("comparable_across_taxonomy"),
+            )
+
             rows_out: list[dict[str, object]] = []
-            for mid, values in rows_map.items():
+            for key_tuple, sub in clean_facts.partition_by(
+                "metric_id", as_dict=True, maintain_order=True
+            ).items():
+                mid = str(key_tuple[0])
                 mmeta = catalog.get(mid)
+                values: dict[str, float | None] = dict(
+                    zip(
+                        sub.get_column("period_iso").to_list(),
+                        sub.get_column("value").to_list(),
+                        strict=True,
+                    )
+                )
+                if mmeta is not None:
+                    unit_val = mmeta.unit
+                    comp_val = mmeta.comparable_across_taxonomy
+                else:
+                    non_null_units = sub.get_column("unit").drop_nulls()
+                    unit_val = (
+                        str(non_null_units[0])
+                        if not non_null_units.is_empty()
+                        else "VND"
+                    )
+                    non_null_comp = sub.get_column(
+                        "comparable_across_taxonomy"
+                    ).drop_nulls()
+                    comp_val = (
+                        bool(non_null_comp[0]) if not non_null_comp.is_empty() else True
+                    )
                 rows_out.append(
                     {
                         "metric_id": mid,
                         "display_name_vn": mmeta.display_name_vn if mmeta else mid,
                         "tt200_code": mmeta.tt200_code if mmeta else None,
                         "tt99_code": mmeta.tt99_code if mmeta else None,
-                        "unit": mmeta.unit if mmeta else units_seen.get(mid, "VND"),
+                        "unit": unit_val,
                         "is_total": mmeta.is_total if mmeta else False,
-                        "comparable_across_taxonomy": (
-                            mmeta.comparable_across_taxonomy
-                            if mmeta
-                            else comparable_seen.get(mid, True)
-                        ),
+                        "comparable_across_taxonomy": comp_val,
                         "sort_order": mmeta.sort_order if mmeta else 99_999,
                         "values": values,
                     }
@@ -3495,29 +3914,83 @@ class DashboardQueryService:
             if sort_cols:
                 df = df.sort(sort_cols, descending=sort_desc, nulls_last=True)
 
-            items: list[dict[str, object]] = []
-            for rec in df.head(limit).to_dicts():
-                rev = rec.get("revision_no")
-                rev_int = int(rev) if isinstance(rev, int) else None
-                items.append(
-                    {
-                        "filing_id": str(rec.get("filing_id") or ""),
-                        "statement_type": rec.get("statement_type"),
-                        "statement_scope": rec.get("statement_scope"),
-                        "period_type": rec.get("period_type"),
-                        "period_end_date": rec.get("period_end_date"),
-                        "taxonomy_version": rec.get("taxonomy_version"),
-                        "published_at": rec.get("published_at"),
-                        "published_at_basis": rec.get("published_at_basis"),
-                        "effective_available_at": rec.get("effective_available_at"),
-                        "audit_status": rec.get("audit_status"),
-                        "audit_opinion": rec.get("audit_opinion"),
-                        "revision_no": rev_int,
-                        "revision_reason": rec.get("revision_reason"),
-                        "has_restatement": bool(rev_int is not None and rev_int > 1),
-                        "source_provider": rec.get("source_provider"),
-                    }
-                )
+            head_df = df.head(limit)
+            rev_expr = (
+                pl.col("revision_no").cast(pl.Int64, strict=False)
+                if "revision_no" in head_df.columns
+                else pl.lit(None, dtype=pl.Int64)
+            )
+            filing_expr = (
+                pl.coalesce(pl.col("filing_id").cast(pl.String), pl.lit(""))
+                if "filing_id" in head_df.columns
+                else pl.lit("")
+            )
+            out_df = head_df.select(
+                filing_expr.alias("filing_id"),
+                (
+                    pl.col("statement_type")
+                    if "statement_type" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("statement_type"),
+                (
+                    pl.col("statement_scope")
+                    if "statement_scope" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("statement_scope"),
+                (
+                    pl.col("period_type")
+                    if "period_type" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("period_type"),
+                (
+                    pl.col("period_end_date")
+                    if "period_end_date" in head_df.columns
+                    else pl.lit(None, dtype=pl.Date)
+                ).alias("period_end_date"),
+                (
+                    pl.col("taxonomy_version")
+                    if "taxonomy_version" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("taxonomy_version"),
+                (
+                    pl.col("published_at")
+                    if "published_at" in head_df.columns
+                    else pl.lit(None, dtype=pl.Date)
+                ).alias("published_at"),
+                (
+                    pl.col("published_at_basis")
+                    if "published_at_basis" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("published_at_basis"),
+                (
+                    pl.col("effective_available_at")
+                    if "effective_available_at" in head_df.columns
+                    else pl.lit(None, dtype=pl.Date)
+                ).alias("effective_available_at"),
+                (
+                    pl.col("audit_status")
+                    if "audit_status" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("audit_status"),
+                (
+                    pl.col("audit_opinion")
+                    if "audit_opinion" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("audit_opinion"),
+                rev_expr.alias("revision_no"),
+                (
+                    pl.col("revision_reason")
+                    if "revision_reason" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("revision_reason"),
+                (rev_expr.is_not_null() & (rev_expr > 1)).alias("has_restatement"),
+                (
+                    pl.col("source_provider")
+                    if "source_provider" in head_df.columns
+                    else pl.lit(None, dtype=pl.String)
+                ).alias("source_provider"),
+            )
+            items = cast(list[dict[str, object]], out_df.to_dicts())
         return issuer_id, items
 
     @staticmethod
@@ -3545,9 +4018,6 @@ class DashboardQueryService:
         if issuers.is_empty():
             return []
         issuer_ids = issuers["issuer_id"].unique().to_list()
-        issuer_lookup: dict[str, dict[str, object]] = {
-            str(r["issuer_id"]): r for r in issuers.to_dicts()
-        }
 
         avail_ratio_cols = _available_table_columns(
             pinned, RATIOS_TABLE, connection=connection
@@ -3565,7 +4035,7 @@ class DashboardQueryService:
             columns=["issuer_id", "period_end_date"],
             filters=ratio_filters,
             connection=connection,
-        )
+        ).filter(pl.col("period_end_date").is_not_null())
         if target_date is not None:
             ratio_dates_df = ratio_dates_df.filter(
                 pl.col("period_end_date") <= target_date
@@ -3573,42 +4043,55 @@ class DashboardQueryService:
         if ratio_dates_df.is_empty():
             return []
 
-        per_issuer_dates: dict[str, list[date]] = {}
-        for rec in (
+        pairs_df = (
             ratio_dates_df.unique()
             .sort(["issuer_id", "period_end_date"], descending=[False, True])
-            .to_dicts()
-        ):
-            iid = str(rec["issuer_id"])
-            pdate = rec["period_end_date"]
-            if isinstance(pdate, date):
-                lst = per_issuer_dates.setdefault(iid, [])
-                if len(lst) < 2:
-                    lst.append(pdate)
-
-        # Retain only issuers whose latest period matches target_date (when specified)
-        relevant_dates: set[date] = set()
-        selected_pairs: dict[str, tuple[date, date | None]] = {}
-        for iid, dates in per_issuer_dates.items():
-            if not dates:
-                continue
-            if target_date is not None and dates[0] != target_date:
-                continue
-            curr_d = dates[0]
-            prev_d = dates[1] if len(dates) > 1 else None
-            selected_pairs[iid] = (curr_d, prev_d)
-            relevant_dates.add(curr_d)
-            if prev_d is not None:
-                relevant_dates.add(prev_d)
-
-        if not selected_pairs:
+            .group_by("issuer_id", maintain_order=True)
+            .agg(
+                pl.col("period_end_date").first().alias("curr_period_end_date"),
+                pl.when(pl.len() > 1)
+                .then(pl.col("period_end_date").get(1))
+                .otherwise(None)
+                .cast(pl.Date)
+                .alias("prev_period_end_date"),
+            )
+        )
+        if target_date is not None:
+            pairs_df = pairs_df.filter(pl.col("curr_period_end_date") == target_date)
+        if pairs_df.is_empty():
             return []
 
-        date_list = sorted(relevant_dates)
-        ml_lookup: dict[tuple[str, date], dict[str, object]] = {}
+        date_list = (
+            pl.concat(
+                [
+                    pairs_df.select(pl.col("curr_period_end_date").alias("d")),
+                    pairs_df.select(
+                        pl.col("prev_period_end_date").alias("d")
+                    ).drop_nulls(),
+                ]
+            )
+            .unique()
+            .sort("d")
+            .get_column("d")
+            .to_list()
+        )
+
+        ml_pair_schema = pl.Schema(
+            {
+                "issuer_id": pl.String,
+                "period_end_date": pl.Date,
+                "altman_zone": pl.String,
+                "calibrated_distress_prob": pl.Float64,
+                "risk_tier": pl.String,
+                "risk_market_percentile": pl.Float64,
+                "market_base_rate": pl.Float64,
+                "relative_risk_lift": pl.Float64,
+            }
+        )
         avail_ml_cols = _available_table_columns(
             pinned, ML_SCORES_TABLE, connection=connection
         )
+        ml_dedup = pl.DataFrame(schema=ml_pair_schema)
         if avail_ml_cols:
             ml_cols = _select_existing_columns(
                 (
@@ -3616,6 +4099,10 @@ class DashboardQueryService:
                     "period_end_date",
                     "altman_zone",
                     "calibrated_distress_prob",
+                    "risk_tier",
+                    "risk_market_percentile",
+                    "market_base_rate",
+                    "relative_risk_lift",
                     "filing_id",
                 ),
                 avail_ml_cols,
@@ -3632,22 +4119,40 @@ class DashboardQueryService:
                 columns=ml_cols,
                 filters=ml_filters,
                 connection=connection,
-            )
+            ).filter(pl.col("period_end_date").is_not_null())
             if not ml_df.is_empty():
                 sort_ml = [
                     c
                     for c in ("issuer_id", "period_end_date", "filing_id")
                     if c in ml_df.columns
                 ]
-                ml_df = ml_df.sort(sort_ml).unique(
-                    subset=["issuer_id", "period_end_date"], keep="last"
+                ml_dedup = _pad_schema_columns(
+                    ml_df.sort(sort_ml).unique(
+                        subset=["issuer_id", "period_end_date"], keep="last"
+                    ),
+                    ml_pair_schema,
                 )
-                for rec in ml_df.to_dicts():
-                    pd_val = rec.get("period_end_date")
-                    if isinstance(pd_val, date):
-                        ml_lookup[(str(rec["issuer_id"]), pd_val)] = rec
+                float_ml_cols = [
+                    "calibrated_distress_prob",
+                    "risk_market_percentile",
+                    "market_base_rate",
+                    "relative_risk_lift",
+                ]
+                ml_dedup = ml_dedup.with_columns(
+                    pl.when(pl.col(c).is_finite())
+                    .then(pl.col(c))
+                    .otherwise(None)
+                    .alias(c)
+                    for c in float_ml_cols
+                )
 
-        rf_lookup: dict[tuple[str, date], set[str]] = {}
+        rf_agg = pl.DataFrame(
+            schema={
+                "issuer_id": pl.String,
+                "period_end_date": pl.Date,
+                "flags": pl.List(pl.String),
+            }
+        )
         avail_rf_cols = _available_table_columns(
             pinned, RED_FLAGS_TABLE, connection=connection
         )
@@ -3664,101 +4169,164 @@ class DashboardQueryService:
                 columns=["issuer_id", "period_end_date", "flag_code"],
                 filters=rf_filters,
                 connection=connection,
+            ).filter(pl.col("period_end_date").is_not_null())
+            if not rf_df.is_empty():
+                rf_agg = rf_df.group_by(["issuer_id", "period_end_date"]).agg(
+                    pl.col("flag_code").cast(pl.String).unique().sort().alias("flags")
+                )
+
+        curr_ml_df = ml_dedup.select(
+            pl.col("issuer_id"),
+            pl.col("period_end_date").alias("curr_period_end_date"),
+            pl.col("altman_zone").alias("altman_zone_curr"),
+            pl.col("calibrated_distress_prob").alias("distress_prob_curr"),
+            pl.col("risk_tier").alias("risk_tier_curr"),
+            pl.col("risk_market_percentile").alias("risk_market_percentile_curr"),
+            pl.col("market_base_rate").alias("market_base_rate_curr"),
+            pl.col("relative_risk_lift").alias("relative_risk_lift_curr"),
+        )
+        prev_ml_df = ml_dedup.select(
+            pl.col("issuer_id"),
+            pl.col("period_end_date").alias("prev_period_end_date"),
+            pl.col("altman_zone").alias("altman_zone_prev"),
+            pl.col("calibrated_distress_prob").alias("distress_prob_prev"),
+            pl.col("risk_tier").alias("risk_tier_prev"),
+        )
+        curr_rf_df = rf_agg.select(
+            pl.col("issuer_id"),
+            pl.col("period_end_date").alias("curr_period_end_date"),
+            pl.col("flags").alias("_curr_flags"),
+        )
+        prev_rf_df = rf_agg.select(
+            pl.col("issuer_id"),
+            pl.col("period_end_date").alias("prev_period_end_date"),
+            pl.col("flags").alias("_prev_flags"),
+        )
+
+        empty_flags = pl.lit([], dtype=pl.List(pl.String))
+        joined = (
+            pairs_df.join(issuers, on="issuer_id", how="left")
+            .join(curr_ml_df, on=["issuer_id", "curr_period_end_date"], how="left")
+            .join(prev_ml_df, on=["issuer_id", "prev_period_end_date"], how="left")
+            .join(curr_rf_df, on=["issuer_id", "curr_period_end_date"], how="left")
+            .join(prev_rf_df, on=["issuer_id", "prev_period_end_date"], how="left")
+            .with_columns(
+                pl.coalesce(
+                    pl.when(pl.col("ticker").is_not_null() & (pl.col("ticker") != ""))
+                    .then(pl.col("ticker"))
+                    .otherwise(None),
+                    pl.col("issuer_id"),
+                ).alias("ticker"),
+                pl.coalesce(pl.col("_curr_flags"), empty_flags).alias("_curr_flags"),
+                pl.coalesce(pl.col("_prev_flags"), empty_flags).alias("_prev_flags"),
             )
-            for rec in rf_df.to_dicts():
-                pd_val = rec.get("period_end_date")
-                if isinstance(pd_val, date):
-                    rf_lookup.setdefault((str(rec["issuer_id"]), pd_val), set()).add(
-                        str(rec["flag_code"])
+            .with_columns(
+                (
+                    pl.when(
+                        pl.col("distress_prob_curr").is_not_null()
+                        & pl.col("distress_prob_prev").is_not_null()
                     )
-
-        def _prob(rec: dict[str, object] | None) -> float | None:
-            if not rec:
-                return None
-            raw = rec.get("calibrated_distress_prob")
-            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-                val = float(raw)
-                return val if math.isfinite(val) else None
-            return None
-
-        changes: list[dict[str, object]] = []
-        for iid, (curr_d, prev_d) in selected_pairs.items():
-            iss = issuer_lookup.get(iid, {})
-            curr_ml = ml_lookup.get((iid, curr_d))
-            prev_ml = ml_lookup.get((iid, prev_d)) if prev_d is not None else None
-
-            zone_curr = (
-                str(curr_ml["altman_zone"])
-                if curr_ml and curr_ml.get("altman_zone") is not None
-                else None
+                    .then(pl.col("distress_prob_curr") - pl.col("distress_prob_prev"))
+                    .otherwise(None)
+                    .cast(pl.Float64)
+                ).alias("distress_prob_delta"),
+                pl.col("_curr_flags")
+                .list.len()
+                .cast(pl.Int64)
+                .alias("red_flag_count_curr"),
+                pl.when(pl.col("prev_period_end_date").is_not_null())
+                .then(pl.col("_prev_flags").list.len().cast(pl.Int64))
+                .otherwise(pl.lit(0, dtype=pl.Int64))
+                .alias("red_flag_count_prev"),
+                pl.col("_curr_flags")
+                .list.set_difference(pl.col("_prev_flags"))
+                .list.sort()
+                .alias("new_red_flag_codes"),
+                pl.when(pl.col("prev_period_end_date").is_not_null())
+                .then(
+                    pl.col("_prev_flags")
+                    .list.set_difference(pl.col("_curr_flags"))
+                    .list.sort()
+                )
+                .otherwise(empty_flags)
+                .alias("resolved_red_flag_codes"),
             )
-            zone_prev = (
-                str(prev_ml["altman_zone"])
-                if prev_ml and prev_ml.get("altman_zone") is not None
-                else None
+            .with_columns(
+                pl.col("new_red_flag_codes")
+                .list.len()
+                .cast(pl.Int64)
+                .alias("_new_flag_count"),
+                (
+                    (
+                        pl.col("altman_zone_curr").is_not_null()
+                        & pl.col("altman_zone_prev").is_not_null()
+                        & (
+                            pl.col("altman_zone_curr").replace_strict(
+                                _ALTMAN_SEVERITY_RANK,
+                                default=-1,
+                                return_dtype=pl.Int64,
+                            )
+                            > pl.col("altman_zone_prev").replace_strict(
+                                _ALTMAN_SEVERITY_RANK,
+                                default=-1,
+                                return_dtype=pl.Int64,
+                            )
+                        )
+                    )
+                    | (
+                        pl.col("risk_tier_curr").is_not_null()
+                        & pl.col("risk_tier_prev").is_not_null()
+                        & (
+                            pl.col("risk_tier_curr").replace_strict(
+                                _RISK_TIER_SEVERITY_RANK,
+                                default=-1,
+                                return_dtype=pl.Int64,
+                            )
+                            > pl.col("risk_tier_prev").replace_strict(
+                                _RISK_TIER_SEVERITY_RANK,
+                                default=-1,
+                                return_dtype=pl.Int64,
+                            )
+                        )
+                    )
+                    | (
+                        pl.col("distress_prob_delta").is_not_null()
+                        & (pl.col("distress_prob_delta") >= 0.003)
+                    )
+                    | (pl.col("new_red_flag_codes").list.len() > 0)
+                ).alias("deteriorated"),
             )
-            prob_curr = _prob(curr_ml)
-            prob_prev = _prob(prev_ml)
-            prob_delta = (
-                prob_curr - prob_prev
-                if prob_curr is not None and prob_prev is not None
-                else None
+            .sort(
+                ["deteriorated", "_new_flag_count", "distress_prob_delta", "ticker"],
+                descending=[True, True, True, False],
+                nulls_last=True,
             )
-
-            curr_flags = rf_lookup.get((iid, curr_d), set())
-            prev_flags = (
-                rf_lookup.get((iid, prev_d), set()) if prev_d is not None else set()
-            )
-            new_flags = sorted(curr_flags - prev_flags)
-            resolved_flags = (
-                sorted(prev_flags - curr_flags) if prev_d is not None else []
-            )
-
-            zone_worsened = (
-                zone_curr is not None
-                and zone_prev is not None
-                and _ALTMAN_SEVERITY_RANK.get(zone_curr, -1)
-                > _ALTMAN_SEVERITY_RANK.get(zone_prev, -1)
-            )
-            deteriorated = bool(
-                zone_worsened
-                or (prob_delta is not None and prob_delta >= 0.003)
-                or len(new_flags) > 0
-            )
-            changes.append(
-                {
-                    "issuer_id": iid,
-                    "ticker": str(iss.get("ticker") or iid),
-                    "company_name_vn": iss.get("company_name_vn"),
-                    "icb_name_level2": iss.get("icb_name_level2"),
-                    "prev_period_end_date": prev_d,
-                    "curr_period_end_date": curr_d,
-                    "altman_zone_prev": zone_prev,
-                    "altman_zone_curr": zone_curr,
-                    "distress_prob_prev": prob_prev,
-                    "distress_prob_curr": prob_curr,
-                    "distress_prob_delta": prob_delta,
-                    "red_flag_count_prev": len(prev_flags),
-                    "red_flag_count_curr": len(curr_flags),
-                    "new_red_flag_codes": new_flags,
-                    "resolved_red_flag_codes": resolved_flags,
-                    "deteriorated": deteriorated,
-                }
-            )
-
-        changes.sort(
-            key=lambda item: (
-                not bool(item["deteriorated"]),
-                -(len(cast(list[str], item["new_red_flag_codes"]))),
-                -(
-                    cast(float, item["distress_prob_delta"])
-                    if item["distress_prob_delta"] is not None
-                    else -999.0
-                ),
-                str(item["ticker"]),
+            .head(limit)
+            .select(
+                "issuer_id",
+                "ticker",
+                "company_name_vn",
+                "icb_name_level2",
+                "prev_period_end_date",
+                "curr_period_end_date",
+                "altman_zone_prev",
+                "altman_zone_curr",
+                "distress_prob_prev",
+                "distress_prob_curr",
+                "distress_prob_delta",
+                "risk_tier_prev",
+                "risk_tier_curr",
+                "risk_market_percentile_curr",
+                "market_base_rate_curr",
+                "relative_risk_lift_curr",
+                "red_flag_count_prev",
+                "red_flag_count_curr",
+                "new_red_flag_codes",
+                "resolved_red_flag_codes",
+                "deteriorated",
             )
         )
-        return changes[:limit]
+        return cast(list[dict[str, object]], joined.to_dicts())
 
     def get_sector_risk_summary(
         self,
@@ -3976,7 +4544,7 @@ class DashboardQueryService:
                     .sum()
                     .cast(pl.Int64)
                     .alias("beneish_flagged_count"),
-                    (pl.col("red_flag_count") >= 3)
+                    (pl.col("red_flag_count") >= 2)
                     .sum()
                     .cast(pl.Int64)
                     .alias("high_red_flag_count"),
@@ -3986,50 +4554,38 @@ class DashboardQueryService:
                     pl.col("red_flag_count").mean().alias("avg_red_flags"),
                     pl.col("total_debt").sum().alias("total_debt_sum"),
                 )
+                .with_columns(
+                    pl.col("icb_code_level2").cast(pl.String),
+                    pl.col("icb_name_level2").cast(pl.String),
+                    pl.when(
+                        pl.col("median_distress_prob")
+                        .cast(pl.Float64, strict=False)
+                        .is_finite()
+                    )
+                    .then(pl.col("median_distress_prob").cast(pl.Float64, strict=False))
+                    .otherwise(None)
+                    .alias("median_distress_prob"),
+                    pl.when(
+                        pl.col("avg_red_flags")
+                        .cast(pl.Float64, strict=False)
+                        .is_finite()
+                    )
+                    .then(pl.col("avg_red_flags").cast(pl.Float64, strict=False))
+                    .otherwise(pl.lit(0.0, dtype=pl.Float64))
+                    .alias("avg_red_flags"),
+                    pl.when(
+                        pl.col("total_debt_sum")
+                        .cast(pl.Float64, strict=False)
+                        .is_finite()
+                    )
+                    .then(pl.col("total_debt_sum").cast(pl.Float64, strict=False))
+                    .otherwise(pl.lit(0.0, dtype=pl.Float64))
+                    .alias("total_debt_sum"),
+                )
                 .sort(["distress_zone_count", "issuer_count"], descending=[True, True])
             )
 
-            sectors_out: list[SectorRiskDict] = []
-            for rec in sector_df.to_dicts():
-                raw_med = rec.get("median_distress_prob")
-                med_prob = (
-                    float(raw_med)
-                    if isinstance(raw_med, (int, float))
-                    and not isinstance(raw_med, bool)
-                    and math.isfinite(float(raw_med))
-                    else None
-                )
-                raw_avg_rf = rec.get("avg_red_flags")
-                avg_rf = (
-                    float(raw_avg_rf)
-                    if isinstance(raw_avg_rf, (int, float))
-                    and not isinstance(raw_avg_rf, bool)
-                    and math.isfinite(float(raw_avg_rf))
-                    else 0.0
-                )
-                raw_debt = rec.get("total_debt_sum")
-                debt_sum = (
-                    float(raw_debt)
-                    if isinstance(raw_debt, (int, float))
-                    and not isinstance(raw_debt, bool)
-                    and math.isfinite(float(raw_debt))
-                    else 0.0
-                )
-                sectors_out.append(
-                    {
-                        "icb_code_level2": str(rec["icb_code_level2"]),
-                        "icb_name_level2": str(rec["icb_name_level2"]),
-                        "issuer_count": int(rec["issuer_count"]),
-                        "safe_zone_count": int(rec["safe_zone_count"]),
-                        "grey_zone_count": int(rec["grey_zone_count"]),
-                        "distress_zone_count": int(rec["distress_zone_count"]),
-                        "beneish_flagged_count": int(rec["beneish_flagged_count"]),
-                        "high_red_flag_count": int(rec["high_red_flag_count"]),
-                        "median_distress_prob": med_prob,
-                        "avg_red_flags": avg_rf,
-                        "total_debt_sum": debt_sum,
-                    }
-                )
+            sectors_out = cast(list[SectorRiskDict], sector_df.to_dicts())
 
             deteriorating = [
                 c
@@ -4092,3 +4648,616 @@ class DashboardQueryService:
                 limit=limit,
                 connection=connection,
             )
+
+    def get_model_card(
+        self, *, connection: duckdb.DuckDBPyConnection | None = None
+    ) -> dict[str, Any]:
+        """Read the persisted Model Card exclusively from active snapshot ``model_card_meta`` (H-04)."""
+        with self.repository.snapshot_session(connection=connection) as pinned:
+            avail_cols = _available_table_columns(
+                pinned, MODEL_CARD_META_TABLE, connection=connection
+            )
+            if not avail_cols or "model_card_json" not in avail_cols:
+                raise ValueError(
+                    "Model card metadata was not found in active snapshot."
+                )
+            card_df = pinned.read_table(
+                MODEL_CARD_META_TABLE,
+                columns=["model_card_id", "model_card_json"],
+                connection=connection,
+            )
+            if card_df.is_empty():
+                raise ValueError(
+                    "Model card metadata was not found in active snapshot."
+                )
+            row = card_df.sort("model_card_id").row(0, named=True)
+            raw_json = row.get("model_card_json")
+            if not isinstance(raw_json, str) or not raw_json.strip():
+                raise ContractViolationError(
+                    "Model card metadata table has invalid or empty JSON payload."
+                )
+            try:
+                parsed = json.loads(raw_json)
+            except ValueError as exc:
+                raise ContractViolationError(
+                    "Model card metadata table contains malformed JSON payload."
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ContractViolationError(
+                    "Model card metadata payload must be a JSON object."
+                )
+            return parsed
+
+    @staticmethod
+    def _build_port_candidate_roots(
+        repo_source: Path,
+        pinned_source: Path,
+        *,
+        port_data_root: Path | None = None,
+    ) -> list[Path]:
+        raw_candidates: list[Path] = []
+        if port_data_root is not None:
+            raw_candidates.extend([port_data_root, port_data_root.parent])
+        raw_candidates.extend([repo_source, pinned_source, repo_source.parent])
+        for src in (repo_source, pinned_source):
+            if (
+                src.name.startswith("snap_")
+                and src.parent.name == "snapshots"
+                and src.parent.parent.name == "published"
+                and len(src.parents) >= 3
+            ):
+                snap_root = src.parents[2]
+                raw_candidates.extend([snap_root, snap_root.parent])
+        env_root = os.getenv("FININTEL_DATA_ROOT")
+        if env_root:
+            env_path = Path(env_root).resolve()
+            raw_candidates.extend([env_path, env_path.parent])
+        else:
+            default_resolved = DEFAULT_DATA_ROOT.resolve()
+            for maybe_src in (port_data_root, repo_source, pinned_source):
+                if maybe_src is not None:
+                    src_resolved = maybe_src.resolve()
+                    if (
+                        src_resolved == default_resolved
+                        or default_resolved in src_resolved.parents
+                    ):
+                        raw_candidates.append(default_resolved)
+                        break
+        deduped: list[Path] = []
+        seen: set[Path] = set()
+        for candidate in raw_candidates:
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                deduped.append(resolved)
+        return deduped
+
+    @staticmethod
+    def _load_port_parquet_for_issuer(
+        *,
+        rel_parquet_path: Path,
+        issuer_id: str,
+        candidate_roots: Sequence[Path],
+    ) -> pl.DataFrame | None:
+        for root in candidate_roots:
+            parquet_path = root / rel_parquet_path
+            if parquet_path.is_file():
+                return (
+                    pl.scan_parquet(parquet_path)
+                    .filter(pl.col("issuer_id") == issuer_id)
+                    .collect()
+                )
+        return None
+
+    @staticmethod
+    def _build_overlay_financial_periods(
+        pinned: ParquetRepository,
+        *,
+        issuer_id: str,
+        ticker: str,
+        accounting_regime: str,
+        statement_scope: str,
+        prices: pl.DataFrame,
+        as_of: date | None,
+        connection: duckdb.DuckDBPyConnection | None,
+    ) -> pl.DataFrame | None:
+        avail_ratio_cols = _available_table_columns(
+            pinned, RATIOS_TABLE, connection=connection
+        )
+        ratios = pl.DataFrame()
+        if avail_ratio_cols:
+            ratio_cols = _select_existing_columns(
+                (
+                    "issuer_id",
+                    "statement_scope",
+                    "period_type",
+                    "period_end_date",
+                    "fiscal_year",
+                    "fiscal_quarter",
+                    "filing_id",
+                    "parent_equity",
+                    "estimated_shares_outstanding",
+                ),
+                avail_ratio_cols,
+            )
+            ratios = pinned.read_table(
+                RATIOS_TABLE,
+                columns=ratio_cols,
+                filters={
+                    "issuer_id": issuer_id,
+                    "statement_scope": statement_scope,
+                    "period_type": "QUARTER",
+                },
+                connection=connection,
+            )
+            if not ratios.is_empty():
+                sort_ratio = [
+                    col
+                    for col in ("period_end_date", "filing_id")
+                    if col in ratios.columns
+                ]
+                ratios = ratios.sort(sort_ratio).unique(
+                    subset=["issuer_id", "period_end_date"], keep="last"
+                )
+
+        facts_table = "latest_facts.parquet"
+        avail_fact_cols = _available_table_columns(
+            pinned, facts_table, connection=connection
+        )
+        if not avail_fact_cols:
+            facts_table = "financial_facts.parquet"
+            avail_fact_cols = _available_table_columns(
+                pinned, facts_table, connection=connection
+            )
+
+        facts = pl.DataFrame()
+        if avail_fact_cols:
+            fact_desired = (
+                "issuer_id",
+                "statement_scope",
+                "period_type",
+                "fiscal_year_start_date",
+                "period_start_date",
+                "period_end_date",
+                "fiscal_year",
+                "fiscal_quarter",
+                "metric_id",
+                "taxonomy_version",
+                "revision_no",
+                "revision_reason",
+                "filing_id",
+                "published_at",
+                "published_at_basis",
+                "effective_available_at",
+                "derivation_method",
+                "audit_status",
+                "audit_opinion",
+                "value",
+                "ttm_value",
+                "comparable_across_taxonomy",
+                "is_filed_late",
+                "source_provider",
+                "source_filing_ids",
+            )
+            fact_cols = _select_existing_columns(fact_desired, avail_fact_cols)
+            facts = pinned.read_table(
+                facts_table,
+                columns=fact_cols,
+                filters={
+                    "issuer_id": issuer_id,
+                    "statement_scope": statement_scope,
+                    "period_type": "QUARTER",
+                },
+                connection=connection,
+            )
+
+        ni_ttm_df = pl.DataFrame()
+        period_dates_df = pl.DataFrame()
+        pp_df: pl.DataFrame | None = None
+
+        if not facts.is_empty():
+            sort_fact = [
+                col
+                for col in (
+                    "period_end_date",
+                    "effective_available_at",
+                    "revision_no",
+                    "filing_id",
+                )
+                if col in facts.columns
+            ]
+            sorted_facts = facts.sort(sort_fact) if sort_fact else facts
+
+            date_cols = [
+                col
+                for col in (
+                    "issuer_id",
+                    "period_end_date",
+                    "published_at",
+                    "effective_available_at",
+                )
+                if col in sorted_facts.columns
+            ]
+            if (
+                "published_at" in date_cols or "effective_available_at" in date_cols
+            ) and "period_end_date" in date_cols:
+                period_dates_df = sorted_facts.select(date_cols).unique(
+                    subset=["issuer_id", "period_end_date"], keep="last"
+                )
+
+            ni_rows = sorted_facts.filter(pl.col("metric_id") == "IS_NET_INCOME_PARENT")
+            if not ni_rows.is_empty():
+                ni_dedup = ni_rows.unique(
+                    subset=["issuer_id", "period_end_date"], keep="last"
+                )
+                has_direct_ttm = (
+                    "ttm_value" in ni_dedup.columns
+                    and ni_dedup["ttm_value"].drop_nulls().len() > 0
+                )
+                if has_direct_ttm:
+                    ni_select = [
+                        pl.col("issuer_id").cast(pl.String),
+                        pl.col("period_end_date").cast(pl.Date),
+                        pl.col("ttm_value")
+                        .cast(pl.Float64)
+                        .alias("IS_NET_INCOME_PARENT_TTM"),
+                    ]
+                    if "published_at" in ni_dedup.columns:
+                        ni_select.append(
+                            pl.col("published_at")
+                            .cast(pl.Date)
+                            .alias("_ni_published_at")
+                        )
+                    if "effective_available_at" in ni_dedup.columns:
+                        ni_select.append(
+                            pl.col("effective_available_at")
+                            .cast(pl.Date)
+                            .alias("_ni_effective_available_at")
+                        )
+                    ni_ttm_df = ni_dedup.select(ni_select)
+
+            if ni_ttm_df.is_empty():
+                required_pp_cols = {
+                    "issuer_id",
+                    "statement_scope",
+                    "period_type",
+                    "fiscal_year_start_date",
+                    "period_start_date",
+                    "period_end_date",
+                    "fiscal_year",
+                    "fiscal_quarter",
+                    "metric_id",
+                    "taxonomy_version",
+                    "revision_no",
+                    "revision_reason",
+                    "filing_id",
+                    "published_at",
+                    "published_at_basis",
+                    "effective_available_at",
+                    "derivation_method",
+                    "audit_status",
+                    "audit_opinion",
+                    "value",
+                }
+                if required_pp_cols <= set(facts.columns):
+                    issuer_frame = pl.DataFrame(
+                        {
+                            "issuer_id": [issuer_id],
+                            "ticker": [ticker],
+                            "accounting_regime": [accounting_regime],
+                        }
+                    )
+                    pp_raw = prepare_periods(
+                        facts,
+                        issuer_frame,
+                        as_of=as_of or date(2099, 12, 31),
+                        market_prices=prices,
+                    ).filter(
+                        (pl.col("statement_scope") == statement_scope)
+                        & (pl.col("period_type") == "QUARTER")
+                    )
+                    if not pp_raw.is_empty():
+                        pp_select = [
+                            pl.col("issuer_id").cast(pl.String),
+                            pl.col("period_end_date").cast(pl.Date),
+                        ]
+                        if "IS_NET_INCOME_PARENT" in pp_raw.columns:
+                            pp_select.append(
+                                pl.col("IS_NET_INCOME_PARENT")
+                                .cast(pl.Float64)
+                                .alias("IS_NET_INCOME_PARENT_TTM")
+                            )
+                        if "parent_equity" in pp_raw.columns:
+                            pp_select.append(
+                                pl.col("parent_equity")
+                                .cast(pl.Float64)
+                                .alias("_pp_parent_equity")
+                            )
+                        if "estimated_shares_outstanding" in pp_raw.columns:
+                            pp_select.append(
+                                pl.col("estimated_shares_outstanding")
+                                .cast(pl.Float64)
+                                .alias("_pp_estimated_shares")
+                            )
+                        if "shares_source" in pp_raw.columns:
+                            pp_select.append(pl.col("shares_source").cast(pl.String))
+                        if "_period_available_at" in pp_raw.columns:
+                            pp_select.append(
+                                pl.col("_period_available_at").cast(pl.Date)
+                            )
+                        pp_df = pp_raw.select(pp_select).unique(
+                            subset=["issuer_id", "period_end_date"], keep="last"
+                        )
+
+        if not ratios.is_empty():
+            combined = ratios
+        elif pp_df is not None and not pp_df.is_empty():
+            combined = pp_df.with_columns(
+                pl.lit(statement_scope).alias("statement_scope"),
+                pl.lit("QUARTER").alias("period_type"),
+            )
+            if "_pp_parent_equity" in combined.columns:
+                combined = combined.rename({"_pp_parent_equity": "parent_equity"})
+            if "_pp_estimated_shares" in combined.columns:
+                combined = combined.rename(
+                    {"_pp_estimated_shares": "estimated_shares_outstanding"}
+                )
+        elif not period_dates_df.is_empty():
+            combined = period_dates_df.with_columns(
+                pl.lit(statement_scope).alias("statement_scope"),
+                pl.lit("QUARTER").alias("period_type"),
+            )
+        else:
+            return None
+
+        if not period_dates_df.is_empty() and "published_at" not in combined.columns:
+            combined = combined.join(
+                period_dates_df, on=["issuer_id", "period_end_date"], how="left"
+            )
+
+        if not ni_ttm_df.is_empty():
+            combined = combined.join(
+                ni_ttm_df, on=["issuer_id", "period_end_date"], how="left"
+            )
+            if "_ni_published_at" in combined.columns:
+                pub_expr = (
+                    pl.coalesce("_ni_published_at", "published_at")
+                    if "published_at" in combined.columns
+                    else pl.col("_ni_published_at")
+                )
+                combined = combined.with_columns(pub_expr.alias("published_at")).drop(
+                    "_ni_published_at"
+                )
+            if "_ni_effective_available_at" in combined.columns:
+                eff_expr = (
+                    pl.coalesce("_ni_effective_available_at", "effective_available_at")
+                    if "effective_available_at" in combined.columns
+                    else pl.col("_ni_effective_available_at")
+                )
+                combined = combined.with_columns(
+                    eff_expr.alias("effective_available_at")
+                ).drop("_ni_effective_available_at")
+        elif pp_df is not None and not pp_df.is_empty() and not ratios.is_empty():
+            combined = combined.join(
+                pp_df, on=["issuer_id", "period_end_date"], how="left"
+            )
+            if "_pp_parent_equity" in combined.columns:
+                eq_expr = (
+                    pl.coalesce("parent_equity", "_pp_parent_equity")
+                    if "parent_equity" in combined.columns
+                    else pl.col("_pp_parent_equity")
+                )
+                combined = combined.with_columns(eq_expr.alias("parent_equity")).drop(
+                    "_pp_parent_equity"
+                )
+            if "_pp_estimated_shares" in combined.columns:
+                sh_expr = (
+                    pl.coalesce("_pp_estimated_shares", "estimated_shares_outstanding")
+                    if "estimated_shares_outstanding" in combined.columns
+                    else pl.col("_pp_estimated_shares")
+                )
+                combined = combined.with_columns(
+                    sh_expr.alias("estimated_shares_outstanding")
+                ).drop("_pp_estimated_shares")
+
+        if (
+            "published_at" not in combined.columns
+            and "effective_available_at" not in combined.columns
+            and "filing_id" in combined.columns
+        ):
+            avail_manifest_cols = _available_table_columns(
+                pinned, FILINGS_MANIFEST_TABLE, connection=connection
+            )
+            if avail_manifest_cols:
+                m_cols = _select_existing_columns(
+                    ("filing_id", "published_at", "effective_available_at"),
+                    avail_manifest_cols,
+                )
+                if "filing_id" in m_cols and (
+                    "published_at" in m_cols or "effective_available_at" in m_cols
+                ):
+                    manifest_df = pinned.read_table(
+                        FILINGS_MANIFEST_TABLE,
+                        columns=m_cols,
+                        filters={"issuer_id": issuer_id},
+                        connection=connection,
+                    ).unique(subset=["filing_id"], keep="last")
+                    if not manifest_df.is_empty():
+                        combined = combined.join(
+                            manifest_df, on="filing_id", how="left"
+                        )
+
+        date_casts = [
+            pl.col(col).cast(pl.Date).alias(col)
+            for col in (
+                "published_at",
+                "effective_available_at",
+                "_period_available_at",
+                "period_end_date",
+            )
+            if col in combined.columns
+        ]
+        if date_casts:
+            combined = combined.with_columns(date_casts)
+
+        has_any_disclosure_col = any(
+            col in combined.columns
+            for col in (
+                "available_at",
+                "published_at",
+                "effective_available_at",
+                "_period_available_at",
+                "_amounts_available_at",
+            )
+        )
+        return combined if has_any_disclosure_col else None
+
+    def get_company_market_overlay(
+        self,
+        ticker: str,
+        *,
+        statement_scope: str = "CONSOLIDATED",
+        as_of: date | None = None,
+        port_data_root: Path | None = None,
+        connection: duckdb.DuckDBPyConnection | None = None,
+    ) -> dict[str, Any]:
+        """Return PIT valuation series and Price & Risk Event Overlay for one company (UI-09b)."""
+        if statement_scope not in STATEMENT_SCOPES:
+            raise ValueError(f"Unsupported statement_scope: {statement_scope!r}")
+        clean_ticker = ticker.strip().upper()
+        if not clean_ticker:
+            raise ValueError("Ticker must not be empty.")
+
+        with self.repository.snapshot_session(connection=connection) as pinned:
+            issuer_row = _resolve_issuer_row(
+                pinned,
+                clean_ticker,
+                columns=("issuer_id", "ticker", "accounting_regime"),
+                connection=connection,
+            )
+            issuer_id = str(issuer_row["issuer_id"])
+            resolved_ticker = str(issuer_row["ticker"])
+            accounting_regime = str(issuer_row["accounting_regime"])
+
+            candidate_roots = self._build_port_candidate_roots(
+                self.repository._source,
+                pinned._source,
+                port_data_root=port_data_root,
+            )
+
+            prices = self._load_port_parquet_for_issuer(
+                rel_parquet_path=Path("market_prices") / "market_prices.parquet",
+                issuer_id=issuer_id,
+                candidate_roots=candidate_roots,
+            )
+            if prices is None:
+                prices = pl.DataFrame()
+            if not prices.is_empty() and as_of is not None:
+                prices = prices.filter(pl.col("trade_date") <= as_of)
+
+            if prices.is_empty():
+                return {
+                    "issuer_id": issuer_id,
+                    "ticker": resolved_ticker,
+                    "as_of": as_of,
+                    "latest_valuation": None,
+                    "price_series": [],
+                    "model_markers": [],
+                    "regulatory_markers": [],
+                    "earliest_warning_summary": None,
+                }
+
+            reg_events = self._load_port_parquet_for_issuer(
+                rel_parquet_path=Path("regulatory_ledger")
+                / "regulatory_events.parquet",
+                issuer_id=issuer_id,
+                candidate_roots=candidate_roots,
+            )
+            if reg_events is not None and reg_events.is_empty():
+                reg_events = None
+
+            ml_scores: pl.DataFrame | None = None
+            avail_ml_cols = _available_table_columns(
+                pinned, ML_SCORES_TABLE, connection=connection
+            )
+            if avail_ml_cols:
+                ml_cols = _select_existing_columns(
+                    (
+                        "issuer_id",
+                        "statement_scope",
+                        "period_type",
+                        "period_end_date",
+                        "filing_id",
+                        "risk_tier",
+                        "calibrated_distress_prob",
+                        "risk_market_percentile",
+                        "relative_risk_lift",
+                        "available_at",
+                        "published_at",
+                        "effective_available_at",
+                    ),
+                    avail_ml_cols,
+                )
+                if {"issuer_id", "period_end_date", "risk_tier"} <= set(ml_cols):
+                    ml_raw = pinned.read_table(
+                        ML_SCORES_TABLE,
+                        columns=ml_cols,
+                        filters={
+                            "issuer_id": issuer_id,
+                            "statement_scope": statement_scope,
+                        },
+                        connection=connection,
+                    )
+                    if not ml_raw.is_empty():
+                        sort_ml = [
+                            col
+                            for col in ("period_type", "period_end_date", "filing_id")
+                            if col in ml_raw.columns
+                        ]
+                        dedup_ml = [
+                            col
+                            for col in ("issuer_id", "period_type", "period_end_date")
+                            if col in ml_raw.columns
+                        ]
+                        ml_scores = ml_raw.sort(sort_ml).unique(
+                            subset=dedup_ml, keep="last"
+                        )
+
+            financial_periods = self._build_overlay_financial_periods(
+                pinned,
+                issuer_id=issuer_id,
+                ticker=resolved_ticker,
+                accounting_regime=accounting_regime,
+                statement_scope=statement_scope,
+                prices=prices,
+                as_of=as_of,
+                connection=connection,
+            )
+
+            valuation_series = (
+                compute_pit_valuation_series(
+                    prices,
+                    financial_periods,
+                    issuer_id=issuer_id,
+                    statement_scope=statement_scope,
+                )
+                if financial_periods is not None and not financial_periods.is_empty()
+                else None
+            )
+
+            payload = build_price_risk_overlay(
+                prices,
+                issuer_id=issuer_id,
+                ml_scores=ml_scores,
+                regulatory_events=reg_events,
+                financial_periods=financial_periods,
+                valuation_series=valuation_series,
+                statement_scope=statement_scope,
+                as_of=as_of,
+            )
+            price_series = payload["price_series"]
+            latest_valuation = price_series[-1] if price_series else None
+            return {
+                **payload,
+                "latest_valuation": latest_valuation,
+            }

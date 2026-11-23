@@ -15,8 +15,11 @@ Verified Sources:
         with ``Runner.run`` via ``<state_dir>/pipeline.lock``.
 """
 
+import argparse
+import json
 import math
-from collections.abc import Callable, Iterator, Mapping
+import os
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -200,19 +203,30 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
             data_root=paths.resolved_data_root(),
         )
 
-        effective_backend: StorageBackend
-        if self.backend is None:
-            effective_backend = base.backend
-        elif self.backend in ("ducklake", "parquet"):
-            effective_backend = "ducklake" if self.backend == "ducklake" else "parquet"
-        else:
+        pg_env_override = os.getenv("FININTEL_DUCKLAKE_PG_DSN_ENV", "").strip()
+        pg_env = (
+            self.postgres_dsn_env.strip()
+            if self.postgres_dsn_env is not None
+            else (pg_env_override or base.catalog.postgres_dsn_env)
+        )
+        if not pg_env:
             raise ContractViolationError(
-                f"StorageResource.backend must be 'ducklake' or 'parquet', got {self.backend!r}."
+                "StorageResource.postgres_dsn_env must be non-empty."
             )
 
+        env_driver = os.getenv("FININTEL_DUCKLAKE_CATALOG_DRIVER", "").strip().lower()
         effective_driver: CatalogDriver
         if self.catalog_driver is None:
-            effective_driver = base.catalog.driver
+            if env_driver:
+                if env_driver not in ("sqlite", "postgres"):
+                    raise ContractViolationError(
+                        "FININTEL_DUCKLAKE_CATALOG_DRIVER must be 'sqlite' or 'postgres'."
+                    )
+                effective_driver = "postgres" if env_driver == "postgres" else "sqlite"
+            elif os.getenv(pg_env, "").strip():
+                effective_driver = "postgres"
+            else:
+                effective_driver = base.catalog.driver
         elif self.catalog_driver in ("sqlite", "postgres"):
             effective_driver = (
                 "postgres" if self.catalog_driver == "postgres" else "sqlite"
@@ -222,20 +236,33 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
                 "StorageResource.catalog_driver must be 'sqlite' or 'postgres'."
             )
 
+        env_backend = os.getenv("FININTEL_STORAGE_BACKEND", "").strip().lower()
+        effective_backend: StorageBackend
+        if self.backend is None:
+            if env_backend:
+                if env_backend not in ("ducklake", "parquet"):
+                    raise ContractViolationError(
+                        "FININTEL_STORAGE_BACKEND must be 'ducklake' or 'parquet'."
+                    )
+                effective_backend = (
+                    "ducklake" if env_backend == "ducklake" else "parquet"
+                )
+            elif effective_driver == "postgres":
+                effective_backend = "ducklake"
+            else:
+                effective_backend = base.backend
+        elif self.backend in ("ducklake", "parquet"):
+            effective_backend = "ducklake" if self.backend == "ducklake" else "parquet"
+        else:
+            raise ContractViolationError(
+                f"StorageResource.backend must be 'ducklake' or 'parquet', got {self.backend!r}."
+            )
+
         sqlite_path = (
             _resolve_under(paths.resolved_project_root(), self.catalog_sqlite_path)
             if self.catalog_sqlite_path is not None
             else base.catalog.sqlite_path
         )
-        pg_env = (
-            self.postgres_dsn_env.strip()
-            if self.postgres_dsn_env is not None
-            else base.catalog.postgres_dsn_env
-        )
-        if not pg_env:
-            raise ContractViolationError(
-                "StorageResource.postgres_dsn_env must be non-empty."
-            )
 
         lake_data = (
             _resolve_under(paths.resolved_project_root(), self.lakehouse_data_path)
@@ -722,3 +749,102 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
             sleeper=sleeper,
             now_fn=now_fn,
         )
+
+
+def bootstrap_dagster_instance(
+    dagster_home: Path | None = None,
+    *,
+    issuers_path: Path | None = None,
+    universe_tickers_path: Path | None = None,
+    pool_limits: Mapping[str, int] | None = None,
+    prune_removed: bool = False,
+) -> dict[str, object]:
+    """Bootstrap Dagster instance concurrency pools and corporate ticker partitions (H-03).
+
+    Intended to run against both SQLite and fresh Tier-1 PostgreSQL (``dagster_state``)
+    instances so ``fhsc_api_pool=1`` and ``public_disclosure_pool=3`` are always persisted
+    in ``event_logs`` before any Dagster daemon/sensor launches runs.
+    """
+    from finintel.orchestration.partitions import (
+        configure_concurrency_pools,
+        sync_corporate_ticker_partitions,
+    )
+
+    if dagster_home is not None:
+        resolved_home = dagster_home.resolve()
+    else:
+        env_home = os.getenv("DAGSTER_HOME", "").strip()
+        resolved_home = (
+            Path(env_home).resolve() if env_home else Path("config").resolve()
+        )
+
+    if not resolved_home.is_dir():
+        raise ContractViolationError(
+            f"Dagster home directory does not exist: {resolved_home}"
+        )
+
+    default_yaml = (resolved_home / "universe_tickers.yaml").resolve()
+    effective_universe_yaml = (
+        universe_tickers_path.resolve()
+        if universe_tickers_path is not None
+        else (default_yaml if default_yaml.is_file() else None)
+    )
+
+    with dg.DagsterInstance.from_config(str(resolved_home)) as instance:
+        applied_pools = configure_concurrency_pools(instance, pool_limits=pool_limits)
+        synced_tickers = sync_corporate_ticker_partitions(
+            instance,
+            issuers_path=issuers_path,
+            universe_tickers_path=effective_universe_yaml,
+            prune_removed=prune_removed,
+        )
+
+    return {
+        "dagster_home": resolved_home.as_posix(),
+        "pool_limits": applied_pools,
+        "synced_partitions_count": len(synced_tickers),
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI entrypoint to bootstrap Dagster concurrency pools and ticker partitions."""
+    parser = argparse.ArgumentParser(
+        prog="python -m finintel.orchestration.resources",
+        description="Bootstrap Dagster concurrency pools and corporate ticker partitions.",
+    )
+    parser.add_argument(
+        "--dagster-home",
+        type=Path,
+        default=None,
+        help="Dagster home directory containing dagster.yaml (defaults to $DAGSTER_HOME or ./config).",
+    )
+    parser.add_argument(
+        "--issuers-path",
+        type=Path,
+        default=None,
+        help="Optional issuers.parquet path for partition sync.",
+    )
+    parser.add_argument(
+        "--universe-tickers-path",
+        type=Path,
+        default=None,
+        help="Optional universe_tickers.yaml fallback path.",
+    )
+    parser.add_argument(
+        "--prune-removed",
+        action="store_true",
+        help="Remove stale dynamic partitions absent from the ticker manifest.",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    summary = bootstrap_dagster_instance(
+        dagster_home=args.dagster_home,
+        issuers_path=args.issuers_path,
+        universe_tickers_path=args.universe_tickers_path,
+        prune_removed=args.prune_removed,
+    )
+    print(json.dumps(summary, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

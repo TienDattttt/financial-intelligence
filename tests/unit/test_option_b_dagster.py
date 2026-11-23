@@ -450,6 +450,21 @@ def test_definitions_validate_loadable_pools_deps_and_schedule() -> None:
     assert lakehouse_maintenance_schedule.execution_timezone == "Asia/Ho_Chi_Minh"
     assert lakehouse_maintenance_schedule.job == lakehouse_maintenance_job
 
+    assert {job.name for job in (defs.jobs or [])} >= {
+        "fhsc_ingestion_job",
+        "downstream_publish_job",
+        "quarterly_ml_retrain_job",
+        "lakehouse_maintenance_job",
+    }
+    assert {sched.name for sched in (defs.schedules or [])} >= {
+        "seasonal_ingestion_schedule",
+        "quarterly_ml_retrain_schedule",
+        "lakehouse_maintenance_schedule",
+    }
+    assert {sensor.name for sensor in (defs.sensors or [])} >= {
+        "downstream_publish_sensor",
+    }
+
 
 def test_dagster_yaml_storage_location_and_concurrency_pools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

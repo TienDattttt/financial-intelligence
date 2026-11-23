@@ -14,6 +14,7 @@ Verified Sources:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from typing import Literal
 
@@ -24,7 +25,7 @@ from finintel.analytics.intermediates import prepare_periods
 from finintel.analytics.ratios import calculate_ratios
 from finintel.exceptions import ContractViolationError
 from finintel.ml.classical_scores import add_classical_scores
-from finintel.ml.supervised.target import build_distress_targets
+from finintel.ml.supervised.target import build_distress_targets, resolve_target_mode
 
 PeerStandardizationMode = Literal["PIT_ICB", "PIT_REGIME_SYMMETRIC"]
 _PIT_ICB_COVERAGE_THRESHOLD = 0.80
@@ -57,10 +58,16 @@ def _pit_icb_coverage(frame: pl.DataFrame) -> float:
 
 def resolve_peer_standardization_mode(
     train: pl.DataFrame,
-    validation: pl.DataFrame,
+    validation: pl.DataFrame | None = None,
 ) -> PeerStandardizationMode:
-    """Select PIT_ICB when PIT-visible ICB coverage >= 80% on both train & validation, else PIT_REGIME_SYMMETRIC."""
+    """Select PIT_ICB when PIT-visible ICB coverage >= 80% on train (and validation if provided)."""
     train_cov = _pit_icb_coverage(train)
+    if validation is None:
+        return (
+            "PIT_ICB"
+            if train_cov >= _PIT_ICB_COVERAGE_THRESHOLD
+            else "PIT_REGIME_SYMMETRIC"
+        )
     valid_cov = _pit_icb_coverage(validation)
     if (
         train_cov >= _PIT_ICB_COVERAGE_THRESHOLD
@@ -196,32 +203,88 @@ def purged_walk_forward_split(
     return {"train": train, "validation": validation, "test": test}
 
 
-def build_pit_ml_splits(
+def purged_two_way_split(
+    samples: pl.DataFrame,
+    *,
+    test_start: date,
+    test_end: date | None = None,
+    require_exact_filing: bool = False,
+) -> dict[str, pl.DataFrame]:
+    """Split into 2-way (Train_OOF -> Test) purging labels unavailable by ``test_start`` (B-02).
+
+    Training rows precede ``test_start`` and satisfy BOTH ``_period_available_at <= test_start``
+    and ``label_available_at <= test_start`` (under Mode B, symmetrically ``a_t + 365d <= test_start``
+    for both ``y = 1`` and ``y = 0``). Test rows satisfy ``period_end_date >= test_start``
+    (and ``< test_end`` when ``test_end`` is provided).
+    """
+    required = {
+        "period_end_date",
+        "label_available_at",
+        "distress_target",
+        "_period_available_at",
+    }
+    if require_exact_filing:
+        required.add("_exact_filing_basis")
+    missing = required - set(samples.columns)
+    if missing:
+        raise ContractViolationError(
+            f"Temporal split input is missing columns: {sorted(missing)}"
+        )
+    if test_end is not None and test_start >= test_end:
+        raise ContractViolationError("test_start must precede test_end.")
+    if samples.filter(
+        pl.col("distress_target").is_not_null() & pl.col("label_available_at").is_null()
+    ).height:
+        raise ContractViolationError(
+            "Labeled samples require a non-null label_available_at."
+        )
+    observation = pl.col("period_end_date").cast(pl.Date)
+    label_time = pl.col("label_available_at").cast(pl.Date)
+    feature_time = pl.col("_period_available_at").cast(pl.Date)
+    labeled = pl.col("distress_target").is_not_null()
+    if require_exact_filing:
+        exact_guard = pl.col("_exact_filing_basis").fill_null(False)
+        if "_label_exact_filing_basis" in samples.columns:
+            exact_guard = exact_guard & pl.col("_label_exact_filing_basis").fill_null(
+                False
+            )
+        labeled = labeled & exact_guard
+
+    train = samples.filter(
+        labeled
+        & (observation < test_start)
+        & label_time.is_not_null()
+        & (label_time <= test_start)
+        & feature_time.is_not_null()
+        & (feature_time <= test_start)
+    )
+    test_expr = labeled & (observation >= test_start)
+    if test_end is not None:
+        test_expr = test_expr & (observation < test_end)
+    test = samples.filter(test_expr)
+    return {"train": train, "test": test}
+
+
+def build_pit_two_way_split(
     facts: pl.DataFrame,
     issuers: pl.DataFrame,
     *,
-    validation_start: date,
     test_start: date,
     as_of: date,
+    test_end: date | None = None,
     require_exact_filing: bool = True,
     statement_scope: str = "CONSOLIDATED",
     taxonomy_version: str | None = "VAS_TT200_2014",
-    target_mode: str = "FUNDAMENTAL_DISTRESS",
+    target_mode: str | None = None,
     regulatory_events: pl.DataFrame | None = None,
     precomputed_as_of_scored: pl.DataFrame | None = None,
 ) -> dict[str, pl.DataFrame]:
-    """Construct fold-specific PIT feature/label snapshots without restatement or future-ICB leakage.
-
-    Train features and labels are materialized strictly as of ``validation_start``;
-    validation features and labels strictly as of ``test_start``; and test features
-    and labels strictly as of ``as_of``. Peer standardization mode (``PIT_ICB`` vs
-    ``PIT_REGIME_SYMMETRIC``) is resolved from PIT-visible ICB coverage on train
-    and validation and applied symmetrically across all folds.
-    """
-    if validation_start >= test_start:
-        raise ContractViolationError("Validation start must precede test start.")
+    """Construct a 2-way PIT split (Train_OOF at ``test_start`` -> Test at ``as_of``) (B-02)."""
     if test_start > as_of:
         raise ContractViolationError("Test start must not exceed the PIT as_of date.")
+    if test_end is not None and test_start >= test_end:
+        raise ContractViolationError("test_start must precede test_end.")
+    resolved_target_mode = resolve_target_mode(target_mode, regulatory_events)
 
     def _materialize_at(
         cutoff: date, *, precomputed_scored: pl.DataFrame | None = None
@@ -238,7 +301,142 @@ def build_pit_ml_splits(
             scoped = scoped.filter(pl.col("taxonomy_version") == taxonomy_version)
         return build_distress_targets(
             scoped,
-            mode=target_mode,
+            mode=resolved_target_mode,
+            as_of=cutoff,
+            regulatory_events=regulatory_events,
+        )
+
+    train_raw = _materialize_at(test_start)
+    test_raw = _materialize_at(as_of, precomputed_scored=precomputed_as_of_scored)
+
+    pre_train = purged_two_way_split(
+        train_raw,
+        test_start=test_start,
+        test_end=test_end,
+        require_exact_filing=require_exact_filing,
+    )["train"]
+    peer_mode = resolve_peer_standardization_mode(pre_train, None)
+
+    train_snapshot = attach_pit_sector_z_features(train_raw, mode=peer_mode)
+    test_snapshot = attach_pit_sector_z_features(test_raw, mode=peer_mode)
+
+    train = purged_two_way_split(
+        train_snapshot,
+        test_start=test_start,
+        test_end=test_end,
+        require_exact_filing=require_exact_filing,
+    )["train"]
+    test = purged_two_way_split(
+        test_snapshot,
+        test_start=test_start,
+        test_end=test_end,
+        require_exact_filing=require_exact_filing,
+    )["test"]
+    return {"train": train, "test": test}
+
+
+def build_expanding_walk_forward_splits(
+    facts: pl.DataFrame,
+    issuers: pl.DataFrame,
+    *,
+    test_years: Sequence[int] = (2021, 2022, 2023, 2024, 2025),
+    as_of: date,
+    require_exact_filing: bool = True,
+    statement_scope: str = "CONSOLIDATED",
+    taxonomy_version: str | None = "VAS_TT200_2014",
+    target_mode: str | None = None,
+    regulatory_events: pl.DataFrame | None = None,
+    precomputed_as_of_scored: pl.DataFrame | None = None,
+) -> dict[int, dict[str, pl.DataFrame]]:
+    """Build 2-way Purged Expanding Walk-Forward PIT splits across ``test_years`` (B-02)."""
+    if not test_years:
+        raise ContractViolationError("test_years must be a nonempty sequence of years.")
+    if precomputed_as_of_scored is None:
+        periods_as_of = prepare_periods(
+            facts, issuers, as_of=as_of, include_ml_inputs=True
+        )
+        scored_as_of = add_classical_scores(calculate_ratios(periods_as_of))
+    else:
+        scored_as_of = precomputed_as_of_scored
+
+    folds: dict[int, dict[str, pl.DataFrame]] = {}
+    for year in test_years:
+        test_start = date(int(year), 1, 1)
+        test_end = date(int(year) + 1, 1, 1)
+        folds[int(year)] = build_pit_two_way_split(
+            facts,
+            issuers,
+            test_start=test_start,
+            test_end=test_end,
+            as_of=as_of,
+            require_exact_filing=require_exact_filing,
+            statement_scope=statement_scope,
+            taxonomy_version=taxonomy_version,
+            target_mode=target_mode,
+            regulatory_events=regulatory_events,
+            precomputed_as_of_scored=scored_as_of,
+        )
+    return folds
+
+
+def build_pit_ml_splits(
+    facts: pl.DataFrame,
+    issuers: pl.DataFrame,
+    *,
+    validation_start: date | None = None,
+    test_start: date,
+    as_of: date,
+    test_end: date | None = None,
+    require_exact_filing: bool = True,
+    statement_scope: str = "CONSOLIDATED",
+    taxonomy_version: str | None = "VAS_TT200_2014",
+    target_mode: str | None = None,
+    regulatory_events: pl.DataFrame | None = None,
+    precomputed_as_of_scored: pl.DataFrame | None = None,
+) -> dict[str, pl.DataFrame]:
+    """Construct fold-specific PIT feature/label snapshots without restatement or future-ICB leakage.
+
+    When ``validation_start`` is ``None`` (recommended 2-way ``B-02`` mode), delegates
+    to ``build_pit_two_way_split`` returning ``{"train": ..., "test": ...}``.
+    When ``validation_start`` is supplied (legacy 3-way callers), materializes
+    train at ``validation_start``, validation at ``test_start``, and test at ``as_of``.
+    """
+    if validation_start is None:
+        return build_pit_two_way_split(
+            facts,
+            issuers,
+            test_start=test_start,
+            test_end=test_end,
+            as_of=as_of,
+            require_exact_filing=require_exact_filing,
+            statement_scope=statement_scope,
+            taxonomy_version=taxonomy_version,
+            target_mode=target_mode,
+            regulatory_events=regulatory_events,
+            precomputed_as_of_scored=precomputed_as_of_scored,
+        )
+    if validation_start >= test_start:
+        raise ContractViolationError("Validation start must precede test start.")
+    if test_start > as_of:
+        raise ContractViolationError("Test start must not exceed the PIT as_of date.")
+    resolved_target_mode = resolve_target_mode(target_mode, regulatory_events)
+
+    def _materialize_at(
+        cutoff: date, *, precomputed_scored: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        if precomputed_scored is not None:
+            scored = precomputed_scored
+        else:
+            periods = prepare_periods(
+                facts, issuers, as_of=cutoff, include_ml_inputs=True
+            )
+            scored = add_classical_scores(calculate_ratios(periods))
+        scoped = scored.filter(pl.col("statement_scope") == statement_scope)
+        if taxonomy_version is not None:
+            scoped = scoped.filter(pl.col("taxonomy_version") == taxonomy_version)
+        return build_distress_targets(
+            scoped,
+            mode=resolved_target_mode,
             as_of=cutoff,
             regulatory_events=regulatory_events,
         )

@@ -5,13 +5,21 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Download, Plus, X } from "lucide-react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
+import { RiskTierBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/primitives";
 import { useAllIssuers, useCompareCompanies } from "@/hooks/use-finintel-queries";
-import { PERIOD_TYPE_LABELS, STATEMENT_SCOPE_LABELS } from "@/lib/domain-labels";
+import {
+  formatCreditTrio,
+  getRiskTierMeta,
+  PERIOD_TYPE_LABELS,
+  selectMlScoreForPeriod,
+  STATEMENT_SCOPE_LABELS,
+} from "@/lib/domain-labels";
+import { useChartTheme } from "@/lib/echarts-theme";
 import {
   buildCsvContent,
   formatNumber,
@@ -21,8 +29,6 @@ import {
   normalizeSearchText,
 } from "@/lib/format";
 import type { RatioName } from "@/types/api";
-
-const SERIES_COLORS = ["#1F4E79", "#2E7D5B", "#B7791F", "#A61B1B", "#6B4C9A"];
 
 type CompareMetricKey =
   | "altman_z_double_prime"
@@ -67,6 +73,7 @@ function CompareContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { statementScope, periodType, periodEndDate, snapshotId } = useAppState();
+  const { palette } = useChartTheme();
 
   const tickers = React.useMemo(() => {
     const raw = searchParams.get("tickers") ?? "";
@@ -178,47 +185,44 @@ function CompareContent() {
       perTickerMap.set(ticker, map);
     });
 
-    const dates = Array.from(dateSet).sort().slice(-12);
+    const dates = Array.from(dateSet)
+      .filter((d) => !periodEndDate || d <= periodEndDate)
+      .sort()
+      .slice(-12);
     return { dates, perTickerMap };
-  }, [metricConfig, profiles, tickers]);
+  }, [metricConfig, periodEndDate, profiles, tickers]);
 
   const chartOption = React.useMemo<EChartsOption>(() => {
     const xLabels = chartData.dates.map((d) => formatPeriodLabel(d, periodType));
     return {
-      animation: false,
       grid: { left: 54, right: 20, top: 36, bottom: 32 },
-      legend: { top: 4, right: 8, textStyle: { color: "#5B6068", fontSize: 11 } },
+      legend: { top: 4, right: 8 },
       tooltip: {
         trigger: "axis",
-        backgroundColor: "#FFFFFF",
-        borderColor: "#DAD7D0",
-        textStyle: { color: "#1A1D21", fontSize: 12 },
       },
       xAxis: {
         type: "category",
         data: xLabels,
-        axisLine: { lineStyle: { color: "#DAD7D0" } },
-        axisLabel: { color: "#5B6068", fontSize: 11 },
       },
       yAxis: {
         type: "value",
-        splitLine: { lineStyle: { color: "#EFEDE8" } },
         axisLabel: {
-          color: "#5B6068",
-          fontSize: 11,
           formatter: metricConfig.isPct ? "{value}%" : "{value}",
         },
       },
-      series: tickers.map((t, idx) => ({
-        name: t,
-        type: "line",
-        symbolSize: 5,
-        lineStyle: { color: SERIES_COLORS[idx % SERIES_COLORS.length], width: 2 },
-        itemStyle: { color: SERIES_COLORS[idx % SERIES_COLORS.length] },
-        data: chartData.dates.map((d) => chartData.perTickerMap.get(t)?.get(d) ?? null),
-      })),
+      series: tickers.map((t, idx) => {
+        const seriesColor = palette.series[idx % palette.series.length];
+        return {
+          name: t,
+          type: "line",
+          symbolSize: 5,
+          lineStyle: { color: seriesColor, width: 2 },
+          itemStyle: { color: seriesColor },
+          data: chartData.dates.map((d) => chartData.perTickerMap.get(t)?.get(d) ?? null),
+        };
+      }),
     };
-  }, [chartData, metricConfig.isPct, periodType, tickers]);
+  }, [chartData, metricConfig.isPct, palette.series, periodType, tickers]);
 
   const chartTableHeaders = ["Kỳ", ...tickers];
   const chartTableRows = chartData.dates.map((d) => [
@@ -246,24 +250,21 @@ function CompareContent() {
       }
     });
 
-    const latestMl = tickers.map((_, idx) => {
-      const scores = [...(profiles[idx]?.data?.ml_scores ?? [])].sort((a, b) =>
-        a.period_end_date.localeCompare(b.period_end_date),
-      );
-      return scores[scores.length - 1] ?? null;
-    });
+    const latestMl = tickers.map((_, idx) =>
+      selectMlScoreForPeriod(profiles[idx]?.data?.ml_scores, periodEndDate),
+    );
 
     const latestFlagsCount = tickers.map((_, idx) => {
       const p = profiles[idx]?.data;
       if (!p) return 0;
-      const latestDate = latestMl[idx]?.period_end_date;
-      return latestDate
-        ? p.red_flags.filter((f) => f.period_end_date === latestDate).length
+      const targetDate = latestMl[idx]?.period_end_date ?? periodEndDate;
+      return targetDate
+        ? p.red_flags.filter((f) => f.period_end_date === targetDate).length
         : p.red_flags.length;
     });
 
     return { ratioList, latestMl, latestFlagsCount };
-  }, [profiles, summaries, tickers]);
+  }, [periodEndDate, profiles, summaries, tickers]);
 
   const handleExportCsv = () => {
     const headers = ["Chỉ tiêu", ...tickers];
@@ -293,8 +294,34 @@ function CompareContent() {
       ),
     ]);
     rows.push([
-      "Xác suất kiệt quệ",
+      "Bậc tín nhiệm (R1–R5)",
+      ...matrixData.latestMl.map((m) => getRiskTierMeta(m?.risk_tier).shortLabel),
+    ]);
+    rows.push([
+      "Vị thế rủi ro cùng kỳ",
+      ...matrixData.latestMl.map(
+        (m) =>
+          formatCreditTrio({
+            risk_tier: m?.risk_tier,
+            risk_market_percentile: m?.risk_market_percentile,
+            calibrated_distress_prob: m?.calibrated_distress_prob,
+            relative_risk_lift: m?.relative_risk_lift,
+            market_base_rate: m?.market_base_rate,
+          }).topPercentLabel,
+      ),
+    ]);
+    rows.push([
+      "Xác suất kiệt quệ 1 năm (1Y PD)",
       ...matrixData.latestMl.map((m) => formatPercent(m?.calibrated_distress_prob)),
+    ]);
+    rows.push([
+      "Hệ số rủi ro so nền thị trường",
+      ...matrixData.latestMl.map(
+        (m) =>
+          formatCreditTrio({
+            relative_risk_lift: m?.relative_risk_lift,
+          }).liftLabel ?? "N/A",
+      ),
     ]);
 
     for (const [metricName, meta] of matrixData.ratioList.entries()) {
@@ -337,6 +364,7 @@ function CompareContent() {
           <p className="mt-0.5 text-xs text-ink-muted">
             Phạm vi {STATEMENT_SCOPE_LABELS[statementScope] ?? statementScope} ·{" "}
             {PERIOD_TYPE_LABELS[periodType] ?? periodType}
+            {periodEndDate ? ` · ${formatPeriodLabel(periodEndDate, periodType)}` : ""}
           </p>
         </div>
         {tickers.length > 0 ? (
@@ -347,17 +375,17 @@ function CompareContent() {
         ) : null}
       </div>
 
-      <Card>
+      <Card className="rounded-lg shadow-xs">
         <CardContent className="space-y-3 p-3.5">
           <div className="flex flex-wrap items-center gap-2">
             {tickers.map((t, idx) => (
               <span
                 key={t}
-                className="inline-flex items-center gap-1.5 rounded border border-border bg-canvas px-2.5 py-1 text-xs font-medium text-ink"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-canvas px-2.5 py-1 text-xs font-medium text-ink"
               >
                 <span
                   className="size-2 rounded-full"
-                  style={{ backgroundColor: SERIES_COLORS[idx % SERIES_COLORS.length] }}
+                  style={{ backgroundColor: palette.series[idx % palette.series.length] }}
                 />
                 <Link href={`/companies/${t}`} className="font-mono font-semibold hover:underline">
                   {t}
@@ -468,19 +496,22 @@ function CompareContent() {
             }
           />
 
-          <Card>
+          <Card className="rounded-lg shadow-xs">
             <CardHeader className="py-2.5">
               <CardTitle className="text-[14px]">
-                Ma trận chỉ số sức khỏe tài chính &amp; định lượng kỳ mới nhất
+                Ma trận chỉ số sức khỏe tài chính &amp; định lượng
+                {periodEndDate
+                  ? ` (${formatPeriodLabel(periodEndDate, periodType)})`
+                  : " kỳ mới nhất"}
               </CardTitle>
-              <div className="inline-flex rounded border border-border bg-canvas p-0.5 text-xs">
+              <div className="inline-flex rounded-lg border border-border bg-canvas p-0.5 text-xs">
                 <button
                   type="button"
                   onClick={() => setMatrixMode("VALUE")}
                   className={
                     matrixMode === "VALUE"
-                      ? "rounded bg-accent-ink px-2.5 py-1 font-medium text-white"
-                      : "px-2.5 py-1 text-ink-muted hover:text-ink"
+                      ? "rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground shadow-xs"
+                      : "rounded-md px-2.5 py-1 text-ink-muted transition-colors duration-150 hover:text-ink"
                   }
                 >
                   Giá trị tuyệt đối
@@ -490,8 +521,8 @@ function CompareContent() {
                   onClick={() => setMatrixMode("PERCENTILE")}
                   className={
                     matrixMode === "PERCENTILE"
-                      ? "rounded bg-accent-ink px-2.5 py-1 font-medium text-white"
-                      : "px-2.5 py-1 text-ink-muted hover:text-ink"
+                      ? "rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground shadow-xs"
+                      : "rounded-md px-2.5 py-1 text-ink-muted transition-colors duration-150 hover:text-ink"
                   }
                 >
                   Phân vị ngành (%)
@@ -568,13 +599,64 @@ function CompareContent() {
                         scope="row"
                         className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
                       >
-                        Xác suất kiệt quệ (Mô hình)
+                        Bậc tín nhiệm (R1–R5)
                       </th>
                       {matrixData.latestMl.map((m, i) => (
-                        <td key={tickers[i]} className="num px-3 py-2 text-right font-medium">
-                          {formatPercent(m?.calibrated_distress_prob)}
+                        <td key={tickers[i]} className="px-3 py-2 text-right">
+                          <div className="flex justify-end">
+                            <RiskTierBadge riskTier={m?.risk_tier} />
+                          </div>
                         </td>
                       ))}
+                    </tr>
+                    <tr className="border-b border-border/60">
+                      <th
+                        scope="row"
+                        className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
+                      >
+                        Vị thế rủi ro cùng kỳ (PIT)
+                      </th>
+                      {matrixData.latestMl.map((m, i) => {
+                        const trio = formatCreditTrio({
+                          risk_tier: m?.risk_tier,
+                          risk_market_percentile: m?.risk_market_percentile,
+                          calibrated_distress_prob: m?.calibrated_distress_prob,
+                          relative_risk_lift: m?.relative_risk_lift,
+                          market_base_rate: m?.market_base_rate,
+                        });
+                        return (
+                          <td key={tickers[i]} className="num px-3 py-2 text-right text-ink-muted">
+                            {trio.topPercentLabel}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                    <tr className="border-b border-border/60">
+                      <th
+                        scope="row"
+                        className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
+                      >
+                        Xác suất kiệt quệ 1 năm (1Y PD · × nền)
+                      </th>
+                      {matrixData.latestMl.map((m, i) => {
+                        const trio = formatCreditTrio({
+                          risk_tier: m?.risk_tier,
+                          risk_market_percentile: m?.risk_market_percentile,
+                          calibrated_distress_prob: m?.calibrated_distress_prob,
+                          relative_risk_lift: m?.relative_risk_lift,
+                          market_base_rate: m?.market_base_rate,
+                        });
+                        return (
+                          <td key={tickers[i]} className="num px-3 py-2 text-right font-medium">
+                            <span>{trio.pdLabel}</span>
+                            {trio.liftLabel ? (
+                              <span className="ml-1.5 text-[11px] font-normal text-ink-muted">
+                                ({trio.liftLabel})
+                              </span>
+                            ) : null}
+                          </td>
+                        );
+                      })}
                     </tr>
                     <tr className="border-b border-border bg-surface-muted/30">
                       <th

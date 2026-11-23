@@ -38,9 +38,9 @@ jobs:
       - name: Install locked MVP dependencies
         run: uv sync --locked --group ml --dev
       - name: Check formatting
-        run: uv run --no-sync ruff format --check src scripts tests dashboard
+        run: uv run --no-sync ruff format --check src scripts tests
       - name: Lint
-        run: uv run --no-sync ruff check src scripts tests dashboard
+        run: uv run --no-sync ruff check src scripts tests
       - name: Check types
         run: uv run --no-sync mypy --strict src/finintel scripts/spike_vnstock6.py scripts/spike_option_b.py tests/unit
       - name: Run tests
@@ -69,10 +69,35 @@ jobs:
       - name: Install locked Platform dependencies
         run: uv sync --locked --group ml --group platform --dev
       - name: Check formatting
-        run: uv run --no-sync ruff format --check src scripts tests dashboard
+        run: uv run --no-sync ruff format --check src scripts tests
       - name: Lint
-        run: uv run --no-sync ruff check src scripts tests dashboard
+        run: uv run --no-sync ruff check src scripts tests
       - name: Check types
         run: uv run --no-sync mypy --strict src/finintel scripts/spike_vnstock6.py scripts/spike_option_b.py tests/unit
       - name: Run tests
         run: uv run --no-sync pytest -q
+
+  frontend-checks:
+    name: Frontend Next.js (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked Node dependencies
+        run: npm ci
+      - name: Lint, typecheck, and build
+        run: npm run check
+      - name: Run unit tests
+        run: npm run test:unit

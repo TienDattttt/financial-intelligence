@@ -1,10 +1,61 @@
 "use client";
 
 import * as React from "react";
+import { RotateCcw } from "lucide-react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
+import { Button } from "@/components/ui/button";
+import { useChartTheme } from "@/lib/echarts-theme";
 import { formatNumber, formatPercent, MINUS_SIGN } from "@/lib/format";
 import { buildShapNarrativeVi } from "@/lib/narrative";
 import type { ShapExplanationItem } from "@/types/api";
+
+export function resolveCrossFilteredMlScore<T extends { period_end_date: string }>(
+  scores: readonly T[],
+  selectedPeriodEndDate: string | null | undefined,
+  globalPeriodEndDate: string | null | undefined,
+): {
+  active: T | null;
+  defaultLatest: T | null;
+  prev: T | null;
+  isCustomSelected: boolean;
+} {
+  if (scores.length === 0) {
+    return { active: null, defaultLatest: null, prev: null, isCustomSelected: false };
+  }
+  const sorted = [...scores].sort((a, b) =>
+    a.period_end_date.localeCompare(b.period_end_date),
+  );
+  let defaultIdx = sorted.length - 1;
+  if (globalPeriodEndDate) {
+    const exact = sorted.findIndex((m) => m.period_end_date === globalPeriodEndDate);
+    if (exact >= 0) {
+      defaultIdx = exact;
+    } else {
+      const le = sorted.reduce(
+        (best, m, i) => (m.period_end_date <= globalPeriodEndDate ? i : best),
+        -1,
+      );
+      if (le >= 0) defaultIdx = le;
+    }
+  }
+  const defaultLatest = sorted[defaultIdx] ?? null;
+
+  let activeIdx = defaultIdx;
+  if (selectedPeriodEndDate) {
+    const pickedIdx = sorted.findIndex(
+      (m) => m.period_end_date === selectedPeriodEndDate,
+    );
+    if (pickedIdx >= 0) {
+      activeIdx = pickedIdx;
+    }
+  }
+  const active = sorted[activeIdx] ?? null;
+  const prev = activeIdx > 0 ? sorted[activeIdx - 1] ?? null : null;
+  const isCustomSelected = Boolean(
+    active && defaultLatest && active.period_end_date !== defaultLatest.period_end_date,
+  );
+  return { active, defaultLatest, prev, isCustomSelected };
+}
 
 interface WaterfallStep {
   label: string;
@@ -18,14 +69,6 @@ interface WaterfallStep {
   feature: string;
 }
 
-const STEP_COLORS: Record<WaterfallStep["kind"], string> = {
-  base: "#5B6068",
-  increase: "#A61B1B",
-  decrease: "#2E7D5B",
-  other: "#868B93",
-  final: "#1F4E79",
-};
-
 function formatSignedLogOdds(val: number): string {
   const formatted = formatNumber(Math.abs(val), 2);
   if (Math.abs(val) < 0.005) return "0,00";
@@ -35,10 +78,18 @@ function formatSignedLogOdds(val: number): string {
 export function ExplainWaterfallChart({
   shap,
   distressProb,
+  periodLabel,
+  isCustomPeriod = false,
+  onResetToLatest,
 }: {
   shap: ShapExplanationItem | null | undefined;
   distressProb?: number | null;
+  periodLabel?: string | null;
+  isCustomPeriod?: boolean;
+  onResetToLatest?: () => void;
 }) {
+  const { palette } = useChartTheme();
+
   const steps = React.useMemo<WaterfallStep[]>(() => {
     if (!shap) return [];
     const result: WaterfallStep[] = [];
@@ -141,14 +192,10 @@ export function ExplainWaterfallChart({
     const dataRows = steps.map((s, idx) => [idx, s.start, s.end, s.delta]);
 
     return {
-      animation: false,
       grid: { left: 56, right: 20, top: 28, bottom: 72 },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
-        backgroundColor: "#FFFFFF",
-        borderColor: "#DAD7D0",
-        textStyle: { color: "#1A1D21", fontSize: 12 },
         formatter: (raw: unknown) => {
           const list = Array.isArray(raw) ? raw : [raw];
           const first = list[0] as { dataIndex?: number } | undefined;
@@ -173,10 +220,7 @@ export function ExplainWaterfallChart({
       xAxis: {
         type: "category",
         data: categories,
-        axisLine: { lineStyle: { color: "#DAD7D0" } },
         axisLabel: {
-          color: "#5B6068",
-          fontSize: 11,
           rotate: 28,
           interval: 0,
         },
@@ -184,9 +228,6 @@ export function ExplainWaterfallChart({
       yAxis: {
         type: "value",
         name: "log-odds",
-        nameTextStyle: { color: "#5B6068", fontSize: 11 },
-        splitLine: { lineStyle: { color: "#EFEDE8" } },
-        axisLabel: { color: "#5B6068", fontSize: 11 },
       },
       series: [
         {
@@ -194,7 +235,7 @@ export function ExplainWaterfallChart({
           type: "custom",
           encode: { x: 0, y: [1, 2] },
           data: dataRows,
-          renderItem: (params, api) => {
+          renderItem: (_params, api) => {
             const idx = Number(api.value(0));
             const startVal = Number(api.value(1));
             const endVal = Number(api.value(2));
@@ -219,14 +260,14 @@ export function ExplainWaterfallChart({
                 r: 2,
               },
               style: {
-                fill: STEP_COLORS[step.kind],
+                fill: palette.waterfall[step.kind],
               },
             };
           },
         },
       ],
     };
-  }, [steps]);
+  }, [palette.waterfall, steps]);
 
   const tableHeaders = ["Yếu tố (TreeSHAP)", "Giá trị DN", "Trung vị ngành", "Đóng góp (log-odds)"];
   const tableRows = steps.map((s) => [
@@ -244,7 +285,11 @@ export function ExplainWaterfallChart({
   return (
     <div className="space-y-3">
       <EChartBox
-        title="Các yếu tố dẫn dắt điểm rủi ro mô hình"
+        title={
+          periodLabel
+            ? `Các yếu tố dẫn dắt điểm rủi ro mô hình (${periodLabel})`
+            : "Các yếu tố dẫn dắt điểm rủi ro mô hình"
+        }
         subtitle={probSubtitle}
         option={option}
         height={310}
@@ -252,10 +297,36 @@ export function ExplainWaterfallChart({
         emptyMessage="Chưa có dữ liệu giải thích TreeSHAP cho kỳ và phạm vi báo cáo đang chọn."
         tableHeaders={tableHeaders}
         tableRows={tableRows}
+        headerRight={
+          periodLabel ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span
+                className={
+                  isCustomPeriod
+                    ? "rounded-full border border-accent-ink/30 bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent-ink"
+                    : "rounded-full border border-border bg-surface-muted px-2 py-0.5 text-[11px] font-medium text-ink-muted"
+                }
+              >
+                {isCustomPeriod ? `Đang xem: ${periodLabel}` : `Kỳ: ${periodLabel}`}
+              </span>
+              {isCustomPeriod && onResetToLatest ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={onResetToLatest}
+                >
+                  <RotateCcw className="size-3" />
+                  <span>Về kỳ mới nhất</span>
+                </Button>
+              ) : null}
+            </div>
+          ) : null
+        }
       />
 
       {narratives.length > 0 ? (
-        <div className="rounded border border-border bg-surface p-3.5">
+        <div className="rounded-lg border border-border bg-surface p-3.5 shadow-xs">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
             <h3 className="font-semibold text-ink">
               Diễn giải định lượng theo quy tắc (TreeSHAP)

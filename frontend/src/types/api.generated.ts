@@ -4,6 +4,40 @@
  */
 
 export interface paths {
+    "/health/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Health Live */
+        get: operations["get_health_live_health_live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Health Ready */
+        get: operations["get_health_ready_health_ready_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health": {
         parameters: {
             query?: never;
@@ -123,6 +157,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/screener/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Screener Csv */
+        get: operations["export_screener_csv_api_v1_screener_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stress-test": {
         parameters: {
             query?: never;
@@ -208,6 +259,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/meta/model-card": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get V2 Meta Model Card */
+        get: operations["get_v2_meta_model_card_api_v2_meta_model_card_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/companies/{ticker}/benchmarks/summary": {
         parameters: {
             query?: never;
@@ -259,6 +327,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/companies/{ticker}/market-overlay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get V2 Company Market Overlay */
+        get: operations["get_v2_company_market_overlay_api_v2_companies__ticker__market_overlay_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/sectors/risk-summary": {
         parameters: {
             query?: never;
@@ -287,6 +372,40 @@ export interface paths {
         get: operations["get_v2_market_changes_api_v2_market_changes_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/documents/{ticker}/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Company Documents */
+        get: operations["list_company_documents_api_v2_documents__ticker__list_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/documents/{ticker}/investigate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Investigate Company Documents */
+        post: operations["investigate_company_documents_api_v2_documents__ticker__investigate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -396,6 +515,24 @@ export interface components {
             sparkline?: (number | null)[];
         };
         /**
+         * BootstrapCI95Item
+         * @description Issuer-clustered 95% bootstrap confidence intervals.
+         */
+        BootstrapCI95Item: {
+            /** Roc Auc */
+            roc_auc?: number[] | null;
+            /** Pr Auc */
+            pr_auc?: number[] | null;
+            /** Brier Score */
+            brier_score?: number[] | null;
+            /** Brier Skill Score */
+            brier_skill_score?: number[] | null;
+            /** Recall At Top 5 Percent */
+            recall_at_top_5_percent?: number[] | null;
+            /** Recall At Top 10 Percent */
+            recall_at_top_10_percent?: number[] | null;
+        };
+        /**
          * CapitalStructurePoint
          * @description Pre-computed assets, equity, liabilities, and total debt time-series point.
          */
@@ -417,6 +554,29 @@ export interface components {
             BS_TOTAL_LIABILITIES?: number | null;
             /** Total Debt */
             total_debt?: number | null;
+        };
+        /** CitationItem */
+        CitationItem: {
+            /** Filing Id */
+            filing_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Fiscal Year */
+            fiscal_year: number;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Page No */
+            page_no: number;
+            /** Section Title */
+            section_title: string;
+            /** Unit Scale */
+            unit_scale: string;
+            /** Verbatim Excerpt */
+            verbatim_excerpt: string;
+            /** Vector Similarity */
+            vector_similarity: number;
+            /** Rrf Score */
+            rrf_score: number;
         };
         /**
          * CompanyBenchmarksResponse
@@ -559,6 +719,28 @@ export interface components {
             items: components["schemas"]["CompanyFilingItem"][];
         };
         /**
+         * CompanyMarketOverlayResponse
+         * @description V2 Company route response: PIT valuation & Price/Risk Event Overlay (UI-09b).
+         */
+        CompanyMarketOverlayResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** As Of */
+            as_of?: string | null;
+            latest_valuation?: components["schemas"]["PriceOverlayPointItem"] | null;
+            /** Price Series */
+            price_series: components["schemas"]["PriceOverlayPointItem"][];
+            /** Model Markers */
+            model_markers: components["schemas"]["ModelRiskMarkerItem"][];
+            /** Regulatory Markers */
+            regulatory_markers: components["schemas"]["RegulatoryEventMarkerItem"][];
+            earliest_warning_summary?: components["schemas"]["WarningSummaryItem"] | null;
+        };
+        /**
          * CompanyProfileResponse
          * @description Route 4 response: full financial profile, core earnings, red flags, and ML scores.
          */
@@ -670,6 +852,97 @@ export interface components {
             /** Core To Ebt Ratio Flag */
             core_to_ebt_ratio_flag?: string | null;
         };
+        /** DocumentFileItem */
+        DocumentFileItem: {
+            /** Filing Id */
+            filing_id: string;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Fiscal Year */
+            fiscal_year: number;
+            /** Fiscal Quarter */
+            fiscal_quarter: number | null;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Doc Type */
+            doc_type: string;
+            /** Cohort */
+            cohort: string;
+            /** Source Title */
+            source_title: string;
+            /** Source Url */
+            source_url: string;
+            /** Pdf Sha256 */
+            pdf_sha256: string;
+            /** File Size Bytes */
+            file_size_bytes: number;
+            /** Total Pages */
+            total_pages: number;
+            /** Digital Pages */
+            digital_pages: number;
+            /** Ocr Pages */
+            ocr_pages: number;
+            /** Chunk Count */
+            chunk_count: number;
+        };
+        /** DocumentListResponse */
+        DocumentListResponse: {
+            /** Ticker */
+            ticker: string;
+            /** Total Documents */
+            total_documents: number;
+            /** Documents */
+            documents: components["schemas"]["DocumentFileItem"][];
+        };
+        /**
+         * DrawdownWindowMetricsItem
+         * @description Peak/trough prices and percentage drawdowns over a post-warning window (UI-09b).
+         */
+        DrawdownWindowMetricsItem: {
+            /**
+             * Start Trade Date
+             * Format: date
+             */
+            start_trade_date: string;
+            /**
+             * End Trade Date
+             * Format: date
+             */
+            end_trade_date: string;
+            /**
+             * Target End Date
+             * Format: date
+             */
+            target_end_date: string;
+            /** Session Count */
+            session_count: number;
+            /** Base Close Adj */
+            base_close_adj: number;
+            /** Peak Close Adj */
+            peak_close_adj: number;
+            /**
+             * Peak Date
+             * Format: date
+             */
+            peak_date: string;
+            /** Trough Close Adj */
+            trough_close_adj: number;
+            /**
+             * Trough Date
+             * Format: date
+             */
+            trough_date: string;
+            /** End Close Adj */
+            end_close_adj: number;
+            /** Return Pct */
+            return_pct: number;
+            /** Drawdown From Marker Pct */
+            drawdown_from_marker_pct: number;
+            /** Max Peak To Trough Drawdown Pct */
+            max_peak_to_trough_drawdown_pct: number;
+        };
         /**
          * DuPontPoint
          * @description Pre-computed 5-factor DuPont decomposition point.
@@ -702,6 +975,22 @@ export interface components {
             dupont_valid_flag?: boolean | null;
         };
         /**
+         * FeatureDriftItem
+         * @description Single feature PSI and missing-rate delta across TT200 -> TT99.
+         */
+        FeatureDriftItem: {
+            /** Feature */
+            feature: string;
+            /** Psi */
+            psi?: number | null;
+            /** Ref Missing Rate */
+            ref_missing_rate?: number | null;
+            /** Tgt Missing Rate */
+            tgt_missing_rate?: number | null;
+            /** Missing Rate Delta */
+            missing_rate_delta?: number | null;
+        };
+        /**
          * GrowthPoint
          * @description Pre-computed revenue, net income, and CFO time-series point.
          */
@@ -729,7 +1018,7 @@ export interface components {
         };
         /**
          * HealthResponse
-         * @description Route 1 response: service liveness and active snapshot binding.
+         * @description Route 1 response: service readiness and active snapshot binding.
          */
         HealthResponse: {
             /**
@@ -741,6 +1030,83 @@ export interface components {
             active_snapshot_id: string | null;
             /** Storage Backend */
             storage_backend: string;
+        };
+        /**
+         * HistoricalCaseStudyItem
+         * @description Real Vietnamese corporate distress case study from the 23-feature model (ML-05/ML-07a).
+         */
+        HistoricalCaseStudyItem: {
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Company Name Vn */
+            company_name_vn?: string | null;
+            /** Exchange */
+            exchange?: string | null;
+            /** First Warning Or Control Date */
+            first_warning_or_control_date?: string | null;
+            /** First Warning Event Type */
+            first_warning_event_type?: string | null;
+            /** Forced Delisting Or Suspension Date */
+            forced_delisting_or_suspension_date?: string | null;
+            /** Exchange Delisted From */
+            exchange_delisted_from?: string | null;
+            /** First R4 R5 Period End Date */
+            first_r4_r5_period_end_date?: string | null;
+            /** First R4 R5 Fiscal Year */
+            first_r4_r5_fiscal_year?: number | null;
+            /** First R4 R5 Fiscal Quarter */
+            first_r4_r5_fiscal_quarter?: number | null;
+            /** First R4 R5 Available At */
+            first_r4_r5_available_at?: string | null;
+            /** First R4 R5 Risk Tier */
+            first_r4_r5_risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** First R4 R5 Pd */
+            first_r4_r5_pd?: number | null;
+            /** First R4 R5 Market Percentile */
+            first_r4_r5_market_percentile?: number | null;
+            /** First R4 R5 Lift */
+            first_r4_r5_lift?: number | null;
+            /** Early Warning Lead Quarters */
+            early_warning_lead_quarters?: number | null;
+            /** Early Warning Lead Days */
+            early_warning_lead_days?: number | null;
+            /** Peak Risk Tier */
+            peak_risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** Peak Pd */
+            peak_pd?: number | null;
+            /** Peak Period End Date */
+            peak_period_end_date?: string | null;
+            /** Top 3 Shap Drivers */
+            top_3_shap_drivers?: components["schemas"]["ShapDriverItem"][];
+        };
+        /** InvestigateResponse */
+        InvestigateResponse: {
+            /** Ticker */
+            ticker: string;
+            /** Question */
+            question: string;
+            /** Answer */
+            answer: string;
+            /** Abstained */
+            abstained: boolean;
+            /** Abstention Reason */
+            abstention_reason: string | null;
+            /** Citations */
+            citations: components["schemas"]["CitationItem"][];
+            /** Retrieved Chunks Count */
+            retrieved_chunks_count: number;
+            /** Top Vector Similarity */
+            top_vector_similarity: number;
+            /** Cached */
+            cached: boolean;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Model Used */
+            model_used: string | null;
+            /** Disclaimer */
+            disclaimer: string;
         };
         /**
          * IssuerItem
@@ -831,6 +1197,17 @@ export interface components {
             canonical_content_sha256?: string | null;
         };
         /**
+         * LivenessResponse
+         * @description Event-loop-only Kubernetes/Docker liveness probe response.
+         */
+        LivenessResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "alive";
+        };
+        /**
          * MLScoreItem
          * @description Single period Layer 4B classical + unsupervised + supervised ML score record.
          */
@@ -886,11 +1263,31 @@ export interface components {
             distress_risk_score?: number | null;
             /** Calibrated Distress Prob */
             calibrated_distress_prob?: number | null;
+            /** Risk Tier */
+            risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** Risk Market Percentile */
+            risk_market_percentile?: number | null;
+            /** Market Base Rate */
+            market_base_rate?: number | null;
+            /** Relative Risk Lift */
+            relative_risk_lift?: number | null;
             /** Model Version */
             model_version?: string | null;
             /** Shap Top Drivers Json */
             shap_top_drivers_json?: string | null;
             shap_top_drivers?: components["schemas"]["ShapExplanationItem"] | null;
+        };
+        /**
+         * MarkerDrawdownBundleItem
+         * @description Post-warning drawdown metrics across standard horizons and cutoff bounds.
+         */
+        MarkerDrawdownBundleItem: {
+            /** Horizons */
+            horizons: {
+                [key: string]: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+            };
+            to_first_regulatory_event?: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+            to_current?: components["schemas"]["DrawdownWindowMetricsItem"] | null;
         };
         /**
          * MarketChangeItem
@@ -922,6 +1319,16 @@ export interface components {
             distress_prob_curr?: number | null;
             /** Distress Prob Delta */
             distress_prob_delta?: number | null;
+            /** Risk Tier Prev */
+            risk_tier_prev?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** Risk Tier Curr */
+            risk_tier_curr?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** Risk Market Percentile Curr */
+            risk_market_percentile_curr?: number | null;
+            /** Market Base Rate Curr */
+            market_base_rate_curr?: number | null;
+            /** Relative Risk Lift Curr */
+            relative_risk_lift_curr?: number | null;
             /** Red Flag Count Prev */
             red_flag_count_prev: number;
             /** Red Flag Count Curr */
@@ -982,6 +1389,135 @@ export interface components {
             sectors_level2: components["schemas"]["SectorOptionItem"][];
         };
         /**
+         * ModelCardResponse
+         * @description V2 Meta route response: complete DuckLake-persisted Model Card (ML-08 / H-04).
+         */
+        ModelCardResponse: {
+            /** Snapshot Id */
+            snapshot_id: string | null;
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version: number;
+            /** Run Id */
+            run_id: string;
+            /** Model Version */
+            model_version: string;
+            /** Model Role */
+            model_role: string;
+            /** Target Mode */
+            target_mode: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Feature Set */
+            feature_set: string;
+            /** Feature Count */
+            feature_count: number;
+            /** Selected Features */
+            selected_features: string[];
+            /** Peer Standardization Mode */
+            peer_standardization_mode: string;
+            /**
+             * Trained As Of
+             * Format: date
+             */
+            trained_as_of: string;
+            /** Generated At */
+            generated_at: string;
+            /** Artifact Sha256 */
+            artifact_sha256: string;
+            /** Platt Slope */
+            platt_slope: number;
+            /** Platt Intercept */
+            platt_intercept: number;
+            /** Train Prevalence */
+            train_prevalence: number;
+            risk_tier_cutoffs: components["schemas"]["RiskTierCutoffsItem"];
+            /** F2 Thresholds */
+            f2_thresholds: {
+                [key: string]: number;
+            };
+            walk_forward: components["schemas"]["WalkForwardReportItem"];
+            risk_tier_reliability: components["schemas"]["RiskTierReliabilityReportItem"];
+            taxonomy_drift_psi: components["schemas"]["TaxonomyDriftPSIItem"];
+            /** Case Studies */
+            case_studies: components["schemas"]["HistoricalCaseStudyItem"][];
+            /** Limitations */
+            limitations: string[];
+        };
+        /**
+         * ModelMetricsItem
+         * @description Standardized evaluation metrics on common OOS samples.
+         */
+        ModelMetricsItem: {
+            /** Roc Auc */
+            roc_auc?: number | null;
+            /** Pr Auc */
+            pr_auc?: number | null;
+            /** Brier Score */
+            brier_score?: number | null;
+            /** Brier Skill Score */
+            brier_skill_score?: number | null;
+            /** F2 Score */
+            f2_score?: number | null;
+            /** Recall At Top 5 Percent */
+            recall_at_top_5_percent?: number | null;
+            /** Recall At Top 10 Percent */
+            recall_at_top_10_percent?: number | null;
+        };
+        /**
+         * ModelRiskMarkerItem
+         * @description PIT marker for first model upgrade to R4 or R5.
+         */
+        ModelRiskMarkerItem: {
+            /**
+             * Marker Type
+             * @constant
+             */
+            marker_type: "MODEL_RISK_TIER";
+            /**
+             * Marker Kind
+             * @enum {string}
+             */
+            marker_kind: "FIRST_R4_UPGRADE" | "FIRST_R5_UPGRADE";
+            /**
+             * Risk Tier
+             * @enum {string}
+             */
+            risk_tier: "R4" | "R5";
+            /** Is First R4 Or R5 */
+            is_first_r4_or_r5: boolean;
+            /**
+             * Disclosure Date
+             * Format: date
+             */
+            disclosure_date: string;
+            /**
+             * Date Basis
+             * @enum {string}
+             */
+            date_basis: "PIT_DISCLOSURE" | "PERIOD_END_FALLBACK";
+            /** Aligned Trade Date */
+            aligned_trade_date?: string | null;
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Close Adj At Marker */
+            close_adj_at_marker?: number | null;
+            /** Close Raw At Marker */
+            close_raw_at_marker?: number | null;
+            /** Calibrated Distress Prob */
+            calibrated_distress_prob?: number | null;
+            /** Risk Market Percentile */
+            risk_market_percentile?: number | null;
+            /** Relative Risk Lift */
+            relative_risk_lift?: number | null;
+            drawdowns?: components["schemas"]["MarkerDrawdownBundleItem"] | null;
+        };
+        /**
          * PeerBandHistoryPoint
          * @description Single period on the historical peer percentile band trajectory.
          */
@@ -1031,6 +1567,41 @@ export interface components {
             icb_name_level3?: string | null;
             /** Icb Name Level2 */
             icb_name_level2?: string | null;
+        };
+        /**
+         * PriceOverlayPointItem
+         * @description Single daily point on the continuous Price & Risk Event Overlay series.
+         */
+        PriceOverlayPointItem: {
+            /**
+             * Trade Date
+             * Format: date
+             */
+            trade_date: string;
+            /** Close Adj */
+            close_adj: number;
+            /** Close Raw */
+            close_raw: number;
+            /** Volume */
+            volume: number;
+            /** Shares Outstanding Market */
+            shares_outstanding_market?: number | null;
+            /** Running Drawdown Pct */
+            running_drawdown_pct: number;
+            /** Drawdown From First Warning Pct */
+            drawdown_from_first_warning_pct?: number | null;
+            /** Market Cap Vnd */
+            market_cap_vnd?: number | null;
+            /** Pe Ttm */
+            pe_ttm?: number | null;
+            /** Pb Ratio */
+            pb_ratio?: number | null;
+            /** Pe Flag */
+            pe_flag?: string | null;
+            /** Pb Flag */
+            pb_flag?: string | null;
+            /** Shares Source */
+            shares_source?: string | null;
         };
         /**
          * QualitySummaryItem
@@ -1179,6 +1750,41 @@ export interface components {
             orphan_filing_ids: string[];
         };
         /**
+         * ReadinessResponse
+         * @description Deep storage & DuckDB readiness probe response (HTTP 200 ready / HTTP 503 unready).
+         */
+        ReadinessResponse: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "unready";
+            /** Active Snapshot Id */
+            active_snapshot_id?: string | null;
+            /**
+             * Storage Backend
+             * @default parquet
+             */
+            storage_backend: string;
+            /**
+             * Duckdb Ok
+             * @default false
+             */
+            duckdb_ok: boolean;
+            /**
+             * Snapshot Readable
+             * @default false
+             */
+            snapshot_readable: boolean;
+            /**
+             * Cache Enabled
+             * @default false
+             */
+            cache_enabled: boolean;
+            /** Detail */
+            detail?: string | null;
+        };
+        /**
          * RedFlagDictionaryItem
          * @description Dictionary definition for one forensic red-flag screening rule.
          */
@@ -1221,8 +1827,93 @@ export interface components {
             filing_id?: string | null;
         };
         /**
+         * RegulatoryEventMarkerItem
+         * @description PIT marker for a real regulatory distress or audit sanction event.
+         */
+        RegulatoryEventMarkerItem: {
+            /**
+             * Marker Type
+             * @constant
+             */
+            marker_type: "REGULATORY_EVENT";
+            /** Event Type */
+            event_type: string;
+            /** Event Stage */
+            event_stage: string;
+            /**
+             * Event Date
+             * Format: date
+             */
+            event_date: string;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /** Resolution Date */
+            resolution_date?: string | null;
+            /** Aligned Trade Date */
+            aligned_trade_date?: string | null;
+            /** Close Adj At Marker */
+            close_adj_at_marker?: number | null;
+            /** Close Raw At Marker */
+            close_raw_at_marker?: number | null;
+            /** Raw Headline */
+            raw_headline: string;
+            /** Source Provider */
+            source_provider: string;
+            /** Source Url */
+            source_url: string;
+            drawdowns?: components["schemas"]["MarkerDrawdownBundleItem"] | null;
+        };
+        /**
+         * RiskTierCutoffsItem
+         * @description Frozen Through-the-Cycle PD boundaries separating R1..R5.
+         */
+        RiskTierCutoffsItem: {
+            /** R2 Min Pd */
+            R2_min_pd: number;
+            /** R3 Min Pd */
+            R3_min_pd: number;
+            /** R4 Min Pd */
+            R4_min_pd: number;
+            /** R5 Min Pd */
+            R5_min_pd: number;
+        };
+        /**
+         * RiskTierReliabilityReportItem
+         * @description Calibration reliability and monotonicity summary across R1..R5.
+         */
+        RiskTierReliabilityReportItem: {
+            /** Evaluation Source */
+            evaluation_source?: string | null;
+            cutoffs: components["schemas"]["RiskTierCutoffsItem"];
+            /** Tiers */
+            tiers: components["schemas"]["RiskTierReliabilityRowItem"][];
+            /** Is Monotone Non Decreasing */
+            is_monotone_non_decreasing: boolean;
+        };
+        /**
+         * RiskTierReliabilityRowItem
+         * @description Empirical event rate and predicted PD for a single risk tier (R1..R5).
+         */
+        RiskTierReliabilityRowItem: {
+            /** Risk Tier */
+            risk_tier: ("R1" | "R2" | "R3" | "R4" | "R5") | string;
+            /** Count */
+            count: number;
+            /** Share */
+            share: number;
+            /** Positive Count */
+            positive_count: number;
+            /** Empirical Event Rate */
+            empirical_event_rate?: number | null;
+            /** Mean Predicted Pd */
+            mean_predicted_pd?: number | null;
+        };
+        /**
          * ScreenerItem
-         * @description Single issuer row matching ``DashboardQueryService.screen_market()`` (37 columns).
+         * @description Single issuer row matching ``DashboardQueryService.screen_market()`` (41 columns).
          */
         ScreenerItem: {
             /** Issuer Id */
@@ -1298,6 +1989,14 @@ export interface components {
             distress_risk_score?: number | null;
             /** Calibrated Distress Prob */
             calibrated_distress_prob?: number | null;
+            /** Risk Tier */
+            risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | string | null;
+            /** Risk Market Percentile */
+            risk_market_percentile?: number | null;
+            /** Market Base Rate */
+            market_base_rate?: number | null;
+            /** Relative Risk Lift */
+            relative_risk_lift?: number | null;
             /** Model Role */
             model_role?: string | null;
             /** Model Version */
@@ -1604,6 +2303,10 @@ export interface components {
              * @default 50
              */
             top_n: number;
+            /** Include All Newly Distressed */
+            include_all_newly_distressed?: boolean | null;
+            /** Tickers */
+            tickers?: string[] | null;
         };
         /**
          * StressSectorSummaryItem
@@ -1663,6 +2366,51 @@ export interface components {
             /** Top Stressed Issuers */
             top_stressed_issuers: components["schemas"]["StressIssuerItem"][];
         };
+        /**
+         * TaxonomyDriftPSIItem
+         * @description Cross-taxonomy stability audit between VAS_TT200_2014 and VAS_TT99_2025 (M-05).
+         */
+        TaxonomyDriftPSIItem: {
+            /** Reference Taxonomy */
+            reference_taxonomy: string;
+            /** Target Taxonomy */
+            target_taxonomy: string;
+            /** Reference Rows */
+            reference_rows: number;
+            /** Target Rows */
+            target_rows: number;
+            /** Mean Feature Psi */
+            mean_feature_psi?: number | null;
+            /** Max Feature Psi */
+            max_feature_psi?: number | null;
+            /** Features Psi Gt 0 25 */
+            features_psi_gt_0_25: string[];
+            /** Mean Ref Missing Rate */
+            mean_ref_missing_rate?: number | null;
+            /** Mean Tgt Missing Rate */
+            mean_tgt_missing_rate?: number | null;
+            score_drift?: components["schemas"]["TaxonomyScoreDriftItem"] | null;
+            /** Feature Drift */
+            feature_drift: components["schemas"]["FeatureDriftItem"][];
+        };
+        /**
+         * TaxonomyScoreDriftItem
+         * @description Score & R4/R5 share drift across TT200 -> TT99 transition.
+         */
+        TaxonomyScoreDriftItem: {
+            /** Score Psi */
+            score_psi?: number | null;
+            /** Ref Mean Pd */
+            ref_mean_pd?: number | null;
+            /** Tgt Mean Pd */
+            tgt_mean_pd?: number | null;
+            /** Ref R4 R5 Share */
+            ref_r4_r5_share?: number | null;
+            /** Tgt R4 R5 Share */
+            tgt_r4_r5_share?: number | null;
+            /** R4 R5 Share Delta */
+            r4_r5_share_delta?: number | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -1676,6 +2424,127 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /**
+         * WalkForwardModelSummaryItem
+         * @description Aggregated yearly mean/std + pooled cluster-bootstrap CI95 for one model.
+         */
+        WalkForwardModelSummaryItem: {
+            /** Model */
+            model: string;
+            /** Yearly Roc Auc Mean */
+            yearly_roc_auc_mean?: number | null;
+            /** Yearly Roc Auc Std */
+            yearly_roc_auc_std?: number | null;
+            /** Yearly Pr Auc Mean */
+            yearly_pr_auc_mean?: number | null;
+            /** Yearly Pr Auc Std */
+            yearly_pr_auc_std?: number | null;
+            /** Yearly Brier Mean */
+            yearly_brier_mean?: number | null;
+            /** Yearly Brier Std */
+            yearly_brier_std?: number | null;
+            /** Yearly Bss Mean */
+            yearly_bss_mean?: number | null;
+            /** Yearly Bss Std */
+            yearly_bss_std?: number | null;
+            /** Yearly Recall Top5 Mean */
+            yearly_recall_top5_mean?: number | null;
+            /** Yearly Recall Top10 Mean */
+            yearly_recall_top10_mean?: number | null;
+            pooled_point: components["schemas"]["ModelMetricsItem"];
+            pooled_ci95: components["schemas"]["BootstrapCI95Item"];
+            /** N Bootstrap Valid */
+            n_bootstrap_valid: number;
+            /** N Clusters */
+            n_clusters: number;
+        };
+        /**
+         * WalkForwardReportItem
+         * @description Complete 2-Way Purged Expanding Walk-Forward report (2021-2025).
+         */
+        WalkForwardReportItem: {
+            /** Test Years */
+            test_years: number[];
+            /** Skipped Years */
+            skipped_years?: number[];
+            /** Pooled Reference Train Prevalence */
+            pooled_reference_train_prevalence?: number | null;
+            /** Per Year */
+            per_year: components["schemas"]["WalkForwardYearItem"][];
+            /** Summary All Oos */
+            summary_all_oos: components["schemas"]["WalkForwardModelSummaryItem"][];
+            /** Summary True Unseen */
+            summary_true_unseen: components["schemas"]["WalkForwardModelSummaryItem"][];
+            pooled_oos_risk_tier_reliability?: components["schemas"]["RiskTierReliabilityReportItem"] | null;
+        };
+        /**
+         * WalkForwardYearItem
+         * @description Single expanding Walk-Forward test year comparison (All OOS & True Unseen Issuers).
+         */
+        WalkForwardYearItem: {
+            /** Year */
+            year: number;
+            /** Train Rows */
+            train_rows: number;
+            /** Train Positive Rows */
+            train_positive_rows: number;
+            /** Train Unique Positive Issuers */
+            train_unique_positive_issuers: number;
+            /** Train Prevalence */
+            train_prevalence?: number | null;
+            /** Test Rows */
+            test_rows: number;
+            /** Test Positive Rows */
+            test_positive_rows: number;
+            /** Test Unique Positive Issuers */
+            test_unique_positive_issuers: number;
+            /** Unseen Rows */
+            unseen_rows: number;
+            /** Unseen Positive Rows */
+            unseen_positive_rows: number;
+            /** Unseen Unique Positive Issuers */
+            unseen_unique_positive_issuers: number;
+            /** Models */
+            models: {
+                [key: string]: components["schemas"]["ModelMetricsItem"];
+            };
+            /** True Unseen Models */
+            true_unseen_models: {
+                [key: string]: components["schemas"]["ModelMetricsItem"];
+            };
+        };
+        /**
+         * WarningSummaryItem
+         * @description Summary anchored at the earliest warning marker (model R4/R5 or regulatory).
+         */
+        WarningSummaryItem: {
+            /**
+             * Warning Source
+             * @enum {string}
+             */
+            warning_source: "MODEL_RISK_TIER" | "REGULATORY_EVENT";
+            /** Warning Label */
+            warning_label: string;
+            /**
+             * Warning Date
+             * Format: date
+             */
+            warning_date: string;
+            /** Aligned Trade Date */
+            aligned_trade_date?: string | null;
+            /** Base Close Adj */
+            base_close_adj?: number | null;
+            /** Latest Trade Date */
+            latest_trade_date?: string | null;
+            /** Latest Close Adj */
+            latest_close_adj?: number | null;
+            /** Horizons */
+            horizons: {
+                [key: string]: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+            };
+            to_first_regulatory_event?: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+            to_current?: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -1685,6 +2554,46 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_health_live_health_live_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LivenessResponse"];
+                };
+            };
+        };
+    };
+    get_health_ready_health_ready_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessResponse"];
+                };
+            };
+        };
+    };
     get_health_api_v1_health_get: {
         parameters: {
             query?: never;
@@ -1904,6 +2813,7 @@ export interface operations {
                 icb_code_level2?: string | null;
                 min_f_score?: number | null;
                 altman_zone?: ("SAFE_ZONE" | "GREY_ZONE" | "DISTRESS_ZONE") | null;
+                risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
                 beneish_flag?: ("VALID" | "HIGH_MANIPULATION_RISK_SCREEN" | "MIXED_TAXONOMY" | "MISSING_PRIOR_YEAR_BASE" | "MISSING_DEPRECIATION_DIRECT_CF" | "MISSING_OR_INVALID_INPUT") | null;
                 max_distress_prob?: number | null;
                 min_distress_prob?: number | null;
@@ -1930,6 +2840,54 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScreenerResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_screener_csv_api_v1_screener_export_get: {
+        parameters: {
+            query?: {
+                period_type?: "QUARTER" | "ANNUAL";
+                period_end_date?: string | null;
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                icb_code_level2?: string | null;
+                min_f_score?: number | null;
+                altman_zone?: ("SAFE_ZONE" | "GREY_ZONE" | "DISTRESS_ZONE") | null;
+                risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
+                beneish_flag?: ("VALID" | "HIGH_MANIPULATION_RISK_SCREEN" | "MIXED_TAXONOMY" | "MISSING_PRIOR_YEAR_BASE" | "MISSING_DEPRECIATION_DIRECT_CF" | "MISSING_OR_INVALID_INPUT") | null;
+                max_distress_prob?: number | null;
+                min_distress_prob?: number | null;
+                max_red_flags?: number | null;
+                min_red_flags?: number | null;
+                q?: string | null;
+                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "debt_to_equity";
+                sort_dir?: "asc" | "desc";
+            };
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Full filtered screener dataset as UTF-8 BOM CSV. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "text/csv; charset=utf-8": unknown;
                 };
             };
             /** @description Validation Error */
@@ -2106,6 +3064,37 @@ export interface operations {
             };
         };
     };
+    get_v2_meta_model_card_api_v2_meta_model_card_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCardResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_v2_company_benchmarks_summary_api_v2_companies__ticker__benchmarks_summary_get: {
         parameters: {
             query?: {
@@ -2218,6 +3207,42 @@ export interface operations {
             };
         };
     };
+    get_v2_company_market_overlay_api_v2_companies__ticker__market_overlay_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                as_of?: string | null;
+            };
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyMarketOverlayResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_v2_sector_risk_summary_api_v2_sectors_risk_summary_get: {
         parameters: {
             query?: {
@@ -2276,6 +3301,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MarketChangesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_company_documents_api_v2_documents__ticker__list_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    investigate_company_documents_api_v2_documents__ticker__investigate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigateResponse"];
                 };
             };
             /** @description Validation Error */

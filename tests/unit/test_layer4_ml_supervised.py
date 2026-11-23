@@ -755,7 +755,9 @@ def test_target_gap03_indirect_cf_trap_4q_persistence_not_7q_and_event3_all_quar
         is False
     )
 
-    # 3. Event 3 triggers at t+2 (not just t+4)
+    # 3. GATE-ML-2 (ML-04): Mode A evaluates TTM-based Event 3 strictly at t+4 (0% TTM overlap).
+    # Severe loss ONLY at 2021-Q2 must NOT trigger 2020-Q4 (t+2 has 50% TTM overlap),
+    # while triggering cleanly at 2020-Q2 (where t+4 == 2021-Q2 has 0% TTM overlap).
     ev3_df = _periods().with_columns(
         pl.lit(100.0).alias("BS_TOTAL_EQUITY"),
         pl.when((pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 2))
@@ -771,6 +773,12 @@ def test_target_gap03_indirect_cf_trap_4q_persistence_not_7q_and_event3_all_quar
     assert (
         ev3_targets.filter(
             (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+        )["distress_target"].item()
+        == 0
+    )
+    assert (
+        ev3_targets.filter(
+            (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 2)
         )["distress_target"].item()
         == 1
     )
@@ -838,8 +846,8 @@ def test_pit_symmetric_peer_z_prevents_future_icb_leakage_and_upgrades_when_hist
     )
     from tests.unit.test_layer4_analytics import facts
 
-    assert len(BASE_FEATURES) == 20
-    assert len(SECTOR_ADJUSTED_FEATURES) == 20
+    assert len(BASE_FEATURES) == 23
+    assert len(SECTOR_ADJUSTED_FEATURES) == 23
     adj_constraints = dict(
         zip(
             SECTOR_ADJUSTED_FEATURES,
@@ -851,6 +859,9 @@ def test_pit_symmetric_peer_z_prevents_future_icb_leakage_and_upgrades_when_hist
     assert adj_constraints["sector_z_debt_to_equity"] == 1
     assert adj_constraints["sector_z_asset_turnover"] == -1
     assert adj_constraints["sector_z_ebit_margin"] == -1
+    assert adj_constraints["overdue_or_late_count_4q"] == 1
+    assert adj_constraints["consecutive_loss_quarters"] == 1
+    assert adj_constraints["cross_sectional_asset_size_pct"] == 0
 
     def make_corp_facts(idx: int) -> pl.DataFrame:
         template: dict[str, float | None] = {
@@ -978,8 +989,8 @@ def test_margin_platt_calibrator_oof_raw_margin_single_group_fallback_and_min_po
     assert np.all(np.diff(probs_deg) > 0.0)
     assert float(np.mean(probs_deg)) == pytest.approx(float(np.mean(y_deg)), abs=1e-4)
 
-    # 1b. Shifted raw_margin where LogisticRegression slope exceeds 10.0:
-    # _fit_platt_params clamps slope=10.0 and solves centered 1D MLE intercept (~ +40.0, not saturated at +30.0)
+    # 1b. Shifted raw_margin where LogisticRegression slope exceeds PLATT_MAX_SLOPE (5.0):
+    # _fit_platt_params clamps slope=5.0 (H-07 [0.15, 5.0]) and solves centered 1D MLE intercept.
     rng_shift = np.random.default_rng(0)
     shifted_margins = np.concatenate(
         [
@@ -991,8 +1002,8 @@ def test_margin_platt_calibrator_oof_raw_margin_single_group_fallback_and_min_po
     cal_shift = MarginPlattCalibrator(classifier=None).fit_margins(
         shifted_margins, y_shift
     )
-    assert cal_shift.slope == pytest.approx(10.0)
-    assert cal_shift.intercept > 35.0
+    assert cal_shift.slope == pytest.approx(5.0)
+    assert cal_shift.intercept > 17.0
     probs_shift = cal_shift.predict_margin_proba(shifted_margins)[:, 1]
     assert float(np.mean(probs_shift)) == pytest.approx(0.5, abs=5e-3)
 
@@ -1035,7 +1046,7 @@ def test_margin_platt_calibrator_oof_raw_margin_single_group_fallback_and_min_po
     train_3pos = make_fold(40, 10, pos_issuers=["POS_A", "POS_B", "POS_C", "POS_A"])
     valid_1group = make_fold(24, 20, pos_issuers=["VAL_ONLY_ONE", "VAL_ONLY_ONE"])
     trained = train_distress_model(train_3pos, valid_1group)
-    assert 0.0 < trained.platt_slope <= 10.0
+    assert 0.15 <= trained.platt_slope <= 5.0
     assert len(trained.calibrated.oof_probabilities) == 24
 
     # 3. Fail-fast when unique positive issuers in train < min_unique_positive_issuers (3)
@@ -1070,7 +1081,8 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
         )
 
     # (b) FORCED_DELISTING at a_t + 180d produces distress_target == 1 even when post-delisting
-    # quarters t+3 and t+4 are absent, and (c) multiple events in 1 year do not duplicate rows.
+    # quarters t+3 and t+4 are absent, (c) multiple events in 1 year do not duplicate rows,
+    # and (B-01) label_available_at is symmetrically locked to a_t + 365d for y=1 as well as y=0.
     delisted_periods = base.filter(
         (pl.col("fiscal_year") == 2020)
         | ((pl.col("fiscal_year") == 2021) & pl.col("fiscal_quarter").is_in([1, 2]))
@@ -1093,11 +1105,12 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
         (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
     ).row(0, named=True)
     assert q4_2020["distress_target"] == 1
-    assert q4_2020["label_available_at"] == date(2021, 4, 15)
+    assert q4_2020["label_available_at"] == date(2021, 12, 31)
 
-    # (d) Right-censoring lock on negative labels y=0:
-    # For healthy issuer, 2020-Q4 has a_t = 2020-12-31, so a_t + 365d = 2021-12-31.
-    # If as_of = 2021-10-01 (even if future filings had early dates), y=0 is blocked if a_t + 365d > as_of.
+    # (d) Symmetric right-censoring lock (B-01) on BOTH y=1 and y=0:
+    # For 2020-Q4 (a_t = 2020-12-31), horizon_end = a_t + 365d = 2021-12-31.
+    # If as_of = 2021-10-01, BOTH negative AND positive rows (even with event on 2021-04-15)
+    # stay censored (distress_target is None) because a_t + 365d > as_of.
     early_filings = base.with_columns(
         pl.when(pl.col("fiscal_year") == 2021)
         .then(pl.lit(date(2021, 9, 1)))
@@ -1111,16 +1124,29 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
     empty_events = pl.DataFrame(
         schema={"issuer_id": pl.String, "event_date": pl.Date, "event_type": pl.String}
     )
-    censored = build_distress_targets(
+    censored_neg = build_distress_targets(
         early_filings,
         mode="REGULATORY_DISTRESS",
         as_of=date(2021, 10, 1),
         regulatory_events=empty_events,
     )
-    q4_censored = censored.filter(
+    q4_censored = censored_neg.filter(
         (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
     ).row(0, named=True)
     assert q4_censored["distress_target"] is None
+    assert q4_censored["label_available_at"] is None
+
+    censored_pos = build_distress_targets(
+        delisted_periods,
+        mode="REGULATORY_DISTRESS",
+        as_of=date(2021, 10, 1),
+        regulatory_events=multi_events,
+    )
+    q4_censored_pos = censored_pos.filter(
+        (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert q4_censored_pos["distress_target"] is None
+    assert q4_censored_pos["label_available_at"] is None
 
     uncensored = build_distress_targets(
         early_filings,
@@ -1134,7 +1160,8 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
     assert q4_uncensored["distress_target"] == 0
     assert q4_uncensored["label_available_at"] == date(2021, 12, 31)
 
-    # (d2) Mode B exact-filing guard when Mode A is STATUTORY_LAG earlier than regulatory event
+    # (d2) Pure exogenous Mode B decouples label provenance from future BCTC STATUTORY_LAG
+    # and enforces symmetric label_available_at = a_t + 365d regardless of Mode A future filings.
     stat_lag_periods = _periods().with_columns(
         pl.when((pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 4))
         .then(pl.lit(date(2021, 10, 1)))
@@ -1163,8 +1190,10 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
         (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
     ).row(0, named=True)
     assert q4_late_reg["distress_target"] == 1
-    assert q4_late_reg["label_available_at"] == date(2021, 10, 1)
-    assert q4_late_reg["_label_exact_filing_basis"] is False
+    assert q4_late_reg["label_available_at"] == date(2021, 12, 31)
+    assert q4_late_reg["_label_exact_filing_basis"] is True
+    # Because label_available_at = 2021-12-31 > validation_start = 2021-11-01, B-01 purges it
+    # from train symmetrically (no 100% prevalence cliff before cutoff).
     split_strict_reg = purged_walk_forward_split(
         late_reg_out,
         validation_start=date(2021, 11, 1),
@@ -1195,7 +1224,7 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
         (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
     ).row(0, named=True)
     assert q4_early_reg["distress_target"] == 1
-    assert q4_early_reg["label_available_at"] == date(2021, 8, 1)
+    assert q4_early_reg["label_available_at"] == date(2021, 12, 31)
     assert q4_early_reg["_label_exact_filing_basis"] is True
 
     # (e) Path-confinement and end-to-end AnalyticsHandler forwarding for ml.* options
@@ -1418,3 +1447,1047 @@ def test_treeshap_waterfall_other_features_delta_and_vietnamese_display_names() 
             )
             if driver["feature"].startswith("sector_z_"):
                 assert driver["peer_median"] == pytest.approx(0.0)
+                assert (
+                    "chuẩn hóa toàn thị trường (Z-Score)" in driver["display_name_vn"]
+                )
+                assert "chuẩn hóa ngành" not in driver["display_name_vn"]
+
+    explained_icb = explain_distress(
+        trained, eval_df, peer_standardization_mode="PIT_ICB"
+    )
+    sector_z_icb_names = [
+        drv["display_name_vn"]
+        for payload_str in explained_icb["shap_top_drivers_json"].to_list()
+        for drv in (
+            json.loads(payload_str)["top_risk_increasing"]
+            + json.loads(payload_str)["top_risk_decreasing"]
+        )
+        if drv["feature"].startswith("sector_z_")
+    ]
+    assert sector_z_icb_names
+    assert all("chuẩn hóa ngành (Z-Score)" in name for name in sector_z_icb_names)
+
+
+def test_synthesize_issuers_from_candidates_uses_real_collection_date_not_2016(
+    tmp_path: Path,
+) -> None:
+    import importlib.util
+    import json
+    import os
+    import sys
+    from datetime import UTC, datetime
+
+    script_path = (
+        Path(__file__).resolve().parents[2] / "scripts" / "migrate_universe_to_v2.py"
+    )
+    module_name = "migrate_universe_to_v2_test"
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+
+    candidates_path = tmp_path / "universe_candidates.json"
+    candidates_path.write_text(
+        json.dumps(
+            {
+                "candidates": [
+                    {
+                        "issuer_id": "FPT",
+                        "ticker": "FPT",
+                        "exchange": "HOSE",
+                        "company_name_vn": "CTCP FPT",
+                        "accounting_regime": "CORPORATE",
+                        "icb_code_level2": "technology",
+                        "icb_code_level3": "software",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    mtime_ts = datetime(2026, 11, 19, 13, 57, 35, tzinfo=UTC).timestamp()
+    os.utime(candidates_path, (mtime_ts, mtime_ts))
+
+    df_from_mtime = mod._synthesize_issuers_from_candidates(candidates_path, ["FPT"])
+    assert df_from_mtime["industry_snapshot_date"].to_list() == [date(2026, 11, 19)]
+    assert df_from_mtime["industry_snapshot_date"].item() != date(2016, 1, 1)
+
+    candidates_with_meta = tmp_path / "universe_candidates_meta.json"
+    candidates_with_meta.write_text(
+        json.dumps(
+            {
+                "collected_at": "2026-10-15T08:30:00Z",
+                "candidates": [
+                    {
+                        "issuer_id": "HPG",
+                        "ticker": "HPG",
+                        "exchange": "HOSE",
+                        "company_name_vn": "CTCP Tập đoàn Hòa Phát",
+                        "accounting_regime": "CORPORATE",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    df_from_meta = mod._synthesize_issuers_from_candidates(
+        candidates_with_meta, ["HPG"]
+    )
+    assert df_from_meta["industry_snapshot_date"].to_list() == [date(2026, 10, 15)]
+
+
+def test_ml04_gate_ml2_symmetric_censoring_continuous_state_first_onset_and_zero_ttm_overlap() -> (
+    None
+):
+    """Prove GATE-ML-2 (B-01 + H-05 + Mode A 0% TTM overlap + Mode B auto-activation)."""
+    quarter_ends = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+    rows = []
+    for issuer in ("HBC_SIM", "HNG_SIM", "HEALTHY_GAP"):
+        for year in range(2020, 2026):
+            for quarter in range(1, 5):
+                # HEALTHY_GAP is missing future quarters in 2024 and has null roa in 2023-Q2
+                if issuer == "HEALTHY_GAP" and year == 2024:
+                    continue
+                month, day = quarter_ends[quarter]
+                p_end = date(year, month, day)
+                avail = date(
+                    year + (1 if month == 12 else 0),
+                    1 if month == 12 else month + 1,
+                    25,
+                )
+                rows.append(
+                    {
+                        "issuer_id": issuer,
+                        "statement_scope": "CONSOLIDATED",
+                        "period_type": "QUARTER",
+                        "fiscal_year": year,
+                        "fiscal_quarter": quarter,
+                        "period_end_date": p_end,
+                        "accounting_regime": "CORPORATE",
+                        "BS_TOTAL_EQUITY": 500.0,
+                        "parent_equity": 500.0,
+                        "interest_coverage": 0.2 if issuer == "HBC_SIM" else 4.0,
+                        "CF_OPERATING_CASH_FLOW": -10.0
+                        if issuer == "HBC_SIM"
+                        else 50.0,
+                        "current_ratio": 0.7 if issuer == "HBC_SIM" else 2.0,
+                        "roa": None
+                        if (issuer == "HEALTHY_GAP" and year == 2023 and quarter == 2)
+                        else (-0.15 if issuer == "HBC_SIM" else 0.08),
+                        "_period_available_at": avail,
+                    }
+                )
+    panel = pl.DataFrame(rows)
+
+    # HBC_SIM: CONTROL starts 2022-04-10 (FIRST_ENTRY), persists > 2 years until FORCED_DELISTING
+    # on 2024-07-26 (ESCALATION, resolution_date=None).
+    # HNG_SIM: CONTROL 2021-04-10..2022-04-10 (resolved), then relapse FIRST_ENTRY on 2024-04-10.
+    events = pl.DataFrame(
+        {
+            "issuer_id": ["HBC_SIM", "HBC_SIM", "HNG_SIM", "HNG_SIM"],
+            "event_date": [
+                date(2022, 4, 10),
+                date(2024, 7, 26),
+                date(2021, 4, 10),
+                date(2024, 4, 10),
+            ],
+            "effective_from": [
+                date(2022, 4, 10),
+                date(2024, 7, 26),
+                date(2021, 4, 10),
+                date(2024, 4, 10),
+            ],
+            "resolution_date": [
+                date(2024, 7, 26),
+                None,
+                date(2022, 4, 10),
+                None,
+            ],
+            "event_type": [
+                "CONTROL",
+                "FORCED_DELISTING",
+                "CONTROL",
+                "CONTROL",
+            ],
+            "event_stage": [
+                "FIRST_ENTRY",
+                "ESCALATION",
+                "FIRST_ENTRY",
+                "FIRST_ENTRY",
+            ],
+        }
+    )
+
+    # 1. Auto-activation of Mode B as Primary Target when regulatory_events is supplied (mode omitted)
+    out = build_distress_targets(
+        panel, as_of=date(2025, 12, 31), regulatory_events=events
+    )
+
+    # 2. H-05 Continuous distress state: HBC_SIM stays already_distressed_at_t == True in Year 2 & Year 3
+    # (2023-Q2..2025-Q1), even > 365d after initial 2022-04-10 CONTROL, and NEVER triggers false onset for ESCALATION.
+    hbc_2021_q4 = out.filter(
+        (pl.col("issuer_id") == "HBC_SIM")
+        & (pl.col("fiscal_year") == 2021)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    # Even though HBC_SIM has weak financial ratios at 2021-Q4, pure Mode B keeps it eligible for onset!
+    assert hbc_2021_q4["already_distressed_at_t"] is False
+    assert hbc_2021_q4["distress_target"] == 1
+    assert hbc_2021_q4["label_available_at"] == date(2023, 1, 25)
+
+    hbc_year2 = out.filter(
+        (pl.col("issuer_id") == "HBC_SIM")
+        & (pl.col("fiscal_year") == 2023)
+        & (pl.col("fiscal_quarter") == 3)
+    ).row(0, named=True)
+    # 2023-Q3 available 2023-10-25 is > 365d after 2022-04-10, yet inside [2022-04-10, 2024-07-26)
+    assert hbc_year2["already_distressed_at_t"] is True
+    # FORCED_DELISTING on 2024-07-26 is ESCALATION, NOT FIRST_ENTRY -> distress_target == 0
+    assert hbc_year2["distress_target"] == 0
+
+    hbc_after_delist = out.filter(
+        (pl.col("issuer_id") == "HBC_SIM")
+        & (pl.col("fiscal_year") == 2024)
+        & (pl.col("fiscal_quarter") == 3)
+    ).row(0, named=True)
+    # resolution_date is None on FORCED_DELISTING -> stays continuously distressed forever
+    assert hbc_after_delist["already_distressed_at_t"] is True
+
+    # 3. H-05 Recovery & Relapse: HNG_SIM exits distress on resolution_date=2022-04-10,
+    # becomes eligible again in 2022-Q2..2023-Q4, and predicts the 2024-04-10 relapse FIRST_ENTRY.
+    hng_active = out.filter(
+        (pl.col("issuer_id") == "HNG_SIM")
+        & (pl.col("fiscal_year") == 2021)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert hng_active["already_distressed_at_t"] is True
+
+    hng_recovered = out.filter(
+        (pl.col("issuer_id") == "HNG_SIM")
+        & (pl.col("fiscal_year") == 2022)
+        & (pl.col("fiscal_quarter") == 2)
+    ).row(0, named=True)
+    assert hng_recovered["already_distressed_at_t"] is False
+    assert hng_recovered["distress_target"] == 0
+
+    hng_relapse_lead = out.filter(
+        (pl.col("issuer_id") == "HNG_SIM")
+        & (pl.col("fiscal_year") == 2023)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert hng_relapse_lead["already_distressed_at_t"] is False
+    assert hng_relapse_lead["distress_target"] == 1
+
+    # 4. H-05 Decoupled pure exogenous negative_verified: HEALTHY_GAP is missing all of 2024
+    # and has null roa in 2023-Q2, yet still gets verified y=0 when a_t + 365d <= as_of.
+    healthy_2023_q3 = out.filter(
+        (pl.col("issuer_id") == "HEALTHY_GAP")
+        & (pl.col("fiscal_year") == 2023)
+        & (pl.col("fiscal_quarter") == 3)
+    ).row(0, named=True)
+    assert healthy_2023_q3["distress_target"] == 0
+    assert healthy_2023_q3["label_available_at"] == date(2024, 10, 24)
+
+    # 5. B-01 Symmetric Horizon Completeness at historical cutoff as_of = 2022-07-01:
+    # At 2021-Q4 (a_t = 2022-01-25), a_t + 365d = 2023-01-25 > 2022-07-01.
+    # Even though HBC_SIM already entered CONTROL on 2022-04-10 (<= 2022-07-01),
+    # BOTH HBC_SIM (y=1 candidate) and HEALTHY_GAP (y=0 candidate) MUST be censored to None!
+    pit_2022 = build_distress_targets(
+        panel, as_of=date(2022, 7, 1), regulatory_events=events
+    )
+    for iss in ("HBC_SIM", "HEALTHY_GAP"):
+        r = pit_2022.filter(
+            (pl.col("issuer_id") == iss)
+            & (pl.col("fiscal_year") == 2021)
+            & (pl.col("fiscal_quarter") == 4)
+        ).row(0, named=True)
+        assert r["distress_target"] is None
+        assert r["label_available_at"] is None
+
+    # 6. PIT masking of future resolution_date: at as_of = 2022-03-01 (before HNG resolution 2022-04-10),
+    # HNG_SIM has no known resolution_date yet.
+    pit_before_res = build_distress_targets(
+        panel, as_of=date(2022, 3, 1), regulatory_events=events
+    )
+    hng_2021_q4_pit = pit_before_res.filter(
+        (pl.col("issuer_id") == "HNG_SIM")
+        & (pl.col("fiscal_year") == 2021)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    assert hng_2021_q4_pit["already_distressed_at_t"] is True
+
+    # 7. Mode A 0% TTM overlap for liquidity distress:
+    # Liquidity bad ONLY at t+1..t+3 (2021-Q1..Q3), healthy at t+4 (2021-Q4) -> 2020-Q4 MUST be y=0!
+    liq_overlap = _periods().with_columns(
+        pl.lit(100.0).alias("BS_TOTAL_EQUITY"),
+        pl.when(
+            (pl.col("fiscal_year") == 2021) & pl.col("fiscal_quarter").is_in([1, 2, 3])
+        )
+        .then(pl.lit(0.4))
+        .otherwise(pl.lit(3.0))
+        .alias("interest_coverage"),
+        pl.when(
+            (pl.col("fiscal_year") == 2021) & pl.col("fiscal_quarter").is_in([1, 2, 3])
+        )
+        .then(pl.lit(-10.0))
+        .otherwise(pl.lit(15.0))
+        .alias("CF_OPERATING_CASH_FLOW"),
+        pl.when(
+            (pl.col("fiscal_year") == 2021) & pl.col("fiscal_quarter").is_in([1, 2, 3])
+        )
+        .then(pl.lit(0.6))
+        .otherwise(pl.lit(2.0))
+        .alias("current_ratio"),
+    )
+    mode_a_out = build_distress_targets(liq_overlap, mode="FUNDAMENTAL_DISTRESS")
+    assert (
+        mode_a_out.filter(
+            (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 4)
+        )["distress_target"].item()
+        == 0
+    )
+    # At 2020-Q3, t+4 is 2021-Q3 (0% TTM overlap with 2020-Q3) -> MUST be y=1!
+    assert (
+        mode_a_out.filter(
+            (pl.col("fiscal_year") == 2020) & (pl.col("fiscal_quarter") == 3)
+        )["distress_target"].item()
+        == 1
+    )
+
+    # 8. Contract validation rejects inverted resolution_date < effective_from and invalid event_stage
+    bad_stage = events.with_columns(pl.lit("INVALID_STAGE").alias("event_stage"))
+    with pytest.raises(ContractViolationError, match="event_stage"):
+        build_distress_targets(panel, regulatory_events=bad_stage)
+    bad_interval = events.with_columns(
+        pl.lit(date(2019, 1, 1)).alias("resolution_date")
+    )
+    with pytest.raises(ContractViolationError, match="resolution_date"):
+        build_distress_targets(panel, regulatory_events=bad_interval)
+
+    # 9. Retroactive effective_from < event_date MUST NOT leak before event_date announcement,
+    #    and boundary a_t == resolution_date is resolved while a_t == event_date is active.
+    retro_panel = pl.DataFrame(
+        {
+            "issuer_id": ["RETRO"] * 4,
+            "statement_scope": ["CONSOLIDATED"] * 4,
+            "period_type": ["QUARTER"] * 4,
+            "fiscal_year": [2022, 2022, 2022, 2022],
+            "fiscal_quarter": [1, 2, 3, 4],
+            "period_end_date": [
+                date(2022, 3, 31),
+                date(2022, 6, 30),
+                date(2022, 9, 30),
+                date(2022, 12, 31),
+            ],
+            "accounting_regime": ["CORPORATE"] * 4,
+            "BS_TOTAL_EQUITY": [100.0] * 4,
+            "parent_equity": [100.0] * 4,
+            "interest_coverage": [5.0] * 4,
+            "CF_OPERATING_CASH_FLOW": [10.0] * 4,
+            "current_ratio": [2.0] * 4,
+            "roa": [0.05] * 4,
+            "_period_available_at": [
+                date(
+                    2022, 7, 30
+                ),  # effective_from < a_t < event_date -> MUST be eligible y=1
+                date(2022, 9, 15),  # a_t == event_date -> active, not future
+                date(2022, 12, 1),  # a_t == resolution_date -> resolved
+                date(2023, 1, 30),  # post-resolution
+            ],
+        }
+    )
+    retro_events = pl.DataFrame(
+        {
+            "issuer_id": ["RETRO"],
+            "event_date": [date(2022, 9, 15)],
+            "effective_from": [date(2022, 6, 1)],
+            "resolution_date": [date(2022, 12, 1)],
+            "event_type": ["CONTROL"],
+            "event_stage": ["FIRST_ENTRY"],
+        },
+        schema={
+            "issuer_id": pl.String,
+            "event_date": pl.Date,
+            "effective_from": pl.Date,
+            "resolution_date": pl.Date,
+            "event_type": pl.String,
+            "event_stage": pl.String,
+        },
+    )
+    retro_out = build_distress_targets(
+        retro_panel, as_of=date(2024, 6, 1), regulatory_events=retro_events
+    )
+    retro_by_q = {int(r["fiscal_quarter"]): r for r in retro_out.to_dicts()}
+    assert retro_by_q[1]["already_distressed_at_t"] is False
+    assert retro_by_q[1]["distress_target"] == 1
+    assert retro_by_q[2]["already_distressed_at_t"] is True
+    assert retro_by_q[2]["distress_target"] == 0
+    assert retro_by_q[3]["already_distressed_at_t"] is False
+    assert retro_by_q[3]["distress_target"] == 0
+
+
+def test_ml06_two_way_purged_oof_fair_three_model_calibration_bss_unseen_bootstrap_and_psi() -> (
+    None
+):
+    """Prove ML-06 (B-02, H-07, M-05, GATE-ML-3..5) on 2-way Train_OOF -> Test."""
+    from datetime import timedelta
+
+    from finintel.ml.supervised.temporal_split import purged_two_way_split
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        LOGIT_CLIP_RANGE,
+        PLATT_MAX_SLOPE,
+        PLATT_MIN_SLOPE,
+        XGB_EQUILIBRIUM_BASE_SCORE,
+        MarginPlattCalibrator,
+        _compute_xgb_base_score,
+        _compute_xgb_regularization,
+        build_evaluation_report,
+        cluster_bootstrap_metrics,
+        compute_taxonomy_drift_psi,
+        evaluate_distress_models,
+        filter_true_unseen_issuers,
+        train_distress_model,
+    )
+
+    # 1. Anti-overfitting & fold-invariant equilibrium prior: single positive leaf forbidden
+    #    and imbalanced distress folds share an identical weighted-equilibrium base_score.
+    for pos, neg in ((4, 36), (14, 1455), (50, 2500), (160, 7000)):
+        spw, mcw = _compute_xgb_regularization(pos, neg)
+        assert 0.25 * spw < mcw
+        assert _compute_xgb_base_score(pos, neg, spw) == pytest.approx(
+            XGB_EQUILIBRIUM_BASE_SCORE
+        )
+
+    # 2. Unpenalized MarginPlattCalibrator (H-07): preserves risk spread on ~2% prevalence
+    #    and clamps weak positive slope to PLATT_MIN_SLOPE = 0.15
+    rng = np.random.default_rng(77)
+    n_imbal = 2000
+    margins_imbal = rng.normal(0.0, 1.0, size=n_imbal)
+    true_p = 1.0 / (1.0 + np.exp(-(1.8 * margins_imbal - 4.5)))
+    y_imbal = (rng.uniform(0.0, 1.0, size=n_imbal) < true_p).astype(np.int8)
+    cal_unpen = MarginPlattCalibrator(None).fit_margins(margins_imbal, y_imbal)
+    assert PLATT_MIN_SLOPE <= cal_unpen.slope <= PLATT_MAX_SLOPE
+    p_pred = cal_unpen.predict_margin_proba(margins_imbal)[:, 1]
+    assert float(np.max(p_pred) - np.min(p_pred)) > 0.15
+    assert float(np.mean(p_pred)) == pytest.approx(float(np.mean(y_imbal)), abs=0.01)
+
+    weak_margins = np.linspace(-100.0, 100.0, 400)
+    y_weak = np.array([0] * 190 + [1] * 10 + [0] * 185 + [1] * 15, dtype=np.int8)
+    cal_weak = MarginPlattCalibrator(None).fit_margins(weak_margins, y_weak)
+    assert cal_weak.slope == pytest.approx(PLATT_MIN_SLOPE)
+
+    # 3. 2-way Purged Split + inner PURGED_TEMPORAL_OOF + Fair 3-model Platt calibration + BSS
+    quarter_ends = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+    rows = []
+    rng_panel = np.random.default_rng(123)
+    for year in range(2018, 2024):
+        for q in range(1, 5):
+            m, d = quarter_ends[q]
+            p_end = date(year, m, d)
+            avail = p_end + timedelta(days=30)
+            label_avail = avail + timedelta(days=365)
+            for iss_idx in range(18):
+                issuer = f"CO_{iss_idx:02d}"
+                risk_signal = -1.6 + 0.22 * iss_idx + float(rng_panel.normal(0.0, 0.35))
+                roa_v = -0.10 * risk_signal + 0.04
+                ic_v = -2.0 * risk_signal + 3.5
+                dte_v = 1.2 + 0.9 * max(0.0, risk_signal)
+                alt_v = 2.2 - 1.1 * risk_signal + float(rng_panel.normal(0.0, 0.2))
+                y_v = int(1 if risk_signal > 1.7 else 0)
+                row: dict[str, object] = {
+                    "issuer_id": issuer,
+                    "accounting_regime": "CORPORATE",
+                    "statement_scope": "CONSOLIDATED",
+                    "period_type": "QUARTER",
+                    "fiscal_year": year,
+                    "fiscal_quarter": q,
+                    "period_end_date": p_end,
+                    "filing_id": f"{issuer}_{year}_Q{q}",
+                    "taxonomy_version": "VAS_TT200_2014",
+                    "_period_available_at": avail,
+                    "label_available_at": label_avail,
+                    "_exact_filing_basis": True,
+                    "_label_exact_filing_basis": True,
+                    "already_distressed_at_t": False,
+                    "distress_target": y_v,
+                }
+                for feat in BASE_FEATURES:
+                    if feat == "roa":
+                        row[feat] = roa_v
+                    elif feat == "interest_coverage":
+                        row[feat] = ic_v
+                    elif feat == "debt_to_equity":
+                        row[feat] = dte_v
+                    elif feat == "altman_z_double_prime":
+                        row[feat] = alt_v
+                    else:
+                        row[feat] = float(rng_panel.normal(0.5, 0.3))
+                rows.append(row)
+    panel = pl.DataFrame(rows)
+
+    two_way = purged_two_way_split(
+        panel,
+        test_start=date(2023, 1, 1),
+        test_end=date(2024, 1, 1),
+        require_exact_filing=True,
+    )
+    assert two_way["train"]["label_available_at"].max() <= date(2023, 1, 1)  # type: ignore[operator]
+    assert two_way["test"]["period_end_date"].min() >= date(2023, 1, 1)  # type: ignore[operator]
+
+    trained = train_distress_model(
+        two_way["train"],
+        validation=None,
+        features=BASE_FEATURES,
+        min_unique_positive_issuers=2,
+    )
+    assert trained.oof_strategy == "PURGED_TEMPORAL_OOF"
+    assert trained.logit_preprocessor is not None
+    assert trained.logit_preprocessor.clip_range == LOGIT_CLIP_RANGE
+    assert trained.calibrated_altman is not None
+    assert trained.calibrated_logit is not None
+    assert PLATT_MIN_SLOPE <= trained.platt_slope <= PLATT_MAX_SLOPE
+    assert PLATT_MIN_SLOPE <= trained.altman_platt_slope <= PLATT_MAX_SLOPE
+    assert PLATT_MIN_SLOPE <= trained.logit_platt_slope <= PLATT_MAX_SLOPE
+    assert 15 <= trained.best_n_estimators <= 300
+    assert 0.25 * trained.scale_pos_weight < trained.min_child_weight
+    y_tr_arr = two_way["train"]["distress_target"].to_numpy()
+    assert trained.classifier.get_params()["base_score"] == pytest.approx(
+        _compute_xgb_base_score(
+            int((y_tr_arr == 1).sum()),
+            int((y_tr_arr == 0).sum()),
+            trained.scale_pos_weight,
+        )
+    )
+
+    # Verify BSS strictly uses train_prevalence, NOT y_test.mean()
+    test_eval = evaluate_distress_models(trained, two_way["test"])
+    assert test_eval["reference_train_prevalence"] == pytest.approx(
+        trained.train_prevalence
+    )
+    assert test_eval["unique_positive_issuers"] > 0
+    for model_name in ("Baseline_1_AltmanZ", "Baseline_2_Logit", "XGBoost"):
+        m_dict = test_eval["models"][model_name]
+        assert m_dict["brier_skill_score"] is not None
+        assert m_dict["recall_at_top_5_percent"] is not None
+        assert m_dict["recall_at_top_10_percent"] is not None
+
+    # Exact numerical BSS verification against train_prevalence when test prevalence differs
+    from finintel.ml.supervised.train import _metrics
+
+    y_custom = np.array([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int8)  # test mean = 0.50
+    s_custom = np.array([0.05, 0.10, 0.15, 0.20, 0.60, 0.70, 0.80, 0.90])
+    train_prev_ref = 0.05
+    m_custom = _metrics(y_custom, s_custom, reference_prevalence=train_prev_ref)
+    expected_brier = float(np.mean((y_custom - s_custom) ** 2))
+    expected_clim = float(np.mean((y_custom - train_prev_ref) ** 2))
+    assert m_custom["brier_skill_score"] == pytest.approx(
+        1.0 - expected_brier / expected_clim
+    )
+    # Row-wise PIT climatology vector (each pooled OOS year uses its own prior train_prevalence)
+    ref_vec = np.array([0.01, 0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.05])
+    m_vec = _metrics(y_custom, s_custom, reference_prevalence=ref_vec)
+    expected_clim_vec = float(np.mean((y_custom - ref_vec) ** 2))
+    assert m_vec["brier_skill_score"] == pytest.approx(
+        1.0 - expected_brier / expected_clim_vec
+    )
+    boot_vec = cluster_bootstrap_metrics(
+        y_custom,
+        s_custom,
+        np.array(["I0", "I1", "I2", "I3", "I4", "I5", "I6", "I7"]),
+        reference_prevalence=ref_vec,
+        n_bootstrap=40,
+        seed=42,
+    )
+    assert boot_vec["point"]["brier_skill_score"] == pytest.approx(
+        1.0 - expected_brier / expected_clim_vec
+    )
+
+    report = build_evaluation_report(
+        trained, train=two_way["train"], validation=None, test=two_way["test"]
+    )
+    assert report["validation"]["evaluation_role"] == "INNER_PURGED_OOF_CALIBRATION"
+    assert "in_sample_models" in report["train_summary"]
+
+    # 4. True Unseen Issuers removes BOTH y=0 and y=1 of prior-event issuers
+    prior_reg = pl.DataFrame(
+        {
+            "issuer_id": ["CO_17", "CO_00"],
+            "event_date": [date(2022, 6, 1), date(2023, 6, 1)],
+            "event_type": ["CONTROL", "CONTROL"],
+        }
+    )
+    unseen = filter_true_unseen_issuers(
+        two_way["test"], test_start=date(2023, 1, 1), regulatory_events=prior_reg
+    )
+    assert "CO_17" not in set(unseen["issuer_id"].to_list())
+    assert "CO_00" in set(unseen["issuer_id"].to_list())
+
+    # 5. Cluster Bootstrap 95% CI (clustered by issuer_id)
+    boot = cluster_bootstrap_metrics(
+        two_way["test"]["distress_target"].to_numpy().astype(np.int8),
+        np.where(two_way["test"]["distress_target"].to_numpy() == 1, 0.8, 0.1),
+        two_way["test"]["issuer_id"].to_numpy(),
+        reference_prevalence=trained.train_prevalence,
+        n_bootstrap=100,
+        seed=42,
+    )
+    assert boot["n_bootstrap_valid"] > 0
+    assert boot["ci95"]["roc_auc"] is not None
+    lo, hi = boot["ci95"]["roc_auc"]
+    assert 0.0 <= lo <= hi <= 1.0
+
+    # 6. Taxonomy Drift PSI (M-05): ~0 on identical slice, > 0.25 on shifted slice
+    same_psi = compute_taxonomy_drift_psi(
+        two_way["test"], two_way["test"], features=BASE_FEATURES, result=trained
+    )
+    assert same_psi["max_feature_psi"] == pytest.approx(0.0, abs=1e-6)
+    shifted_test = two_way["test"].with_columns((pl.col("roa") + 0.50).alias("roa"))
+    shift_psi = compute_taxonomy_drift_psi(
+        two_way["test"], shifted_test, features=BASE_FEATURES, result=trained
+    )
+    assert "roa" in shift_psi["features_psi_gt_0_25"]
+    assert shift_psi["score_drift"]["score_psi"] is not None
+    assert "ref_r4_r5_share" in shift_psi["score_drift"]
+    assert "tgt_r4_r5_share" in shift_psi["score_drift"]
+
+    # 7. Regression guard: when earliest temporal inner block has an all-null feature
+    #    (e.g. 2016 YoY features), train_distress_model falls back cleanly to issuer-grouped OOF.
+    early_null_train = two_way["train"].with_columns(
+        pl.when(pl.col("fiscal_year") <= 2020)
+        .then(pl.lit(None, dtype=pl.Float64))
+        .otherwise(pl.col("revenue_growth_yoy"))
+        .alias("revenue_growth_yoy")
+    )
+    trained_fallback = train_distress_model(
+        early_null_train,
+        validation=None,
+        features=BASE_FEATURES,
+        min_unique_positive_issuers=2,
+    )
+    assert trained_fallback.oof_strategy == "STRATIFIED_GROUP_OOF"
+    assert trained_fallback.oof_sample_count > 0
+
+
+def test_ml07a_credit_risk_triad_ttc_tiers_pit_percentile_lift_and_reliability() -> (
+    None
+):
+    """Prove ML-07a (H-07 / ADR-ML-04): TTC R1..R5 decoupled from PIT quarter percentile + lift."""
+    from datetime import timedelta
+
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        RISK_TIER_LABELS,
+        assign_risk_tiers,
+        compute_cross_sectional_risk_percentile,
+        compute_ttc_risk_tier_cutoffs,
+        evaluate_risk_tier_reliability,
+        score_distress_model,
+        train_distress_model,
+    )
+
+    # 1. TTC cutoffs are strictly increasing and assign R1..R5 without embedding "[Top 5%]"
+    oof_p = np.linspace(0.002, 0.35, 200)
+    cutoffs = compute_ttc_risk_tier_cutoffs(oof_p, base_rate=0.025)
+    assert cutoffs[0] < cutoffs[1] < cutoffs[2] < cutoffs[3]
+    tiers_check = assign_risk_tiers(
+        np.array([0.001, cutoffs[0], cutoffs[1], cutoffs[2], cutoffs[3], np.nan]),
+        cutoffs,
+    )
+    assert tiers_check == ["R1", "R2", "R3", "R4", "R5", None]
+    assert all("Top" not in label for label in RISK_TIER_LABELS)
+
+    # 2. Prove TTC vs PIT decoupling:
+    #    In a crisis quarter where ALL companies have high PD >= cutoffs[3],
+    #    ALL companies receive TTC risk_tier == "R5", while PIT risk_market_percentile still spans (0, 100]!
+    crisis_df = pl.DataFrame(
+        {
+            "issuer_id": ["A", "B", "C", "D"],
+            "statement_scope": ["CONSOLIDATED"] * 4,
+            "period_type": ["QUARTER"] * 4,
+            "period_end_date": [date(2023, 6, 30)] * 4,
+            "calibrated_distress_prob": [0.40, 0.50, 0.60, 0.80],
+        }
+    )
+    crisis_tiers = assign_risk_tiers(
+        crisis_df["calibrated_distress_prob"].to_numpy(), cutoffs
+    )
+    assert crisis_tiers == ["R5", "R5", "R5", "R5"]
+    crisis_ranked = compute_cross_sectional_risk_percentile(crisis_df)
+    assert crisis_ranked["risk_market_percentile"].to_list() == pytest.approx(
+        [25.0, 50.0, 75.0, 100.0]
+    )
+
+    # 3. End-to-end score_distress_model emits all 4 additive fields + exact lift = pd / base_rate
+    rng = np.random.default_rng(314)
+    rows = []
+    for idx in range(120):
+        risk = -1.5 + 0.03 * idx + float(rng.normal(0.0, 0.2))
+        q_date = date(2022, 6, 30) if idx % 2 == 0 else date(2022, 9, 30)
+        row: dict[str, object] = {
+            "issuer_id": f"TRIAD_{idx:03d}",
+            "accounting_regime": "CORPORATE",
+            "statement_scope": "CONSOLIDATED",
+            "period_type": "QUARTER",
+            "period_end_date": q_date,
+            "filing_id": f"FIL_T_{idx:03d}",
+            "taxonomy_version": "VAS_TT200_2014",
+            "_period_available_at": q_date + timedelta(days=30),
+            "label_available_at": q_date + timedelta(days=395),
+            "distress_target": int(1 if risk > 1.2 else 0),
+        }
+        for feat in BASE_FEATURES:
+            if feat == "roa":
+                row[feat] = -0.10 * risk + 0.05
+            elif feat == "interest_coverage":
+                row[feat] = -1.8 * risk + 4.0
+            elif feat == "debt_to_equity":
+                row[feat] = 1.0 + 0.8 * max(0.0, risk)
+            elif feat == "altman_z_double_prime":
+                row[feat] = 2.5 - 1.0 * risk
+            else:
+                row[feat] = float(rng.normal(0.4, 0.25))
+        rows.append(row)
+    df_all = pl.DataFrame(rows)
+    trained = train_distress_model(
+        df_all, validation=None, features=BASE_FEATURES, min_unique_positive_issuers=3
+    )
+    scored = score_distress_model(trained, df_all)
+    assert {
+        "risk_tier",
+        "risk_market_percentile",
+        "market_base_rate",
+        "relative_risk_lift",
+    } <= set(scored.columns)
+    assert set(scored["risk_tier"].drop_nulls().unique().to_list()) <= set(
+        RISK_TIER_LABELS
+    )
+    pcts = scored["risk_market_percentile"].to_numpy()
+    assert np.all((pcts > 0.0) & (pcts <= 100.0))
+    base_rates = scored["market_base_rate"].to_numpy()
+    probs = scored["calibrated_distress_prob"].to_numpy()
+    lifts = scored["relative_risk_lift"].to_numpy()
+    assert np.allclose(base_rates, trained.train_prevalence, rtol=1e-9)
+    assert np.allclose(lifts, probs / trained.train_prevalence, rtol=1e-9)
+
+    rel = evaluate_risk_tier_reliability(
+        df_all["distress_target"].to_numpy().astype(np.int8),
+        probs,
+        trained.risk_tier_cutoffs,
+    )
+    assert len(rel["tiers"]) == 5
+    assert rel["is_monotone_non_decreasing"] is True
+
+    # 4. Backward compatibility: unpickled pre-ML-07a TrainingResult lacking risk_tier_cutoffs/train_prevalence
+    from finintel.ml.supervised.train import TrainingResult
+
+    legacy_res = object.__new__(TrainingResult)
+    legacy_res.__dict__.update(
+        {
+            "features": trained.features,
+            "preprocessor": trained.preprocessor,
+            "classifier": trained.classifier,
+            "calibrated": trained.calibrated,
+            "baseline_logit": trained.baseline_logit,
+            "validation_metrics": trained.validation_metrics,
+            "f2_thresholds": trained.f2_thresholds,
+            "platt_slope": trained.platt_slope,
+            "platt_intercept": trained.platt_intercept,
+            "oof_validation_metrics": trained.oof_validation_metrics,
+        }
+    )
+    legacy_scored = score_distress_model(legacy_res, df_all.head(10))
+    assert legacy_scored.height == 10
+    assert legacy_scored["risk_tier"].null_count() == 0
+    assert legacy_scored["market_base_rate"].null_count() == 10
+    assert legacy_scored["relative_risk_lift"].null_count() == 10
+
+
+def test_ml05_leak_free_overdue_loss_streak_asset_size_pct_momentum_and_labels() -> (
+    None
+):
+    """Prove ML-05 (H-06 / GATE-ML-2..5): 0% leakage, discrete loss streak, PIT size rank & labels."""
+    from finintel.analytics.intermediates import prepare_periods
+    from finintel.ml.supervised.explain import get_feature_display_names
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        SECTOR_ADJUSTED_FEATURES,
+        _constraints,
+    )
+    from tests.unit.test_layer4_analytics import facts
+
+    # 1. Retained feature set & ablation-candidate monotonicity rules
+    assert {
+        "consecutive_loss_quarters",
+        "overdue_or_late_count_4q",
+        "cross_sectional_asset_size_pct",
+    } <= set(BASE_FEATURES)
+    assert {
+        "consecutive_loss_quarters",
+        "overdue_or_late_count_4q",
+        "cross_sectional_asset_size_pct",
+    } <= set(SECTOR_ADJUSTED_FEATURES)
+    # Dropped noisy delta_4q candidates must NOT pollute BASE_FEATURES / SECTOR_ADJUSTED_FEATURES
+    for dropped in (
+        "delta_roa_4q",
+        "delta_liabilities_to_assets_4q",
+        "delta_current_ratio_4q",
+    ):
+        assert dropped not in BASE_FEATURES
+        assert dropped not in SECTOR_ADJUSTED_FEATURES
+    assert _constraints(
+        (
+            "overdue_or_late_count_4q",
+            "consecutive_loss_quarters",
+            "cross_sectional_asset_size_pct",
+            "delta_roa_4q",
+            "delta_liabilities_to_assets_4q",
+            "delta_current_ratio_4q",
+        )
+    ) == (1, 1, 0, -1, 1, 0)
+
+    # Vietnamese SHAP labels exist for all retained + candidate features
+    labels_market = get_feature_display_names("PIT_REGIME_SYMMETRIC")
+    assert labels_market["consecutive_loss_quarters"] == "Số quý lỗ ròng liên tiếp"
+    assert (
+        labels_market["overdue_or_late_count_4q"]
+        == "Số quý nộp trễ hoặc quá hạn công bố BCTC (4Q)"
+    )
+    assert (
+        labels_market["cross_sectional_asset_size_pct"]
+        == "Phân vị quy mô tổng tài sản theo quý"
+    )
+
+    # 2. Build multi-issuer panel testing:
+    #    - Issuer LATE_EVADE:
+    #        2021-Q1 (2021-03-31): filed ON TIME 2021-04-28 (<= deadline 2021-05-04),
+    #                              then restated 2021-09-01 (still counts ON TIME!)
+    #        2021-Q2 (2021-06-30): filed LATE 2021-10-15 (> deadline 2021-08-30, > Q3 a_t? Wait: arrives 2021-12-01!)
+    #        2021-Q3 (2021-09-30): EVADED / NEVER FILED!
+    #        2021-Q4 (2021-12-31): filed ON TIME 2022-01-25 (<= deadline 2022-02-07)
+    #        2022-Q1..Q4: all filed ON TIME
+    #      And net income discrete sequence for LATE_EVADE:
+    #        2021-Q1: +100 (big profit so 4Q TTM stays positive!),
+    #        2021-Q2: -10 (loss, arrives 2021-12-01), 2021-Q3: missing,
+    #        2021-Q4: -15, 2022-Q1: -20, 2022-Q2: -5 (3 consecutive discrete losses even if TTM > 0!)
+    #    - Issuer LATE_IPO: starts reporting at 2022-Q1 (pre-IPO 2021 quarters must NOT count overdue!)
+    #    - Issuer BIG_PEER: larger assets for cross_sectional_asset_size_pct check
+    def mk_template(
+        assets: float, liab: float, ca: float, cl: float, ni: float
+    ) -> dict[str, float | None]:
+        return {
+            "BS_TOTAL_ASSETS": assets,
+            "BS_TOTAL_EQUITY": assets - liab,
+            "BS_TOTAL_LIABILITIES": liab,
+            "BS_CURRENT_ASSETS": ca,
+            "BS_CURRENT_LIABILITIES": cl,
+            "IS_NET_REVENUE": 200.0,
+            "IS_NET_INCOME": ni,
+        }
+
+    def set_exact_dates(
+        df: pl.DataFrame,
+        avail_map: dict[tuple[int, int], tuple[date, bool]],
+        *,
+        audit_status: str = "UNAUDITED",
+    ) -> pl.DataFrame:
+        out_rows = []
+        for row in df.to_dicts():
+            key = (int(row["fiscal_year"]), int(row["fiscal_quarter"]))
+            pub, late = avail_map[key]
+            row["published_at"] = pub
+            row["effective_available_at"] = pub
+            row["published_at_basis"] = "EXACT_FILING"
+            row["is_filed_late"] = late
+            if key[1] == 2:
+                row["audit_status"] = "REVIEWED"
+            else:
+                row["audit_status"] = audit_status
+            out_rows.append(row)
+        return pl.DataFrame(out_rows, schema=df.schema)
+
+    evade_base = facts(
+        {
+            (2021, 1): mk_template(100.0, 40.0, 50.0, 25.0, 100.0),
+            (2021, 2): mk_template(100.0, 45.0, 45.0, 25.0, -10.0),
+            # (2021, 3) EVADED!
+            (2021, 4): mk_template(100.0, 50.0, 40.0, 25.0, -15.0),
+            (2022, 1): mk_template(100.0, 55.0, 35.0, 25.0, -20.0),
+            (2022, 2): mk_template(100.0, 60.0, 30.0, 25.0, -5.0),
+            (2022, 3): mk_template(100.0, 65.0, 30.0, 25.0, 12.0),
+        },
+        issuer_id="LATE_EVADE",
+    )
+    evade_dates = {
+        (2021, 1): (date(2021, 4, 28), False),
+        (2021, 2): (date(2022, 3, 15), True),  # Arrives AFTER 2021-Q4 (2022-01-25)!
+        (2021, 4): (date(2022, 1, 25), False),
+        (2022, 1): (date(2022, 4, 25), False),
+        (2022, 2): (date(2022, 8, 20), False),
+        (2022, 3): (date(2022, 10, 25), False),
+    }
+    evade_facts = set_exact_dates(evade_base, evade_dates)
+    # Add an audited restatement for 2021-Q1 arriving late in 2021-09-01: must NOT turn 2021-Q1 overdue!
+    evade_q1_restated = evade_facts.filter(
+        (pl.col("fiscal_year") == 2021) & (pl.col("fiscal_quarter") == 1)
+    ).with_columns(
+        pl.lit(2, dtype=pl.Int64).alias("revision_no"),
+        pl.lit("LATE_EVADE-2021-1-R2").alias("filing_id"),
+        pl.lit(["LATE_EVADE-2021-1-R2"]).alias("source_filing_ids"),
+        pl.lit(date(2021, 9, 1)).alias("published_at"),
+        pl.lit(date(2021, 9, 1)).alias("effective_available_at"),
+        pl.lit(True).alias("is_filed_late"),
+        pl.lit("AUDITED_UPDATE").alias("revision_reason"),
+    )
+
+    ipo_base = facts(
+        {
+            (2022, 1): mk_template(200.0, 80.0, 80.0, 40.0, 10.0),
+            (2022, 2): mk_template(200.0, 80.0, 80.0, 40.0, 10.0),
+        },
+        issuer_id="LATE_IPO",
+    )
+    ipo_facts = set_exact_dates(
+        ipo_base,
+        {
+            (2022, 1): (date(2022, 4, 25), False),
+            (2022, 2): (date(2022, 8, 20), False),
+        },
+    )
+
+    big_base = facts(
+        {
+            (2021, 4): mk_template(1000.0, 300.0, 400.0, 100.0, 50.0),
+            (2022, 1): mk_template(1000.0, 300.0, 400.0, 100.0, 50.0),
+            (2022, 2): mk_template(1000.0, 300.0, 400.0, 100.0, 50.0),
+        },
+        issuer_id="BIG_PEER",
+    )
+    big_facts = set_exact_dates(
+        big_base,
+        {
+            (2021, 4): (date(2022, 1, 25), False),
+            (2022, 1): (date(2022, 4, 25), False),
+            (2022, 2): (date(2022, 8, 20), False),
+        },
+    )
+
+    all_facts = pl.concat([evade_facts, evade_q1_restated, ipo_facts, big_facts])
+    issuers_df = pl.DataFrame(
+        {
+            "issuer_id": ["LATE_EVADE", "LATE_IPO", "BIG_PEER"],
+            "ticker": ["LE", "LI", "BP"],
+            "accounting_regime": ["CORPORATE"] * 3,
+        }
+    )
+
+    # 0% lookahead invariance check: 2021-Q4 (available 2022-01-25) evaluated at
+    # as_of=2022-02-01 (before 2021-Q2 late filing arrives on 2022-03-15) vs
+    # as_of=2022-12-31 (after 2021-Q2 late filing arrived) MUST produce identical values!
+    early_p = prepare_periods(
+        all_facts, issuers_df, as_of=date(2022, 2, 1), include_ml_inputs=True
+    )
+    late_p = prepare_periods(
+        all_facts, issuers_df, as_of=date(2022, 12, 31), include_ml_inputs=True
+    )
+
+    q4_early = early_p.filter(
+        (pl.col("issuer_id") == "LATE_EVADE")
+        & (pl.col("fiscal_year") == 2021)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    q4_late = late_p.filter(
+        (pl.col("issuer_id") == "LATE_EVADE")
+        & (pl.col("fiscal_year") == 2021)
+        & (pl.col("fiscal_quarter") == 4)
+    ).row(0, named=True)
+    # 2021-Q1 restated on time (0), 2021-Q2 overdue (1), 2021-Q3 evaded (1), 2021-Q4 on time (0) -> 2.0!
+    assert q4_early["overdue_or_late_count_4q"] == pytest.approx(2.0)
+    assert q4_late["overdue_or_late_count_4q"] == pytest.approx(2.0)
+    assert q4_early["consecutive_loss_quarters"] == pytest.approx(1.0)
+    assert q4_late["consecutive_loss_quarters"] == pytest.approx(1.0)
+
+    # By 2022-Q2 (available 2022-08-20):
+    # - 2021-Q3 evaded (1) + 2021-Q4 on time (0) + 2022-Q1 on time (0) + 2022-Q2 on time (0) -> overdue = 1.0
+    # - Discrete losses: 2021-Q4 (-15), 2022-Q1 (-20), 2022-Q2 (-5) -> streak = 3.0 (stopped at 2021-Q3 gap!)
+    # - 2022-Q3 returns to profit (+12) -> streak resets to 0.0!
+    ev_22_q2 = late_p.filter(
+        (pl.col("issuer_id") == "LATE_EVADE")
+        & (pl.col("fiscal_year") == 2022)
+        & (pl.col("fiscal_quarter") == 2)
+    ).row(0, named=True)
+    ev_22_q3 = late_p.filter(
+        (pl.col("issuer_id") == "LATE_EVADE")
+        & (pl.col("fiscal_year") == 2022)
+        & (pl.col("fiscal_quarter") == 3)
+    ).row(0, named=True)
+    assert ev_22_q2["overdue_or_late_count_4q"] == pytest.approx(1.0)
+    assert ev_22_q2["consecutive_loss_quarters"] == pytest.approx(3.0)
+    assert ev_22_q3["consecutive_loss_quarters"] == pytest.approx(0.0)
+
+    # Pre-IPO quarters must NOT be flagged overdue on LATE_IPO's first quarter (2022-Q1)
+    ipo_q1 = late_p.filter(
+        (pl.col("issuer_id") == "LATE_IPO")
+        & (pl.col("fiscal_year") == 2022)
+        & (pl.col("fiscal_quarter") == 1)
+    ).row(0, named=True)
+    assert ipo_q1["overdue_or_late_count_4q"] == pytest.approx(0.0)
+
+    # Cross-sectional asset size pct in 2022-Q2: assets = [100, 200, 1000] -> [0.0, 50.0, 100.0],
+    # and invariant to uniform 10x nominal asset inflation across all issuers!
+    q2_22 = late_p.filter(
+        (pl.col("fiscal_year") == 2022) & (pl.col("fiscal_quarter") == 2)
+    ).sort("BS_TOTAL_ASSETS")
+    assert q2_22["cross_sectional_asset_size_pct"].to_list() == pytest.approx(
+        [0.0, 50.0, 100.0]
+    )
+    inflated_facts = all_facts.with_columns(
+        pl.when(pl.col("metric_id") == "BS_TOTAL_ASSETS")
+        .then(pl.col("value") * 10.0)
+        .otherwise(pl.col("value"))
+        .alias("value")
+    )
+    inflated_q2_22 = (
+        prepare_periods(
+            inflated_facts, issuers_df, as_of=date(2022, 12, 31), include_ml_inputs=True
+        )
+        .filter((pl.col("fiscal_year") == 2022) & (pl.col("fiscal_quarter") == 2))
+        .sort("BS_TOTAL_ASSETS")
+    )
+    assert inflated_q2_22["cross_sectional_asset_size_pct"].to_list() == pytest.approx(
+        [0.0, 50.0, 100.0]
+    )
+
+    # 4Q delta calculations & cross-taxonomy guard
+    assert ev_22_q2["delta_liabilities_to_assets_4q"] == pytest.approx(0.60 - 0.45)
+    assert ev_22_q2["delta_current_ratio_4q"] == pytest.approx(
+        (30.0 / 25.0) - (45.0 / 25.0)
+    )
+    tt99_incompat = all_facts.with_columns(
+        pl.when(pl.col("fiscal_year") == 2022)
+        .then(pl.lit("VAS_TT99_2025"))
+        .otherwise(pl.col("taxonomy_version"))
+        .alias("taxonomy_version"),
+        pl.when(pl.col("fiscal_year") == 2022)
+        .then(pl.lit(False))
+        .otherwise(pl.col("comparable_across_taxonomy"))
+        .alias("comparable_across_taxonomy"),
+    )
+    incompat_q2 = (
+        prepare_periods(
+            tt99_incompat, issuers_df, as_of=date(2022, 12, 31), include_ml_inputs=True
+        )
+        .filter(
+            (pl.col("issuer_id") == "LATE_EVADE")
+            & (pl.col("fiscal_year") == 2022)
+            & (pl.col("fiscal_quarter") == 2)
+        )
+        .row(0, named=True)
+    )
+    assert incompat_q2["delta_liabilities_to_assets_4q"] is None
+    assert incompat_q2["delta_current_ratio_4q"] is None

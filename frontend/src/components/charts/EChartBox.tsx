@@ -2,9 +2,10 @@
 
 import * as React from "react";
 import * as echarts from "echarts";
-import { BarChart3, Table2 } from "lucide-react";
+import { BarChart3, Download, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { applyChartThemeDefaults, getChartPalette, useChartTheme } from "@/lib/echarts-theme";
 import { cn } from "@/lib/utils";
 
 export type EChartsOption = echarts.EChartsOption;
@@ -14,6 +15,19 @@ export interface ChartClickPayload {
   dataIndex?: number;
   seriesName?: string;
   data?: unknown;
+}
+
+export function buildSafeExportFilename(title: string): string {
+  const base = title
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return `${base || "finintel-chart"}.png`;
 }
 
 export function EChartBox({
@@ -28,6 +42,8 @@ export function EChartBox({
   onChartClick,
   emptyMessage = "Chưa có dữ liệu biểu đồ cho lát cắt này.",
   isEmpty = false,
+  enableExportPng = true,
+  enableTableToggle = true,
   className,
 }: {
   title: string;
@@ -41,12 +57,20 @@ export function EChartBox({
   onChartClick?: (params: ChartClickPayload) => void;
   emptyMessage?: string;
   isEmpty?: boolean;
+  enableExportPng?: boolean;
+  enableTableToggle?: boolean;
   className?: string;
 }) {
   const [showTable, setShowTable] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const chartRef = React.useRef<echarts.ECharts | null>(null);
   const onClickRef = React.useRef(onChartClick);
+  const { theme, reducedMotion } = useChartTheme();
+
+  const themedOption = React.useMemo(
+    () => applyChartThemeDefaults(option, theme, reducedMotion),
+    [option, reducedMotion, theme],
+  );
 
   React.useEffect(() => {
     onClickRef.current = onChartClick;
@@ -78,6 +102,27 @@ export function EChartBox({
 
     instance.on("click", handleClick);
 
+    const zr = instance.getZr();
+    const handleZrClick = (event: {
+      target?: unknown;
+      offsetX: number;
+      offsetY: number;
+    }) => {
+      if (event.target || !onClickRef.current) return;
+      const point: [number, number] = [event.offsetX, event.offsetY];
+      try {
+        if (!instance.containPixel("grid", point)) return;
+        const coord = instance.convertFromPixel({ seriesIndex: 0 }, point);
+        const xIdx = Array.isArray(coord) ? Math.round(Number(coord[0])) : NaN;
+        if (Number.isInteger(xIdx) && xIdx >= 0) {
+          onClickRef.current({ dataIndex: xIdx });
+        }
+      } catch {
+        // Non-cartesian charts (e.g. treemap, radar) do not have a grid coordinate system
+      }
+    };
+    zr.on("click", handleZrClick);
+
     const observer = new ResizeObserver(() => {
       instance.resize();
     });
@@ -85,6 +130,7 @@ export function EChartBox({
 
     return () => {
       observer.disconnect();
+      zr.off("click", handleZrClick);
       instance.off("click", handleClick);
       instance.dispose();
       chartRef.current = null;
@@ -93,11 +139,28 @@ export function EChartBox({
 
   React.useEffect(() => {
     if (showTable || isEmpty || !chartRef.current) return;
-    chartRef.current.setOption(option, { notMerge: true });
-  }, [option, showTable, isEmpty]);
+    chartRef.current.setOption(themedOption, { notMerge: true });
+  }, [themedOption, showTable, isEmpty]);
+
+  const handleExportPng = React.useCallback(() => {
+    const instance = chartRef.current;
+    if (!instance || showTable || isEmpty) return;
+    const palette = getChartPalette(theme);
+    const dataUrl = instance.getDataURL({
+      type: "png",
+      pixelRatio: 2,
+      backgroundColor: palette.surface,
+    });
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = buildSafeExportFilename(title);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, [isEmpty, showTable, theme, title]);
 
   return (
-    <Card className={cn("overflow-hidden", className)}>
+    <Card className={cn("overflow-hidden rounded-lg shadow-xs transition-colors duration-150", className)}>
       <CardHeader className="flex-wrap gap-2 py-2.5">
         <div className="min-w-0">
           <CardTitle className="text-[14px] leading-5">{title}</CardTitle>
@@ -105,9 +168,9 @@ export function EChartBox({
             <p className="mt-0.5 text-xs text-ink-muted">{subtitle}</p>
           ) : null}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           {headerRight}
-          {!isEmpty ? (
+          {!isEmpty && enableTableToggle ? (
             <Button
               type="button"
               variant="outline"
@@ -128,19 +191,37 @@ export function EChartBox({
               )}
             </Button>
           ) : null}
+          {!isEmpty && enableExportPng ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={handleExportPng}
+              disabled={showTable}
+              title={
+                showTable
+                  ? "Chuyển về chế độ biểu đồ để xuất ảnh PNG"
+                  : "Tải xuống biểu đồ dạng ảnh PNG"
+              }
+              aria-label={`Xuất PNG: ${title}`}
+            >
+              <Download className="size-3" />
+              <span>Xuất PNG</span>
+            </Button>
+          ) : null}
         </div>
       </CardHeader>
 
       <CardContent className="p-3 sm:p-4">
         {isEmpty ? (
           <div
-            className="flex items-center justify-center rounded border border-dashed border-border bg-canvas/50 px-4 text-center text-xs text-ink-muted"
+            className="flex items-center justify-center rounded-lg border border-dashed border-border bg-canvas/50 px-4 text-center text-xs text-ink-muted"
             style={{ height }}
           >
             {emptyMessage}
           </div>
         ) : showTable ? (
-          <div className="max-h-[340px] overflow-auto rounded border border-border">
+          <div className="max-h-[340px] overflow-auto rounded-lg border border-border">
             <table className="w-full border-collapse text-xs">
               <thead>
                 <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
@@ -162,7 +243,7 @@ export function EChartBox({
                 {tableRows.map((row, rIdx) => (
                   <tr
                     key={rIdx}
-                    className="border-b border-border/60 hover:bg-surface-muted/40"
+                    className="border-b border-border/60 transition-colors duration-150 hover:bg-surface-muted/40"
                   >
                     {row.map((cell, cIdx) => (
                       <td

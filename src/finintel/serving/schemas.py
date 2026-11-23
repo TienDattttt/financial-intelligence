@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import date
 from typing import Any, Literal
 
@@ -35,6 +36,7 @@ from finintel.serving.queries import (
     PeerGroupLevel,
     PeriodType,
     PeriodView,
+    RiskTier,
     StatementScope,
 )
 
@@ -49,6 +51,7 @@ ScreenerSortField = Literal[
     "debt_to_equity",
 ]
 SortDirection = Literal["asc", "desc"]
+_TICKER_ITEM_RE = re.compile(r"^[A-Z0-9]{1,10}$")
 
 RatioName = Literal[
     "gross_margin",
@@ -283,6 +286,10 @@ class MLScoreItem(BaseModel):
     anomaly_flag: str | None = None
     distress_risk_score: float | None = None
     calibrated_distress_prob: float | None = None
+    risk_tier: RiskTier | str | None = None
+    risk_market_percentile: float | None = None
+    market_base_rate: float | None = None
+    relative_risk_lift: float | None = None
     model_version: str | None = None
     shap_top_drivers_json: str | None = None
     shap_top_drivers: ShapExplanationItem | None = None
@@ -478,7 +485,7 @@ class RatioLineageResponse(BaseModel):
 
 
 class ScreenerItem(BaseModel):
-    """Single issuer row matching ``DashboardQueryService.screen_market()`` (37 columns)."""
+    """Single issuer row matching ``DashboardQueryService.screen_market()`` (41 columns)."""
 
     issuer_id: str
     ticker: str
@@ -515,6 +522,10 @@ class ScreenerItem(BaseModel):
     anomaly_flag: str | None = None
     distress_risk_score: float | None = None
     calibrated_distress_prob: float | None = None
+    risk_tier: RiskTier | str | None = None
+    risk_market_percentile: float | None = None
+    market_base_rate: float | None = None
+    relative_risk_lift: float | None = None
     model_role: str | None = None
     model_version: str | None = None
 
@@ -549,7 +560,8 @@ class StressScenarioRequest(BaseModel):
     dso_shock_days: float = Field(0.0, ge=-90.0, le=180.0, allow_inf_nan=False)
     dio_shock_days: float = Field(0.0, ge=-90.0, le=180.0, allow_inf_nan=False)
     top_n: int = Field(50, ge=1, le=200)
-    include_all_newly_distressed: bool = False
+    include_all_newly_distressed: bool | None = None
+    tickers: list[str] | None = Field(default=None, max_length=200)
 
     @field_validator("scenario_name")
     @classmethod
@@ -558,6 +570,24 @@ class StressScenarioRequest(BaseModel):
         if not stripped:
             raise ValueError("scenario_name must not be blank.")
         return stripped
+
+    @field_validator("tickers")
+    @classmethod
+    def _normalize_tickers(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("tickers must contain ticker strings.")
+            tok = item.strip().upper()
+            if not tok or not _TICKER_ITEM_RE.fullmatch(tok):
+                raise ValueError(f"Invalid ticker format in tickers list: {item!r}")
+            if tok not in seen:
+                seen.add(tok)
+                normalized.append(tok)
+        return normalized
 
 
 class StressSectorSummaryItem(BaseModel):
@@ -843,6 +873,11 @@ class MarketChangeItem(BaseModel):
     distress_prob_prev: float | None = None
     distress_prob_curr: float | None = None
     distress_prob_delta: float | None = None
+    risk_tier_prev: RiskTier | str | None = None
+    risk_tier_curr: RiskTier | str | None = None
+    risk_market_percentile_curr: float | None = None
+    market_base_rate_curr: float | None = None
+    relative_risk_lift_curr: float | None = None
     red_flag_count_prev: int
     red_flag_count_curr: int
     new_red_flag_codes: list[str]
@@ -874,3 +909,311 @@ class MarketChangesResponse(BaseModel):
     statement_scope: StatementScope
     period_type: PeriodType
     items: list[MarketChangeItem]
+
+
+class RiskTierCutoffsItem(BaseModel):
+    """Frozen Through-the-Cycle PD boundaries separating R1..R5."""
+
+    R2_min_pd: float
+    R3_min_pd: float
+    R4_min_pd: float
+    R5_min_pd: float
+
+
+class RiskTierReliabilityRowItem(BaseModel):
+    """Empirical event rate and predicted PD for a single risk tier (R1..R5)."""
+
+    risk_tier: RiskTier | str
+    count: int
+    share: float
+    positive_count: int
+    empirical_event_rate: float | None = None
+    mean_predicted_pd: float | None = None
+
+
+class RiskTierReliabilityReportItem(BaseModel):
+    """Calibration reliability and monotonicity summary across R1..R5."""
+
+    evaluation_source: str | None = None
+    cutoffs: RiskTierCutoffsItem
+    tiers: list[RiskTierReliabilityRowItem]
+    is_monotone_non_decreasing: bool
+
+
+class ModelMetricsItem(BaseModel):
+    """Standardized evaluation metrics on common OOS samples."""
+
+    roc_auc: float | None = None
+    pr_auc: float | None = None
+    brier_score: float | None = None
+    brier_skill_score: float | None = None
+    f2_score: float | None = None
+    recall_at_top_5_percent: float | None = None
+    recall_at_top_10_percent: float | None = None
+
+
+class BootstrapCI95Item(BaseModel):
+    """Issuer-clustered 95% bootstrap confidence intervals."""
+
+    roc_auc: list[float] | None = None
+    pr_auc: list[float] | None = None
+    brier_score: list[float] | None = None
+    brier_skill_score: list[float] | None = None
+    recall_at_top_5_percent: list[float] | None = None
+    recall_at_top_10_percent: list[float] | None = None
+
+
+class WalkForwardYearItem(BaseModel):
+    """Single expanding Walk-Forward test year comparison (All OOS & True Unseen Issuers)."""
+
+    year: int
+    train_rows: int
+    train_positive_rows: int
+    train_unique_positive_issuers: int
+    train_prevalence: float | None = None
+    test_rows: int
+    test_positive_rows: int
+    test_unique_positive_issuers: int
+    unseen_rows: int
+    unseen_positive_rows: int
+    unseen_unique_positive_issuers: int
+    models: dict[str, ModelMetricsItem]
+    true_unseen_models: dict[str, ModelMetricsItem]
+
+
+class WalkForwardModelSummaryItem(BaseModel):
+    """Aggregated yearly mean/std + pooled cluster-bootstrap CI95 for one model."""
+
+    model: str
+    yearly_roc_auc_mean: float | None = None
+    yearly_roc_auc_std: float | None = None
+    yearly_pr_auc_mean: float | None = None
+    yearly_pr_auc_std: float | None = None
+    yearly_brier_mean: float | None = None
+    yearly_brier_std: float | None = None
+    yearly_bss_mean: float | None = None
+    yearly_bss_std: float | None = None
+    yearly_recall_top5_mean: float | None = None
+    yearly_recall_top10_mean: float | None = None
+    pooled_point: ModelMetricsItem
+    pooled_ci95: BootstrapCI95Item
+    n_bootstrap_valid: int
+    n_clusters: int
+
+
+class WalkForwardReportItem(BaseModel):
+    """Complete 2-Way Purged Expanding Walk-Forward report (2021-2025)."""
+
+    test_years: list[int]
+    skipped_years: list[int] = Field(default_factory=list)
+    pooled_reference_train_prevalence: float | None = None
+    per_year: list[WalkForwardYearItem]
+    summary_all_oos: list[WalkForwardModelSummaryItem]
+    summary_true_unseen: list[WalkForwardModelSummaryItem]
+    pooled_oos_risk_tier_reliability: RiskTierReliabilityReportItem | None = None
+
+
+class TaxonomyScoreDriftItem(BaseModel):
+    """Score & R4/R5 share drift across TT200 -> TT99 transition."""
+
+    score_psi: float | None = None
+    ref_mean_pd: float | None = None
+    tgt_mean_pd: float | None = None
+    ref_r4_r5_share: float | None = None
+    tgt_r4_r5_share: float | None = None
+    r4_r5_share_delta: float | None = None
+
+
+class FeatureDriftItem(BaseModel):
+    """Single feature PSI and missing-rate delta across TT200 -> TT99."""
+
+    feature: str
+    psi: float | None = None
+    ref_missing_rate: float | None = None
+    tgt_missing_rate: float | None = None
+    missing_rate_delta: float | None = None
+
+
+class TaxonomyDriftPSIItem(BaseModel):
+    """Cross-taxonomy stability audit between VAS_TT200_2014 and VAS_TT99_2025 (M-05)."""
+
+    reference_taxonomy: str
+    target_taxonomy: str
+    reference_rows: int
+    target_rows: int
+    mean_feature_psi: float | None = None
+    max_feature_psi: float | None = None
+    features_psi_gt_0_25: list[str]
+    mean_ref_missing_rate: float | None = None
+    mean_tgt_missing_rate: float | None = None
+    score_drift: TaxonomyScoreDriftItem | None = None
+    feature_drift: list[FeatureDriftItem]
+
+
+class HistoricalCaseStudyItem(BaseModel):
+    """Real Vietnamese corporate distress case study from the 23-feature model (ML-05/ML-07a)."""
+
+    issuer_id: str
+    ticker: str
+    company_name_vn: str | None = None
+    exchange: str | None = None
+    first_warning_or_control_date: date | None = None
+    first_warning_event_type: str | None = None
+    forced_delisting_or_suspension_date: date | None = None
+    exchange_delisted_from: str | None = None
+    first_r4_r5_period_end_date: date | None = None
+    first_r4_r5_fiscal_year: int | None = None
+    first_r4_r5_fiscal_quarter: int | None = None
+    first_r4_r5_available_at: date | None = None
+    first_r4_r5_risk_tier: RiskTier | str | None = None
+    first_r4_r5_pd: float | None = None
+    first_r4_r5_market_percentile: float | None = None
+    first_r4_r5_lift: float | None = None
+    early_warning_lead_quarters: int | None = None
+    early_warning_lead_days: int | None = None
+    peak_risk_tier: RiskTier | str | None = None
+    peak_pd: float | None = None
+    peak_period_end_date: date | None = None
+    top_3_shap_drivers: list[ShapDriverItem] = Field(default_factory=list)
+
+
+class ModelCardResponse(BaseModel):
+    """V2 Meta route response: complete DuckLake-persisted Model Card (ML-08 / H-04)."""
+
+    snapshot_id: str | None
+    schema_version: int = 1
+    run_id: str
+    model_version: str
+    model_role: str
+    target_mode: str
+    statement_scope: str
+    feature_set: str
+    feature_count: int
+    selected_features: list[str]
+    peer_standardization_mode: str
+    trained_as_of: date
+    generated_at: str
+    artifact_sha256: str
+    platt_slope: float
+    platt_intercept: float
+    train_prevalence: float
+    risk_tier_cutoffs: RiskTierCutoffsItem
+    f2_thresholds: dict[str, float]
+    walk_forward: WalkForwardReportItem
+    risk_tier_reliability: RiskTierReliabilityReportItem
+    taxonomy_drift_psi: TaxonomyDriftPSIItem
+    case_studies: list[HistoricalCaseStudyItem]
+    limitations: list[str]
+
+
+DrawdownHorizonKey = Literal["T+30d", "T+90d", "T+180d", "T+365d"]
+
+
+class DrawdownWindowMetricsItem(BaseModel):
+    """Peak/trough prices and percentage drawdowns over a post-warning window (UI-09b)."""
+
+    start_trade_date: date
+    end_trade_date: date
+    target_end_date: date
+    session_count: int
+    base_close_adj: float
+    peak_close_adj: float
+    peak_date: date
+    trough_close_adj: float
+    trough_date: date
+    end_close_adj: float
+    return_pct: float
+    drawdown_from_marker_pct: float
+    max_peak_to_trough_drawdown_pct: float
+
+
+class MarkerDrawdownBundleItem(BaseModel):
+    """Post-warning drawdown metrics across standard horizons and cutoff bounds."""
+
+    horizons: dict[DrawdownHorizonKey, DrawdownWindowMetricsItem | None]
+    to_first_regulatory_event: DrawdownWindowMetricsItem | None = None
+    to_current: DrawdownWindowMetricsItem | None = None
+
+
+class ModelRiskMarkerItem(BaseModel):
+    """PIT marker for first model upgrade to R4 or R5."""
+
+    marker_type: Literal["MODEL_RISK_TIER"]
+    marker_kind: Literal["FIRST_R4_UPGRADE", "FIRST_R5_UPGRADE"]
+    risk_tier: Literal["R4", "R5"]
+    is_first_r4_or_r5: bool
+    disclosure_date: date
+    date_basis: Literal["PIT_DISCLOSURE", "PERIOD_END_FALLBACK"]
+    aligned_trade_date: date | None = None
+    period_end_date: date
+    close_adj_at_marker: float | None = None
+    close_raw_at_marker: float | None = None
+    calibrated_distress_prob: float | None = None
+    risk_market_percentile: float | None = None
+    relative_risk_lift: float | None = None
+    drawdowns: MarkerDrawdownBundleItem | None = None
+
+
+class RegulatoryEventMarkerItem(BaseModel):
+    """PIT marker for a real regulatory distress or audit sanction event."""
+
+    marker_type: Literal["REGULATORY_EVENT"]
+    event_type: str
+    event_stage: str
+    event_date: date
+    effective_from: date
+    resolution_date: date | None = None
+    aligned_trade_date: date | None = None
+    close_adj_at_marker: float | None = None
+    close_raw_at_marker: float | None = None
+    raw_headline: str
+    source_provider: str
+    source_url: str
+    drawdowns: MarkerDrawdownBundleItem | None = None
+
+
+class PriceOverlayPointItem(BaseModel):
+    """Single daily point on the continuous Price & Risk Event Overlay series."""
+
+    trade_date: date
+    close_adj: float
+    close_raw: float
+    volume: float
+    shares_outstanding_market: float | None = None
+    running_drawdown_pct: float
+    drawdown_from_first_warning_pct: float | None = None
+    market_cap_vnd: float | None = None
+    pe_ttm: float | None = None
+    pb_ratio: float | None = None
+    pe_flag: str | None = None
+    pb_flag: str | None = None
+    shares_source: str | None = None
+
+
+class WarningSummaryItem(BaseModel):
+    """Summary anchored at the earliest warning marker (model R4/R5 or regulatory)."""
+
+    warning_source: Literal["MODEL_RISK_TIER", "REGULATORY_EVENT"]
+    warning_label: str
+    warning_date: date
+    aligned_trade_date: date | None = None
+    base_close_adj: float | None = None
+    latest_trade_date: date | None = None
+    latest_close_adj: float | None = None
+    horizons: dict[DrawdownHorizonKey, DrawdownWindowMetricsItem | None]
+    to_first_regulatory_event: DrawdownWindowMetricsItem | None = None
+    to_current: DrawdownWindowMetricsItem | None = None
+
+
+class CompanyMarketOverlayResponse(BaseModel):
+    """V2 Company route response: PIT valuation & Price/Risk Event Overlay (UI-09b)."""
+
+    snapshot_id: str | None = None
+    issuer_id: str
+    ticker: str
+    as_of: date | None = None
+    latest_valuation: PriceOverlayPointItem | None = None
+    price_series: list[PriceOverlayPointItem]
+    model_markers: list[ModelRiskMarkerItem]
+    regulatory_markers: list[RegulatoryEventMarkerItem]
+    earliest_warning_summary: WarningSummaryItem | None = None

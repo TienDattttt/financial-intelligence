@@ -1,7 +1,11 @@
 "use client";
 
-import { useMutation, useQueries, useQuery } from "@tanstack/react-query";
-import { apiClient } from "@/lib/api-client";
+import {
+  keepPreviousData,
+  useQueries,
+  useQuery,
+} from "@tanstack/react-query";
+import { ApiError, apiClient } from "@/lib/api-client";
 import type {
   IssuerItem,
   PeriodType,
@@ -10,7 +14,6 @@ import type {
   ScreenerQueryParams,
   StatementScope,
   StatementType,
-  StressScenarioRequest,
 } from "@/types/api";
 
 const SNAPSHOT_STALE_MS = 1000 * 60 * 60; // Immutable snapshot data pinned by snapshotId
@@ -43,6 +46,24 @@ export function useMetaDictionary(snapshotId?: string | null) {
   return useQuery({
     queryKey: ["meta-dictionary", snapshotId ?? "latest"],
     queryFn: apiClient.getMetaDictionary,
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}
+
+export function useModelCard(
+  snapshotId?: string | null,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ["model-card", snapshotId ?? "latest"],
+    queryFn: apiClient.getModelCard,
+    enabled: options?.enabled ?? true,
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) {
+        return false;
+      }
+      return failureCount < 1;
+    },
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -218,6 +239,50 @@ export function useCompanyFilings(
   });
 }
 
+export function useCompanyMarketOverlay(
+  ticker: string,
+  statementScope: StatementScope = "CONSOLIDATED",
+  snapshotId?: string | null,
+  asOf?: string | null,
+) {
+  const cleanTicker = ticker.trim().toUpperCase();
+  return useQuery({
+    queryKey: [
+      "company-market-overlay",
+      snapshotId ?? "latest",
+      cleanTicker,
+      statementScope,
+      asOf ?? "latest",
+    ],
+    queryFn: () =>
+      apiClient.getCompanyMarketOverlay(cleanTicker, statementScope, asOf),
+    enabled: cleanTicker.length > 0,
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}
+
+export function useCompanyDocuments(
+  ticker: string,
+  options?: { enabled?: boolean },
+) {
+  const cleanTicker = ticker.trim().toUpperCase();
+  return useQuery({
+    queryKey: ["company-documents", cleanTicker],
+    queryFn: () => apiClient.getCompanyDocuments(cleanTicker),
+    enabled: (options?.enabled ?? true) && cleanTicker.length > 0,
+    retry: (failureCount, error) => {
+      if (
+        error instanceof ApiError &&
+        (error.status === 404 || error.status === 422 || error.status === 503)
+      ) {
+        return false;
+      }
+      return failureCount < 1;
+    },
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}
+
 export function useRatioLineage(
   opts: {
     ticker: string;
@@ -261,6 +326,7 @@ export function useScreener(
   return useQuery({
     queryKey: ["screener", snapshotId ?? "latest", params],
     queryFn: () => apiClient.getScreener(params),
+    placeholderData: keepPreviousData,
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -385,12 +451,5 @@ export function useQualityQuarantine(limit = 50, offset = 0, snapshotId?: string
     queryKey: ["quality-quarantine", snapshotId ?? "latest", limit, offset],
     queryFn: () => apiClient.getQualityQuarantine(limit, offset),
     staleTime: SNAPSHOT_STALE_MS,
-  });
-}
-
-export function useStressTestMutation() {
-  return useMutation({
-    mutationFn: (req: { payload: StressScenarioRequest; signal?: AbortSignal }) =>
-      apiClient.postStressTest(req.payload, req.signal),
   });
 }

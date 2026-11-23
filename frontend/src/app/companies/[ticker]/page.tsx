@@ -5,23 +5,50 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Bookmark,
   CheckCircle2,
+  FileSearch,
   GitCompare,
   Link2,
   Printer,
+  RotateCcw,
   ShieldAlert,
 } from "lucide-react";
+import { CapitalStructureChart } from "@/components/charts/CapitalStructureChart";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
-import { ExplainWaterfallChart } from "@/components/charts/ExplainWaterfallChart";
+import {
+  ExplainWaterfallChart,
+  resolveCrossFilteredMlScore,
+} from "@/components/charts/ExplainWaterfallChart";
+import { GrowthComboChart } from "@/components/charts/GrowthComboChart";
+import {
+  groupAndSortSummaryRatios,
+  HEALTH_PILLAR_DEFS,
+  HealthRadarChart,
+  type PillarGroupId,
+  type RatioTableSortField,
+} from "@/components/charts/HealthRadarChart";
 import { PeerBandChart } from "@/components/charts/PeerBandChart";
+import {
+  PitValuationStrip,
+  PriceRiskOverlayChart,
+} from "@/components/charts/PriceRiskOverlayChart";
+import { SectorBoxPlotChart } from "@/components/charts/SectorBoxPlotChart";
 import { FinancialTable } from "@/components/financial/FinancialTable";
 import { PercentileBar } from "@/components/financial/PercentileBar";
 import { RedFlagChecklist } from "@/components/financial/RedFlagChecklist";
-import { RiskBadge } from "@/components/financial/RiskBadge";
+import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
 import { ScoreDots } from "@/components/financial/ScoreDots";
 import { SparklineSvg } from "@/components/financial/SparklineSvg";
 import { VerdictCard } from "@/components/financial/VerdictCard";
+import {
+  DocumentInvestigationPanel,
+  type DocumentInvestigationPreset,
+  getRedFlagPresetQuestion,
+} from "@/components/rag/DocumentInvestigationPanel";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
@@ -33,6 +60,7 @@ import {
   useCompanyBenchmarks,
   useCompanyBenchmarksSummary,
   useCompanyFilings,
+  useCompanyMarketOverlay,
   useCompanyProfile,
   useCompanyStatements,
   useMetaDictionary,
@@ -42,8 +70,11 @@ import {
   AUDIT_OPINION_LABELS,
   AUDIT_STATUS_LABELS,
   BENEISH_FLAG_META,
+  formatCreditTrio,
+  formatFormulaVi,
   formatPeerGroupLabel,
-  getDistressRiskBadge,
+  getMlFeatureLabel,
+  MODEL_ROLE_LABELS,
   PERIOD_TYPE_LABELS,
   RATIO_CATEGORY_LABELS,
   REVISION_REASON_LABELS,
@@ -51,6 +82,7 @@ import {
   STATEMENT_SCOPE_LABELS,
   TAXONOMY_LABELS,
 } from "@/lib/domain-labels";
+import { useChartTheme } from "@/lib/echarts-theme";
 import {
   formatDateVi,
   formatMultiple,
@@ -68,6 +100,7 @@ import {
   getDensitySnapshot,
   getWatchlistServerSnapshot,
   getWatchlistSnapshot,
+  setLastViewedTicker,
   subscribePreferences,
   toggleWatchlistTicker,
 } from "@/lib/watchlist-store";
@@ -80,6 +113,7 @@ type CompanyTab =
   | "ratios"
   | "quality"
   | "model"
+  | "documents"
   | "lineage";
 
 const TABS: { id: CompanyTab; label: string }[] = [
@@ -88,6 +122,7 @@ const TABS: { id: CompanyTab; label: string }[] = [
   { id: "ratios", label: "Tỷ số & Ngành" },
   { id: "quality", label: "Chất lượng LN & Cờ đỏ" },
   { id: "model", label: "Mô hình & SHAP" },
+  { id: "documents", label: "Điều tra Thuyết minh (PDF)" },
   { id: "lineage", label: "Nguồn dữ liệu" },
 ];
 
@@ -126,6 +161,7 @@ function CompanyProfileContent() {
     snapshotId,
     openSourceDrawer,
   } = useAppState();
+  const { palette } = useChartTheme();
 
   const watchlist = React.useSyncExternalStore(
     subscribePreferences,
@@ -147,20 +183,61 @@ function CompanyProfileContent() {
 
   const [showAll38, setShowAll38] = React.useState(false);
   const [trafficMode, setTrafficMode] = React.useState<"VALUE" | "PERCENTILE">("VALUE");
+  const [growthLocalView, setGrowthLocalView] = React.useState<"TTM" | "Quarterly">("TTM");
+  const mlContextKey = `${ticker}|${statementScope}|${periodType}`;
+  const [selectedMlState, setSelectedMlState] = React.useState<{
+    key: string;
+    periodEnd: string;
+  } | null>(null);
+  const selectedMlPeriodEnd =
+    selectedMlState?.key === mlContextKey ? selectedMlState.periodEnd : null;
+  const setSelectedMlPeriodEnd = React.useCallback(
+    (periodEnd: string | null) => {
+      setSelectedMlState(periodEnd ? { key: mlContextKey, periodEnd } : null);
+    },
+    [mlContextKey],
+  );
+  const [ratioSearch, setRatioSearch] = React.useState("");
+  const [ratioGroupFilter, setRatioGroupFilter] = React.useState<PillarGroupId | "ALL">("ALL");
+  const [ratioSortBy, setRatioSortBy] = React.useState<RatioTableSortField>("name");
+  const [ratioSortDir, setRatioSortDir] = React.useState<"asc" | "desc">("asc");
+  const [ratiosShowAll38, setRatiosShowAll38] = React.useState(true);
   const [statementType, setStatementType] =
     React.useState<StatementType>("INCOME_STATEMENT");
-  const [periodsLimit, setPeriodsLimit] = React.useState<number>(8);
+  const [periodsLimit, setPeriodsLimit] = React.useState<number>(12);
   const [lineageFilter, setLineageFilter] = React.useState("");
+  const [ragPreset, setRagPreset] =
+    React.useState<DocumentInvestigationPreset | null>(null);
+
+  const effectiveGrowthView = periodType === "ANNUAL" ? "Annual" : growthLocalView;
 
   const profileQuery = useCompanyProfile(ticker, statementScope, periodView, snapshotId);
+  const growthProfileQuery = useCompanyProfile(
+    ticker,
+    statementScope,
+    effectiveGrowthView,
+    snapshotId,
+  );
   const dictQuery = useMetaDictionary(snapshotId);
   const issuersQuery = useAllIssuers(snapshotId);
   const filingsQuery = useCompanyFilings(ticker, { statementScope }, snapshotId);
+  const overlayQuery = useCompanyMarketOverlay(ticker, statementScope, snapshotId);
+
+  const loadedTicker = profileQuery.data?.ticker;
+  React.useEffect(() => {
+    if (loadedTicker) {
+      setLastViewedTicker(loadedTicker);
+    }
+  }, [loadedTicker]);
 
   const allMetricNames = React.useMemo(
     () => (dictQuery.data?.ratios ?? []).map((r) => r.ratio_name),
     [dictQuery.data?.ratios],
   );
+
+  const shouldFetchAllSummary =
+    (activeTab === "overview" && showAll38) ||
+    (activeTab === "ratios" && ratiosShowAll38);
 
   const summaryQuery = useCompanyBenchmarksSummary(
     ticker,
@@ -168,8 +245,11 @@ function CompanyProfileContent() {
       statementScope,
       periodType,
       periodEndDate,
-      metrics: showAll38 && allMetricNames.length > 0 ? allMetricNames : undefined,
-      enabled: activeTab === "overview",
+      metrics:
+        shouldFetchAllSummary && allMetricNames.length > 0
+          ? allMetricNames
+          : undefined,
+      enabled: activeTab === "overview" || activeTab === "ratios",
     },
     snapshotId,
   );
@@ -217,6 +297,18 @@ function CompanyProfileContent() {
     [router, searchParams, ticker],
   );
 
+  const handleInvestigateRedFlag = React.useCallback(
+    (flagCode: string, presetQuestion: string) => {
+      setRagPreset({
+        flagCode,
+        question: presetQuestion,
+        requestNonce: Date.now(),
+      });
+      setTabAndParams("documents");
+    },
+    [setTabAndParams],
+  );
+
   const issuerMeta = React.useMemo(
     () =>
       (issuersQuery.data ?? []).find(
@@ -241,27 +333,71 @@ function CompanyProfileContent() {
     return list;
   }, [profileQuery.data?.ml_scores]);
 
-  // Align latestMl with selected global periodEndDate when available
-  const { latestMl, prevMl } = React.useMemo(() => {
-    if (sortedMl.length === 0) return { latestMl: null, prevMl: null };
-    let idx = sortedMl.length - 1;
-    if (periodEndDate) {
-      const exactIdx = sortedMl.findIndex((m) => m.period_end_date === periodEndDate);
-      if (exactIdx >= 0) {
-        idx = exactIdx;
+  // Align latestMl with selected global periodEndDate, plus cross-filtered activeMl for TreeSHAP
+  const {
+    active: activeMl,
+    defaultLatest: latestMl,
+    isCustomSelected: isCustomMlPeriod,
+  } = React.useMemo(
+    () =>
+      resolveCrossFilteredMlScore(
+        sortedMl,
+        selectedMlPeriodEnd,
+        periodEndDate,
+      ),
+    [periodEndDate, selectedMlPeriodEnd, sortedMl],
+  );
+
+  const prevMl = React.useMemo(() => {
+    if (!latestMl) return null;
+    const idx = sortedMl.findIndex(
+      (m) => m.period_end_date === latestMl.period_end_date,
+    );
+    return idx > 0 ? sortedMl[idx - 1] ?? null : null;
+  }, [latestMl, sortedMl]);
+
+  const handleRiskPeriodClick = React.useCallback(
+    (payload: { dataIndex?: number }) => {
+      if (typeof payload.dataIndex !== "number") return;
+      const target = sortedMl[payload.dataIndex];
+      if (!target) return;
+      setSelectedMlPeriodEnd(target.period_end_date);
+    },
+    [setSelectedMlPeriodEnd, sortedMl],
+  );
+
+  const activeMlPeriodLabel = activeMl
+    ? formatPeriodLabel(activeMl.period_end_date, periodType)
+    : null;
+
+  const groupedRatioBuckets = React.useMemo(
+    () =>
+      groupAndSortSummaryRatios(summaryQuery.data?.items ?? [], {
+        search: ratioSearch,
+        groupId: ratioGroupFilter,
+        sortBy: ratioSortBy,
+        sortDir: ratioSortDir,
+      }),
+    [
+      ratioGroupFilter,
+      ratioSearch,
+      ratioSortBy,
+      ratioSortDir,
+      summaryQuery.data?.items,
+    ],
+  );
+
+  const toggleRatioSort = React.useCallback(
+    (field: RatioTableSortField) => {
+      if (ratioSortBy === field) {
+        setRatioSortDir((d) => (d === "asc" ? "desc" : "asc"));
       } else {
-        const leIdx = sortedMl.reduce(
-          (best, m, i) => (m.period_end_date <= periodEndDate ? i : best),
-          -1,
-        );
-        if (leIdx >= 0) idx = leIdx;
+        setRatioSortBy(field);
+        setRatioSortDir(field === "name" ? "asc" : "desc");
       }
-    }
-    return {
-      latestMl: sortedMl[idx] ?? null,
-      prevMl: idx > 0 ? sortedMl[idx - 1] ?? null : null,
-    };
-  }, [periodEndDate, sortedMl]);
+    },
+    [ratioSortBy],
+  );
 
   const activePeriodEnd =
     latestMl?.period_end_date ??
@@ -291,68 +427,164 @@ function CompanyProfileContent() {
     return table[table.length - 1] ?? null;
   }, [periodEndDate, profileQuery.data?.ratios_table]);
 
-  // Historical ML Trend option for `model` tab
-  const mlTrendOption = React.useMemo<EChartsOption>(() => {
+  // Historical ML Trend options for `overview` & `model` tabs — strictly single-Y-axis per chart (no mixed units)
+  const mlAltmanOption = React.useMemo<EChartsOption>(() => {
     const labels = sortedMl.map((m) => formatPeriodLabel(m.period_end_date, periodType));
+    const selectedIdx = activeMl
+      ? sortedMl.findIndex((m) => m.period_end_date === activeMl.period_end_date)
+      : -1;
+    const selectedVal =
+      selectedIdx >= 0 ? sortedMl[selectedIdx]?.altman_z_double_prime : null;
+
     return {
-      animation: false,
-      grid: { left: 48, right: 48, top: 36, bottom: 32 },
-      legend: { top: 4, right: 12, textStyle: { color: "#5B6068", fontSize: 11 } },
+      grid: { left: 52, right: 24, top: 28, bottom: 32 },
       tooltip: {
         trigger: "axis",
-        backgroundColor: "#FFFFFF",
-        borderColor: "#DAD7D0",
-        textStyle: { color: "#1A1D21", fontSize: 12 },
+        formatter: (raw: unknown) => {
+          const list = Array.isArray(raw) ? raw : [raw];
+          const first = list[0] as { dataIndex?: number } | undefined;
+          const m = sortedMl[first?.dataIndex ?? -1];
+          if (!m) return "";
+          return [
+            `<div style="font-weight:600;margin-bottom:4px">${formatPeriodLabel(m.period_end_date, periodType)}</div>`,
+            `<div>Altman Z″ (EM): <b>${formatNumber(m.altman_z_double_prime, 2)}</b></div>`,
+            `<div style="color:${palette.company};font-size:11px;margin-top:3px">Nhấp để xem TreeSHAP kỳ này</div>`,
+          ].join("");
+        },
       },
       xAxis: {
         type: "category",
         data: labels,
-        axisLine: { lineStyle: { color: "#DAD7D0" } },
-        axisLabel: { color: "#5B6068", fontSize: 11 },
       },
-      yAxis: [
-        {
-          type: "value",
-          name: "Altman Z″",
-          nameTextStyle: { color: "#1F4E79", fontSize: 11 },
-          splitLine: { lineStyle: { color: "#EFEDE8" } },
-          axisLabel: { color: "#5B6068", fontSize: 11 },
-        },
-        {
-          type: "value",
-          name: "XS kiệt quệ (%)",
-          nameTextStyle: { color: "#A61B1B", fontSize: 11 },
-          min: 0,
-          splitLine: { show: false },
-          axisLabel: { color: "#5B6068", fontSize: 11, formatter: "{value}%" },
-        },
-      ],
+      yAxis: {
+        type: "value",
+        name: "Altman Z″",
+      },
       series: [
         {
           name: "Altman Z″",
           type: "line",
-          yAxisIndex: 0,
-          symbolSize: 5,
-          lineStyle: { color: "#1F4E79", width: 2 },
-          itemStyle: { color: "#1F4E79" },
+          symbolSize: 7,
+          lineStyle: { color: palette.company, width: 2 },
+          itemStyle: { color: palette.company },
           data: sortedMl.map((m) => m.altman_z_double_prime ?? null),
+          ...(selectedIdx >= 0 &&
+          typeof selectedVal === "number" &&
+          Number.isFinite(selectedVal)
+            ? {
+                markPoint: {
+                  symbolSize: 12,
+                  symbol: "circle",
+                  itemStyle: {
+                    color: palette.company,
+                    borderColor: palette.surface,
+                    borderWidth: 2,
+                  },
+                  label: { show: false },
+                  data: [{ name: "Kỳ đang chọn", coord: [selectedIdx, selectedVal] }],
+                },
+              }
+            : {}),
+          markLine: {
+            silent: true,
+            symbol: "none",
+            lineStyle: { type: "dashed", width: 1 },
+            label: { fontSize: 10 },
+            data: [
+              {
+                yAxis: 1.1,
+                lineStyle: { color: palette.riskHigh },
+                label: { formatter: "1,10 (Nguy cơ)", color: palette.riskHigh, position: "insideEndTop" },
+              },
+              {
+                yAxis: 2.6,
+                lineStyle: { color: palette.riskLow },
+                label: { formatter: "2,60 (An toàn)", color: palette.riskLow, position: "insideEndTop" },
+              },
+            ],
+          },
         },
+      ],
+    };
+  }, [activeMl, palette.company, palette.riskHigh, palette.riskLow, palette.surface, periodType, sortedMl]);
+
+  const mlDistressProbOption = React.useMemo<EChartsOption>(() => {
+    const labels = sortedMl.map((m) => formatPeriodLabel(m.period_end_date, periodType));
+    const selectedIdx = activeMl
+      ? sortedMl.findIndex((m) => m.period_end_date === activeMl.period_end_date)
+      : -1;
+    const rawSelected =
+      selectedIdx >= 0 ? sortedMl[selectedIdx]?.calibrated_distress_prob : null;
+    const selectedPct =
+      typeof rawSelected === "number" && Number.isFinite(rawSelected)
+        ? Number((rawSelected * 100).toFixed(2))
+        : null;
+
+    return {
+      grid: { left: 52, right: 20, top: 28, bottom: 32 },
+      tooltip: {
+        trigger: "axis",
+        formatter: (raw: unknown) => {
+          const list = Array.isArray(raw) ? raw : [raw];
+          const first = list[0] as { dataIndex?: number } | undefined;
+          const m = sortedMl[first?.dataIndex ?? -1];
+          if (!m) return "";
+          const trio = formatCreditTrio({
+            risk_tier: m.risk_tier,
+            risk_market_percentile: m.risk_market_percentile,
+            calibrated_distress_prob: m.calibrated_distress_prob,
+            relative_risk_lift: m.relative_risk_lift,
+            market_base_rate: m.market_base_rate,
+          });
+          return [
+            `<div style="font-weight:600;margin-bottom:4px">${formatPeriodLabel(m.period_end_date, periodType)}</div>`,
+            `<div>1Y PD mô hình: <b style="color:${palette.riskHigh}">${trio.pdLabel}</b>${trio.liftLabel ? ` (${trio.liftLabel})` : ""}</div>`,
+            `<div>Bậc &amp; Vị thế: <b>${trio.tierMeta.shortLabel}</b> · ${trio.topPercentLabel}</div>`,
+            `<div style="color:${palette.company};font-size:11px;margin-top:3px">Nhấp để xem TreeSHAP kỳ này</div>`,
+          ].join("");
+        },
+      },
+      xAxis: {
+        type: "category",
+        data: labels,
+      },
+      yAxis: {
+        type: "value",
+        name: "XS kiệt quệ (%)",
+        min: 0,
+        axisLabel: { formatter: "{value}%" },
+      },
+      series: [
         {
           name: "XS kiệt quệ (%)",
           type: "line",
-          yAxisIndex: 1,
-          symbolSize: 5,
-          lineStyle: { color: "#A61B1B", width: 2 },
-          itemStyle: { color: "#A61B1B" },
+          symbolSize: 7,
+          lineStyle: { color: palette.riskHigh, width: 2 },
+          itemStyle: { color: palette.riskHigh },
           data: sortedMl.map((m) =>
             m.calibrated_distress_prob !== null && m.calibrated_distress_prob !== undefined
               ? Number((m.calibrated_distress_prob * 100).toFixed(2))
               : null,
           ),
+          ...(selectedIdx >= 0 && selectedPct !== null
+            ? {
+                markPoint: {
+                  symbolSize: 12,
+                  symbol: "circle",
+                  itemStyle: {
+                    color: palette.riskHigh,
+                    borderColor: palette.surface,
+                    borderWidth: 2,
+                  },
+                  label: { show: false },
+                  data: [{ name: "Kỳ đang chọn", coord: [selectedIdx, selectedPct] }],
+                },
+              }
+            : {}),
         },
       ],
     };
-  }, [periodType, sortedMl]);
+  }, [activeMl, palette.company, palette.riskHigh, palette.surface, periodType, sortedMl]);
 
   if (profileQuery.isLoading) {
     return <PageSkeleton />;
@@ -393,7 +625,13 @@ function CompanyProfileContent() {
       description: "Chưa có kết quả kiểm tra Beneish M-Score.",
     };
 
-  const distressBadge = getDistressRiskBadge(latestMl?.calibrated_distress_prob);
+  const creditTrio = formatCreditTrio({
+    risk_tier: latestMl?.risk_tier,
+    risk_market_percentile: latestMl?.risk_market_percentile,
+    calibrated_distress_prob: latestMl?.calibrated_distress_prob,
+    relative_risk_lift: latestMl?.relative_risk_lift,
+    market_base_rate: latestMl?.market_base_rate,
+  });
 
   const fScore = latestMl?.piotroski_f_score ?? null;
   const fTone =
@@ -448,11 +686,11 @@ function CompanyProfileContent() {
   return (
     <div className="space-y-4">
       {/* Sticky Company Header */}
-      <Card>
+      <Card className="rounded-lg md:sticky md:top-[52px] md:z-20 bg-surface shadow-xs">
         <CardContent className="flex flex-col justify-between gap-3 p-4 lg:flex-row lg:items-center">
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded bg-accent-ink px-2 py-0.5 font-mono text-sm font-semibold text-white">
+              <span className="rounded-md bg-primary px-2 py-0.5 font-mono text-sm font-semibold text-primary-foreground">
                 {profile.ticker}
               </span>
               <h1 className="truncate text-lg font-semibold text-ink">
@@ -615,12 +853,13 @@ function CompanyProfileContent() {
             />
 
             <VerdictCard
-              title="Xác suất kiệt quệ (Mô hình)"
-              tooltip={distressBadge.description}
-              value={formatPercent(latestMl?.calibrated_distress_prob)}
-              tone={distressBadge.tone}
-              badgeLabel={distressBadge.shortLabel}
-              thresholdText="Ngưỡng tham chiếu: < 3% Thấp · ≥ 8% Cao"
+              title="Xác suất kiệt quệ 1 năm (1Y PD)"
+              tooltip={creditTrio.tierMeta.description}
+              value={creditTrio.pdLabel}
+              subValueText={creditTrio.liftLabel}
+              tone={creditTrio.tierMeta.tone}
+              badgeLabel={creditTrio.tierMeta.shortLabel}
+              thresholdText={creditTrio.baseRateLabel ?? creditTrio.tierMeta.description}
               deltaText={
                 probDelta !== null ? formatPercentPoints(probDelta, 1) : null
               }
@@ -638,15 +877,78 @@ function CompanyProfileContent() {
                   ? `10 kỳ: Thấp ${formatPercent(probStats.min)} · TV ${formatPercent(probStats.median)} · Cao ${formatPercent(probStats.max)}`
                   : null
               }
-            />
+            >
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <RiskTierBadge riskTier={latestMl?.risk_tier} compact />
+                <span className="rounded bg-surface-muted px-1.5 py-0.5 font-medium text-ink-muted">
+                  {creditTrio.topPercentLabel}
+                </span>
+              </div>
+            </VerdictCard>
           </section>
+
+          {/* Tier 1b: PIT Market Valuation & Early-Warning Price Overlay (UI-09b) */}
+          <PitValuationStrip
+            latestValuation={overlayQuery.data?.latest_valuation}
+            isLoading={overlayQuery.isLoading}
+          />
+
+          <PriceRiskOverlayChart
+            ticker={profile.ticker}
+            overlay={overlayQuery.data}
+            isLoading={overlayQuery.isLoading}
+            isError={overlayQuery.isError}
+            errorMessage={overlayQuery.error?.message}
+            onRetry={() => overlayQuery.refetch()}
+          />
 
           {/* Tier 2: SHAP Drivers (60%) + Red Flags & Filings (40%) */}
           <section className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-            <div className="lg:col-span-7">
+            <div className="space-y-4 lg:col-span-7">
               <ExplainWaterfallChart
-                shap={latestMl?.shap_top_drivers}
-                distressProb={latestMl?.calibrated_distress_prob}
+                shap={activeMl?.shap_top_drivers}
+                distressProb={activeMl?.calibrated_distress_prob}
+                periodLabel={activeMlPeriodLabel}
+                isCustomPeriod={isCustomMlPeriod}
+                onResetToLatest={() => setSelectedMlPeriodEnd(null)}
+              />
+
+              <EChartBox
+                title="Diễn biến Xác suất kiệt quệ theo kỳ — Nhấp kỳ để xem TreeSHAP"
+                subtitle="Đơn vị: phần trăm (%) · Nhấp vào một điểm bất kỳ để cập nhật biểu đồ giải thích phía trên"
+                option={mlDistressProbOption}
+                height={190}
+                isEmpty={sortedMl.length === 0}
+                onChartClick={handleRiskPeriodClick}
+                tableHeaders={["Kỳ", "1Y PD", "Bậc", "Vị thế PIT", "Altman Z″"]}
+                tableRows={sortedMl.map((m) => {
+                  const rowTrio = formatCreditTrio({
+                    risk_tier: m.risk_tier,
+                    risk_market_percentile: m.risk_market_percentile,
+                    calibrated_distress_prob: m.calibrated_distress_prob,
+                    relative_risk_lift: m.relative_risk_lift,
+                  });
+                  return [
+                    formatPeriodLabel(m.period_end_date, periodType),
+                    rowTrio.liftLabel ? `${rowTrio.pdLabel} (${rowTrio.liftLabel})` : rowTrio.pdLabel,
+                    rowTrio.tierMeta.badgeText,
+                    rowTrio.topPercentLabel,
+                    formatNumber(m.altman_z_double_prime, 2),
+                  ];
+                })}
+                headerRight={
+                  isCustomMlPeriod ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => setSelectedMlPeriodEnd(null)}
+                    >
+                      <RotateCcw className="size-3" />
+                      <span>Về kỳ mới nhất</span>
+                    </Button>
+                  ) : null
+                }
               />
             </div>
 
@@ -675,6 +977,8 @@ function CompanyProfileContent() {
                     <ul className="space-y-2">
                       {activeRedFlags.slice(0, 4).map((rf) => {
                         const sev = SEVERITY_META[rf.severity] ?? SEVERITY_META.MEDIUM;
+                        const shortCode = rf.flag_code.split("_").slice(0, 2).join("_");
+                        const presetQ = getRedFlagPresetQuestion(shortCode);
                         return (
                           <li
                             key={`${rf.flag_code}-${rf.period_end_date}`}
@@ -682,7 +986,7 @@ function CompanyProfileContent() {
                           >
                             <div className="flex items-center justify-between gap-2">
                               <span className="font-semibold text-ink">
-                                {rf.flag_title_vn ?? rf.flag_code}
+                                {rf.flag_title_vn ?? "Dấu hiệu bất thường kế toán"}
                               </span>
                               <RiskBadge tone={sev.tone} label={sev.shortLabel} />
                             </div>
@@ -690,6 +994,21 @@ function CompanyProfileContent() {
                               <p className="mt-1 text-[11px] leading-4 text-ink-muted">
                                 {rf.explanation_text_vn}
                               </p>
+                            ) : null}
+                            {presetQ ? (
+                              <div className="mt-2">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="xs"
+                                  onClick={() =>
+                                    handleInvestigateRedFlag(shortCode, presetQ)
+                                  }
+                                >
+                                  <FileSearch className="size-3" aria-hidden="true" />
+                                  <span>Kiểm tra Thuyết minh gốc</span>
+                                </Button>
+                              </div>
                             ) : null}
                           </li>
                         );
@@ -764,6 +1083,30 @@ function CompanyProfileContent() {
             </div>
           </section>
 
+          {/* Tier 2b: Core Financial Visual Storytelling (Growth + Capital Structure) */}
+          <section
+            aria-label="Diễn biến tăng trưởng và cơ cấu vốn"
+            className="grid grid-cols-1 gap-4 xl:grid-cols-2"
+          >
+            <GrowthComboChart
+              ticker={profile.ticker}
+              points={
+                growthProfileQuery.data?.growth_series ?? profile.growth_series
+              }
+              globalPeriodType={periodType}
+              localPeriodView={effectiveGrowthView}
+              onChangeLocalPeriodView={setGrowthLocalView}
+              isLoading={
+                growthProfileQuery.isLoading && !growthProfileQuery.data
+              }
+            />
+            <CapitalStructureChart
+              ticker={profile.ticker}
+              points={profile.capital_structure_series}
+              periodType={periodType}
+            />
+          </section>
+
           {/* Tier 3: Stockopedia-style Traffic Light Peer Benchmark Table */}
           <Card>
             <CardHeader className="flex-wrap gap-2 py-2.5">
@@ -776,14 +1119,14 @@ function CompanyProfileContent() {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <div className="inline-flex rounded border border-border bg-canvas p-0.5 text-xs">
+                <div className="inline-flex rounded-lg border border-border bg-canvas p-0.5 text-xs">
                   <button
                     type="button"
                     onClick={() => setShowAll38(false)}
                     className={cn(
-                      "rounded px-2 py-1 font-medium",
+                      "rounded-md px-2 py-1 font-medium transition-colors duration-150",
                       !showAll38
-                        ? "bg-accent-ink text-white"
+                        ? "bg-primary text-primary-foreground shadow-xs"
                         : "text-ink-muted hover:text-ink",
                     )}
                   >
@@ -793,9 +1136,9 @@ function CompanyProfileContent() {
                     type="button"
                     onClick={() => setShowAll38(true)}
                     className={cn(
-                      "rounded px-2 py-1 font-medium",
+                      "rounded-md px-2 py-1 font-medium transition-colors duration-150",
                       showAll38
-                        ? "bg-accent-ink text-white"
+                        ? "bg-primary text-primary-foreground shadow-xs"
                         : "text-ink-muted hover:text-ink",
                     )}
                   >
@@ -803,14 +1146,14 @@ function CompanyProfileContent() {
                   </button>
                 </div>
 
-                <div className="inline-flex rounded border border-border bg-canvas p-0.5 text-xs">
+                <div className="inline-flex rounded-lg border border-border bg-canvas p-0.5 text-xs">
                   <button
                     type="button"
                     onClick={() => setTrafficMode("VALUE")}
                     className={cn(
-                      "rounded px-2 py-1 font-medium",
+                      "rounded-md px-2 py-1 font-medium transition-colors duration-150",
                       trafficMode === "VALUE"
-                        ? "bg-accent-ink text-white"
+                        ? "bg-primary text-primary-foreground shadow-xs"
                         : "text-ink-muted hover:text-ink",
                     )}
                   >
@@ -820,9 +1163,9 @@ function CompanyProfileContent() {
                     type="button"
                     onClick={() => setTrafficMode("PERCENTILE")}
                     className={cn(
-                      "rounded px-2 py-1 font-medium",
+                      "rounded-md px-2 py-1 font-medium transition-colors duration-150",
                       trafficMode === "PERCENTILE"
-                        ? "bg-accent-ink text-white"
+                        ? "bg-primary text-primary-foreground shadow-xs"
                         : "text-ink-muted hover:text-ink",
                     )}
                   >
@@ -981,7 +1324,7 @@ function CompanyProfileContent() {
       ) : activeTab === "statements" ? (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="inline-flex rounded border border-border bg-surface p-0.5 text-xs">
+            <div className="inline-flex rounded-lg border border-border bg-surface p-0.5 text-xs">
               {(
                 [
                   ["INCOME_STATEMENT", "Kết quả kinh doanh"],
@@ -994,9 +1337,9 @@ function CompanyProfileContent() {
                   type="button"
                   onClick={() => setStatementType(st)}
                   className={cn(
-                    "rounded px-2.5 py-1.5 font-medium",
+                    "rounded-md px-2.5 py-1.5 font-medium transition-colors duration-150",
                     statementType === st
-                      ? "bg-accent-ink text-white"
+                      ? "bg-primary text-primary-foreground shadow-xs"
                       : "text-ink-muted hover:text-ink",
                   )}
                 >
@@ -1005,15 +1348,22 @@ function CompanyProfileContent() {
               ))}
             </div>
 
-            <Select
-              aria-label="Số kỳ báo cáo hiển thị"
-              value={String(periodsLimit)}
-              onChange={(e) => setPeriodsLimit(Number(e.target.value) || 8)}
-              className="h-8 text-xs"
-            >
-              <option value="8">8 kỳ gần nhất</option>
-              <option value="12">12 kỳ gần nhất</option>
-            </Select>
+            <div className="flex flex-wrap items-center gap-2">
+              {periodType === "QUARTER" ? (
+                <span className="text-[11px] text-ink-muted">
+                  Hiển thị số liệu quý rời rạc (theo từng kỳ công bố)
+                </span>
+              ) : null}
+              <Select
+                aria-label="Số kỳ báo cáo hiển thị"
+                value={String(periodsLimit)}
+                onChange={(e) => setPeriodsLimit(Number(e.target.value) || 8)}
+                className="h-8 text-xs"
+              >
+                <option value="8">8 kỳ gần nhất</option>
+                <option value="12">12 kỳ gần nhất</option>
+              </Select>
+            </div>
           </div>
 
           {statementsQuery.isLoading ? (
@@ -1104,6 +1454,26 @@ function CompanyProfileContent() {
             />
           ) : benchmarksQuery.data ? (
             <>
+              <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                <HealthRadarChart
+                  ticker={profile.ticker}
+                  items={summaryQuery.data?.items ?? []}
+                  isLoading={summaryQuery.isLoading}
+                />
+                <SectorBoxPlotChart
+                  ticker={profile.ticker}
+                  metricLabel={benchmarkMeta?.display_name_vn ?? metricParam}
+                  formatType={benchmarkMeta?.format_type ?? "NUMBER"}
+                  companyValue={benchmarksQuery.data.company_value}
+                  peerP25={benchmarksQuery.data.peer_p25}
+                  peerMedian={benchmarksQuery.data.peer_median}
+                  peerP75={benchmarksQuery.data.peer_p75}
+                  peerRanking={benchmarksQuery.data.peer_ranking}
+                  peerGroupLevel={benchmarksQuery.data.peer_group_level}
+                  peerCount={benchmarksQuery.data.peer_count}
+                />
+              </div>
+
               <PeerBandChart
                 metricLabel={benchmarkMeta?.display_name_vn ?? metricParam}
                 formatType={benchmarkMeta?.format_type ?? "NUMBER"}
@@ -1111,6 +1481,270 @@ function CompanyProfileContent() {
                 history={benchmarksQuery.data.history}
                 ticker={profile.ticker}
               />
+
+              <Card>
+                <CardHeader className="flex-wrap gap-2 py-2.5">
+                  <div>
+                    <CardTitle className="text-[14px]">
+                      Bảng tỷ số phân nhóm theo 5 trụ cột nghiệp vụ
+                    </CardTitle>
+                    <p className="mt-0.5 text-xs text-ink-muted">
+                      Nhấp tên chỉ số để cập nhật biểu đồ dải P25–P75 và Box Plot phía trên · Sắp xếp theo từng cột
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input
+                      value={ratioSearch}
+                      onChange={(e) => setRatioSearch(e.target.value)}
+                      placeholder="Tìm chỉ số..."
+                      aria-label="Tìm kiếm chỉ số tài chính"
+                      className="h-7 w-44 text-xs"
+                    />
+                    <div className="inline-flex rounded-lg border border-border bg-canvas p-0.5 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setRatiosShowAll38(false)}
+                        className={cn(
+                          "rounded-md px-2 py-1 font-medium transition-colors duration-150",
+                          !ratiosShowAll38
+                            ? "bg-primary text-primary-foreground shadow-xs"
+                            : "text-ink-muted hover:text-ink",
+                        )}
+                      >
+                        12 cốt lõi
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRatiosShowAll38(true)}
+                        className={cn(
+                          "rounded-md px-2 py-1 font-medium transition-colors duration-150",
+                          ratiosShowAll38
+                            ? "bg-primary text-primary-foreground shadow-xs"
+                            : "text-ink-muted hover:text-ink",
+                        )}
+                      >
+                        Tất cả 38
+                      </button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3 p-3.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setRatioGroupFilter("ALL")}
+                      className={cn(
+                        "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors duration-150",
+                        ratioGroupFilter === "ALL"
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border bg-surface text-ink-muted hover:text-ink",
+                      )}
+                    >
+                      Tất cả 5 nhóm
+                    </button>
+                    {HEALTH_PILLAR_DEFS.map((grp) => (
+                      <button
+                        key={grp.id}
+                        type="button"
+                        onClick={() => setRatioGroupFilter(grp.id)}
+                        className={cn(
+                          "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors duration-150",
+                          ratioGroupFilter === grp.id
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border bg-surface text-ink-muted hover:text-ink",
+                        )}
+                      >
+                        {grp.shortLabel}
+                      </button>
+                    ))}
+                  </div>
+
+                  {summaryQuery.isLoading ? (
+                    <p className="text-xs text-ink-muted">Đang tải bảng tỷ số theo nhóm...</p>
+                  ) : groupedRatioBuckets.length === 0 ? (
+                    <p className="text-xs text-ink-muted">
+                      Không tìm thấy chỉ số phù hợp với bộ lọc hiện tại.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto rounded-lg border border-border">
+                      <table className="w-full border-collapse text-xs">
+                        <thead>
+                          <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
+                            <th scope="col" className="px-3 py-2 text-left font-semibold">
+                              <button
+                                type="button"
+                                onClick={() => toggleRatioSort("name")}
+                                className="inline-flex items-center gap-1 hover:text-ink"
+                              >
+                                <span>Chỉ số</span>
+                                {ratioSortBy === "name" ? (
+                                  ratioSortDir === "asc" ? (
+                                    <ArrowUp className="size-3" />
+                                  ) : (
+                                    <ArrowDown className="size-3" />
+                                  )
+                                ) : (
+                                  <ArrowUpDown className="size-3 opacity-60" />
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-3 py-2 text-right font-semibold">
+                              <button
+                                type="button"
+                                onClick={() => toggleRatioSort("company_value")}
+                                className="inline-flex items-center justify-end gap-1 hover:text-ink"
+                              >
+                                <span>Giá trị DN</span>
+                                {ratioSortBy === "company_value" ? (
+                                  ratioSortDir === "asc" ? (
+                                    <ArrowUp className="size-3" />
+                                  ) : (
+                                    <ArrowDown className="size-3" />
+                                  )
+                                ) : (
+                                  <ArrowUpDown className="size-3 opacity-60" />
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-3 py-2 text-right font-semibold">
+                              <button
+                                type="button"
+                                onClick={() => toggleRatioSort("peer_median")}
+                                className="inline-flex items-center justify-end gap-1 hover:text-ink"
+                              >
+                                <span>Trung vị ngành</span>
+                                {ratioSortBy === "peer_median" ? (
+                                  ratioSortDir === "asc" ? (
+                                    <ArrowUp className="size-3" />
+                                  ) : (
+                                    <ArrowDown className="size-3" />
+                                  )
+                                ) : (
+                                  <ArrowUpDown className="size-3 opacity-60" />
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-3 py-2 text-left font-semibold">
+                              <button
+                                type="button"
+                                onClick={() => toggleRatioSort("percentile")}
+                                className="inline-flex items-center gap-1 hover:text-ink"
+                              >
+                                <span>Phân vị ngành</span>
+                                {ratioSortBy === "percentile" ? (
+                                  ratioSortDir === "asc" ? (
+                                    <ArrowUp className="size-3" />
+                                  ) : (
+                                    <ArrowDown className="size-3" />
+                                  )
+                                ) : (
+                                  <ArrowUpDown className="size-3 opacity-60" />
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-3 py-2 text-center font-semibold">
+                              Xu hướng
+                            </th>
+                            <th scope="col" className="px-3 py-2 text-right font-semibold">
+                              Nguồn
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {groupedRatioBuckets.map((bucket) => (
+                            <React.Fragment key={bucket.id}>
+                              <tr className="border-b border-border bg-surface-muted/60">
+                                <th
+                                  colSpan={6}
+                                  scope="colgroup"
+                                  className="px-3 py-1.5 text-left text-[11px] font-semibold text-ink"
+                                >
+                                  {bucket.label} ({bucket.items.length})
+                                </th>
+                              </tr>
+                              {bucket.items.map((item) => {
+                                const isActiveMetric = item.metric_name === metricParam;
+                                return (
+                                  <tr
+                                    key={item.metric_name}
+                                    className={cn(
+                                      "border-b border-border/60 hover:bg-surface-muted/40",
+                                      isActiveMetric && "bg-accent-soft/45",
+                                    )}
+                                  >
+                                    <td className="px-3 py-2">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setTabAndParams("ratios", {
+                                            metric: item.metric_name,
+                                          })
+                                        }
+                                        className={cn(
+                                          "text-left font-medium hover:underline",
+                                          isActiveMetric
+                                            ? "font-semibold text-accent-ink"
+                                            : "text-ink",
+                                        )}
+                                      >
+                                        {item.display_name_vn}
+                                      </button>
+                                    </td>
+                                    <td className="num px-3 py-2 text-right font-semibold text-ink">
+                                      {formatRatioValue(
+                                        item.company_value,
+                                        item.format_type,
+                                      )}
+                                    </td>
+                                    <td className="num px-3 py-2 text-right text-ink-muted">
+                                      {formatRatioValue(
+                                        item.peer_median,
+                                        item.format_type,
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <PercentileBar
+                                        percentile={item.percentile_rank}
+                                        direction={item.direction}
+                                        peerGroupLevel={item.peer_group_level}
+                                        peerCount={item.peer_count}
+                                      />
+                                    </td>
+                                    <td className="px-3 py-2 text-center">
+                                      <SparklineSvg values={item.sparkline ?? []} />
+                                    </td>
+                                    <td className="px-3 py-2 text-right">
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="xs"
+                                        onClick={() =>
+                                          openSourceDrawer({
+                                            ticker: profile.ticker,
+                                            ratioName: item.metric_name,
+                                            statementScope,
+                                            periodType,
+                                            periodEndDate:
+                                              summaryQuery.data?.period_end_date ??
+                                              periodEndDate,
+                                          })
+                                        }
+                                      >
+                                        <Link2 className="size-3" />
+                                        Truy nguồn
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
 
               <Card>
                 <CardHeader className="py-2.5">
@@ -1129,7 +1763,12 @@ function CompanyProfileContent() {
                   </div>
                 </CardHeader>
                 <CardContent className="p-0">
-                  <div className="max-h-[360px] overflow-auto">
+                  <div
+                    tabIndex={0}
+                    role="region"
+                    aria-label="Bảng xếp hạng trong nhóm so sánh"
+                    className="max-h-[360px] overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
                     <table className="w-full border-collapse text-xs">
                       <thead>
                         <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
@@ -1335,6 +1974,7 @@ function CompanyProfileContent() {
             dictionary={dictQuery.data?.red_flags ?? []}
             triggeredFlags={profile.red_flags}
             latestPeriodEndDate={activePeriodEnd}
+            onInvestigateRedFlag={handleInvestigateRedFlag}
           />
 
           <Card>
@@ -1349,7 +1989,12 @@ function CompanyProfileContent() {
               ) : (filingsQuery.data?.items.length ?? 0) === 0 ? (
                 <p className="p-4 text-xs text-ink-muted">Chưa có hồ sơ ghi nhận.</p>
               ) : (
-                <div className="max-h-[360px] overflow-auto">
+                <div
+                  tabIndex={0}
+                  role="region"
+                  aria-label="Bảng lịch sử hồ sơ công bố và ý kiến kiểm toán"
+                  className="max-h-[360px] overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
                   <table className="w-full border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
@@ -1416,33 +2061,74 @@ function CompanyProfileContent() {
         </div>
       ) : activeTab === "model" ? (
         <div className="space-y-4">
-          <EChartBox
-            title="Diễn biến lịch sử Altman Z″ và Xác suất kiệt quệ mô hình"
-            subtitle="Theo dõi xu hướng điểm rủi ro qua các kỳ công bố liên tiếp"
-            option={mlTrendOption}
-            height={300}
-            isEmpty={sortedMl.length === 0}
-            tableHeaders={["Kỳ", "Altman Z″", "F-Score", "Beneish M", "XS kiệt quệ"]}
-            tableRows={sortedMl.map((m) => [
-              formatPeriodLabel(m.period_end_date, periodType),
-              formatNumber(m.altman_z_double_prime, 2),
-              m.piotroski_f_score !== null && m.piotroski_f_score !== undefined
-                ? `${m.piotroski_f_score}/9`
-                : "N/A",
-              formatNumber(m.beneish_m8_score, 2),
-              formatPercent(m.calibrated_distress_prob),
-            ])}
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <EChartBox
+              title="Diễn biến lịch sử điểm Altman Z″ (EM) — Nhấp kỳ để cập nhật TreeSHAP"
+              subtitle="Đơn vị: điểm Z″ · Ngưỡng < 1,10 Nguy cơ · > 2,60 An toàn"
+              option={mlAltmanOption}
+              height={290}
+              isEmpty={sortedMl.length === 0}
+              onChartClick={handleRiskPeriodClick}
+              tableHeaders={["Kỳ", "Altman Z″", "F-Score", "Beneish M"]}
+              tableRows={sortedMl.map((m) => [
+                formatPeriodLabel(m.period_end_date, periodType),
+                formatNumber(m.altman_z_double_prime, 2),
+                m.piotroski_f_score !== null && m.piotroski_f_score !== undefined
+                  ? `${m.piotroski_f_score}/9`
+                  : "N/A",
+                formatNumber(m.beneish_m8_score, 2),
+              ])}
+            />
+
+            <EChartBox
+              title="Diễn biến lịch sử Xác suất kiệt quệ mô hình — Nhấp kỳ để cập nhật TreeSHAP"
+              subtitle="Đơn vị: phần trăm (%) · Xác suất kiệt quệ 1 năm đã hiệu chỉnh (1Y PD)"
+              option={mlDistressProbOption}
+              height={290}
+              isEmpty={sortedMl.length === 0}
+              onChartClick={handleRiskPeriodClick}
+              tableHeaders={["Kỳ", "1Y PD", "Bậc", "F-Score", "Beneish M"]}
+              tableRows={sortedMl.map((m) => [
+                formatPeriodLabel(m.period_end_date, periodType),
+                formatPercent(m.calibrated_distress_prob),
+                m.risk_tier ?? "N/A",
+                m.piotroski_f_score !== null && m.piotroski_f_score !== undefined
+                  ? `${m.piotroski_f_score}/9`
+                  : "N/A",
+                formatNumber(m.beneish_m8_score, 2),
+              ])}
+            />
+          </div>
+
+          <ExplainWaterfallChart
+            shap={activeMl?.shap_top_drivers}
+            distressProb={activeMl?.calibrated_distress_prob}
+            periodLabel={activeMlPeriodLabel}
+            isCustomPeriod={isCustomMlPeriod}
+            onResetToLatest={() => setSelectedMlPeriodEnd(null)}
           />
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
             <Card className="lg:col-span-7">
-              <CardHeader className="py-2.5">
+              <CardHeader className="flex-wrap gap-2 py-2.5">
                 <CardTitle className="text-[14px]">
-                  Bảng chi tiết đóng góp TreeSHAP (Kỳ đang chọn)
+                  Bảng chi tiết đóng góp TreeSHAP{" "}
+                  {activeMlPeriodLabel ? `(${activeMlPeriodLabel})` : "(Kỳ đang chọn)"}
                 </CardTitle>
+                {isCustomMlPeriod ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    onClick={() => setSelectedMlPeriodEnd(null)}
+                  >
+                    <RotateCcw className="size-3" />
+                    <span>Về kỳ mới nhất</span>
+                  </Button>
+                ) : null}
               </CardHeader>
               <CardContent className="p-0">
-                {!latestMl?.shap_top_drivers ? (
+                {!activeMl?.shap_top_drivers ? (
                   <p className="p-4 text-xs text-ink-muted">
                     Chưa có dữ liệu đóng góp TreeSHAP cho kỳ đang chọn.
                   </p>
@@ -1459,33 +2145,43 @@ function CompanyProfileContent() {
                       </thead>
                       <tbody>
                         {[
-                          ...latestMl.shap_top_drivers.top_risk_increasing,
-                          ...latestMl.shap_top_drivers.top_risk_decreasing,
-                        ].map((drv) => (
-                          <tr
-                            key={drv.feature}
-                            className="border-b border-border/60 hover:bg-surface-muted/40"
-                          >
-                            <td className="px-3 py-2 font-medium text-ink">
-                              {drv.display_name_vn}
-                            </td>
+                          ...activeMl.shap_top_drivers.top_risk_increasing,
+                          ...activeMl.shap_top_drivers.top_risk_decreasing,
+                        ].map((drv) => {
+                          const ratioFallback = ratioDictMap.get(
+                            drv.feature as RatioName,
+                          )?.display_name_vn;
+                          const driverLabel =
+                            drv.display_name_vn &&
+                            drv.display_name_vn !== drv.feature
+                              ? drv.display_name_vn
+                              : (ratioFallback ?? getMlFeatureLabel(drv.feature));
+                          return (
+                            <tr
+                              key={drv.feature}
+                              className="border-b border-border/60 hover:bg-surface-muted/40"
+                            >
+                              <td className="px-3 py-2 font-medium text-ink">
+                                {driverLabel}
+                              </td>
                             <td className="num px-3 py-2 text-right">
                               {formatNumber(drv.value, 3)}
                             </td>
                             <td className="num px-3 py-2 text-right text-ink-muted">
                               {formatNumber(drv.peer_median, 3)}
                             </td>
-                            <td
-                              className={cn(
-                                "num px-3 py-2 text-right font-semibold",
-                                drv.shap_delta >= 0 ? "text-risk-high" : "text-risk-low",
-                              )}
-                            >
-                              {drv.shap_delta >= 0 ? "+" : MINUS_SIGN}
-                              {formatNumber(Math.abs(drv.shap_delta), 3)}
-                            </td>
-                          </tr>
-                        ))}
+                              <td
+                                className={cn(
+                                  "num px-3 py-2 text-right font-semibold",
+                                  drv.shap_delta >= 0 ? "text-risk-high" : "text-risk-low",
+                                )}
+                              >
+                                {drv.shap_delta >= 0 ? "+" : MINUS_SIGN}
+                                {formatNumber(Math.abs(drv.shap_delta), 3)}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -1504,28 +2200,30 @@ function CompanyProfileContent() {
                   <div className="flex justify-between gap-2 border-b border-border/60 pb-1.5">
                     <dt className="text-ink-muted">Nhóm cấu trúc tài chính</dt>
                     <dd className="text-right font-medium text-ink">
-                      {latestMl?.cluster_archetype_name ?? "Chưa phân cụm"}
+                      {activeMl?.cluster_archetype_name ?? "Chưa phân cụm"}
                     </dd>
                   </div>
                   <div className="flex justify-between gap-2 border-b border-border/60 pb-1.5">
                     <dt className="text-ink-muted">Phân vị bất thường thống kê</dt>
                     <dd className="num text-right font-medium text-ink">
-                      {latestMl?.anomaly_percentile_rank !== null &&
-                      latestMl?.anomaly_percentile_rank !== undefined
-                        ? `${formatNumber(latestMl.anomaly_percentile_rank, 1)}%`
+                      {activeMl?.anomaly_percentile_rank !== null &&
+                      activeMl?.anomaly_percentile_rank !== undefined
+                        ? `${formatNumber(activeMl.anomaly_percentile_rank, 1)}%`
                         : "N/A"}
                     </dd>
                   </div>
                   <div className="flex justify-between gap-2 border-b border-border/60 pb-1.5">
                     <dt className="text-ink-muted">Phiên bản mô hình</dt>
                     <dd className="font-mono text-right text-ink">
-                      {latestMl?.model_version ?? "—"}
+                      {activeMl?.model_version ?? "—"}
                     </dd>
                   </div>
                   <div className="flex justify-between gap-2 pb-1">
                     <dt className="text-ink-muted">Vai trò điểm số</dt>
                     <dd className="text-right text-ink">
-                      {latestMl?.model_role ?? "Đánh giá định lượng"}
+                      {(activeMl?.model_role &&
+                        MODEL_ROLE_LABELS[activeMl.model_role]) ??
+                        "Đánh giá định lượng"}
                     </dd>
                   </div>
                 </dl>
@@ -1536,8 +2234,17 @@ function CompanyProfileContent() {
             </Card>
           </div>
         </div>
+      ) : activeTab === "documents" ? (
+        <DocumentInvestigationPanel
+          key={`${profile.ticker}-${ragPreset?.requestNonce ?? 0}`}
+          ticker={profile.ticker}
+          companyName={
+            profile.company_name_vn ?? issuerMeta?.company_name_vn ?? null
+          }
+          initialPreset={ragPreset}
+        />
       ) : (
-        /* TAB 6: LINEAGE REGISTRY */
+        /* TAB 7: LINEAGE REGISTRY */
         <Card>
           <CardHeader className="flex-wrap gap-2 py-2.5">
             <div>
@@ -1593,8 +2300,8 @@ function CompanyProfileContent() {
                           <td className="px-3 py-2 text-ink-muted">
                             {RATIO_CATEGORY_LABELS[r.category] ?? r.category}
                           </td>
-                          <td className="px-3 py-2 font-mono text-[11px] text-ink-muted">
-                            {r.formula_display}
+                          <td className="px-3 py-2 text-xs text-ink-muted">
+                            {formatFormulaVi(r.formula_display)}
                           </td>
                           <td className="num px-3 py-2 text-right font-medium text-ink">
                             {formatRatioValue(val, r.format_type)}

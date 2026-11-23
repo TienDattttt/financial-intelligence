@@ -26,6 +26,12 @@ ML_SCORES_TABLE = "ml_scores_and_explanations.parquet"
 QUALITY_SUMMARY_TABLE = "quality_summary.parquet"
 AUDIT_QUARANTINE_TABLE = "audit_quarantine.parquet"
 FILINGS_MANIFEST_TABLE = "filings_manifest.parquet"
+MODEL_CARD_META_TABLE = "model_card_meta.parquet"
+REGULATORY_EVENTS_TABLE = "regulatory_events.parquet"
+MARKET_PRICES_TABLE = "market_prices.parquet"
+EXTENSION_PORT_TABLES: frozenset[str] = frozenset(
+    {REGULATORY_EVENTS_TABLE, MARKET_PRICES_TABLE}
+)
 
 RATIO_KEY = (
     "issuer_id",
@@ -162,6 +168,7 @@ ML_SCORES_KEY = (
     "period_end_date",
     "filing_id",
 )
+RISK_TIERS: frozenset[str] = frozenset({"R1", "R2", "R3", "R4", "R5"})
 ML_SCORES_SCHEMA = pl.Schema(
     {
         "issuer_id": pl.String,
@@ -188,6 +195,10 @@ ML_SCORES_SCHEMA = pl.Schema(
         "anomaly_flag": pl.String,
         "distress_risk_score": pl.Float64,
         "calibrated_distress_prob": pl.Float64,
+        "risk_tier": pl.String,
+        "risk_market_percentile": pl.Float64,
+        "market_base_rate": pl.Float64,
+        "relative_risk_lift": pl.Float64,
         "model_version": pl.String,
         "shap_top_drivers_json": pl.String,
     }
@@ -262,6 +273,24 @@ FILINGS_MANIFEST_SCHEMA = pl.Schema(
         "payload_file_sha256": pl.String,
     }
 )
+MODEL_CARD_META_KEY = ("model_card_id",)
+MODEL_CARD_META_SCHEMA = pl.Schema(
+    {
+        "model_card_id": pl.String,
+        "schema_version": pl.Int32,
+        "run_id": pl.String,
+        "model_version": pl.String,
+        "feature_set": pl.String,
+        "feature_count": pl.Int32,
+        "target_mode": pl.String,
+        "statement_scope": pl.String,
+        "peer_standardization_mode": pl.String,
+        "trained_as_of": pl.Date,
+        "artifact_sha256": pl.String,
+        "model_card_json": pl.String,
+        "generated_at": pl.String,
+    }
+)
 
 # A snapshot may contain zero peers, alerts, quarantine rows or unmapped metrics.
 OPTIONAL_ANALYTICS_SCHEMAS = {
@@ -301,6 +330,7 @@ OPTIONAL_ANALYTICS_SCHEMAS = {
     QUALITY_SUMMARY_TABLE: QUALITY_SUMMARY_SCHEMA,
     AUDIT_QUARANTINE_TABLE: AUDIT_QUARANTINE_SCHEMA,
     FILINGS_MANIFEST_TABLE: FILINGS_MANIFEST_SCHEMA,
+    MODEL_CARD_META_TABLE: MODEL_CARD_META_SCHEMA,
 }
 ANALYTICS_SCHEMAS = {
     RATIOS_TABLE: FINANCIAL_RATIOS_SCHEMA,
@@ -314,6 +344,7 @@ ANALYTICS_KEYS = {
     QUALITY_SUMMARY_TABLE: QUALITY_SUMMARY_KEY,
     AUDIT_QUARANTINE_TABLE: AUDIT_QUARANTINE_KEY,
     FILINGS_MANIFEST_TABLE: FILINGS_MANIFEST_KEY,
+    MODEL_CARD_META_TABLE: MODEL_CARD_META_KEY,
 }
 
 
@@ -395,6 +426,74 @@ UNMAPPED_METRICS_SCHEMA = pl.Schema(
 )
 UNMAPPED_SCHEMA = UNMAPPED_METRICS_SCHEMA
 FACTS_SCHEMA = FINANCIAL_FACTS_SCHEMA
+
+# Extension Port 1: Regulatory & Audit Events (ARCH-09 / H-05)
+REGULATORY_EVENTS_KEY = (
+    "issuer_id",
+    "event_date",
+    "effective_from",
+    "event_type",
+    "event_stage",
+)
+REGULATORY_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "CONTROL",
+        "TRADING_RESTRICTION",
+        "SUSPENSION",
+        "FORCED_DELISTING",
+        "ADVERSE_OR_DISCLAIMER_AUDIT",
+    }
+)
+REGULATORY_EVENT_STAGES: frozenset[str] = frozenset({"FIRST_ENTRY", "ESCALATION"})
+REGULATORY_DELISTING_EXCHANGES: frozenset[str] = frozenset({"HOSE", "HNX", "UPCOM"})
+REGULATORY_EVENTS_SCHEMA = pl.Schema(
+    {
+        "issuer_id": pl.String,
+        "event_date": pl.Date,
+        "effective_from": pl.Date,
+        "resolution_date": pl.Date,
+        "event_type": pl.String,
+        "event_stage": pl.String,
+        "exchange_delisted_from": pl.String,
+        "source_provider": pl.String,
+        "source_url": pl.String,
+        "raw_headline": pl.String,
+        "payload_sha256": pl.String,
+    }
+)
+
+# Extension Port 2: Document AI / Grounded RAG Chunks (ARCH-09 / H-08)
+DOCUMENT_STATEMENT_SCOPES: frozenset[str] = frozenset({"CONSOLIDATED", "SEPARATE"})
+DOCUMENT_CHUNKS_CONTRACT = pl.Schema(
+    {
+        "filing_id": pl.String,
+        "issuer_id": pl.String,
+        "fiscal_year": pl.Int32,
+        "fiscal_quarter": pl.Int32,
+        "statement_scope": pl.String,
+        "doc_type": pl.String,
+        "page_no": pl.Int32,
+        "section_title": pl.String,
+        "unit_scale": pl.String,
+        "text_content": pl.String,
+        "content_sha256": pl.String,
+    }
+)
+
+# Extension Port 3: Market Prices EOD (ARCH-09 / B-06)
+MARKET_PRICES_KEY = ("issuer_id", "trade_date")
+MARKET_PRICES_SCHEMA = pl.Schema(
+    {
+        "issuer_id": pl.String,
+        "ticker": pl.String,
+        "trade_date": pl.Date,
+        "close_raw": pl.Float64,
+        "close_adj": pl.Float64,
+        "volume": pl.Float64,
+        "shares_outstanding_market": pl.Float64,
+        "source_provider": pl.String,
+    }
+)
 
 FINANCIAL_FACTS_KEY = (
     "issuer_id",
@@ -557,6 +656,221 @@ def validate_required_columns(
                 "statement_scope": ALLOWED_VALUES["statement_scope"],
                 "period_type": ALLOWED_VALUES["period_type"],
             },
+        )
+    elif schema is REGULATORY_EVENTS_SCHEMA:
+        _validate_regulatory_events_frame(frame)
+    elif schema is DOCUMENT_CHUNKS_CONTRACT:
+        _validate_document_chunks_frame(frame)
+    elif schema is MARKET_PRICES_SCHEMA:
+        _validate_market_prices_frame(frame)
+
+
+def _validate_regulatory_events_frame(frame: pl.DataFrame) -> None:
+    non_null_cols = (
+        "issuer_id",
+        "event_date",
+        "effective_from",
+        "event_type",
+        "event_stage",
+        "source_provider",
+        "source_url",
+        "raw_headline",
+        "payload_sha256",
+    )
+    null_columns = [name for name in non_null_cols if frame[name].is_null().any()]
+    if null_columns:
+        raise ContractViolationError(
+            "Regulatory events contain nulls in non-nullable columns: "
+            + ", ".join(null_columns)
+            + "."
+        )
+    if frame.is_empty():
+        return
+    string_non_empty_cols = (
+        "issuer_id",
+        "source_provider",
+        "source_url",
+        "raw_headline",
+        "payload_sha256",
+    )
+    for col_name in string_non_empty_cols:
+        if (
+            frame.schema[col_name] == pl.String
+            and frame.select(pl.col(col_name).str.strip_chars().eq("").any()).item()
+        ):
+            raise ContractViolationError(
+                f"Regulatory events require non-empty {col_name} values."
+            )
+    if (
+        frame.schema["payload_sha256"] == pl.String
+        and frame.select(
+            (~pl.col("payload_sha256").str.contains(r"^[0-9a-fA-F]{64}$")).any()
+        ).item()
+    ):
+        raise ContractViolationError(
+            "Regulatory events require 64-char hex payload_sha256 values."
+        )
+    _validate_allowed_values(
+        frame,
+        {
+            "event_type": REGULATORY_EVENT_TYPES,
+            "event_stage": REGULATORY_EVENT_STAGES,
+            "exchange_delisted_from": REGULATORY_DELISTING_EXCHANGES,
+        },
+    )
+    if frame.schema["effective_from"] == pl.Date and frame.schema[
+        "resolution_date"
+    ] in (
+        pl.Date,
+        pl.Null,
+    ):
+        inverted = frame.select(
+            (
+                pl.col("resolution_date").is_not_null()
+                & (pl.col("resolution_date") < pl.col("effective_from"))
+            ).any()
+        ).item()
+        if inverted:
+            raise ContractViolationError(
+                "Regulatory events require resolution_date >= effective_from."
+            )
+
+
+def _validate_document_chunks_frame(frame: pl.DataFrame) -> None:
+    non_null_cols = (
+        "filing_id",
+        "issuer_id",
+        "fiscal_year",
+        "statement_scope",
+        "doc_type",
+        "page_no",
+        "section_title",
+        "unit_scale",
+        "text_content",
+        "content_sha256",
+    )
+    null_columns = [name for name in non_null_cols if frame[name].is_null().any()]
+    if null_columns:
+        raise ContractViolationError(
+            "Document chunks contain nulls in non-nullable columns: "
+            + ", ".join(null_columns)
+            + "."
+        )
+    if frame.is_empty():
+        return
+    for col_name in (
+        "filing_id",
+        "issuer_id",
+        "doc_type",
+        "section_title",
+        "unit_scale",
+        "text_content",
+        "content_sha256",
+    ):
+        if (
+            frame.schema[col_name] == pl.String
+            and frame.select(pl.col(col_name).str.strip_chars().eq("").any()).item()
+        ):
+            raise ContractViolationError(
+                f"Document chunks require non-empty {col_name} values."
+            )
+    if (
+        frame.schema["content_sha256"] == pl.String
+        and frame.select(
+            (~pl.col("content_sha256").str.contains(r"^[0-9a-fA-F]{64}$")).any()
+        ).item()
+    ):
+        raise ContractViolationError(
+            "Document chunks require 64-char hex content_sha256 values."
+        )
+    _validate_allowed_values(
+        frame,
+        {"statement_scope": DOCUMENT_STATEMENT_SCOPES},
+    )
+    if (
+        frame.schema["fiscal_year"].is_integer()
+        and (~frame["fiscal_year"].is_between(1, 9999)).any()
+    ):
+        raise ContractViolationError("Document chunks contain an invalid fiscal_year.")
+    if frame.schema["fiscal_quarter"].is_integer():
+        invalid_q = frame.select(
+            (
+                pl.col("fiscal_quarter").is_not_null()
+                & ~pl.col("fiscal_quarter").is_between(1, 4).fill_null(False)
+            ).any()
+        ).item()
+        if invalid_q:
+            raise ContractViolationError(
+                "Document chunks require fiscal_quarter in 1..4 when non-null."
+            )
+    if frame.schema["page_no"].is_integer() and (frame["page_no"] < 1).any():
+        raise ContractViolationError("Document chunks require page_no >= 1.")
+
+
+def _validate_market_prices_frame(frame: pl.DataFrame) -> None:
+    non_null_cols = (
+        "issuer_id",
+        "ticker",
+        "trade_date",
+        "close_raw",
+        "close_adj",
+        "volume",
+        "source_provider",
+    )
+    null_columns = [name for name in non_null_cols if frame[name].is_null().any()]
+    if null_columns:
+        raise ContractViolationError(
+            "Market prices contain nulls in non-nullable columns: "
+            + ", ".join(null_columns)
+            + "."
+        )
+    if frame.is_empty():
+        return
+    for col_name in ("issuer_id", "ticker", "source_provider"):
+        if (
+            frame.schema[col_name] == pl.String
+            and frame.select(pl.col(col_name).str.strip_chars().eq("").any()).item()
+        ):
+            raise ContractViolationError(
+                f"Market prices require non-empty {col_name} values."
+            )
+    for col_name in ("close_raw", "close_adj"):
+        if (
+            frame.schema[col_name].is_float()
+            and frame.select(
+                (~pl.col(col_name).is_finite() | (pl.col(col_name) <= 0.0)).any()
+            ).item()
+        ):
+            raise ContractViolationError(
+                f"Market prices require finite positive {col_name} values."
+            )
+    if (
+        frame.schema["volume"].is_float()
+        and frame.select(
+            (~pl.col("volume").is_finite() | (pl.col("volume") < 0.0)).any()
+        ).item()
+    ):
+        raise ContractViolationError(
+            "Market prices require finite non-negative volume values."
+        )
+    if (
+        frame.schema["shares_outstanding_market"].is_float()
+        and frame.select(
+            (
+                pl.col("shares_outstanding_market").is_not_null()
+                & (
+                    ~pl.col("shares_outstanding_market").is_finite()
+                    | (pl.col("shares_outstanding_market") <= 0.0)
+                )
+            ).any()
+        ).item()
+    ):
+        raise ContractViolationError(
+            "Market prices require finite positive shares_outstanding_market when non-null."
+        )
+    if frame.select(list(MARKET_PRICES_KEY)).is_duplicated().any():
+        raise ContractViolationError(
+            "Market prices contain duplicate (issuer_id, trade_date) keys."
         )
 
 

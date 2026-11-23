@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
-from collections.abc import Callable, Iterator, Sequence
-from datetime import datetime
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from datetime import UTC, datetime
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING
 
 from finintel.domain.schemas import (
@@ -55,6 +58,28 @@ def _default_sleep(seconds: float) -> None:
 
 def _default_clock() -> float:
     return time.monotonic()
+
+
+def _validate_checkpoint_path(path: Path) -> Path:
+    """Resolve ``path`` and reject symbolic links on the checkpoint file or directory."""
+    if not path.is_absolute():
+        walk = Path()
+        for part in path.parts:
+            walk = walk / part
+            if walk.is_symlink():
+                raise ContractViolationError(
+                    "FHSC checkpoint path cannot use symbolic links."
+                )
+    if (
+        path.is_symlink()
+        or path.parent.is_symlink()
+        or (path.parent != path.parent.parent and path.parent.parent.is_symlink())
+    ):
+        raise ContractViolationError("FHSC checkpoint path cannot use symbolic links.")
+    resolved = path.resolve()
+    if resolved.is_symlink():
+        raise ContractViolationError("FHSC checkpoint path cannot use symbolic links.")
+    return resolved
 
 
 def _payload(envelope: Envelope, query: dict[str, object]) -> RawPayload:
@@ -113,6 +138,12 @@ class FhscOapiAdapter(FinancialStatementProvider):
         early_stop_predicate: Callable[[tuple[RawFiling, ...]], bool] | None = None,
         metadata_resolver: Callable[[int, int | None], FilingMetadata | None]
         | None = None,
+        record_metadata_resolver: Callable[
+            [int, int | None, Mapping[str, object]], FilingMetadata | None
+        ]
+        | None = None,
+        page_observer: Callable[[Sequence[Mapping[str, object]]], None] | None = None,
+        checkpoint_path: Path | None = None,
         sleeper: Callable[[float], None] | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
@@ -158,11 +189,20 @@ class FhscOapiAdapter(FinancialStatementProvider):
         )
         self.early_stop_predicate = early_stop_predicate
         self._metadata_resolver = metadata_resolver
+        self._record_metadata_resolver = record_metadata_resolver
+        self._page_observer = page_observer
+        self._checkpoint_path = (
+            _validate_checkpoint_path(checkpoint_path)
+            if checkpoint_path is not None
+            else None
+        )
         self._sleeper = sleeper
         self._clock = clock
         self._last_request_at: float | None = None
         self._next_page = 1
         self._seen: set[tuple[int, int | None]] = set()
+        if self._checkpoint_path is not None:
+            self._load_checkpoint()
         self.metadata: dict[tuple[int, int | None], FilingMetadata] = {}
         for filing in metadata:
             if (
@@ -201,6 +241,131 @@ class FhscOapiAdapter(FinancialStatementProvider):
         ):
             return 1.0 / float(rate_per_second)
         return 1.0 / DEFAULT_RATE_PER_SECOND
+
+    @property
+    def next_page(self) -> int:
+        """Next page index to request when resuming pagination."""
+        return self._next_page
+
+    def clear_checkpoint(self) -> None:
+        """Reset pagination state and delete any persisted checkpoint file."""
+        self._next_page = 1
+        self._seen.clear()
+        self._clear_checkpoint()
+
+    def _checkpoint_scope(self) -> dict[str, object]:
+        return {
+            "ticker": self.ticker,
+            "statement_type": self.statement_type.value,
+            "period_type": self.period_type.value,
+            "year": self.year,
+            "quarter": self.quarter,
+            "limit": self.limit,
+        }
+
+    def _load_checkpoint(self) -> None:
+        if self._checkpoint_path is None:
+            return
+        path = _validate_checkpoint_path(self._checkpoint_path)
+        if not path.exists():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self._clear_checkpoint()
+            return
+        if not isinstance(raw, dict) or raw.get("scope") != self._checkpoint_scope():
+            self._next_page = 1
+            self._seen.clear()
+            return
+        next_page = raw.get("next_page")
+        seen_raw = raw.get("seen")
+        if (
+            type(next_page) is not int
+            or next_page < 1
+            or not isinstance(seen_raw, list)
+        ):
+            self._clear_checkpoint()
+            return
+        parsed_seen: set[tuple[int, int | None]] = set()
+        for item in seen_raw:
+            if not isinstance(item, list) or len(item) != 2:
+                self._clear_checkpoint()
+                return
+            year, quarter = item
+            if type(year) is not int or not 1 <= year <= 9999:
+                self._clear_checkpoint()
+                return
+            if quarter is not None and (
+                type(quarter) is not int or not 1 <= quarter <= 4
+            ):
+                self._clear_checkpoint()
+                return
+            parsed_seen.add((year, quarter))
+        self._next_page = next_page
+        self._seen = parsed_seen
+
+    def _save_checkpoint(self) -> None:
+        if self._checkpoint_path is None:
+            return
+        path = _validate_checkpoint_path(self._checkpoint_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _validate_checkpoint_path(path)
+        payload = {
+            "version": 1,
+            "scope": self._checkpoint_scope(),
+            "next_page": self._next_page,
+            "seen": sorted(
+                ([year, quarter] for year, quarter in self._seen),
+                key=lambda item: (item[0], -1 if item[1] is None else item[1]),
+            ),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        tmp_path: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                tmp_path = Path(tmp.name)
+                json.dump(payload, tmp, ensure_ascii=False, indent=2)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_path, path)
+            tmp_path = None
+        finally:
+            if tmp_path is not None and tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+
+    def _clear_checkpoint(self) -> None:
+        if self._checkpoint_path is None:
+            return
+        path = _validate_checkpoint_path(self._checkpoint_path)
+        if path.exists():
+            path.unlink()
+
+    def _validate_resolved_metadata(
+        self, resolved: FilingMetadata, year: int, quarter: int | None
+    ) -> FilingMetadata:
+        expected_quarter = (
+            2
+            if resolved.period_type == PeriodType.SEMI_ANNUAL
+            else resolved.fiscal_quarter
+        )
+        if (
+            resolved.ticker_at_filing != self.ticker
+            or resolved.statement_type != self.statement_type
+            or resolved.fiscal_year != year
+            or expected_quarter != quarter
+        ):
+            raise ContractViolationError(
+                "Resolved metadata does not match the FHSC period."
+            )
+        return resolved
 
     def fetch(self) -> Iterator[RawFilingBundle]:
         source = load_fhsc_source()
@@ -266,13 +431,17 @@ class FhscOapiAdapter(FinancialStatementProvider):
             self._seen = page_seen
             self._next_page = page + 1
             if status == "THROTTLED":
+                self._save_checkpoint()
                 raise RateLimitOrCircuitOpenError("FHSC is throttling requests.")
             if empty or status == "EARLY_STOPPED":
                 self._next_page = 1
                 self._seen.clear()
+                self._clear_checkpoint()
                 return
+            self._save_checkpoint()
         self._next_page = 1
         self._seen.clear()
+        self._clear_checkpoint()
 
     def _records(
         self, body: object, seen: set[tuple[int, int | None]]
@@ -283,8 +452,8 @@ class FhscOapiAdapter(FinancialStatementProvider):
         if not isinstance(rows, list):
             raise ContractViolationError("FHSC response is missing its data array.")
 
-        filings: list[RawFiling] = []
-        deferred: list[str] = []
+        validated: list[tuple[int, int, int | None, dict[str, object]]] = []
+        observed_rows: list[dict[str, object]] = []
         for index, row in enumerate(rows):
             if not isinstance(row, dict):
                 raise ContractViolationError("Invalid FHSC period record.")
@@ -308,28 +477,28 @@ class FhscOapiAdapter(FinancialStatementProvider):
                     "Duplicate fiscal period in FHSC pagination."
                 )
             seen.add(key)
+            normalized_row = dict(row)
+            observed_rows.append(normalized_row)
             if self.quarter is not None and self.quarter != quarter:
                 continue
+            validated.append((index, year, quarter, normalized_row))
+
+        if self._page_observer is not None and observed_rows:
+            self._page_observer(tuple(observed_rows))
+
+        filings: list[RawFiling] = []
+        deferred: list[str] = []
+        for index, year, quarter, row in validated:
             locator = f"/data/{index}"
-            metadata = self.metadata.get(key)
+            metadata = self.metadata.get((year, quarter))
+            if metadata is None and self._record_metadata_resolver is not None:
+                resolved = self._record_metadata_resolver(year, quarter, row)
+                if resolved is not None:
+                    metadata = self._validate_resolved_metadata(resolved, year, quarter)
             if metadata is None and self._metadata_resolver is not None:
                 resolved = self._metadata_resolver(year, quarter)
                 if resolved is not None:
-                    expected_quarter = (
-                        2
-                        if resolved.period_type == PeriodType.SEMI_ANNUAL
-                        else resolved.fiscal_quarter
-                    )
-                    if (
-                        resolved.ticker_at_filing != self.ticker
-                        or resolved.statement_type != self.statement_type
-                        or resolved.fiscal_year != year
-                        or expected_quarter != quarter
-                    ):
-                        raise ContractViolationError(
-                            "Resolved metadata does not match the FHSC period."
-                        )
-                    metadata = resolved
+                    metadata = self._validate_resolved_metadata(resolved, year, quarter)
             if metadata is None:
                 deferred.append(locator)
             else:

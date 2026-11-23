@@ -47,6 +47,37 @@ export type SectorRiskItem = Schema["SectorRiskItem"];
 export type MarketChangeItem = Schema["MarketChangeItem"];
 export type SectorRiskSummaryResponse = Schema["SectorRiskSummaryResponse"];
 export type MarketChangesResponse = Schema["MarketChangesResponse"];
+export type RiskTierCutoffsItem = Schema["RiskTierCutoffsItem"];
+export type RiskTierReliabilityRowItem = Schema["RiskTierReliabilityRowItem"];
+export type RiskTierReliabilityReportItem = Schema["RiskTierReliabilityReportItem"];
+export type ModelMetricsItem = Schema["ModelMetricsItem"];
+export type BootstrapCI95Item = Schema["BootstrapCI95Item"];
+export type WalkForwardYearItem = Schema["WalkForwardYearItem"];
+export type WalkForwardModelSummaryItem = Schema["WalkForwardModelSummaryItem"];
+export type WalkForwardReportItem = Schema["WalkForwardReportItem"];
+export type TaxonomyScoreDriftItem = Schema["TaxonomyScoreDriftItem"];
+export type FeatureDriftItem = Schema["FeatureDriftItem"];
+export type TaxonomyDriftPSIItem = Schema["TaxonomyDriftPSIItem"];
+export type HistoricalCaseStudyItem = Schema["HistoricalCaseStudyItem"];
+export type ModelCardResponse = Schema["ModelCardResponse"];
+export type DrawdownWindowMetricsItem = Schema["DrawdownWindowMetricsItem"];
+export type MarkerDrawdownBundleItem = Schema["MarkerDrawdownBundleItem"];
+export type ModelRiskMarkerItem = Schema["ModelRiskMarkerItem"];
+export type RegulatoryEventMarkerItem = Schema["RegulatoryEventMarkerItem"];
+export type PriceOverlayPointItem = Schema["PriceOverlayPointItem"];
+export type WarningSummaryItem = Schema["WarningSummaryItem"];
+export type CompanyMarketOverlayResponse = Schema["CompanyMarketOverlayResponse"];
+export type DocumentFileItem = Schema["DocumentFileItem"];
+export type DocumentListResponse = Schema["DocumentListResponse"];
+export type CitationItem = Schema["CitationItem"];
+export type InvestigateResponse = Schema["InvestigateResponse"];
+export interface InvestigateRequest {
+  question: string;
+  fiscal_year?: number | null;
+  statement_scope?: string | null;
+  top_k?: number;
+  use_cache?: boolean;
+}
 
 export type StatementScope = CompanyBenchmarksResponse["statement_scope"];
 export type PeriodType = CompanyBenchmarksResponse["period_type"];

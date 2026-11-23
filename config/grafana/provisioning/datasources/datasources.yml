@@ -1,0 +1,43 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    isDefault: false
+    editable: false
+    jsonData:
+      httpMethod: GET
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+        tags:
+          - key: "service.name"
+            value: "service"
+        queries:
+          - name: "Request Rate (RPS)"
+            query: 'sum(rate(http_requests_total{$__tags}[5m]))'
+          - name: "P95 Route Latency (ms)"
+            query: 'histogram_quantile(0.95, sum by (le, handler) (rate(http_request_duration_seconds_bucket{$__tags}[5m]))) * 1000'
+          - name: "Valkey Cache Hit Ratio (%)"
+            query: '100 * sum(rate(finintel_valkey_cache_requests_total{$__tags,result="hit"}[5m])) / clamp_min(sum(rate(finintel_valkey_cache_requests_total{$__tags}[5m])), 1e-9)'
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false

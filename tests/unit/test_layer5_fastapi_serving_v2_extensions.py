@@ -277,10 +277,13 @@ def test_v2_routes_are_sync_and_v1_route_count_preserved(
         for r in app.routes
         if isinstance(r, APIRoute) and r.path.startswith("/api/v2/")
     ]
-    assert len(v1_routes) == 10
-    assert len(v2_routes) == 7
+    assert len(v1_routes) == 11
+    assert len(v2_routes) == 9
     for route in (*v1_routes, *v2_routes):
         assert not inspect.iscoroutinefunction(route.endpoint)
+    openapi_paths = app.openapi()["paths"]
+    assert "/api/v2/documents/{ticker}/list" in openapi_paths
+    assert "/api/v2/documents/{ticker}/investigate" in openapi_paths
 
 
 def test_all_7_v2_routes_etag_304_and_screener_extensions(

@@ -11,8 +11,7 @@ dependencies = [
     "pyyaml==6.0.3",
     "tenacity==9.2.1",
     "vnstock-oapi==0.1.2",
-    "streamlit==1.45.1",
-    "plotly==6.0.1",
+    "prometheus-client==0.26.0",
 ]
 
 [dependency-groups]
@@ -28,6 +27,9 @@ ml = [
     "shap==0.49.1",
     "xgboost==2.1.4",
 ]
+notebooks = [
+    "plotly==6.0.1",
+]
 spike = [
     "httpx==0.28.1",
 ]
@@ -37,18 +39,23 @@ platform = [
     "pydantic==2.14.4",
     "httpx==0.28.1",
     "dagster==1.13.30",
+    "dagster-postgres==0.29.30",
     "dagster-webserver==1.13.30",
-    "dagster-duckdb==0.29.30",
     "orjson==3.13.0",
     "granian==2.8.8",
-    "hishel==2.0.0",
     "redis==8.1.0",
     "psycopg[binary]==3.3.9",
     "structlog==26.1.0",
-    "prometheus-fastapi-instrumentator==8.1.0",
     "opentelemetry-api==1.45.2",
     "opentelemetry-sdk==1.45.2",
     "opentelemetry-instrumentation-fastapi==0.66b2",
+    "opentelemetry-exporter-otlp-proto-http==1.45.2",
+]
+rag = [
+    "pymupdf==2.1",
+    "pgvector==0.5.1",
+    "google-genai==1.20.0",
+    "sentence-transformers==6.3.0",
 ]
 
 [tool.uv]

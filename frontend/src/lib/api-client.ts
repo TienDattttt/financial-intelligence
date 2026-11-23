@@ -1,3 +1,4 @@
+import type { CompanyMarketOverlayResponse } from "@/lib/market-overlay-types";
 import type {
   AuditQuarantinePageResponse,
   CompanyBenchmarksResponse,
@@ -5,11 +6,15 @@ import type {
   CompanyFilingsResponse,
   CompanyProfileResponse,
   CompanyStatementsResponse,
+  DocumentListResponse,
   HealthResponse,
+  InvestigateRequest,
+  InvestigateResponse,
   IssuersPageResponse,
   MarketChangesResponse,
   MetaDictionaryResponse,
   MetaPeriodsResponse,
+  ModelCardResponse,
   PeriodType,
   PeriodView,
   QualitySummaryPageResponse,
@@ -45,9 +50,9 @@ function sanitizeClientMessage(raw: string, status: number): string {
   if (/not found/i.test(cleaned) || status === 404) {
     return "Không tìm thấy dữ liệu cho yêu cầu này trong kỳ hiện hành.";
   }
-  if (!cleaned || INTERNAL_LEAK_RE.test(cleaned)) {
+    if (!cleaned || INTERNAL_LEAK_RE.test(cleaned)) {
     if (status === 422) return "Tham số truy vấn không hợp lệ.";
-    if (status === 503) return "Hệ thống đang xử lý mô phỏng, vui lòng thử lại sau giây lát.";
+    if (status === 503) return "Dịch vụ tra cứu hiện tạm thời chưa sẵn sàng, vui lòng thử lại sau giây lát.";
     return "Không thể tải dữ liệu từ máy chủ phân tích.";
   }
   return cleaned.slice(0, 200);
@@ -117,6 +122,17 @@ export const apiClient = {
 
   getMetaDictionary: () =>
     requestJson<MetaDictionaryResponse>("/api/v2/meta/dictionary"),
+
+  getModelCard: async (): Promise<ModelCardResponse | null> => {
+    try {
+      return await requestJson<ModelCardResponse>("/api/v2/meta/model-card");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        return null;
+      }
+      throw err;
+    }
+  },
 
   getCompanyProfile: (
     ticker: string,
@@ -201,6 +217,57 @@ export const apiClient = {
       }),
     ),
 
+  getCompanyMarketOverlay: (
+    ticker: string,
+    statementScope?: StatementScope,
+    asOf?: string | null,
+  ) =>
+    requestJson<CompanyMarketOverlayResponse>(
+      buildUrl(`/api/v2/companies/${encodeURIComponent(ticker.toUpperCase())}/market-overlay`, {
+        statement_scope: statementScope,
+        as_of: asOf,
+      }),
+    ),
+
+  getCompanyDocuments: (ticker: string) =>
+    requestJson<DocumentListResponse>(
+      `/api/v2/documents/${encodeURIComponent(ticker.trim().toUpperCase())}/list`,
+    ),
+
+  postCompanyInvestigate: async (
+    ticker: string,
+    payload: InvestigateRequest,
+    signal?: AbortSignal,
+  ): Promise<InvestigateResponse> => {
+    const res = await fetch(
+      `/api/v2/documents/${encodeURIComponent(ticker.trim().toUpperCase())}/investigate`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal,
+      },
+    );
+
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const errBody = (await res.json()) as { detail?: unknown };
+        if (typeof errBody.detail === "string") {
+          detail = errBody.detail;
+        }
+      } catch {
+        detail = "";
+      }
+      throw new ApiError(res.status, sanitizeClientMessage(detail, res.status));
+    }
+
+    return (await res.json()) as InvestigateResponse;
+  },
+
   getRatioLineage: (
     ticker: string,
     opts: {
@@ -263,7 +330,7 @@ export const apiClient = {
     ),
 
   postStressTest: async (
-    payload: StressScenarioRequest,
+    payload: StressScenarioRequest & { tickers?: string[] | null },
     signal?: AbortSignal,
   ): Promise<StressTestResponse> => {
     const attempt = async () =>

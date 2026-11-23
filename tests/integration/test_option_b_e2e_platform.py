@@ -1687,14 +1687,15 @@ def test_suite3_mode_b_regulatory_distress_offline_contract_e2e() -> None:
         regulatory_events=events_df,
     )
 
-    # 1. Forced delisting preserves y = 1 even though post-delisting quarters t+3 and t+4 are absent!
+    # 1. Forced delisting preserves y = 1 even though post-delisting quarters t+3 and t+4 are absent,
+    #    and B-01 locks label_available_at symmetrically to a_t + 365d (2022-01-25).
     delist_q4_2020 = targets.filter(
         (pl.col("issuer_id") == "DELIST_CO")
         & (pl.col("fiscal_year") == 2020)
         & (pl.col("fiscal_quarter") == 4)
     ).row(0, named=True)
     assert delist_q4_2020["distress_target"] == 1
-    assert delist_q4_2020["label_available_at"] == date(2021, 8, 15)
+    assert delist_q4_2020["label_available_at"] == date(2022, 1, 25)
     assert delist_q4_2020["_label_exact_filing_basis"] is True
 
     # 2. Right-censoring lock on negative labels: HEALTHY_CO 2021-Q4 has a_t = 2022-01-25,
