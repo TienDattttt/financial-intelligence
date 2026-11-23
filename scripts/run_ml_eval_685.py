@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import logging
 import math
@@ -1311,10 +1312,10 @@ def publish_production_685_snapshot(
         con_check.close()
 
     # Verify direct read-back via ParquetRepository + DashboardQueryService
-    from finintel.serving.queries import DashboardQueryService
+    queries_mod = importlib.import_module("finintel.serving.queries")
 
     repo = ParquetRepository(data_root=publish_root, backend="ducklake")
-    svc = DashboardQueryService(repo)
+    svc = queries_mod.DashboardQueryService(repo)
     read_issuers = repo.read_table("issuers.parquet")
     read_ml = repo.read_table(ML_SCORES_TABLE)
     served_card = svc.get_model_card()
