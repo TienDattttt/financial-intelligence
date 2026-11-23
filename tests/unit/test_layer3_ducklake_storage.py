@@ -1958,3 +1958,127 @@ def test_ducklake_hash_skip_all_tables_unchanged_still_commits_audit_snapshot(
         assert pinned.snapshot_id == "snap_same_002"
         assert pinned.read_table("issuers.parquet").height == 3
         assert pinned.read_table("financial_facts.parquet").height == 3
+
+
+def test_ducklake_maintain_and_reconcile_repair_stale_postgres_pointer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2-7: maintain() and reconcile_unpromoted_snapshots() repair stale non-None Postgres pointer."""
+    from finintel.storage.ducklake_store import PostgresActiveSnapshotPointer
+
+    data_root = tmp_path / "pg_reconcile_data"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    backing_sqlite = data_root / "metadata" / "backing_catalog.sqlite"
+    real_attach = ensure_ducklake_attached
+
+    def mocked_attach(
+        connection: duckdb.DuckDBPyConnection,
+        *,
+        catalog_path: Path,
+        data_path: Path,
+        catalog_alias: str = "finintel_lake",
+        catalog_driver: str = "sqlite",
+        postgres_dsn_env: str = "FININTEL_DUCKLAKE_PG_DSN",
+        read_only: bool = True,
+        override_data_path: bool = False,
+    ) -> None:
+        _ = (catalog_path, catalog_driver, postgres_dsn_env, override_data_path)
+        real_attach(
+            connection,
+            catalog_path=backing_sqlite,
+            data_path=data_path,
+            catalog_alias=catalog_alias,
+            catalog_driver="sqlite",
+            read_only=read_only,
+        )
+
+    pg_box: dict[str, PostgresActiveSnapshotPointer | None] = {"ptr": None}
+
+    def fake_upsert(
+        *,
+        postgres_dsn_env: str,
+        catalog_alias: str,
+        snapshot_id: str,
+        ducklake_version: int,
+        run_id: str,
+        published_at: str,
+    ) -> None:
+        _ = (postgres_dsn_env, catalog_alias)
+        pg_box["ptr"] = PostgresActiveSnapshotPointer(
+            snapshot_id=snapshot_id,
+            ducklake_version=ducklake_version,
+            run_id=run_id,
+            published_at=published_at,
+        )
+
+    def fake_read(
+        *, postgres_dsn_env: str, catalog_alias: str
+    ) -> PostgresActiveSnapshotPointer | None:
+        _ = (postgres_dsn_env, catalog_alias)
+        return pg_box["ptr"]
+
+    monkeypatch.setattr(
+        "finintel.storage.ducklake_store.ensure_ducklake_attached", mocked_attach
+    )
+    monkeypatch.setattr(
+        "finintel.storage.ducklake_store.upsert_postgres_active_snapshot", fake_upsert
+    )
+    monkeypatch.setattr(
+        "finintel.storage.ducklake_store.read_postgres_active_snapshot", fake_read
+    )
+
+    store = DuckLakeStore(
+        catalog_path=backing_sqlite,
+        data_path=data_root / "lakehouse" / "data",
+        state_store=state,
+        catalog_driver="postgres",
+        postgres_dsn_env="FININTEL_P27_PG_DSN",
+        keep_snapshots=2,
+        min_snapshot_age_seconds=0,
+    )
+
+    state.start_run("run-1", "CLI_MANUAL", {"source": "fhsc"}, None)
+    ver1 = store.publish_snapshot(
+        "snap_p27_001",
+        {
+            "issuers.parquet": _sample_issuers("v1"),
+            "financial_facts.parquet": _sample_facts(value_offset=1.0),
+        },
+        run_id="run-1",
+    )
+    state.finish_run("run-1", "SUCCEEDED", "snap_p27_001")
+
+    state.start_run("run-2", "CLI_MANUAL", {"source": "fhsc"}, None)
+    ver2 = store.publish_snapshot(
+        "snap_p27_002",
+        {
+            "issuers.parquet": _sample_issuers("v2"),
+            "financial_facts.parquet": _sample_facts(value_offset=2.0),
+        },
+        run_id="run-2",
+    )
+    state.finish_run("run-2", "SUCCEEDED", "snap_p27_002")
+
+    # Simulate Postgres pointer left stuck at snap_p27_001 while state.sqlite promoted snap_p27_002.
+    stale_ptr = PostgresActiveSnapshotPointer(
+        snapshot_id="snap_p27_001",
+        ducklake_version=ver1,
+        run_id="run-1",
+        published_at="2026-01-01T00:00:00+00:00",
+    )
+    pg_box["ptr"] = stale_ptr
+    orphans = store.reconcile_unpromoted_snapshots()
+    assert orphans == []
+    assert pg_box["ptr"] is not None
+    assert pg_box["ptr"].snapshot_id == "snap_p27_002"
+    assert pg_box["ptr"].ducklake_version == ver2
+
+    # Simulate stale Postgres pointer again and verify maintain() reconciles it to snap_p27_002.
+    pg_box["ptr"] = stale_ptr
+    maint = store.maintain(keep_snapshots=2, min_snapshot_age_seconds=0)
+    assert pg_box["ptr"] is not None
+    assert pg_box["ptr"].snapshot_id == "snap_p27_002"
+    assert pg_box["ptr"].ducklake_version == ver2
+    assert ver1 in maint["protected_versions"]  # type: ignore[operator]
