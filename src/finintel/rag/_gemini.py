@@ -18,9 +18,10 @@ FALLBACK_GEMINI_MODELS: tuple[str, ...] = (
     "gemini-3.5-flash-lite",
 )
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_ENV_CANDIDATES: tuple[Path, ...] = (
     Path(".env"),
-    Path("d:/KiCuoiCung/DATN/financial-intelligence/.env"),
+    _REPO_ROOT / ".env",
 )
 
 
