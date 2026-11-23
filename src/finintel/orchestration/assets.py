@@ -1521,15 +1521,17 @@ def quarterly_ml_retrain_schedule(
     retrain_cfg: Mapping[str, object] = (
         raw_retrain if isinstance(raw_retrain, Mapping) else {}
     )
-    val_start = str(
-        retrain_cfg.get("validation_start")
-        or date(max(2019, vn_date.year - 3), 1, 1).isoformat()
+    raw_val_start = retrain_cfg.get("validation_start")
+    val_start: str | None = (
+        str(raw_val_start)
+        if isinstance(raw_val_start, str) and raw_val_start.strip()
+        else None
     )
     test_start = str(
         retrain_cfg.get("test_start")
         or date(max(2020, vn_date.year - 1), 1, 1).isoformat()
     )
-    target_mode = str(retrain_cfg.get("target_mode") or "FUNDAMENTAL_DISTRESS")
+    target_mode = str(retrain_cfg.get("target_mode") or "REGULATORY_DISTRESS")
     reg_path_raw = retrain_cfg.get("regulatory_events_path")
     reg_path = str(reg_path_raw) if isinstance(reg_path_raw, str) else None
 

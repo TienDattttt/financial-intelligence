@@ -415,14 +415,24 @@ def evaluate_risk_tier_reliability(
     y: NDArray[np.int8],
     probs: NDArray[np.floating[Any]],
     cutoffs: tuple[float, float, float, float],
+    *,
+    assigned_tiers: Sequence[str | None] | None = None,
 ) -> dict[str, Any]:
     """Summarize empirical event rate and mean predicted PD across R1..R5 tiers."""
     y_arr = np.asarray(y, dtype=np.int8).reshape(-1)
     p_arr = np.asarray(probs, dtype=np.float64).reshape(-1)
+    if assigned_tiers is not None and len(assigned_tiers) != len(y_arr):
+        raise ContractViolationError(
+            "assigned_tiers length must match y and probs in evaluate_risk_tier_reliability."
+        )
     finite = np.isfinite(p_arr)
     y_fin = y_arr[finite]
     p_fin = p_arr[finite]
-    tiers = assign_risk_tiers(p_fin, cutoffs)
+    tiers: list[str | None] = (
+        [t for t, keep in zip(assigned_tiers, finite, strict=True) if keep]
+        if assigned_tiers is not None
+        else assign_risk_tiers(p_fin, cutoffs)
+    )
     n_total = max(1, len(y_fin))
     rows: list[dict[str, Any]] = []
     observed_rates: list[float] = []
@@ -1749,6 +1759,7 @@ def run_expanding_walk_forward_evaluation(
     precomputed_as_of_scored: pl.DataFrame | None = None,
     strict_years: bool = True,
     tier_cutoffs: tuple[float, float, float, float] | None = None,
+    statutory_delay_days: int = 0,
 ) -> dict[str, Any]:
     """Execute 2-Way Purged Expanding Walk-Forward (2021..2025) with Cluster Bootstrap CI & Unseen Issuers."""
     requested_years = [int(y) for y in test_years]
@@ -1771,6 +1782,7 @@ def run_expanding_walk_forward_evaluation(
             target_mode=target_mode,
             regulatory_events=regulatory_events,
             precomputed_as_of_scored=precomputed_as_of_scored,
+            statutory_delay_days=statutory_delay_days,
         )
         if candidate_years
         else {}
@@ -1793,6 +1805,7 @@ def run_expanding_walk_forward_evaluation(
     pooled_y: list[NDArray[np.int8]] = []
     pooled_iss: list[NDArray[Any]] = []
     pooled_ref_prevs: list[NDArray[np.float64]] = []
+    pooled_tiers: list[str | None] = []
     pooled_scores: dict[str, list[NDArray[np.float64]]] = {m: [] for m in model_names}
     unseen_y: list[NDArray[np.int8]] = []
     unseen_iss: list[NDArray[Any]] = []
@@ -1824,6 +1837,9 @@ def run_expanding_walk_forward_evaluation(
                 features=features,
                 min_unique_positive_issuers=min_unique_positive_issuers,
             )
+        fold_cutoffs = (
+            tier_cutoffs if tier_cutoffs is not None else trained.risk_tier_cutoffs
+        )
         if tier_cutoffs is None:
             last_cutoffs = trained.risk_tier_cutoffs
         evaluated_years.append(year)
@@ -1869,6 +1885,7 @@ def run_expanding_walk_forward_evaluation(
                 pooled_scores["Baseline_1_AltmanZ"].append(alt_p[common])
                 pooled_scores["Baseline_2_Logit"].append(log_p[common])
                 pooled_scores["XGBoost"].append(xgb_p[common])
+                pooled_tiers.extend(assign_risk_tiers(xgb_p[common], fold_cutoffs))
 
         if not unseen_df.is_empty():
             y_u, alt_u, log_u, xgb_u, common_u = _score_three_models(
@@ -1940,7 +1957,10 @@ def run_expanding_walk_forward_evaluation(
         all_iss = np.concatenate(pooled_iss)
         pooled_xgb = np.concatenate(pooled_scores["XGBoost"])
         pooled_reliability = evaluate_risk_tier_reliability(
-            all_y, pooled_xgb, last_cutoffs
+            all_y,
+            pooled_xgb,
+            last_cutoffs,
+            assigned_tiers=pooled_tiers,
         )
         for m in model_names:
             pooled_bootstrap[m] = cluster_bootstrap_metrics(
@@ -2151,7 +2171,12 @@ def compute_taxonomy_drift_psi(
     }
 
 
-def score_distress_model(result: TrainingResult, frame: pl.DataFrame) -> pl.DataFrame:
+def score_distress_model(
+    result: TrainingResult,
+    frame: pl.DataFrame,
+    *,
+    model_role: str | Sequence[str] = "SCREENING_INDICATOR",
+) -> pl.DataFrame:
     """Return calibrated PD, TTC R1..R5 tier, PIT market percentile, base rate & lift."""
     present_keys = [name for name in ML_SCORES_KEY if name in frame.columns]
     if frame.is_empty():
@@ -2172,6 +2197,14 @@ def score_distress_model(result: TrainingResult, frame: pl.DataFrame) -> pl.Data
             if present_keys
             else empty_scores
         )
+    if isinstance(model_role, str):
+        role_values = [model_role] * frame.height
+    else:
+        role_values = [str(r) for r in model_role]
+        if len(role_values) != frame.height:
+            raise ContractViolationError(
+                "model_role sequence length must match frame height."
+            )
     matrix = result.preprocessor.transform(frame).select(result.features).to_numpy()
     raw_margin = np.asarray(
         result.classifier.predict(matrix, output_margin=True), dtype=np.float64
@@ -2218,7 +2251,7 @@ def score_distress_model(result: TrainingResult, frame: pl.DataFrame) -> pl.Data
                 dtype=pl.Float64,
             ),
             "model_version": [MODEL_VERSION] * frame.height,
-            "model_role": ["SCREENING_INDICATOR"] * frame.height,
+            "model_role": pl.Series("model_role", role_values, dtype=pl.String),
         }
     )
     combined = frame.select(present_keys).hstack(output) if present_keys else output

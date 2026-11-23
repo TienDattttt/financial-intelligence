@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Literal
 
+import numpy as np
 import polars as pl
 
 from finintel.analytics.comparisons import benchmark_ratios
@@ -77,6 +78,159 @@ def resolve_peer_standardization_mode(
     return "PIT_REGIME_SYMMETRIC"
 
 
+def _compute_pit_sector_z_by_availability(
+    base_frame: pl.DataFrame,
+    *,
+    mode: PeerStandardizationMode,
+) -> pl.DataFrame:
+    """Compute ``sector_z_*`` using only peers with ``_period_available_at <= row._period_available_at`` (P2-10)."""
+    cohort_cols = [
+        col
+        for col in (
+            "accounting_regime",
+            "statement_scope",
+            "period_type",
+            "period_end_date",
+            "fiscal_year",
+            "fiscal_quarter",
+        )
+        if col in base_frame.columns
+    ]
+    n_rows = base_frame.height
+    z_arrays: dict[str, list[float | None]] = {
+        z_name: [None] * n_rows for z_name in SECTOR_RAW_TO_Z.values()
+    }
+    icb3_col = (
+        base_frame["icb_code_level3"].cast(pl.String).to_list()
+        if mode == "PIT_ICB" and "icb_code_level3" in base_frame.columns
+        else [None] * n_rows
+    )
+    icb2_col = (
+        base_frame["icb_code_level2"].cast(pl.String).to_list()
+        if mode == "PIT_ICB" and "icb_code_level2" in base_frame.columns
+        else [None] * n_rows
+    )
+
+    staged = base_frame.with_row_index("_row_idx")
+    raw_cols = {
+        raw_name: [
+            float(v)
+            if v is not None and isinstance(v, (int, float)) and np.isfinite(float(v))
+            else None
+            for v in base_frame[raw_name].to_list()
+        ]
+        for raw_name in SECTOR_Z_RAW_METRICS
+    }
+
+    valid_avail = staged.filter(pl.col("_period_available_at").is_not_null())
+    partitions = (
+        valid_avail.partition_by(cohort_cols, maintain_order=False)
+        if cohort_cols
+        else [valid_avail]
+    )
+
+    def _z_from_pool(val: float, pool: list[float]) -> float:
+        arr = np.asarray(pool, dtype=np.float64)
+        q25, med, q75 = np.quantile(arr, [0.25, 0.50, 0.75], method="linear")
+        scale = max(float(q75 - q25) * 0.7413011, 1e-6)
+        return float(np.clip((val - float(med)) / scale, -5.0, 5.0))
+
+    for sub in partitions:
+        sub_sorted = sub.sort(["_period_available_at", "_row_idx"])
+        dates_list = sub_sorted["_period_available_at"].to_list()
+        idxs_list = sub_sorted["_row_idx"].to_list()
+        m_len = len(idxs_list)
+        for raw_name, z_name in SECTOR_RAW_TO_Z.items():
+            vals_for_metric = raw_cols[raw_name]
+            pool_all: list[float] = []
+            pool_icb2: dict[str, list[float]] = {}
+            pool_icb3: dict[str, list[float]] = {}
+            pos = 0
+            while pos < m_len:
+                cur_d = dates_list[pos]
+                end = pos
+                while end < m_len and dates_list[end] == cur_d:
+                    r_idx = int(idxs_list[end])
+                    v = vals_for_metric[r_idx]
+                    if v is not None:
+                        pool_all.append(v)
+                        if mode == "PIT_ICB":
+                            c3 = icb3_col[r_idx]
+                            if isinstance(c3, str) and c3.strip():
+                                pool_icb3.setdefault(c3, []).append(v)
+                            c2 = icb2_col[r_idx]
+                            if isinstance(c2, str) and c2.strip():
+                                pool_icb2.setdefault(c2, []).append(v)
+                    end += 1
+
+                if pool_all:
+                    all_arr = np.asarray(pool_all, dtype=np.float64)
+                    q25_all, med_all, q75_all = np.quantile(
+                        all_arr, [0.25, 0.50, 0.75], method="linear"
+                    )
+                    scale_all = max(float(q75_all - q25_all) * 0.7413011, 1e-6)
+                    med_all_f = float(med_all)
+                    icb_cache: dict[tuple[int, str], tuple[float, float]] = {}
+
+                    for k in range(pos, end):
+                        r_idx = int(idxs_list[k])
+                        v = vals_for_metric[r_idx]
+                        if v is None:
+                            continue
+                        if mode == "PIT_ICB":
+                            c3 = icb3_col[r_idx]
+                            if (
+                                isinstance(c3, str)
+                                and c3.strip()
+                                and len(pool_icb3.get(c3, ())) >= 8
+                            ):
+                                if (3, c3) not in icb_cache:
+                                    arr3 = np.asarray(pool_icb3[c3], dtype=np.float64)
+                                    p25, m3, p75 = np.quantile(
+                                        arr3, [0.25, 0.50, 0.75], method="linear"
+                                    )
+                                    icb_cache[(3, c3)] = (
+                                        float(m3),
+                                        max(float(p75 - p25) * 0.7413011, 1e-6),
+                                    )
+                                m_u, s_u = icb_cache[(3, c3)]
+                                z_arrays[z_name][r_idx] = float(
+                                    np.clip((v - m_u) / s_u, -5.0, 5.0)
+                                )
+                                continue
+                            c2 = icb2_col[r_idx]
+                            if (
+                                isinstance(c2, str)
+                                and c2.strip()
+                                and len(pool_icb2.get(c2, ())) >= 5
+                            ):
+                                if (2, c2) not in icb_cache:
+                                    arr2 = np.asarray(pool_icb2[c2], dtype=np.float64)
+                                    p25, m2, p75 = np.quantile(
+                                        arr2, [0.25, 0.50, 0.75], method="linear"
+                                    )
+                                    icb_cache[(2, c2)] = (
+                                        float(m2),
+                                        max(float(p75 - p25) * 0.7413011, 1e-6),
+                                    )
+                                m_u, s_u = icb_cache[(2, c2)]
+                                z_arrays[z_name][r_idx] = float(
+                                    np.clip((v - m_u) / s_u, -5.0, 5.0)
+                                )
+                                continue
+                        z_arrays[z_name][r_idx] = float(
+                            np.clip((v - med_all_f) / scale_all, -5.0, 5.0)
+                        )
+                pos = end
+
+    return base_frame.with_columns(
+        *(
+            pl.Series(z_name, z_arrays[z_name], dtype=pl.Float64)
+            for z_name in SECTOR_RAW_TO_Z.values()
+        )
+    )
+
+
 def attach_pit_sector_z_features(
     frame: pl.DataFrame,
     *,
@@ -92,6 +246,14 @@ def attach_pit_sector_z_features(
                 for z_col in SECTOR_RAW_TO_Z.values()
             )
         )
+
+    if (
+        "_period_available_at" in base_frame.columns
+        and base_frame["_period_available_at"].null_count() < base_frame.height
+        and {"accounting_regime", "statement_scope", "period_type", "period_end_date"}
+        <= set(base_frame.columns)
+    ):
+        return _compute_pit_sector_z_by_availability(base_frame, mode=mode)
 
     if mode == "PIT_REGIME_SYMMETRIC":
         bench_input = base_frame.with_columns(
@@ -278,6 +440,7 @@ def build_pit_two_way_split(
     target_mode: str | None = None,
     regulatory_events: pl.DataFrame | None = None,
     precomputed_as_of_scored: pl.DataFrame | None = None,
+    statutory_delay_days: int = 0,
 ) -> dict[str, pl.DataFrame]:
     """Construct a 2-way PIT split (Train_OOF at ``test_start`` -> Test at ``as_of``) (B-02)."""
     if test_start > as_of:
@@ -293,7 +456,11 @@ def build_pit_two_way_split(
             scored = precomputed_scored
         else:
             periods = prepare_periods(
-                facts, issuers, as_of=cutoff, include_ml_inputs=True
+                facts,
+                issuers,
+                as_of=cutoff,
+                include_ml_inputs=True,
+                statutory_delay_days=statutory_delay_days,
             )
             scored = add_classical_scores(calculate_ratios(periods))
         scoped = scored.filter(pl.col("statement_scope") == statement_scope)
@@ -347,13 +514,18 @@ def build_expanding_walk_forward_splits(
     target_mode: str | None = None,
     regulatory_events: pl.DataFrame | None = None,
     precomputed_as_of_scored: pl.DataFrame | None = None,
+    statutory_delay_days: int = 0,
 ) -> dict[int, dict[str, pl.DataFrame]]:
     """Build 2-way Purged Expanding Walk-Forward PIT splits across ``test_years`` (B-02)."""
     if not test_years:
         raise ContractViolationError("test_years must be a nonempty sequence of years.")
     if precomputed_as_of_scored is None:
         periods_as_of = prepare_periods(
-            facts, issuers, as_of=as_of, include_ml_inputs=True
+            facts,
+            issuers,
+            as_of=as_of,
+            include_ml_inputs=True,
+            statutory_delay_days=statutory_delay_days,
         )
         scored_as_of = add_classical_scores(calculate_ratios(periods_as_of))
     else:
@@ -375,6 +547,7 @@ def build_expanding_walk_forward_splits(
             target_mode=target_mode,
             regulatory_events=regulatory_events,
             precomputed_as_of_scored=scored_as_of,
+            statutory_delay_days=statutory_delay_days,
         )
     return folds
 
@@ -393,6 +566,7 @@ def build_pit_ml_splits(
     target_mode: str | None = None,
     regulatory_events: pl.DataFrame | None = None,
     precomputed_as_of_scored: pl.DataFrame | None = None,
+    statutory_delay_days: int = 0,
 ) -> dict[str, pl.DataFrame]:
     """Construct fold-specific PIT feature/label snapshots without restatement or future-ICB leakage.
 
@@ -414,6 +588,7 @@ def build_pit_ml_splits(
             target_mode=target_mode,
             regulatory_events=regulatory_events,
             precomputed_as_of_scored=precomputed_as_of_scored,
+            statutory_delay_days=statutory_delay_days,
         )
     if validation_start >= test_start:
         raise ContractViolationError("Validation start must precede test start.")

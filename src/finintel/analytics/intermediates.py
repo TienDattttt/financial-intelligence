@@ -26,6 +26,7 @@ Verified Sources:
     https://congbao.chinhphu.vn/van-ban/thong-tu-so-202-2014-tt-btc-6558.htm
 """
 
+from bisect import bisect_left, bisect_right, insort
 import calendar
 import math
 from datetime import date, timedelta
@@ -242,8 +243,11 @@ def _visible_facts(
     as_of: date,
     stocks: tuple[str, ...],
     *,
+    statutory_delay_days: int = 0,
     _precanonicalized: bool = False,
 ) -> pl.DataFrame:
+    if statutory_delay_days < 0:
+        raise ContractViolationError("statutory_delay_days must be non-negative.")
     frame = facts if _precanonicalized else canonicalize_financial_facts(facts)
     optional = {
         "source_provider": pl.lit("normalized"),
@@ -251,10 +255,15 @@ def _visible_facts(
         "comparable_across_taxonomy": pl.lit(False),
         "is_filed_late": pl.lit(None, dtype=pl.Boolean),
     }
+    stat_avail = (
+        pl.col("effective_available_at").dt.offset_by(f"{statutory_delay_days}d")
+        if statutory_delay_days > 0
+        else pl.col("effective_available_at")
+    )
     available = (
         pl.when(pl.col("published_at_basis") == "EXACT_FILING")
         .then(pl.col("published_at"))
-        .otherwise(pl.col("effective_available_at"))
+        .otherwise(stat_avail)
     )
     return (
         frame.with_columns(
@@ -720,6 +729,8 @@ def _quarter_statutory_deadline(
 def _compute_overdue_or_late_count_4q(
     visible_facts: pl.DataFrame,
     frame: pl.DataFrame,
+    *,
+    statutory_delay_days: int = 0,
 ) -> pl.DataFrame:
     """Count trailing-4Q overdue or late filings at each row's PIT ``a_t`` with 0% lookahead (H-06).
 
@@ -833,7 +844,7 @@ def _compute_overdue_or_late_count_4q(
             stat_ontime = slot[2] if slot is not None else None
             arrived_on_time = (
                 exact_ontime is not None and exact_ontime <= deadline_s
-            ) or (stat_ontime is not None and stat_ontime <= a_t)
+            ) or (stat_ontime is not None and stat_ontime <= deadline_s)
             if not arrived_on_time:
                 overdue += 1
         counts.append(float(overdue))
@@ -931,14 +942,67 @@ def _compute_consecutive_loss_quarters(
     )
 
 
+def _compute_pit_cross_sectional_asset_size_pct(
+    frame: pl.DataFrame,
+    valid_asset: pl.Expr,
+    asset_group: list[str],
+) -> pl.Series:
+    """Compute cross-sectional asset size percentile strictly over peers with ``_period_available_at <= row._period_available_at`` (P2-10)."""
+    if frame.is_empty():
+        return pl.Series("cross_sectional_asset_size_pct", [], dtype=pl.Float64)
+
+    staged = frame.with_row_index("_row_idx").select(
+        "_row_idx",
+        *asset_group,
+        "_period_available_at",
+        valid_asset.alias("_valid_asset"),
+    )
+    out: list[float | None] = [None] * frame.height
+    grouped = staged.filter(
+        pl.col("_valid_asset").is_not_null()
+        & pl.col("_period_available_at").is_not_null()
+    ).partition_by(asset_group, maintain_order=False)
+    for sub in grouped:
+        sub_sorted = sub.sort(["_period_available_at", "_valid_asset", "_row_idx"])
+        dates_col = sub_sorted["_period_available_at"].to_list()
+        vals_col = sub_sorted["_valid_asset"].to_list()
+        idxs_col = sub_sorted["_row_idx"].to_list()
+        sorted_peers: list[float] = []
+        n = len(dates_col)
+        pos = 0
+        while pos < n:
+            cur_date = dates_col[pos]
+            end = pos
+            while end < n and dates_col[end] == cur_date:
+                insort(sorted_peers, float(vals_col[end]))
+                end += 1
+            count = len(sorted_peers)
+            for k in range(pos, end):
+                r_idx = int(idxs_col[k])
+                if count == 1:
+                    out[r_idx] = 50.0
+                else:
+                    v = float(vals_col[k])
+                    lo = bisect_left(sorted_peers, v)
+                    hi = bisect_right(sorted_peers, v)
+                    avg_rank = 1.0 + 0.5 * (lo + hi - 1)
+                    out[r_idx] = 100.0 * (avg_rank - 1.0) / (count - 1.0)
+            pos = end
+    return pl.Series("cross_sectional_asset_size_pct", out, dtype=pl.Float64)
+
+
 def _attach_ml_candidate_features(
     frame: pl.DataFrame,
     visible_facts: pl.DataFrame,
+    *,
+    statutory_delay_days: int = 0,
 ) -> pl.DataFrame:
     """Attach leak-free ML-05 candidate features onto corporate periods."""
     with_counts = _compute_consecutive_loss_quarters(
         visible_facts,
-        _compute_overdue_or_late_count_4q(visible_facts, frame),
+        _compute_overdue_or_late_count_4q(
+            visible_facts, frame, statutory_delay_days=statutory_delay_days
+        ),
     )
 
     c = pl.col
@@ -960,15 +1024,8 @@ def _attach_ml_candidate_features(
         .then(c(ASSETS).cast(pl.Float64))
         .otherwise(pl.lit(None, dtype=pl.Float64))
     )
-    asset_count = valid_asset.count().over(asset_group)
-    asset_rank = valid_asset.rank(method="average").over(asset_group)
-    asset_pct = (
-        pl.when(valid_asset.is_not_null() & (asset_count == 1))
-        .then(50.0)
-        .when(valid_asset.is_not_null() & (asset_count > 1))
-        .then(100.0 * (asset_rank - 1.0) / (asset_count - 1.0))
-        .otherwise(pl.lit(None, dtype=pl.Float64))
-        .alias("cross_sectional_asset_size_pct")
+    asset_pct_series = _compute_pit_cross_sectional_asset_size_pct(
+        with_counts, valid_asset, asset_group
     )
 
     avg_assets = average(ASSETS)
@@ -1010,7 +1067,7 @@ def _attach_ml_candidate_features(
         .otherwise(pl.lit(None, dtype=pl.Float64))
         .alias("_ml_cr")
     )
-    staged = with_counts.with_columns(asset_pct, ml_roa, ml_lta, ml_cr)
+    staged = with_counts.with_columns(asset_pct_series, ml_roa, ml_lta, ml_cr)
 
     prior_keys = [*SERIES, "fiscal_year", "fiscal_quarter"]
     prior_ratios = staged.select(
@@ -1118,6 +1175,7 @@ def prepare_periods(
     as_of: date,
     include_ml_inputs: bool = False,
     market_prices: pl.DataFrame | None = None,
+    statutory_delay_days: int = 0,
     _precanonicalized: bool = False,
 ) -> pl.DataFrame:
     """Build annual and TTM inputs from reports available by the PIT cut-off.
@@ -1168,7 +1226,11 @@ def prepare_periods(
     flows = (*FLOWS, *ML_FLOWS) if include_ml_inputs else FLOWS
     amounts = (*stocks, *flows, EPS)
     visible_facts = _visible_facts(
-        facts, as_of, stocks, _precanonicalized=_precanonicalized
+        facts,
+        as_of,
+        stocks,
+        statutory_delay_days=statutory_delay_days,
+        _precanonicalized=_precanonicalized,
     )
     periods = (
         _period_amounts(
@@ -1228,5 +1290,9 @@ def prepare_periods(
         ).alias("source_filing_ids"),
     ).rename({"taxonomy_version_prior": "_prior_taxonomy"})
     if include_ml_inputs:
-        assembled = _attach_ml_candidate_features(assembled, visible_facts)
+        assembled = _attach_ml_candidate_features(
+            assembled,
+            visible_facts,
+            statutory_delay_days=statutory_delay_days,
+        )
     return assembled.sort(PERIOD)

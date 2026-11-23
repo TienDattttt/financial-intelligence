@@ -230,9 +230,12 @@ def _validate_ml_config(ml_config: MLTransformConfig) -> None:
         raise ContractViolationError(
             "Guardrail G2 requires approved_target=True before supervised ML runs."
         )
-    if type(ml_config.validation_start) is not date:
+    if (
+        ml_config.validation_start is not None
+        and type(ml_config.validation_start) is not date
+    ):
         raise ContractViolationError(
-            "Enabled ML transform requires validation_start as a datetime.date."
+            "MLTransformConfig.validation_start must be a datetime.date or None."
         )
     if type(ml_config.test_start) is not date:
         raise ContractViolationError(
@@ -1008,10 +1011,20 @@ def _assemble_ml_scores_table(
     shap_out: pl.DataFrame,
 ) -> pl.DataFrame:
     join_keys = list(ML_SCORES_KEY)
+    supervised_join = (
+        supervised_out.rename({"model_role": "_supervised_model_role"})
+        if "model_role" in supervised_out.columns
+        else supervised_out.with_columns(
+            pl.lit(None, dtype=pl.String).alias("_supervised_model_role")
+        )
+    )
     assembled = (
         classical_df.join(unsupervised_out, on=join_keys, how="left", validate="1:1")
-        .join(supervised_out, on=join_keys, how="left", validate="1:1")
+        .join(supervised_join, on=join_keys, how="left", validate="1:1")
         .join(shap_out, on=join_keys, how="left", validate="1:1")
+        .with_columns(
+            pl.coalesce("_supervised_model_role", "model_role").alias("model_role")
+        )
         .select(
             *(
                 pl.col(name).cast(dtype, strict=True).alias(name)
@@ -1105,7 +1118,6 @@ def _train_ml_with_bundle(
     )
     from finintel.ml.unsupervised import FinancialArchetypes
 
-    assert ml_config.validation_start is not None
     assert ml_config.test_start is not None
     selected_features = (
         SECTOR_ADJUSTED_FEATURES
@@ -1135,21 +1147,25 @@ def _train_ml_with_bundle(
         regulatory_events=ml_config.regulatory_events,
         precomputed_as_of_scored=classical_as_of,
     )
+    validation_fold = splits.get("validation")
     peer_standardization_mode = resolve_peer_standardization_mode(
-        splits["train"], splits["validation"]
+        splits["train"], validation_fold
     )
     archetypes = FinancialArchetypes().fit(splits["train"])
     training = train_distress_model(
         splits["train"],
-        splits["validation"],
+        validation_fold,
         features=selected_features,
         min_unique_positive_issuers=ml_config.min_unique_positive_issuers,
     )
     evaluation_report = build_evaluation_report(
         training,
         train=splits["train"],
-        validation=splits["validation"],
+        validation=validation_fold,
         test=splits["test"],
+    )
+    split_mode = (
+        "TWO_WAY_PURGED_OOF" if validation_fold is None else "THREE_WAY_HOLD_OUT"
     )
     evaluation_report.update(
         {
@@ -1158,6 +1174,7 @@ def _train_ml_with_bundle(
             "feature_set": ml_config.feature_set,
             "peer_standardization_mode": peer_standardization_mode,
             "target_mode": ml_config.target_mode,
+            "split_mode": split_mode,
             "platt_slope": training.platt_slope,
             "platt_intercept": training.platt_intercept,
             "risk_tier_cutoffs": {
@@ -1185,7 +1202,13 @@ def _train_ml_with_bundle(
     )
 
     unsupervised_out = archetypes.transform(eligible)
-    supervised_out = score_distress_model(training, eligible).drop("model_role")
+    role_values = [
+        "OUT_OF_SAMPLE_LIVE"
+        if isinstance(pend, date) and pend >= ml_config.test_start
+        else "IN_SAMPLE_TRAIN"
+        for pend in eligible["period_end_date"].cast(pl.Date).to_list()
+    ]
+    supervised_out = score_distress_model(training, eligible, model_role=role_values)
     shap_out = explain_distress(
         training,
         eligible,
@@ -1201,8 +1224,13 @@ def _train_ml_with_bundle(
         "cadence_mode": "retrain",
         "retrained": True,
         "as_of": as_of.isoformat(),
-        "validation_start": ml_config.validation_start.isoformat(),
+        "validation_start": (
+            ml_config.validation_start.isoformat()
+            if ml_config.validation_start is not None
+            else None
+        ),
         "test_start": ml_config.test_start.isoformat(),
+        "split_mode": split_mode,
         "approved_target": ml_config.approved_target,
         "require_exact_filing": ml_config.require_exact_filing,
         "statement_scope": ml_config.statement_scope,
@@ -1333,9 +1361,25 @@ def _score_ml_with_bundle(
         if artifact.require_exact_filing
         else eligible_with_z
     )
+    raw_test_start = (
+        artifact.run_manifest.get("test_start")
+        if isinstance(artifact.run_manifest, Mapping)
+        else None
+    )
+    artifact_test_start = (
+        date.fromisoformat(str(raw_test_start))
+        if isinstance(raw_test_start, str) and raw_test_start.strip()
+        else date.fromisoformat(artifact.trained_as_of)
+    )
+    role_values = [
+        "OUT_OF_SAMPLE_LIVE"
+        if isinstance(pend, date) and pend >= artifact_test_start
+        else "IN_SAMPLE_TRAIN"
+        for pend in eligible["period_end_date"].cast(pl.Date).to_list()
+    ]
     unsupervised_out = artifact.archetypes.transform(eligible)
-    supervised_out = score_distress_model(artifact.training, eligible).drop(
-        "model_role"
+    supervised_out = score_distress_model(
+        artifact.training, eligible, model_role=role_values
     )
     shap_out = explain_distress(
         artifact.training,
@@ -1608,7 +1652,6 @@ def run_incremental_analytics_transform(
     ml_artifact_payload: PersistedMLArtifactBundle | None = None
     model_card_meta: pl.DataFrame | None = None
     if effective_ml_mode == "retrain":
-        assert effective_ml.validation_start is not None
         assert effective_ml.test_start is not None
         if effective_ml.model_artifact_dir is not None:
             (

@@ -5,7 +5,7 @@ Verified Sources:
     https://xgboost.readthedocs.io/en/stable/tutorials/monotonic.html
     Lundberg, S. M. et al. (2020). "From local explanations to global understanding
         with explainable AI for trees." Nature Machine Intelligence, Vol. 2, pp. 56-67.
-    Raw-margin SHAP values are additive to XGBoost's log-odds output within 1e-6.
+    Raw-margin SHAP values are additive to XGBoost's log-odds output within 1e-5 (float32 ULP).
     Missingness indicator contributions are folded into their corresponding original
     financial feature so exact additivity holds over original feature names without
     leaking synthetic *_missing columns into downstream UI payloads.
@@ -130,7 +130,7 @@ def compute_shap_contributions(
         aggregated[:, out_idx] = contrib
 
     if not np.allclose(
-        base_value + aggregated.sum(axis=1), margin, rtol=1e-6, atol=1e-6
+        base_value + aggregated.sum(axis=1), margin, rtol=1e-5, atol=1e-5
     ):
         raise ContractViolationError(
             "TreeSHAP additivity check failed against XGBoost raw margins."
