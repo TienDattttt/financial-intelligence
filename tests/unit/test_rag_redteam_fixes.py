@@ -743,3 +743,97 @@ def test_p0_1_and_p2_9_router_returns_503_on_bulkhead_timeout_and_unary_minus_ch
     )
     assert resp.status_code == 503
     assert resp.headers.get("Retry-After") == "5"
+
+
+def test_p0_1_multiline_wrapped_table_excerpt_preserves_vas_sign_security() -> None:
+    wrapped_chunk = (
+        "| Doanh thu thuần về bán hàng và | 10 |\n"
+        "| cung cấp dịch vụ (10 = 01 - 02) | 30 138.855.112.131.387 118.953.027.893.654 |\n"
+        "| Lợi nhuận sau thuế TNDN | 60 | (1.079.868.045.668) |"
+    )
+    ok_wrapped, _ = verify_verbatim_excerpt(
+        "Doanh thu thuần về bán hàng và\ncung cấp dịch vụ (10 = 01 - 02)\n30 138.855.112.131.387 118.953.027.893.654",
+        wrapped_chunk,
+    )
+    assert ok_wrapped is True
+
+    # Flipping VAS negative sign across multiline excerpt MUST STILL FAIL.
+    ok_flipped, _ = verify_verbatim_excerpt(
+        "cung cấp dịch vụ (10 = 01 - 02)\nLợi nhuận sau thuế TNDN 60 1.079.868.045.668",
+        wrapped_chunk,
+    )
+    assert ok_flipped is False
+
+    # Mutating a number across multiline excerpt MUST STILL FAIL.
+    ok_mutated, _ = verify_verbatim_excerpt(
+        "Doanh thu thuần về bán hàng và\ncung cấp dịch vụ (10 = 01 - 02)\n30 999.855.112.131.387 118.953.027.893.654",
+        wrapped_chunk,
+    )
+    assert ok_mutated is False
+
+
+def test_p0_1_answer_grounding_accepts_question_date_markdown_lists_and_grounded_chunk_notes() -> (
+    None
+):
+    chunk_text = (
+        "Thuyết minh số 5.1: Chi tiết khoản phải thu ngắn hạn của khách hàng.\n"
+        "| 131 | Phải thu ngắn hạn của khách hàng | 7.232.690.258.971 | (2.476.507.836.278) |"
+    )
+    excerpt = "| 131 | Phải thu ngắn hạn của khách hàng | 7.232.690.258.971 | (2.476.507.836.278) |"
+    hit = _make_hit(page_no=9, text_content=chunk_text)
+    inv = _make_stub_investigator(
+        hits=[hit],
+        llm_payload={
+            "abstained": False,
+            "abstention_reason": None,
+            "answer": (
+                "1. **Phải thu tại ngày 31/12/2023**: Theo Thuyết minh số 5.1, "
+                "phải thu ngắn hạn là 7.232.690.258.971 VND và dự phòng là (2.476.507.836.278) VND "
+                "[BCTC, Trang 9]."
+            ),
+            "citations": [{"chunk_id": 1, "page_no": 9, "verbatim_excerpt": excerpt}],
+        },
+    )
+    res_ok = asyncio.run(
+        inv.investigate(
+            ticker="HBC",
+            question="Tại ngày 31/12/2023, khoản phải thu và dự phòng là bao nhiêu?",
+            use_cache=False,
+        )
+    )
+    assert res_ok.abstained is False
+    assert len(res_ok.citations) == 1
+
+    # Ungrounded financial figure in answer MUST STILL abstain.
+    inv_bad = _make_stub_investigator(
+        hits=[hit],
+        llm_payload={
+            "abstained": False,
+            "abstention_reason": None,
+            "answer": "1. **Phải thu**: 9.999.000.000 VND [BCTC, Trang 9].",
+            "citations": [{"chunk_id": 1, "page_no": 9, "verbatim_excerpt": excerpt}],
+        },
+    )
+    res_bad = asyncio.run(
+        inv_bad.investigate(
+            ticker="HBC",
+            question="Tại ngày 31/12/2023, khoản phải thu là bao nhiêu?",
+            use_cache=False,
+        )
+    )
+    assert res_bad.abstained is True
+
+
+def test_p2_1_phrase_tsquery_helper_builds_adjacent_accounting_pairs() -> None:
+    from finintel.rag.retriever import _build_phrase_tsquery_expression
+
+    phrase_expr = _build_phrase_tsquery_expression(
+        "Ý kiến kiểm toán và tổng tài sản 2024 HPG",
+        excluded_terms=frozenset({"hpg", "2024"}),
+    )
+    assert "ý <-> kiến" in phrase_expr
+    assert "kiểm <-> toán" in phrase_expr
+    assert "tổng <-> tài" in phrase_expr
+    assert "tài <-> sản" in phrase_expr
+    assert "hpg" not in phrase_expr
+    assert "2024" not in phrase_expr
