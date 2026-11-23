@@ -121,20 +121,13 @@ def create_rag_router(
             ],
         )
 
-    @router.post("/{ticker}/investigate", response_model=InvestigateResponse)
     async def investigate_company_documents(
         ticker: str,
-        raw_body: dict[str, Any],
+        body: InvestigateRequest,
     ) -> InvestigateResponse:
-        from pydantic import ValidationError
-
         clean_ticker = ticker.strip().upper()
         if not clean_ticker or not clean_ticker.isalnum() or len(clean_ticker) > 16:
             raise HTTPException(status_code=422, detail="Invalid ticker symbol.")
-        try:
-            body = InvestigateRequest.model_validate(raw_body)
-        except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.errors()) from None
         investigator = await asyncio.to_thread(get_investigator)
         try:
             result = await investigator.investigate(
@@ -147,11 +140,29 @@ def create_rag_router(
             )
         except PromptInjectionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
+        except TimeoutError:
+            raise HTTPException(
+                status_code=503,
+                detail="Hệ thống điều tra tài liệu đang quá tải, vui lòng thử lại sau.",
+                headers={"Retry-After": "5"},
+            ) from None
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
 
         payload: dict[str, Any] = result.to_dict()
         return InvestigateResponse(**payload)
+
+    # Resolve local Pydantic annotations eagerly so FastAPI builds OpenAPI schemas
+    # cleanly even with ``from __future__ import annotations``.
+    investigate_company_documents.__annotations__["ticker"] = str
+    investigate_company_documents.__annotations__["body"] = InvestigateRequest
+    investigate_company_documents.__annotations__["return"] = InvestigateResponse
+    router.add_api_route(
+        "/{ticker}/investigate",
+        investigate_company_documents,
+        methods=["POST"],
+        response_model=InvestigateResponse,
+    )
 
     return router
 
