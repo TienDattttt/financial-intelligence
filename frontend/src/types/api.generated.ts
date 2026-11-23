@@ -1081,6 +1081,28 @@ export interface components {
             /** Top 3 Shap Drivers */
             top_3_shap_drivers?: components["schemas"]["ShapDriverItem"][];
         };
+        /** InvestigateRequest */
+        InvestigateRequest: {
+            /** Question */
+            question: string;
+            /** Fiscal Year */
+            fiscal_year?: number | null;
+            /**
+             * Statement Scope
+             * @default CONSOLIDATED
+             */
+            statement_scope: string | null;
+            /**
+             * Top K
+             * @default 6
+             */
+            top_k: number;
+            /**
+             * Use Cache
+             * @default true
+             */
+            use_cache: boolean;
+        };
         /** InvestigateResponse */
         InvestigateResponse: {
             /** Ticker */
@@ -3356,9 +3378,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["InvestigateRequest"];
             };
         };
         responses: {
