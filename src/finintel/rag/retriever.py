@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +16,7 @@ DEFAULT_RRF_K = 60
 DEFAULT_CANDIDATE_K = 25
 
 _FTS_TOKEN_RE = re.compile(r"[0-9A-Za-zÀ-ỹ]+")
+_EXACT_VIETNAMESE_STOPWORDS: frozenset[str] = frozenset({"tại"})
 _VIETNAMESE_STOPWORDS: frozenset[str] = frozenset(
     {
         "la",
@@ -28,7 +30,6 @@ _VIETNAMESE_STOPWORDS: frozenset[str] = frozenset(
         "bao",
         "nhieu",
         "nam",
-        "tai",
         "ve",
         "voi",
         "duoc",
@@ -45,10 +46,24 @@ _VIETNAMESE_STOPWORDS: frozenset[str] = frozenset(
         "nhu",
         "nay",
         "do",
-        "tai",
         "sao",
+        "theo",
+        "bctc",
+        "hop",
+        "nhat",
+        "kiem",
+        "toan",
+        "cong",
+        "ty",
+        "ngay",
     }
 )
+
+
+def _strip_vietnamese_diacritics(text: str) -> str:
+    nfd = unicodedata.normalize("NFD", text)
+    without_marks = "".join(ch for ch in nfd if unicodedata.category(ch) != "Mn")
+    return without_marks.replace("đ", "d").replace("Đ", "D")
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,20 +98,32 @@ def reciprocal_rank_fusion(
     return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
 
 
-def build_or_tsquery_expression(query: str, *, max_terms: int = 12) -> str:
+def build_or_tsquery_expression(query: str, *, max_terms: int = 24) -> str:
     """Build a safe OR-joined PostgreSQL tsquery string from natural-language Vietnamese queries."""
     tokens = [tok.lower() for tok in _FTS_TOKEN_RE.findall(query)]
     filtered: list[str] = []
     seen: set[str] = set()
     for tok in tokens:
-        if len(tok) < 2 or tok in _VIETNAMESE_STOPWORDS or tok in seen:
+        if len(tok) < 2 or tok in _EXACT_VIETNAMESE_STOPWORDS:
             continue
-        seen.add(tok)
+        unaccented = _strip_vietnamese_diacritics(tok)
+        if (
+            len(unaccented) < 2
+            or unaccented in _VIETNAMESE_STOPWORDS
+            or unaccented in seen
+        ):
+            continue
+        seen.add(unaccented)
         filtered.append(tok)
         if len(filtered) >= max_terms:
             break
     if not filtered:
-        filtered = [tok.lower() for tok in tokens[:max_terms] if tok]
+        for tok in tokens:
+            if tok and tok not in seen:
+                seen.add(tok)
+                filtered.append(tok)
+                if len(filtered) >= max_terms:
+                    break
     return " | ".join(filtered)
 
 
@@ -147,8 +174,8 @@ class HybridPgVectorRetriever:
         query_vec = self.embedder.embed_query(clean_query)
         or_expr = build_or_tsquery_expression(clean_query)
 
-        where_clauses = ["(c.issuer_id = %s OR c.ticker = %s)"]
-        base_params: list[Any] = [clean_issuer, clean_issuer]
+        where_clauses = ["c.ticker = %s"]
+        base_params: list[Any] = [clean_issuer]
         if scope_filter is not None:
             where_clauses.append("c.statement_scope = %s")
             base_params.append(scope_filter)
