@@ -4,7 +4,6 @@ import * as React from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
-  AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
@@ -37,6 +36,7 @@ import {
   PriceRiskOverlayChart,
 } from "@/components/charts/PriceRiskOverlayChart";
 import { SectorBoxPlotChart } from "@/components/charts/SectorBoxPlotChart";
+import { DataCoverageNotice } from "@/components/financial/DataCoverageNotice";
 import { FinancialTable } from "@/components/financial/FinancialTable";
 import { PercentileBar } from "@/components/financial/PercentileBar";
 import { RedFlagChecklist } from "@/components/financial/RedFlagChecklist";
@@ -146,12 +146,16 @@ function computeRangeStats(values: readonly (number | null | undefined)[]) {
 
 function CompanyProfileContent() {
   const params = useParams<{ ticker: string }>();
-  const router = useRouter();
-  const searchParams = useSearchParams();
   const ticker = React.useMemo(
     () => decodeURIComponent(params.ticker ?? "").trim().toUpperCase(),
     [params.ticker],
   );
+  return <CompanyProfileBody key={ticker} ticker={ticker} />;
+}
+
+function CompanyProfileBody({ ticker }: { ticker: string }) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
   const {
     statementScope,
@@ -160,6 +164,7 @@ function CompanyProfileContent() {
     periodView,
     snapshotId,
     openSourceDrawer,
+    closeSourceDrawer,
   } = useAppState();
   const { palette } = useChartTheme();
 
@@ -208,6 +213,10 @@ function CompanyProfileContent() {
   const [lineageFilter, setLineageFilter] = React.useState("");
   const [ragPreset, setRagPreset] =
     React.useState<DocumentInvestigationPreset | null>(null);
+
+  React.useEffect(() => {
+    closeSourceDrawer();
+  }, [ticker, closeSourceDrawer]);
 
   const effectiveGrowthView = periodType === "ANNUAL" ? "Annual" : growthLocalView;
 
@@ -748,16 +757,21 @@ function CompanyProfileContent() {
         </CardContent>
       </Card>
 
-      {profile.accounting_regime !== "CORPORATE" || sortedMl.length === 0 ? (
-        <div className="flex items-start gap-2 rounded border border-risk-mid/35 bg-risk-mid-soft p-3 text-xs text-risk-mid">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span>
-            {profile.accounting_regime !== "CORPORATE"
-              ? "Tổ chức này thuộc nhóm định chế tài chính/bảo hiểm áp dụng chuẩn mực kế toán đặc thù; các chỉ số chấm điểm doanh nghiệp phi tài chính không áp dụng trực tiếp."
-              : "Chưa đủ dữ liệu chuỗi kỳ để chấm điểm mô hình cho lát cắt báo cáo đang chọn. Thử chuyển giữa Hợp nhất / Riêng lẻ hoặc Theo quý / Theo năm."}
-          </span>
-        </div>
-      ) : null}
+      <DataCoverageNotice
+        ticker={profile.ticker}
+        exchange={issuerMeta?.exchange}
+        accountingRegime={profile.accounting_regime}
+        hasFinancialData={profile.ratios_table.length > 0 || sortedMl.length > 0}
+        hasSupervisedPd={
+          latestMl?.calibrated_distress_prob !== null &&
+          latestMl?.calibrated_distress_prob !== undefined
+        }
+        hasEodPrices={
+          overlayQuery.isLoading || overlayQuery.isError
+            ? null
+            : (overlayQuery.data?.price_series.length ?? 0) > 0
+        }
+      />
 
       {/* Navigation Tabs */}
       <div className="no-print flex flex-wrap gap-1 border-b border-border">
