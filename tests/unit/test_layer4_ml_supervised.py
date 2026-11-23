@@ -2717,44 +2717,6 @@ def test_p1_1_explain_float32_tolerance_and_two_way_incremental(
     assert "IN_SAMPLE_TRAIN" in ml_roles
 
 
-def test_p1_1_quarterly_retrain_schedule_defaults(tmp_path: Path) -> None:
-    """P1-1: quarterly_ml_retrain_schedule defaults to validation_start=None & target_mode=REGULATORY_DISTRESS."""
-    dg = pytest.importorskip("dagster")
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    from finintel.orchestration.assets import (
-        PublishMartsConfig,
-        quarterly_ml_retrain_schedule,
-    )
-    from finintel.orchestration.resources import FinIntelPathsResource
-
-    VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-
-    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "config" / "settings.yaml").write_text(
-        "orchestration: {}\n", encoding="utf-8"
-    )
-    paths_res = FinIntelPathsResource(
-        project_root=str(tmp_path), data_root=str(tmp_path / "data")
-    )
-    ctx = dg.build_schedule_context(
-        scheduled_execution_time=datetime(2026, 4, 1, 2, 0, tzinfo=VN_TZ),
-        resources={"paths": paths_res},
-    )
-    eval_res = quarterly_ml_retrain_schedule.evaluate_tick(ctx)
-    if isinstance(eval_res, dg.RunRequest):
-        req = eval_res
-    else:
-        assert eval_res.run_requests is not None and len(eval_res.run_requests) == 1
-        req = eval_res.run_requests[0]
-    assert isinstance(req, dg.RunRequest)
-    cfg = req.run_config["ops"]["published_financial_marts"]["config"]
-    assert cfg.get("ml_validation_start") is None
-    assert PublishMartsConfig(**cfg).ml_validation_start is None
-    assert cfg["target_mode"] == "REGULATORY_DISTRESS"
-
-
 def test_p1_2_walk_forward_uses_per_fold_pit_cutoffs_without_lookahead(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -644,5 +644,36 @@ def test_incremental_transform_has_zero_platform_group_imports() -> None:
             assert node.module.split(".")[0] not in forbidden, node.module
 
 
+def test_p1_1_quarterly_retrain_schedule_defaults(tmp_path: Path) -> None:
+    """P1-1: quarterly_ml_retrain_schedule defaults to validation_start=None & target_mode=REGULATORY_DISTRESS."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    vn_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config" / "settings.yaml").write_text(
+        "orchestration: {}\n", encoding="utf-8"
+    )
+    paths_res = FinIntelPathsResource(
+        project_root=str(tmp_path), data_root=str(tmp_path / "data")
+    )
+    ctx = dg.build_schedule_context(
+        scheduled_execution_time=datetime(2026, 4, 1, 2, 0, tzinfo=vn_tz),
+        resources={"paths": paths_res},
+    )
+    eval_res = quarterly_ml_retrain_schedule.evaluate_tick(ctx)
+    if isinstance(eval_res, dg.RunRequest):
+        req = eval_res
+    else:
+        assert eval_res.run_requests is not None and len(eval_res.run_requests) == 1
+        req = eval_res.run_requests[0]
+    assert isinstance(req, dg.RunRequest)
+    cfg = req.run_config["ops"]["published_financial_marts"]["config"]
+    assert cfg.get("ml_validation_start") is None
+    assert PublishMartsConfig(**cfg).ml_validation_start is None
+    assert cfg["target_mode"] == "REGULATORY_DISTRESS"
+
+
 def timezone_vn() -> tzinfo:
     return timezone(timedelta(hours=7))
