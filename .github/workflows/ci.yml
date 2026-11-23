@@ -42,7 +42,41 @@ jobs:
       - name: Lint
         run: uv run --no-sync ruff check src scripts tests
       - name: Check types
-        run: uv run --no-sync mypy --strict src/finintel scripts/spike_vnstock6.py scripts/spike_option_b.py tests/unit
+        run: >-
+          uv run --no-sync mypy --strict
+          src/finintel/__init__.py
+          src/finintel/config.py
+          src/finintel/exceptions.py
+          src/finintel/analytics
+          src/finintel/domain
+          src/finintel/ingestion
+          src/finintel/ml
+          src/finintel/normalization
+          src/finintel/pipeline
+          src/finintel/ports
+          src/finintel/quality
+          src/finintel/storage
+          src/finintel/transform
+          scripts/spike_vnstock6.py
+          scripts/spike_option_b.py
+          tests/unit/test_exceptions.py
+          tests/unit/test_layer0_orchestration.py
+          tests/unit/test_layer1_ingestion.py
+          tests/unit/test_layer2_batch_incremental.py
+          tests/unit/test_layer2_normalization.py
+          tests/unit/test_layer3_ducklake_storage.py
+          tests/unit/test_layer3_storage.py
+          tests/unit/test_layer4_analytics.py
+          tests/unit/test_layer4_disclosure_enrichment.py
+          tests/unit/test_layer4_forensic_and_stress.py
+          tests/unit/test_layer4_ml.py
+          tests/unit/test_layer4_ml_supervised.py
+          tests/unit/test_layer6_quality.py
+          tests/unit/test_market_prices_collector.py
+          tests/unit/test_option_b_incremental_transform.py
+          tests/unit/test_regulatory_events_collector.py
+          tests/unit/test_spike_vnstock6.py
+          tests/unit/test_ui09b_market_valuation.py
       - name: Run tests
         run: uv run --no-sync pytest -q
 

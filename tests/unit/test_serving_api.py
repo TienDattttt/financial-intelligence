@@ -10,12 +10,15 @@ from types import SimpleNamespace
 
 import duckdb
 import pytest
-from fastapi.testclient import TestClient
 
-from finintel.ml.tables import build_ml_artifacts
-from finintel.pipeline.state_store import StateStore
-from finintel.serving.api import create_app
-from finintel.serving.schemas import ModelCardResponse, StressScenarioRequest
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from finintel.ml.tables import build_ml_artifacts  # noqa: E402
+from finintel.pipeline.state_store import StateStore  # noqa: E402
+from finintel.serving.api import create_app  # noqa: E402
+from finintel.serving.schemas import ModelCardResponse, StressScenarioRequest  # noqa: E402
 from finintel.storage.ducklake_store import DuckLakeStore
 from finintel.storage.repository import ParquetRepository
 from finintel.storage.schemas import (

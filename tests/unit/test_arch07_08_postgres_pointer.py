@@ -252,6 +252,8 @@ def test_arch08_serving_without_state_sqlite_or_metadata_dir_ttl_cache_and_rollb
     from DuckLake model_card_meta, and observes rollback cleanly."""
     import duckdb
     import pytest
+
+    pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     from finintel.serving.api import create_app
@@ -406,6 +408,8 @@ def test_arch08_split_brain_postgres_pointer_returns_503(
     """ARCH-08: split-brain between Postgres pointer and DuckLake catalog returns HTTP 503."""
     import duckdb
     import pytest
+
+    pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     from finintel.serving.api import create_app

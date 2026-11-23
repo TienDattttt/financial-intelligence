@@ -10,12 +10,15 @@ from types import SimpleNamespace
 
 import polars as pl
 import pytest
-from fastapi.testclient import TestClient
 
-from finintel.analytics.tables import build_analytics_tables
-from finintel.pipeline.state_store import StateStore
-from finintel.serving.api import create_app
-from finintel.serving.schemas import CompanyMarketOverlayResponse
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from finintel.analytics.tables import build_analytics_tables  # noqa: E402
+from finintel.pipeline.state_store import StateStore  # noqa: E402
+from finintel.serving.api import create_app  # noqa: E402
+from finintel.serving.schemas import CompanyMarketOverlayResponse  # noqa: E402
 from finintel.storage.schemas import (
     BENCHMARKS_TABLE,
     FILINGS_MANIFEST_SCHEMA,

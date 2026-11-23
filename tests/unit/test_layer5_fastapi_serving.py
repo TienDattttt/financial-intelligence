@@ -26,21 +26,24 @@ from typing import Any
 import duckdb
 import polars as pl
 import pytest
-from fastapi.routing import APIRoute
-from fastapi.testclient import TestClient
 
-from finintel.analytics.stress_test import (
+pytest.importorskip("fastapi")
+
+from fastapi.routing import APIRoute  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from finintel.analytics.stress_test import (  # noqa: E402
     StressScenario,
     simulate_financial_stress,
     summarize_stress_by_sector,
 )
-from finintel.analytics.tables import build_analytics_tables
-from finintel.exceptions import ContractViolationError
-from finintel.pipeline.state_store import StateStore
-from finintel.quality.gate import evaluate_quality_gate, verify_analytics_quality_gate
-from finintel.serving.api import create_app
-from finintel.serving.dependencies import DEFAULT_API_HOST, get_db_cursor
-from finintel.serving.queries import (
+from finintel.analytics.tables import build_analytics_tables  # noqa: E402
+from finintel.exceptions import ContractViolationError  # noqa: E402
+from finintel.pipeline.state_store import StateStore  # noqa: E402
+from finintel.quality.gate import evaluate_quality_gate, verify_analytics_quality_gate  # noqa: E402
+from finintel.serving.api import create_app  # noqa: E402
+from finintel.serving.dependencies import DEFAULT_API_HOST, get_db_cursor  # noqa: E402
+from finintel.serving.queries import (  # noqa: E402
     ALL_RATIOS,
     RATIO_LINEAGE_CATALOG,
     SCREENER_SCHEMA,

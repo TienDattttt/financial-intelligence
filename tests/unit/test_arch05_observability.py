@@ -9,13 +9,16 @@ from typing import Any
 
 import pytest
 import yaml  # type: ignore[import-untyped]
-from fastapi import FastAPI, Response
-from fastapi.testclient import TestClient
 from prometheus_client import CollectorRegistry, Counter
 from prometheus_client.mmap_dict import MmapedDict, mmap_key
 
-from finintel.serving import observability
-from finintel.serving.observability import (
+pytest.importorskip("fastapi")
+
+from fastapi import FastAPI, Response  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from finintel.serving import observability  # noqa: E402
+from finintel.serving.observability import (  # noqa: E402
     DEFAULT_OTEL_EXPORTER_OTLP_ENDPOINT,
     DEFAULT_OTEL_SERVICE_NAME,
     SPAN_ANALYTICS_STRESS_TEST,

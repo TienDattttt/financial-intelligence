@@ -1157,6 +1157,8 @@ class DuckLakeStore:
                 con.close()
 
             orphans: list[dict[str, object]] = []
+            audit_by_snap_id: dict[str, int] = {}
+            audit_meta_by_snap_id: dict[str, tuple[str, str]] = {}
             for (
                 snap_id,
                 version,
@@ -1167,6 +1169,8 @@ class DuckLakeStore:
             ) in rows:
                 sid = str(snap_id)
                 ver_int = int(version)
+                audit_by_snap_id[sid] = ver_int
+                audit_meta_by_snap_id[sid] = (str(run_id), str(published_at))
                 if sid not in promoted and ver_int in live_versions:
                     record: dict[str, object] = {
                         "snapshot_id": sid,
@@ -1190,6 +1194,53 @@ class DuckLakeStore:
                             },
                         },
                     )
+
+            if (
+                self.catalog_driver == "postgres"
+                and active is not None
+                and active.get("snapshot_id") is not None
+            ):
+                active_sid = str(active["snapshot_id"])
+                active_ver = audit_by_snap_id.get(active_sid)
+                if active_ver is not None and active_ver in live_versions:
+                    pg_pointer = read_postgres_active_snapshot(
+                        postgres_dsn_env=self.postgres_dsn_env,
+                        catalog_alias=self.catalog_alias,
+                    )
+                    if (
+                        pg_pointer is None
+                        or pg_pointer.snapshot_id != active_sid
+                        or int(pg_pointer.ducklake_version) != active_ver
+                    ):
+                        audit_run_id, audit_pub = audit_meta_by_snap_id[active_sid]
+                        logger.warning(
+                            "Reconciling drifted Postgres active snapshot pointer",
+                            extra={
+                                "event": "ducklake_pg_pointer_reconcile",
+                                "run_id": str(active.get("run_id") or audit_run_id),
+                                "details": {
+                                    "postgres_snapshot_id": (
+                                        pg_pointer.snapshot_id
+                                        if pg_pointer is not None
+                                        else None
+                                    ),
+                                    "active_snapshot_id": active_sid,
+                                    "ducklake_version": active_ver,
+                                },
+                            },
+                        )
+                        upsert_postgres_active_snapshot(
+                            postgres_dsn_env=self.postgres_dsn_env,
+                            catalog_alias=self.catalog_alias,
+                            snapshot_id=active_sid,
+                            ducklake_version=active_ver,
+                            run_id=str(active.get("run_id") or audit_run_id),
+                            published_at=str(
+                                active.get("published_at")
+                                or audit_pub
+                                or datetime.now(UTC).isoformat()
+                            ),
+                        )
             return orphans
 
     def rollback_snapshot(
@@ -1345,14 +1396,19 @@ class DuckLakeStore:
                             protected_versions.add(
                                 audit_by_snap_id[pg_pointer.snapshot_id]
                             )
-                    elif active is not None and active.get("snapshot_id") is not None:
+                    if active is not None and active.get("snapshot_id") is not None:
                         active_sid = str(active["snapshot_id"])
-                        if active_sid in audit_by_snap_id:
+                        active_ver = audit_by_snap_id.get(active_sid)
+                        if active_ver is not None and (
+                            pg_pointer is None
+                            or pg_pointer.snapshot_id != active_sid
+                            or int(pg_pointer.ducklake_version) != active_ver
+                        ):
                             upsert_postgres_active_snapshot(
                                 postgres_dsn_env=self.postgres_dsn_env,
                                 catalog_alias=self.catalog_alias,
                                 snapshot_id=active_sid,
-                                ducklake_version=audit_by_snap_id[active_sid],
+                                ducklake_version=active_ver,
                                 run_id=str(active.get("run_id") or "maintain_sync"),
                                 published_at=str(
                                     active.get("published_at")

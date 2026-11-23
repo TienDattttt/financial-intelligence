@@ -252,7 +252,9 @@ def _sanitize_csv_cell(value: object) -> str | int | float:
     if isinstance(value, date):
         return value.isoformat()
     text = str(value)
-    if text.startswith(_CSV_FORMULA_PREFIXES):
+    if text.startswith(_CSV_FORMULA_PREFIXES) or text.lstrip().startswith(
+        _CSV_FORMULA_PREFIXES
+    ):
         return f"'{text}"
     return text
 
@@ -568,7 +570,16 @@ def _mount_rag_router(
             return investigator
 
     def _prewarm_rag_worker() -> None:
-        dsn = os.getenv("FININTEL_RAG_PG_DSN", "").strip()
+        try:
+            from finintel.rag.store import resolve_rag_pg_dsn
+
+            dsn = resolve_rag_pg_dsn()
+        except Exception as exc:
+            logger.info(
+                "RAG pre-warm skipped (RAG store config unavailable: %s).",
+                type(exc).__name__,
+            )
+            return
         if not dsn:
             return
         try:
@@ -598,8 +609,6 @@ def _mount_rag_router(
 
     def _schedule_rag_prewarm() -> None:
         if rag_store is not None or rag_investigator is not None:
-            return
-        if not os.getenv("FININTEL_RAG_PG_DSN", "").strip():
             return
         if os.getenv("PYTEST_CURRENT_TEST") and not os.getenv(
             "FININTEL_RAG_PREWARM_IN_TEST"
