@@ -7,6 +7,7 @@ imports are lazy inside ``create_rag_router`` so CI ``mvp-checks`` stays green (
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -92,8 +93,8 @@ def create_rag_router(
         clean_ticker = ticker.strip().upper()
         if not clean_ticker or not clean_ticker.isalnum() or len(clean_ticker) > 16:
             raise HTTPException(status_code=422, detail="Invalid ticker symbol.")
-        store = get_store()
-        docs = store.list_documents(clean_ticker)
+        store = await asyncio.to_thread(get_store)
+        docs = await asyncio.to_thread(store.list_documents, clean_ticker)
         return DocumentListResponse(
             ticker=clean_ticker,
             total_documents=len(docs),
@@ -134,7 +135,7 @@ def create_rag_router(
             body = InvestigateRequest.model_validate(raw_body)
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors()) from None
-        investigator = get_investigator()
+        investigator = await asyncio.to_thread(get_investigator)
         try:
             result = await investigator.investigate(
                 ticker=clean_ticker,

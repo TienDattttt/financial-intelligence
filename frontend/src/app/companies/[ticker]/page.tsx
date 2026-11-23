@@ -1763,7 +1763,12 @@ function CompanyProfileContent() {
                   </div>
                 </CardHeader>
                 <CardContent className="p-0">
-                  <div className="max-h-[360px] overflow-auto">
+                  <div
+                    tabIndex={0}
+                    role="region"
+                    aria-label="Bảng xếp hạng trong nhóm so sánh"
+                    className="max-h-[360px] overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
                     <table className="w-full border-collapse text-xs">
                       <thead>
                         <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
@@ -1984,7 +1989,12 @@ function CompanyProfileContent() {
               ) : (filingsQuery.data?.items.length ?? 0) === 0 ? (
                 <p className="p-4 text-xs text-ink-muted">Chưa có hồ sơ ghi nhận.</p>
               ) : (
-                <div className="max-h-[360px] overflow-auto">
+                <div
+                  tabIndex={0}
+                  role="region"
+                  aria-label="Bảng lịch sử hồ sơ công bố và ý kiến kiểm toán"
+                  className="max-h-[360px] overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
                   <table className="w-full border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">

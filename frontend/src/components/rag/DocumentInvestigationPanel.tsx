@@ -35,21 +35,21 @@ export interface ForensicPresetQuery {
 export const FORENSIC_PRESET_QUERIES: readonly ForensicPresetQuery[] = [
   {
     flagCode: "RF_03",
-    shortLabel: "RF_03 Phải thu & Dòng tiền",
+    shortLabel: "RF_03 Phải thu ngoài khách hàng",
     question:
-      "Thuyết minh các khoản phải thu ngắn hạn của khách hàng, phải thu khó đòi, dự phòng phải thu ngắn hạn khó đòi và chênh lệch dòng tiền kinh doanh",
+      "Thuyết minh phải thu ngắn hạn, phải thu khác và dự phòng phải thu khó đòi",
   },
   {
     flagCode: "RF_07",
-    shortLabel: "RF_07 Vay nợ & Thanh khoản",
+    shortLabel: "RF_07 Cảnh báo kiểm toán & Hoạt động liên tục",
     question:
-      "Thuyết minh vay và nợ thuê tài chính ngắn hạn, dài hạn, nợ quá hạn, khả năng thanh toán và giả định hoạt động liên tục",
+      "Ý kiến kiểm toán viên độc lập, cơ sở ý kiến ngoại trừ và vấn đề cần nhấn mạnh hoạt động liên tục",
   },
   {
     flagCode: "RF_09",
-    shortLabel: "RF_09 Ý kiến kiểm toán & Hoạt động liên tục",
+    shortLabel: "RF_09 Xây dựng cơ bản dở dang",
     question:
-      "Ý kiến của kiểm toán viên độc lập, vấn đề cần nhấn mạnh, cơ sở ý kiến ngoại trừ hoặc từ chối đưa ra ý kiến và giao dịch với các bên liên quan",
+      "Chi phí xây dựng cơ bản dở dang dài hạn trên Bảng cân đối kế toán và thuyết minh",
   },
 ];
 
@@ -89,14 +89,21 @@ export function extractFiscalYears(
   return Array.from(years).sort((a, b) => b - a);
 }
 
+export function sanitizeRagText(raw: string): string {
+  return raw
+    .replace(/<\/?\s*CHUNK\b[^>]*>/gi, "đoạn tài liệu")
+    .replace(/\(\s*CHUNKS?(?:\s*#?\d+)?\s*\)/gi, "")
+    .replace(/\bCHUNKS?\b/gi, "đoạn tài liệu")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/ +([.,;:?!])/g, "$1")
+    .trim();
+}
+
 export function sanitizeAbstentionReason(
   reason: string | null | undefined,
 ): string | null {
   if (!reason) return null;
-  const cleaned = reason
-    .replace(/<\/?CHUNK[^>]*>/gi, "đoạn tài liệu")
-    .replace(/\s+/g, " ")
-    .trim();
+  const cleaned = sanitizeRagText(reason.replace(/\s+/g, " "));
   return cleaned || null;
 }
 
@@ -124,11 +131,12 @@ export function tokenizeAnswerWithCitations(
   answer: string,
   citations: readonly CitationItem[],
 ): AnswerToken[] {
-  if (!answer) return [];
+  const sanitizedAnswer = sanitizeRagText(answer);
+  if (!sanitizedAnswer) return [];
   const tokens: AnswerToken[] = [];
   let lastIndex = 0;
 
-  for (const match of answer.matchAll(BRACKET_CITATION_RE)) {
+  for (const match of sanitizedAnswer.matchAll(BRACKET_CITATION_RE)) {
     const start = match.index ?? 0;
     const rawWhole = match[0];
     const inner = match[1] ?? "";
@@ -150,7 +158,7 @@ export function tokenizeAnswerWithCitations(
 
     if (matchedCitationIdx >= 0) {
       if (start > lastIndex) {
-        const textSegment = answer
+        const textSegment = sanitizedAnswer
           .slice(lastIndex, start)
           .replace(INTERNAL_FILING_ID_RE, "Tài liệu BCTC");
         tokens.push({ type: "text", value: textSegment });
@@ -165,8 +173,8 @@ export function tokenizeAnswerWithCitations(
     }
   }
 
-  if (lastIndex < answer.length) {
-    const tail = answer
+  if (lastIndex < sanitizedAnswer.length) {
+    const tail = sanitizedAnswer
       .slice(lastIndex)
       .replace(INTERNAL_FILING_ID_RE, "Tài liệu BCTC");
     tokens.push({ type: "text", value: tail });
@@ -546,7 +554,7 @@ export function DocumentInvestigationPanel({
                       </span>
                     </div>
                     <p className="text-[13px] leading-5 text-ink">
-                      {result.answer}
+                      {sanitizeRagText(result.answer)}
                     </p>
                     {cleanAbstentionReason ? (
                       <p className="text-[11px] leading-4 text-ink-muted">

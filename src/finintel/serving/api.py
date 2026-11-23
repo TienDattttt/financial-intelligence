@@ -22,13 +22,15 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import importlib
 import io
 import logging
 import math
 import os
 import re
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
@@ -503,7 +505,8 @@ def _mount_rag_router(
     rag_investigator: Any | None = None,
 ) -> None:
     """Mount Port 2 Document RAG routes lazily without importing optional ML/DB deps at boot."""
-    rag_lock = threading.Lock()
+    store_lock = threading.Lock()
+    investigator_lock = threading.Lock()
     api.state._rag_store = rag_store
     api.state._rag_investigator = rag_investigator
 
@@ -511,7 +514,7 @@ def _mount_rag_router(
         existing = getattr(api.state, "_rag_store", None)
         if existing is not None:
             return existing
-        with rag_lock:
+        with store_lock:
             existing = getattr(api.state, "_rag_store", None)
             if existing is not None:
                 return existing
@@ -525,27 +528,92 @@ def _mount_rag_router(
             api.state._rag_store = store
             return store
 
+    def _build_investigator_sync(*, warm_models: bool = False) -> Any:
+        from finintel.rag.embedder import BgeM3Embedder
+        from finintel.rag.investigator import GroundedDocumentInvestigator
+        from finintel.rag.retriever import HybridPgVectorRetriever
+
+        store = _get_store()
+        embedder = BgeM3Embedder()
+        if warm_models:
+            embedder._ensure_loaded()
+        retriever = HybridPgVectorRetriever(store=store, embedder=embedder)
+        gemini_bundle: Any | None = None
+        if warm_models:
+            try:
+                from finintel.rag._gemini import create_verified_gemini_bundle
+
+                gemini_bundle = create_verified_gemini_bundle()
+            except Exception as exc:
+                logger.warning(
+                    "RAG Gemini pre-warm skipped (%s); will probe lazily.",
+                    type(exc).__name__,
+                )
+        return GroundedDocumentInvestigator(
+            retriever=retriever,
+            gemini_bundle=gemini_bundle,
+            valkey_url=valkey_url,
+        )
+
     def _get_investigator() -> Any:
         existing = getattr(api.state, "_rag_investigator", None)
         if existing is not None:
             return existing
-        with rag_lock:
+        with investigator_lock:
             existing = getattr(api.state, "_rag_investigator", None)
             if existing is not None:
                 return existing
-            from finintel.rag.embedder import BgeM3Embedder
-            from finintel.rag.investigator import GroundedDocumentInvestigator
-            from finintel.rag.retriever import HybridPgVectorRetriever
-
-            store = _get_store()
-            embedder = BgeM3Embedder()
-            retriever = HybridPgVectorRetriever(store=store, embedder=embedder)
-            investigator = GroundedDocumentInvestigator(
-                retriever=retriever,
-                valkey_url=valkey_url,
-            )
+            investigator = _build_investigator_sync(warm_models=False)
             api.state._rag_investigator = investigator
             return investigator
+
+    def _prewarm_rag_worker() -> None:
+        dsn = os.getenv("FININTEL_RAG_PG_DSN", "").strip()
+        if not dsn:
+            return
+        try:
+            psycopg_mod: Any = importlib.import_module("psycopg")
+            check_dsn = dsn
+            if "connect_timeout=" not in check_dsn and "://" in check_dsn:
+                sep = "&" if "?" in check_dsn else "?"
+                check_dsn = f"{check_dsn}{sep}connect_timeout=1"
+            with psycopg_mod.connect(check_dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+        except Exception as exc:
+            logger.info(
+                "RAG pre-warm skipped (Postgres unreachable or deps absent: %s).",
+                type(exc).__name__,
+            )
+            return
+
+        with investigator_lock:
+            if getattr(api.state, "_rag_investigator", None) is not None:
+                return
+            try:
+                api.state._rag_investigator = _build_investigator_sync(warm_models=True)
+                logger.info("RAG embedder and Gemini bundle pre-warmed successfully.")
+            except Exception as exc:
+                logger.warning("RAG pre-warm failed (%s).", type(exc).__name__)
+
+    def _schedule_rag_prewarm() -> None:
+        if rag_store is not None or rag_investigator is not None:
+            return
+        if not os.getenv("FININTEL_RAG_PG_DSN", "").strip():
+            return
+        if os.getenv("PYTEST_CURRENT_TEST") and not os.getenv(
+            "FININTEL_RAG_PREWARM_IN_TEST"
+        ):
+            return
+        thread = threading.Thread(
+            target=_prewarm_rag_worker,
+            name="finintel-rag-prewarm",
+            daemon=True,
+        )
+        thread.start()
+
+    api.state._rag_prewarm_fn = _schedule_rag_prewarm
+    api.state._rag_prewarm_worker = _prewarm_rag_worker
 
     try:
         from finintel.rag.router import create_rag_router
@@ -588,7 +656,7 @@ def create_app(
 ) -> FastAPI:
     """Create a configured read-only analytical FastAPI application."""
     allowed_origins = resolve_cors_origins(cors_origins)
-    app_lifespan = build_lifespan(
+    base_lifespan = build_lifespan(
         data_root=data_root,
         repository=repository,
         duckdb_threads=duckdb_threads,
@@ -597,6 +665,14 @@ def create_app(
         stress_semaphore_timeout=stress_semaphore_timeout,
         valkey_url=valkey_url,
     )
+
+    @asynccontextmanager
+    async def app_lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
+        async with base_lifespan(app_instance):
+            prewarm_fn = getattr(app_instance.state, "_rag_prewarm_fn", None)
+            if callable(prewarm_fn):
+                prewarm_fn()
+            yield
 
     api = FastAPI(
         title="finintel Read-Only Analytical API",

@@ -52,18 +52,32 @@ FORENSIC_DISCLAIMER_VN = (
 
 RED_FLAG_PREWARM_QUERIES: dict[str, str] = {
     "RF_03": (
-        "Thuyết minh các khoản phải thu ngắn hạn của khách hàng, phải thu khó đòi, "
-        "dự phòng phải thu ngắn hạn khó đòi và chênh lệch dòng tiền kinh doanh"
+        "Thuyết minh phải thu ngắn hạn, phải thu khác và dự phòng phải thu khó đòi"
     ),
     "RF_07": (
-        "Thuyết minh vay và nợ thuê tài chính ngắn hạn, dài hạn, nợ quá hạn, "
-        "khả năng thanh toán và giả định hoạt động liên tục"
+        "Ý kiến kiểm toán viên độc lập, cơ sở ý kiến ngoại trừ và vấn đề cần nhấn mạnh hoạt động liên tục"
     ),
     "RF_09": (
-        "Ý kiến của kiểm toán viên độc lập, vấn đề cần nhấn mạnh, cơ sở ý kiến ngoại trừ "
-        "hoặc từ chối đưa ra ý kiến và giao dịch với các bên liên quan"
+        "Chi phí xây dựng cơ bản dở dang dài hạn trên Bảng cân đối kế toán và thuyết minh"
     ),
 }
+
+_CHUNK_TAG_RE = re.compile(r"</?\s*CHUNK\b[^>]*>", re.IGNORECASE)
+_CHUNK_PAREN_RE = re.compile(r"\(\s*CHUNKS?(?:\s*#?\d+)?\s*\)", re.IGNORECASE)
+_CHUNK_WORD_RE = re.compile(r"\bCHUNKS?\b", re.IGNORECASE)
+_HSPACE_RE = re.compile(r"[ \t]{2,}")
+_PUNCT_SPACE_RE = re.compile(r" +([.,;:?!])")
+
+
+def sanitize_rag_output_text(text: str) -> str:
+    """Strip internal ``<CHUNK>`` / ``(CHUNK)`` / ``CHUNK`` prompt markers from user-facing text."""
+    cleaned = _CHUNK_TAG_RE.sub("đoạn tài liệu", text)
+    cleaned = _CHUNK_PAREN_RE.sub("", cleaned)
+    cleaned = _CHUNK_WORD_RE.sub("đoạn tài liệu", cleaned)
+    cleaned = _HSPACE_RE.sub(" ", cleaned)
+    cleaned = _PUNCT_SPACE_RE.sub(r"\1", cleaned)
+    return cleaned.strip()
+
 
 _INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
@@ -496,12 +510,18 @@ class GroundedDocumentInvestigator:
                         CitationEvidence(**c)
                         for c in cached_payload.get("citations", [])
                     )
+                    raw_reason = cached_payload.get("abstention_reason")
+                    cached_reason = (
+                        sanitize_rag_output_text(str(raw_reason))
+                        if raw_reason
+                        else None
+                    )
                     cached_result = InvestigationResult(
                         ticker=str(cached_payload["ticker"]),
                         question=str(cached_payload["question"]),
-                        answer=str(cached_payload["answer"]),
+                        answer=sanitize_rag_output_text(str(cached_payload["answer"])),
                         abstained=bool(cached_payload["abstained"]),
-                        abstention_reason=cached_payload.get("abstention_reason"),
+                        abstention_reason=cached_reason or None,
                         citations=citations,
                         retrieved_chunks_count=int(
                             cached_payload.get("retrieved_chunks_count", 0)
@@ -569,12 +589,17 @@ class GroundedDocumentInvestigator:
                 )
 
             abstained = bool(llm_payload.get("abstained", False))
-            abstention_reason = (
+            raw_abstention_reason = (
                 str(llm_payload["abstention_reason"]).strip()
                 if llm_payload.get("abstention_reason")
                 else None
             )
-            answer = str(llm_payload.get("answer") or "").strip()
+            abstention_reason = (
+                sanitize_rag_output_text(raw_abstention_reason)
+                if raw_abstention_reason
+                else None
+            ) or None
+            answer = sanitize_rag_output_text(str(llm_payload.get("answer") or ""))
             verified_citations = self._reconcile_citations(
                 llm_payload.get("citations"), hits
             )
@@ -662,6 +687,7 @@ __all__ = [
     "PromptInjectionError",
     "RED_FLAG_PREWARM_QUERIES",
     "build_rag_cache_key",
+    "sanitize_rag_output_text",
     "sanitize_user_question",
     "verify_verbatim_excerpt",
 ]

@@ -234,6 +234,15 @@ def test_build_lifespan_wires_finintel_ducklake_pg_dsn_into_repository(
             read_only=read_only,
         )
 
+    from collections import OrderedDict
+
+    monkeypatch.setattr(
+        "finintel.storage.repository._POSTGRES_POINTER_CACHE", OrderedDict()
+    )
+    monkeypatch.setattr(
+        "finintel.storage.repository.read_postgres_active_snapshot",
+        lambda **_kwargs: None,
+    )
     monkeypatch.setattr(
         "finintel.serving.dependencies.ensure_ducklake_attached", _delegating_attach
     )

@@ -640,7 +640,12 @@ function MethodologyContent() {
                         Chưa có đủ dữ liệu TT99/2025 để tính PSI từng biến.
                       </p>
                     ) : (
-                      <div className="max-h-[340px] overflow-auto rounded-lg border border-border">
+                      <div
+                        tabIndex={0}
+                        role="region"
+                        aria-label="Bảng độ ổn định PSI 23 biến đầu vào"
+                        className="max-h-[340px] overflow-auto rounded-lg border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
                         <table className="w-full border-collapse text-xs">
                           <thead>
                             <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">

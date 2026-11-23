@@ -20,6 +20,8 @@ from finintel.pipeline.state_store import StateStore
 from finintel.ports.documents import DocumentChunk
 from finintel.rag.investigator import (
     GroundedDocumentInvestigator,
+    RED_FLAG_PREWARM_QUERIES,
+    sanitize_rag_output_text,
 )
 from finintel.rag.retriever import RetrievalHit
 from finintel.rag.store import IndexedDocumentSummary
@@ -391,3 +393,105 @@ def test_rag_routes_end_to_end_with_trace_span_and_validation(
             json={"question": "a"},
         )
         assert r_short_q.status_code == 422
+
+
+def test_rag_investigator_strips_chunk_markers_from_answer_and_abstention_reason(
+    tmp_path: Path,
+) -> None:
+    assert (
+        sanitize_rag_output_text(
+            "Dữ liệu từ các đoạn trích (CHUNK) và <CHUNK id='1'> không đủ."
+        )
+        == "Dữ liệu từ các đoạn trích và đoạn tài liệu không đủ."
+    )
+    assert set(RED_FLAG_PREWARM_QUERIES) == {"RF_03", "RF_07", "RF_09"}
+
+    data_root = _publish_minimal_sqlite_snapshot(tmp_path)
+
+    class _StubRetriever:
+        def retrieve_hits(self, **kwargs: Any) -> list[RetrievalHit]:
+            _ = kwargs
+            return [
+                RetrievalHit(
+                    chunk=DocumentChunk(
+                        filing_id="HBC_FY2023_CONSOLIDATED_b0f2ff7892bc",
+                        issuer_id="HBC",
+                        fiscal_year=2023,
+                        fiscal_quarter=None,
+                        statement_scope="CONSOLIDATED",
+                        doc_type="AUDITED_ANNUAL_CONSOLIDATED_FS",
+                        page_no=7,
+                        section_title="Báo cáo kiểm toán độc lập",
+                        unit_scale="VND",
+                        text_content="Nội dung kiểm toán độc lập năm 2023.",
+                        content_sha256="c" * 64,
+                        score=0.03,
+                    ),
+                    source_title="BCTC 2023",
+                    rrf_score=0.03,
+                    vector_similarity=0.71,
+                    fts_rank=0.4,
+                    vector_position=1,
+                    fts_position=1,
+                )
+            ]
+
+    class _LeakyModels:
+        def generate_content(self, **_kwargs: Any) -> Any:
+            payload = {
+                "abstained": True,
+                "abstention_reason": "Các đoạn <CHUNK> và (CHUNK) được cung cấp không có chi tiết.",
+                "answer": "Tôi xin từ chối trả lời câu hỏi này do dữ liệu từ các đoạn trích (CHUNK) không đề cập.",
+                "citations": [],
+            }
+            return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))
+
+    stub_bundle = SimpleNamespace(
+        client=SimpleNamespace(models=_LeakyModels()),
+        mode="api_key",
+        model="gemini-2.5-flash",
+    )
+    investigator = GroundedDocumentInvestigator(
+        retriever=_StubRetriever(),  # type: ignore[arg-type]
+        gemini_bundle=stub_bundle,  # type: ignore[arg-type]
+        valkey_url="",
+    )
+
+    class _WorkingStore:
+        def list_documents(self, ticker: str) -> list[IndexedDocumentSummary]:
+            _ = ticker
+            return []
+
+    app = create_app(
+        data_root=data_root,
+        valkey_url="",
+        rag_store=_WorkingStore(),
+        rag_investigator=investigator,
+    )
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v2/documents/HBC/investigate",
+            json={"question": "Chi phí xây dựng cơ bản dở dang năm 2023?"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["abstained"] is True
+        assert "CHUNK" not in body["answer"].upper()
+        assert "CHUNK" not in (body["abstention_reason"] or "").upper()
+
+
+def test_rag_prewarm_skips_gracefully_when_postgres_unreachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_root = _publish_minimal_sqlite_snapshot(tmp_path)
+    monkeypatch.setenv(
+        "FININTEL_RAG_PG_DSN",
+        "postgresql://finintel:finintel_dev@127.0.0.1:59999/finintel_rag",
+    )
+    monkeypatch.setenv("FININTEL_RAG_PREWARM_IN_TEST", "1")
+    app = create_app(data_root=data_root, valkey_url="")
+    with TestClient(app) as client:
+        assert client.get("/api/v1/health").status_code == 200
+        # Calling the worker synchronously verifies fast-fail without crashing boot.
+        app.state._rag_prewarm_worker()
+        assert getattr(app.state, "_rag_investigator", None) is None

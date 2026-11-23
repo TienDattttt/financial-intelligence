@@ -640,8 +640,15 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
       .getByRole("button", { name: /Kiểm tra Thuyết minh gốc/i })
       .first();
     let jumpedFromRedFlag = false;
+    let invPromise: ReturnType<typeof page.waitForResponse> | null = null;
     if (await jumpBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
       jumpedFromRedFlag = true;
+      invPromise = page.waitForResponse(
+        (res) =>
+          res.url().includes("/api/v2/documents/HBC/investigate") &&
+          res.request().method() === "POST",
+        { timeout: 45_000 },
+      );
       await jumpBtn.click();
       await expect(page).toHaveURL(/tab=documents/);
     } else {
@@ -664,47 +671,54 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
         ).toBeVisible();
         await expect(page.locator("#rag-fiscal-year")).toBeVisible();
 
-        const rf09Btn = page.getByRole("button", {
-          name: /RF_09 Ý kiến kiểm toán & Hoạt động liên tục/i,
+        const rf03Btn = page.getByRole("button", {
+          name: /RF_03 Phải thu ngoài khách hàng/i,
         });
+        const rf07Btn = page.getByRole("button", {
+          name: /RF_07 Cảnh báo kiểm toán & Hoạt động liên tục/i,
+        });
+        const rf09Btn = page.getByRole("button", {
+          name: /RF_09 Xây dựng cơ bản dở dang/i,
+        });
+        await expect(rf03Btn).toBeVisible();
+        await expect(rf07Btn).toBeVisible();
         await expect(rf09Btn).toBeVisible();
-        await expect(
-          page.getByRole("button", { name: /RF_03 Phải thu & Dòng tiền/i }),
-        ).toBeVisible();
-        await expect(
-          page.getByRole("button", { name: /RF_07 Vay nợ & Thanh khoản/i }),
-        ).toBeVisible();
 
         const questionInput = page.locator("#rag-question-input");
         await expect(questionInput).toBeVisible();
         if (jumpedFromRedFlag) {
           await expect(questionInput).not.toHaveValue("");
         } else {
-          const invPromise = page.waitForResponse(
+          invPromise = page.waitForResponse(
             (res) =>
               res.url().includes("/api/v2/documents/HBC/investigate") &&
               res.request().method() === "POST",
+            { timeout: 45_000 },
           );
-          await rf09Btn.click();
-          const invRes = await invPromise;
-          expect([200, 503]).toContain(invRes.status());
-          if (invRes.status() === 200) {
-            const invJson = (await invRes.json()) as {
-              abstained: boolean;
-              citations: Array<{ page_no: number }>;
-            };
-            await expect(page.getByText(/Valkey (HIT|MISS)/)).toBeVisible({
-              timeout: 15_000,
-            });
-            if (!invJson.abstained && invJson.citations.length > 0) {
-              const firstBadge = page
-                .getByRole("button", { name: /^\[1\]/ })
-                .first();
-              await expect(firstBadge).toBeVisible();
-              await firstBadge.click();
-            }
-          }
+          await rf07Btn.click();
         }
+
+        const invRes = await invPromise!;
+        expect(invRes.status()).toBe(200);
+        const invJson = (await invRes.json()) as {
+          abstained: boolean;
+          answer: string;
+          abstention_reason: string | null;
+          citations: Array<{ page_no: number }>;
+        };
+        expect(invJson.abstained).toBe(false);
+        expect(invJson.citations.length).toBeGreaterThan(0);
+        expect(invJson.answer).not.toMatch(/\bCHUNKS?\b/i);
+        expect(invJson.abstention_reason ?? "").not.toMatch(/\bCHUNKS?\b/i);
+
+        await expect(page.getByText(/Valkey (HIT|MISS)/)).toBeVisible({
+          timeout: 15_000,
+        });
+        const firstBadge = page
+          .getByRole("button", { name: /^\[1\]/ })
+          .first();
+        await expect(firstBadge).toBeVisible();
+        await firstBadge.click();
       }
     }
 

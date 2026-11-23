@@ -9,6 +9,7 @@ import {
   getRedFlagPresetQuestion,
   getSafeDocumentUrl,
   sanitizeAbstentionReason,
+  sanitizeRagText,
   tokenizeAnswerWithCitations,
 } from "@/components/rag/DocumentInvestigationPanel";
 import { ApiError, apiClient } from "@/lib/api-client";
@@ -149,12 +150,34 @@ describe("UI-08b Split-View Audited PDF RAG Helpers, API Client & Anti-AI-Slop",
     expect(joinedText).not.toContain("HBC_FY2023_CONSOLIDATED_b0f2ff7892bc");
   });
 
-  it("sanitizes abstention reasons and formats latency and semantic similarity in vi-VN", () => {
+  it("sanitizes abstention reasons and CHUNK markers in both answer and reason, and formats latency/similarity in vi-VN", () => {
     expect(
       sanitizeAbstentionReason(
         "Không tìm thấy dữ liệu trong các đoạn <CHUNK> được cung cấp.",
       ),
     ).toBe("Không tìm thấy dữ liệu trong các đoạn đoạn tài liệu được cung cấp.");
+    expect(
+      sanitizeAbstentionReason(
+        "Các đoạn trích (CHUNK) được cung cấp không đề cập chỉ tiêu này.",
+      ),
+    ).toBe("Các đoạn trích được cung cấp không đề cập chỉ tiêu này.");
+    expect(
+      sanitizeRagText(
+        "Tôi xin từ chối trả lời do dữ liệu từ các đoạn trích (CHUNK) và <CHUNK id=\"2\"> không đủ.",
+      ),
+    ).toBe(
+      "Tôi xin từ chối trả lời do dữ liệu từ các đoạn trích và đoạn tài liệu không đủ.",
+    );
+    const sanitizedTokens = tokenizeAnswerWithCitations(
+      "Theo các đoạn trích (CHUNK), không có thông tin.",
+      [],
+    );
+    expect(sanitizedTokens).toEqual([
+      {
+        type: "text",
+        value: "Theo các đoạn trích, không có thông tin.",
+      },
+    ]);
     expect(formatLatencyMs(1.8)).toBe("1,8 ms");
     expect(formatLatencyMs(3760.27)).toBe("3.760 ms");
     expect(formatSimilarityScore(0.762)).toBe("76,2%");
