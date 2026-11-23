@@ -175,7 +175,8 @@ def test_reciprocal_rank_fusion_and_or_tsquery() -> None:
         "Ý kiến kiểm toán ngoại trừ và dự phòng phải thu khó đòi năm 2023?"
     )
     assert " | " in expr
-    assert "kiểm" in expr
+    assert "ngoại" in expr
+    assert "kiểm" not in expr
 
 
 def test_prompt_injection_guard_and_verbatim_verification() -> None:
