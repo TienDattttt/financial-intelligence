@@ -6,8 +6,9 @@ Verified Sources:
       Outer parent/consolidated ceilings: unaudited quarter +30d, reviewed quarter +45d,
       semiannual / Q2 reviewed or unknown +60d, audited annual +90d. Standalone
       (SEPARATE) reports can carry shorter statutory ceilings (e.g., 20d/45d); Layer 1
-      retains the conservative outer ceiling when ``published_at`` is missing to avoid
-      look-ahead bias.
+      records the unpenalized Circular 96 statutory deadline upper-bound (+0d) when
+      ``published_at`` is missing (see ``EMPIRICAL_STATUTORY_DELAY_P90_DAYS = 37``
+      for empirical UPCOM distress late-filing sensitivity).
     - Vietnam Civil Code 2015 (Articles 147 & 148(5)): when the final day of a
       statutory deadline falls on a weekend or public holiday, the deadline ends at
       the close of the next working day.
@@ -84,6 +85,7 @@ PaginationStatus = Literal[
     "INVALID_RESPONSE",
 ]
 _Enum = TypeVar("_Enum", bound=StrEnum)
+EMPIRICAL_STATUTORY_DELAY_P90_DAYS: int = 37
 
 # Fixed solar Vietnam public holidays (Labor Code 2019, Art. 112).
 _VN_FIXED_HOLIDAYS: frozenset[tuple[int, int]] = frozenset(
@@ -357,6 +359,14 @@ class FilingMetadata:
     @property
     def effective_available_at(self) -> date:
         return self.published_at or self._statutory_deadline
+
+    def effective_available_at_with_delay(self, statutory_delay_days: int = 0) -> date:
+        """Return ``published_at`` or statutory deadline shifted by empirical delay days."""
+        if statutory_delay_days < 0:
+            raise ContractViolationError("statutory_delay_days must be non-negative.")
+        if self.published_at is not None:
+            return self.published_at
+        return self._statutory_deadline + timedelta(days=statutory_delay_days)
 
     @property
     def published_at_basis(self) -> str:

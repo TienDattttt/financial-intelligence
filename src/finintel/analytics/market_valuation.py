@@ -494,13 +494,14 @@ def compute_pit_valuation_series(
             )
         else:
             # Step 2: Carry each forward-aligned disclosure across daily trading bars
-            # until the next disclosure's effective_trade_date.
+            # until the next disclosure's effective_trade_date, bounded at 180d (P2-6).
             joined = prices_sorted.join_asof(
                 forward_aligned.sort(["issuer_id", "effective_trade_date"]),
                 left_on="trade_date",
                 right_on="effective_trade_date",
                 by="issuer_id",
                 strategy="backward",
+                tolerance="180d",
                 check_sortedness=False,
             )
 
@@ -748,6 +749,10 @@ def _extract_first_r4_r5_markers(
         quarterly = scoped.filter(pl.col("period_type") == "QUARTER")
         if not quarterly.is_empty():
             scoped = quarterly
+    if "model_role" in scoped.columns:
+        scoped = scoped.filter(
+            pl.col("model_role").cast(pl.String).str.starts_with("OUT_OF_SAMPLE")
+        )
     if scoped.is_empty():
         return []
 
@@ -764,7 +769,10 @@ def _extract_first_r4_r5_markers(
         disc_expr, date_basis = _resolve_disclosure_date_expr(
             scoped, available_date_col=None
         )
-        with_dates = scoped.with_columns(disc_expr.alias("_disclosure_date"))
+        with_dates = scoped.with_columns(
+            disc_expr.alias("_disclosure_date"),
+            pl.lit(date_basis).alias("_date_basis"),
+        )
     elif financial_periods is not None and not financial_periods.is_empty():
         fp = financial_periods.filter(pl.col("issuer_id") == target_issuer_id)
         if "statement_scope" in fp.columns:
@@ -785,17 +793,20 @@ def _extract_first_r4_r5_markers(
         with_dates = scoped.with_columns(pl.col("period_end_date").cast(pl.Date)).join(
             fp_dates, on=["issuer_id", "period_end_date"], how="left"
         )
-        if with_dates["_disclosure_date"].null_count() > 0:
-            with_dates = with_dates.with_columns(
-                pl.coalesce("_disclosure_date", "period_end_date").alias(
-                    "_disclosure_date"
-                )
-            )
+        with_dates = with_dates.with_columns(
+            pl.when(pl.col("_disclosure_date").is_not_null())
+            .then(pl.lit(date_basis))
+            .otherwise(pl.lit("PERIOD_END_FALLBACK"))
+            .alias("_date_basis"),
+            pl.coalesce("_disclosure_date", "period_end_date").alias(
+                "_disclosure_date"
+            ),
+        )
     else:
         with_dates = scoped.with_columns(
-            pl.col("period_end_date").cast(pl.Date).alias("_disclosure_date")
+            pl.col("period_end_date").cast(pl.Date).alias("_disclosure_date"),
+            pl.lit("PERIOD_END_FALLBACK").alias("_date_basis"),
         )
-        date_basis = "PERIOD_END_FALLBACK"
 
     if as_of is not None:
         with_dates = with_dates.filter(pl.col("_disclosure_date") <= as_of)
@@ -829,7 +840,7 @@ def _extract_first_r4_r5_markers(
                     "risk_tier": "R4",
                     "is_first_r4_or_r5": is_first,
                     "disclosure_date": row["_disclosure_date"],
-                    "date_basis": date_basis,
+                    "date_basis": row["_date_basis"],
                     "period_end_date": row["period_end_date"],
                     "calibrated_distress_prob": row.get("calibrated_distress_prob"),
                     "risk_market_percentile": row.get("risk_market_percentile"),
@@ -847,7 +858,7 @@ def _extract_first_r4_r5_markers(
                     "risk_tier": "R5",
                     "is_first_r4_or_r5": is_first,
                     "disclosure_date": row["_disclosure_date"],
-                    "date_basis": date_basis,
+                    "date_basis": row["_date_basis"],
                     "period_end_date": row["period_end_date"],
                     "calibrated_distress_prob": row.get("calibrated_distress_prob"),
                     "risk_market_percentile": row.get("risk_market_percentile"),

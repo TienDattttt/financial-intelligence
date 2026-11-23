@@ -5,8 +5,9 @@ Verified Sources:
     docs/v2_specs/06_STREAM_A4_LAYER4B_ML_REMEDIATION_SECTOR_ADJ_AND_REGULATORY_TARGET.md.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -642,7 +643,14 @@ def test_ml_pipeline_guardrails_and_publishable_ml_scores_snapshot(
     )
     ml_table = ParquetRepository(snap_dir).read_table(ML_SCORES_TABLE)
     assert ml_table.height > 0
-    assert ml_table["model_role"].unique().to_list() == ["SCREENING_INDICATOR"]
+    roles_present = set(ml_table["model_role"].drop_nulls().to_list())
+    assert roles_present <= {
+        "IN_SAMPLE_TRAIN",
+        "OUT_OF_SAMPLE_WALK_FORWARD",
+        "OUT_OF_SAMPLE_LIVE",
+        "SCREENING_INDICATOR",
+    }
+    assert "OUT_OF_SAMPLE_LIVE" in roles_present
     assert ml_table["shap_top_drivers_json"].drop_nulls().len() > 0
 
 
@@ -1471,6 +1479,8 @@ def test_treeshap_waterfall_other_features_delta_and_vietnamese_display_names() 
 def test_synthesize_issuers_from_candidates_uses_real_collection_date_not_2016(
     tmp_path: Path,
 ) -> None:
+    pytest.importorskip("dagster")
+    pytest.importorskip("pydantic")
     import importlib.util
     import json
     import os
@@ -2490,4 +2500,785 @@ def test_ml05_leak_free_overdue_loss_streak_asset_size_pct_momentum_and_labels()
         .row(0, named=True)
     )
     assert incompat_q2["delta_liabilities_to_assets_4q"] is None
+    assert incompat_q2["delta_liabilities_to_assets_4q"] is None
     assert incompat_q2["delta_current_ratio_4q"] is None
+
+
+def test_p0_2_model_role_preserved_and_case_studies_exclude_in_sample(
+    tmp_path: Path,
+) -> None:
+    """P0-2: model_role distinguishes IN_SAMPLE_TRAIN vs OUT_OF_SAMPLE_* and case_studies exclude IN_SAMPLE_TRAIN."""
+    from finintel.ml.tables import build_historical_case_studies
+
+    scores = pl.DataFrame(
+        {
+            "issuer_id": ["HBC", "HBC", "HNG"],
+            "statement_scope": ["CONSOLIDATED"] * 3,
+            "period_type": ["QUARTER"] * 3,
+            "period_end_date": [
+                date(2019, 3, 31),
+                date(2022, 12, 31),
+                date(2018, 12, 31),
+            ],
+            "filing_id": ["HBC-2019-1", "HBC-2022-4", "HNG-2018-4"],
+            "model_role": [
+                "IN_SAMPLE_TRAIN",
+                "OUT_OF_SAMPLE_WALK_FORWARD",
+                "IN_SAMPLE_TRAIN",
+            ],
+            "calibrated_distress_prob": [0.45, 0.18, 0.50],
+            "risk_tier": ["R5", "R4", "R5"],
+            "risk_market_percentile": [98.0, 92.0, 99.0],
+            "relative_risk_lift": [15.0, 6.0, 16.0],
+            "shap_top_drivers_json": [None, None, None],
+        },
+        schema_overrides={"shap_top_drivers_json": pl.String},
+    )
+    issuers_df = pl.DataFrame(
+        {
+            "issuer_id": ["HBC", "HNG"],
+            "ticker": ["HBC", "HNG"],
+            "exchange": ["HOSE", "HOSE"],
+            "company_name_vn": ["HBC Corp", "HNG Corp"],
+            "delisted_date": [None, None],
+        },
+        schema_overrides={"delisted_date": pl.Date},
+    )
+    reg_events = pl.DataFrame(
+        {
+            "issuer_id": ["HBC", "HNG"],
+            "event_date": [date(2023, 5, 1), date(2020, 4, 1)],
+            "event_type": ["CONTROL", "CONTROL"],
+            "exchange_delisted_from": [None, None],
+        },
+        schema_overrides={"exchange_delisted_from": pl.String},
+    )
+
+    cases = build_historical_case_studies(
+        scores,
+        issuers_df,
+        regulatory_events=reg_events,
+        tickers=("HBC", "HNG"),
+    )
+    assert len(cases) == 1
+    assert cases[0]["ticker"] == "HBC"
+    assert cases[0]["first_r4_r5_period_end_date"] == "2022-12-31"
+    assert cases[0]["first_r4_r5_risk_tier"] == "R4"
+
+
+def test_p0_2_2020_statutory_fallback_arm_never_labeled_exact_wf() -> None:
+    """P0-2: Year 2020 fallback trained with require_exact_filing=False must be labeled STATUTORY_PRE2020_WF."""
+    import scripts.run_ml_eval_685 as eval_mod
+
+    assert eval_mod._resolve_case_study_arm_label(False, 2020) == "STATUTORY_PRE2020_WF"
+    assert eval_mod._resolve_case_study_arm_label(True, 2020) == "STATUTORY_PRE2020_WF"
+    assert eval_mod._resolve_case_study_arm_label(False, 2021) == "EXACT_WF"
+    assert eval_mod._resolve_case_study_arm_label(True, 2022) == "STATUTORY_WF"
+
+
+def test_p1_1_explain_float32_tolerance_and_two_way_incremental(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1-1: explain.py allows 2.7e-6 float32 ULP drift (< 1e-5) and incremental supports validation_start=None."""
+    from finintel.ml.supervised import explain as explain_mod
+    from finintel.ml.supervised.train import BASE_FEATURES, train_distress_model
+    from finintel.transform.incremental import (
+        MLTransformConfig,
+        run_incremental_analytics_transform,
+    )
+    from tests.unit.test_layer4_analytics import facts
+
+    rng = np.random.default_rng(7)
+    rows = []
+    for i in range(40):
+        row: dict[str, object] = {
+            "issuer_id": f"SHAP_{i:02d}",
+            "accounting_regime": "CORPORATE",
+            "statement_scope": "CONSOLIDATED",
+            "period_type": "QUARTER",
+            "period_end_date": date(2022, 12, 31),
+            "filing_id": f"SHAP_{i:02d}_F1",
+            "taxonomy_version": "VAS_TT200_2014",
+            "_period_available_at": date(2023, 1, 25),
+            "altman_z_double_prime": 1.0 if i < 10 else 3.0,
+            "distress_target": 1 if i < 10 else 0,
+        }
+        for feat in BASE_FEATURES:
+            if feat == "altman_z_double_prime":
+                continue
+            row[feat] = float(rng.normal(0.0, 1.0))
+        rows.append(row)
+    df = pl.DataFrame(rows)
+    trained = train_distress_model(
+        df, None, features=BASE_FEATURES, min_unique_positive_issuers=2
+    )
+
+    from finintel.exceptions import ContractViolationError
+
+    orig_predict = trained.classifier.predict
+    drift_amount = 2.7e-6
+
+    def _drifted_predict(
+        x: object, *, output_margin: bool = False
+    ) -> np.ndarray[tuple[int, ...], np.dtype[np.float64]]:
+        out = np.asarray(orig_predict(x, output_margin=output_margin), dtype=np.float64)
+        if output_margin and out.size > 0:
+            out = out.copy()
+            out[0] += drift_amount
+        return out
+
+    monkeypatch.setattr(trained.classifier, "predict", _drifted_predict)
+    base_v, _, agg, margins = explain_mod.compute_shap_contributions(trained, df)
+    assert float(np.max(np.abs(base_v + agg.sum(axis=1) - margins))) < 1e-5
+
+    drift_amount = 1e-3
+    with pytest.raises(ContractViolationError):
+        explain_mod.compute_shap_contributions(trained, df)
+    monkeypatch.undo()
+
+    # Two-way incremental transform with validation_start=None
+    def _mk_facts(idx: int, distressed_year: int | None) -> pl.DataFrame:
+        pmap: dict[tuple[int, int | None], dict[str, float | None]] = {}
+        for yr in range(2018, 2025):
+            for q in range(1, 5):
+                hit = distressed_year == yr and q == 3
+                s = 1.0 + 0.02 * idx
+                pmap[(yr, q)] = {
+                    "BS_TOTAL_ASSETS": 1000.0 * s,
+                    "BS_TOTAL_EQUITY": -20.0 * s if hit else 450.0 * s,
+                    "BS_MINORITY_INTEREST": 5.0 * s,
+                    "BS_TOTAL_LIABILITIES": 1020.0 * s if hit else 550.0 * s,
+                    "BS_CURRENT_ASSETS": 350.0 * s,
+                    "BS_CURRENT_LIABILITIES": 180.0 * s,
+                    "BS_CASH_AND_EQUIVALENTS": 80.0 * s,
+                    "BS_SHORT_TERM_BORROWINGS": 100.0 * s,
+                    "BS_LONG_TERM_BORROWINGS": 80.0 * s,
+                    "BS_RETAINED_EARNINGS": 120.0 * s,
+                    "BS_ORDINARY_SHARES_CAPITAL": 200_000.0,
+                    "BS_TREASURY_SHARES": 0.0,
+                    "BS_INVENTORIES": 60.0 * s,
+                    "BS_TRADE_RECEIVABLES_ST": 90.0 * s,
+                    "BS_TRADE_PAYABLES_ST": 60.0 * s,
+                    "BS_TANGIBLE_FIXED_ASSETS": 300.0 * s,
+                    "IS_NET_REVENUE": 250.0 * s,
+                    "IS_COST_OF_GOODS_SOLD": 150.0 * s,
+                    "IS_GROSS_PROFIT": 100.0 * s,
+                    "IS_OPERATING_PROFIT": 40.0 * s,
+                    "IS_PROFIT_BEFORE_TAX": 36.0 * s,
+                    "IS_INTEREST_EXPENSE": 4.0 * s,
+                    "IS_CURRENT_INCOME_TAX": 7.0 * s,
+                    "IS_DEFERRED_INCOME_TAX": 0.5 * s,
+                    "IS_NET_INCOME": 28.5 * s,
+                    "IS_NET_INCOME_PARENT": 27.0 * s,
+                    "IS_SELLING_EXPENSES": 12.0 * s,
+                    "IS_ADMINISTRATIVE_EXPENSES": 14.0 * s,
+                    "CF_OPERATING_CASH_FLOW": 32.0 * s,
+                    "CF_CAPITAL_EXPENDITURE": -10.0 * s,
+                    "CF_DEPRECIATION_AMORTIZATION": 8.0 * s,
+                    "CF_EQUITY_ISSUANCE_PROCEEDS": 0.0,
+                }
+        return facts(pmap, issuer_id=f"TW_{idx:02d}").with_columns(
+            pl.lit("EXACT_FILING").alias("published_at_basis"),
+            pl.col("effective_available_at").alias("published_at"),
+        )
+
+    all_facts = pl.concat(
+        [_mk_facts(i, 2021 if i < 3 else (2024 if i == 3 else None)) for i in range(10)]
+    )
+    issuers_df = pl.DataFrame(
+        {
+            "issuer_id": [f"TW_{i:02d}" for i in range(10)],
+            "ticker": [f"TW{i:02d}" for i in range(10)],
+            "accounting_regime": ["CORPORATE"] * 10,
+            "industry_snapshot_date": [date(2026, 1, 1)] * 10,
+        }
+    )
+    bundle = run_incremental_analytics_transform(
+        all_facts,
+        issuers_df,
+        as_of=date(2025, 3, 1),
+        run_id="inc_twoway_01",
+        ml_config=MLTransformConfig(
+            enabled=True,
+            mode="retrain",
+            approved_target=True,
+            require_exact_filing=True,
+            validation_start=None,
+            test_start=date(2023, 3, 1),
+        ),
+    )
+    assert bundle.evaluation_report is not None
+    assert bundle.evaluation_report["split_mode"] == "TWO_WAY_PURGED_OOF"
+    assert bundle.ml_run_manifest is not None
+    assert bundle.ml_run_manifest["validation_start"] is None
+    assert bundle.ml_run_manifest["split_mode"] == "TWO_WAY_PURGED_OOF"
+    ml_roles = set(bundle.ml_scores["model_role"].drop_nulls().to_list())
+    assert "OUT_OF_SAMPLE_LIVE" in ml_roles
+    assert "IN_SAMPLE_TRAIN" in ml_roles
+
+
+def test_p1_1_quarterly_retrain_schedule_defaults(tmp_path: Path) -> None:
+    """P1-1: quarterly_ml_retrain_schedule defaults to validation_start=None & target_mode=REGULATORY_DISTRESS."""
+    dg = pytest.importorskip("dagster")
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from finintel.orchestration.assets import (
+        PublishMartsConfig,
+        quarterly_ml_retrain_schedule,
+    )
+    from finintel.orchestration.resources import FinIntelPathsResource
+
+    VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config" / "settings.yaml").write_text(
+        "orchestration: {}\n", encoding="utf-8"
+    )
+    paths_res = FinIntelPathsResource(
+        project_root=str(tmp_path), data_root=str(tmp_path / "data")
+    )
+    ctx = dg.build_schedule_context(
+        scheduled_execution_time=datetime(2026, 4, 1, 2, 0, tzinfo=VN_TZ),
+        resources={"paths": paths_res},
+    )
+    eval_res = quarterly_ml_retrain_schedule.evaluate_tick(ctx)
+    if isinstance(eval_res, dg.RunRequest):
+        req = eval_res
+    else:
+        assert eval_res.run_requests is not None and len(eval_res.run_requests) == 1
+        req = eval_res.run_requests[0]
+    assert isinstance(req, dg.RunRequest)
+    cfg = req.run_config["ops"]["published_financial_marts"]["config"]
+    assert cfg.get("ml_validation_start") is None
+    assert PublishMartsConfig(**cfg).ml_validation_start is None
+    assert cfg["target_mode"] == "REGULATORY_DISTRESS"
+
+
+def test_p1_2_walk_forward_uses_per_fold_pit_cutoffs_without_lookahead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2: pooled_oos_risk_tier_reliability assigns risk tiers per fold using PIT cutoffs before pooling."""
+    from finintel.ml.supervised import train as train_mod
+
+    # Mock splits and train_distress_model with deterministic fold probabilities & cutoffs:
+    # Fold 2021: cutoffs = (0.01, 0.02, 0.05, 0.10), test probs = [0.005 (y=0), 0.015 (y=1)] -> R1 (0%), R2 (100%)
+    # Fold 2022: cutoffs = (0.05, 0.10, 0.20, 0.30), test probs = [0.015 (y=0), 0.08 (y=0), 0.25 (y=1)] -> R1 (0%), R2 (0%), R4 (100%)
+    # With look-ahead Fold 2022 cutoffs (c1=0.05) applied retroactively to Fold 2021:
+    #   Fold 2021's 0.015 (y=1) gets demoted to R1! -> R1 = 1/3 (33%), R2 = 0/1 (0%) -> BROKEN MONOTONICITY!
+    # With PIT per-fold cutoffs:
+    #   R1 = {0.005(0), 0.015_f2(0)} -> 0/2 = 0%
+    #   R2 = {0.015_f1(1), 0.08_f2(0)} -> 1/2 = 50%  (wait: make 2022 have y=1 at R4, y=0 at R1 so R1(0%) <= R2(50%) <= R4(100%)!)
+    def _mk_df(
+        issuer_ids: list[str], targets: list[int], probs: list[float]
+    ) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "issuer_id": issuer_ids,
+                "accounting_regime": ["CORPORATE"] * len(issuer_ids),
+                "statement_scope": ["CONSOLIDATED"] * len(issuer_ids),
+                "taxonomy_version": ["VAS_TT200_2014"] * len(issuer_ids),
+                "altman_z_double_prime": [2.0] * len(issuer_ids),
+                "_period_available_at": [date(2021, 1, 1)] * len(issuer_ids),
+                "distress_target": targets,
+                "_stub_p": probs,
+            }
+        )
+
+    fake_splits = {
+        2021: {
+            "train": _mk_df(["TR1"], [0], [0.01]),
+            "test": _mk_df(["A1", "A2"], [0, 1], [0.005, 0.015]),
+        },
+        2022: {
+            "train": _mk_df(["TR2"], [0], [0.05]),
+            "test": _mk_df(["B1", "B2", "B3"], [0, 0, 1], [0.015, 0.08, 0.25]),
+        },
+    }
+    cutoffs_by_train = {
+        "TR1": (0.01, 0.02, 0.05, 0.10),
+        "TR2": (0.05, 0.10, 0.20, 0.30),
+    }
+
+    monkeypatch.setattr(
+        train_mod,
+        "build_expanding_walk_forward_splits",
+        lambda *a, **kw: fake_splits,
+    )
+
+    class _FakeTrained:
+        def __init__(self, cutoffs: tuple[float, float, float, float]) -> None:
+            self.risk_tier_cutoffs = cutoffs
+            self.train_prevalence = 0.05
+            self.oof_strategy = "PURGED_TEMPORAL_OOF"
+            self.best_n_estimators = 20
+            self.scale_pos_weight = 1.0
+            self.min_child_weight = 2.0
+            self.platt_slope = 1.0
+            self.platt_intercept = 0.0
+            self.f2_thresholds = {
+                "Baseline_1_AltmanZ": 0.5,
+                "Baseline_2_Logit": 0.5,
+                "XGBoost": 0.5,
+            }
+
+    monkeypatch.setattr(
+        train_mod,
+        "train_distress_model",
+        lambda tr_df, *a, **kw: _FakeTrained(cutoffs_by_train[tr_df["issuer_id"][0]]),
+    )
+    monkeypatch.setattr(
+        train_mod,
+        "evaluate_distress_models",
+        lambda *a, **kw: {
+            "common_sample_count": 2,
+            "positive_count": 1,
+            "unique_positive_issuers": 1,
+            "models": {
+                m: {
+                    "roc_auc": 0.8,
+                    "pr_auc": 0.5,
+                    "brier_score": 0.1,
+                    "brier_skill_score": 0.1,
+                    "recall_at_top_5_percent": 0.5,
+                    "recall_at_top_10_percent": 0.5,
+                }
+                for m in ("Baseline_1_AltmanZ", "Baseline_2_Logit", "XGBoost")
+            },
+        },
+    )
+    monkeypatch.setattr(
+        train_mod,
+        "filter_true_unseen_issuers",
+        lambda df, **kw: df,
+    )
+
+    def _fake_score_three(
+        _trained: object, df: pl.DataFrame, *, target: str
+    ) -> tuple[
+        np.ndarray[tuple[int, ...], np.dtype[np.int8]],
+        np.ndarray[tuple[int, ...], np.dtype[np.float64]],
+        np.ndarray[tuple[int, ...], np.dtype[np.float64]],
+        np.ndarray[tuple[int, ...], np.dtype[np.float64]],
+        np.ndarray[tuple[int, ...], np.dtype[np.bool_]],
+    ]:
+        y = df[target].to_numpy().astype(np.int8)
+        p = df["_stub_p"].to_numpy().astype(np.float64)
+        mask = np.ones(len(y), dtype=bool)
+        return y, p, p, p, mask
+
+    monkeypatch.setattr(train_mod, "_score_three_models", _fake_score_three)
+
+    wf = train_mod.run_expanding_walk_forward_evaluation(
+        pl.DataFrame(),
+        pl.DataFrame(),
+        as_of=date(2023, 1, 1),
+        test_years=(2021, 2022),
+        n_bootstrap=10,
+    )
+    rel = wf["pooled_oos_risk_tier_reliability"]
+    assert rel is not None
+    tiers_by_name = {row["risk_tier"]: row for row in rel["tiers"]}
+    assert tiers_by_name["R1"]["count"] == 2
+    assert tiers_by_name["R1"]["positive_count"] == 0
+    assert tiers_by_name["R2"]["count"] == 2
+    assert tiers_by_name["R2"]["positive_count"] == 1
+    assert tiers_by_name["R4"]["count"] == 1
+    assert tiers_by_name["R4"]["positive_count"] == 1
+    assert rel["is_monotone_non_decreasing"] is True
+
+
+def test_p1_3_statutory_delay_sensitivity_37d_and_overdue_count() -> None:
+    """P1-3: STATUTORY_LAG + 37d shifts availability on STATUTORY_LAG rows and flags unverified deadlines."""
+    from finintel.analytics.intermediates import prepare_periods
+    from finintel.domain.schemas import (
+        EMPIRICAL_STATUTORY_DELAY_P90_DAYS,
+        FilingMetadata,
+        PeriodType,
+        StatementType,
+    )
+    from tests.unit.test_layer4_analytics import facts
+
+    assert EMPIRICAL_STATUTORY_DELAY_P90_DAYS == 37
+    meta = FilingMetadata(
+        issuer_id="UP1",
+        ticker_at_filing="UP1",
+        statement_type=StatementType.BALANCE_SHEET,
+        period_type=PeriodType.QUARTER,
+        fiscal_year=2023,
+        fiscal_quarter=1,
+        fiscal_year_start_date=date(2023, 1, 1),
+        period_start_date=date(2023, 1, 1),
+        period_end_date=date(2023, 3, 31),
+        published_at=None,
+    )
+    assert meta.effective_available_at_with_delay(37) == (
+        meta.effective_available_at + timedelta(days=37)
+    )
+
+    template: dict[str, float | None] = {
+        "BS_TOTAL_ASSETS": 100.0,
+        "BS_TOTAL_EQUITY": 50.0,
+        "BS_TOTAL_LIABILITIES": 50.0,
+        "BS_CURRENT_ASSETS": 40.0,
+        "BS_CURRENT_LIABILITIES": 20.0,
+        "IS_NET_REVENUE": 100.0,
+        "IS_NET_INCOME": 5.0,
+    }
+    meta_q2 = FilingMetadata(
+        issuer_id="UP1",
+        ticker_at_filing="UP1",
+        statement_type=StatementType.BALANCE_SHEET,
+        period_type=PeriodType.QUARTER,
+        fiscal_year=2023,
+        fiscal_quarter=2,
+        fiscal_year_start_date=date(2023, 1, 1),
+        period_start_date=date(2023, 4, 1),
+        period_end_date=date(2023, 6, 30),
+        published_at=None,
+    )
+    raw = facts({(2023, 1): template, (2023, 2): template}, issuer_id="UP1")
+    stat_facts = raw.with_columns(
+        pl.lit("STATUTORY_LAG").alias("published_at_basis"),
+        pl.lit(None, dtype=pl.Date).alias("published_at"),
+        pl.lit(None, dtype=pl.Boolean).alias("is_filed_late"),
+        pl.when(pl.col("fiscal_quarter") == 1)
+        .then(pl.lit(meta.effective_available_at))
+        .otherwise(pl.lit(meta_q2.effective_available_at))
+        .alias("effective_available_at"),
+    )
+    issuers_df = pl.DataFrame(
+        {
+            "issuer_id": ["UP1"],
+            "ticker": ["UP1"],
+            "accounting_regime": ["CORPORATE"],
+        }
+    )
+    base_p = prepare_periods(
+        stat_facts, issuers_df, as_of=date(2024, 1, 1), include_ml_inputs=True
+    )
+    delayed_p = prepare_periods(
+        stat_facts,
+        issuers_df,
+        as_of=date(2024, 1, 1),
+        include_ml_inputs=True,
+        statutory_delay_days=37,
+    )
+    q1_base = base_p.filter(pl.col("fiscal_quarter") == 1).row(0, named=True)
+    q1_del = delayed_p.filter(pl.col("fiscal_quarter") == 1).row(0, named=True)
+    assert q1_del["_period_available_at"] == q1_base[
+        "_period_available_at"
+    ] + timedelta(days=37)
+
+    # At +0d, neither Q1 nor Q2 exceeded its statutory deadline; at +37d, both Q1 and Q2 did.
+    q2_base = base_p.filter(pl.col("fiscal_quarter") == 2).row(0, named=True)
+    q2_del = delayed_p.filter(pl.col("fiscal_quarter") == 2).row(0, named=True)
+    assert q2_base["overdue_or_late_count_4q"] == pytest.approx(0.0)
+    assert q2_del["overdue_or_late_count_4q"] == pytest.approx(2.0)
+
+
+def test_p1_6_dynamic_gate_ml_checks_reflect_actual_failures() -> None:
+    """P1-6: GATE-ML-1..6 status is computed dynamically from real summary metrics (never hardcoded PASS)."""
+    import scripts.run_ml_eval_685 as eval_mod
+
+    fake_models = {
+        m: {
+            "roc_auc": 0.80,
+            "pr_auc": 0.25,
+            "brier_score": 0.02,
+            "brier_skill_score": 0.10,
+            "recall_at_top_5_percent": 0.30,
+            "recall_at_top_10_percent": 0.50,
+        }
+        for m in ("Baseline_1_AltmanZ", "Baseline_2_Logit", "XGBoost")
+    }
+    fake_boot = {
+        m: {
+            "point": fake_models[m],
+            "ci95": {
+                "roc_auc": [0.70, 0.88],
+                "pr_auc": [0.15, 0.35],
+                "brier_skill_score": [0.02, 0.18],
+            },
+        }
+        for m in ("Baseline_1_AltmanZ", "Baseline_2_Logit", "XGBoost")
+    }
+    fake_yr_sum = {
+        m: {
+            "roc_auc": {"mean": 0.80, "std": 0.04},
+            "pr_auc": {"mean": 0.25, "std": 0.05},
+        }
+        for m in ("Baseline_1_AltmanZ", "Baseline_2_Logit", "XGBoost")
+    }
+    fake_per_year = {
+        str(yr): {
+            "oof_strategy": "STRATIFIED_GROUP_OOF"
+            if yr == 2021
+            else "PURGED_TEMPORAL_OOF",
+            "best_n_estimators": 20,
+            "platt_slope": 5.0 if yr == 2021 else 1.5,
+            "train_rows": 1000,
+            "train_positive_rows": 25,
+            "train_unique_positive_issuers": 10,
+            "train_models": fake_models,
+            "test": {
+                "common_sample_count": 500,
+                "positive_count": 15,
+                "unique_positive_issuers": 8,
+                "models": fake_models,
+            },
+            "true_unseen_issuers": {
+                "common_sample_count": 400,
+                "positive_count": 10,
+                "unique_positive_issuers": 6,
+                "models": fake_models,
+            },
+        }
+        for yr in (2021, 2022, 2023, 2024, 2025)
+    }
+    tiers_ok = [
+        {
+            "risk_tier": f"R{i}",
+            "count": 100,
+            "positive_count": i,
+            "empirical_event_rate": 0.01 * i,
+        }
+        for i in range(1, 6)
+    ]
+    tiers_broken = [
+        {
+            "risk_tier": "R1",
+            "count": 100,
+            "positive_count": 3,
+            "empirical_event_rate": 0.03,
+        },
+        {
+            "risk_tier": "R2",
+            "count": 100,
+            "positive_count": 1,
+            "empirical_event_rate": 0.01,
+        },
+        {
+            "risk_tier": "R3",
+            "count": 100,
+            "positive_count": 2,
+            "empirical_event_rate": 0.02,
+        },
+        {
+            "risk_tier": "R4",
+            "count": 100,
+            "positive_count": 4,
+            "empirical_event_rate": 0.04,
+        },
+        {
+            "risk_tier": "R5",
+            "count": 100,
+            "positive_count": 10,
+            "empirical_event_rate": 0.10,
+        },
+    ]
+
+    def _wf_block(monotone: bool) -> dict[str, Any]:
+        return {
+            "evaluated_years": [2021, 2022, 2023, 2024, 2025],
+            "per_year": fake_per_year,
+            "yearly_summary_all_oos": fake_yr_sum,
+            "yearly_summary_true_unseen": fake_yr_sum,
+            "pooled_oos_cluster_bootstrap": fake_boot,
+            "pooled_true_unseen_cluster_bootstrap": fake_boot,
+            "pooled_oos_risk_tier_reliability": {
+                "tiers": tiers_ok if monotone else tiers_broken,
+                "is_monotone_non_decreasing": monotone,
+            },
+        }
+
+    psi_ok = {
+        "reference_rows": 100,
+        "target_rows": 50,
+        "mean_feature_psi": 0.05,
+        "max_feature_psi": 0.12,
+        "features_psi_gt_0_25": [],
+        "mean_ref_missing_rate": 0.01,
+        "mean_tgt_missing_rate": 0.01,
+        "score_drift": {
+            "score_psi": 0.02,
+            "ref_r4_r5_share": 0.10,
+            "tgt_r4_r5_share": 0.11,
+            "r4_r5_share_delta": 0.01,
+        },
+    }
+
+    summary = {
+        "generated_at": "2026-11-23T00:00:00+00:00",
+        "as_of": "2026-11-22",
+        "issuers_count": 685,
+        "exchange_counts": {"HOSE": 280, "HNX": 110, "UPCOM": 295},
+        "facts_raw_rows": 100000,
+        "stub_harmonized_rows": 0,
+        "qg1_clean_facts": 99000,
+        "qg1_critical_issuers": 0,
+        "qg1_critical_ratio": 0.0,
+        "reg_events_count": 1406,
+        "reg_positive_issuers": 247,
+        "reg_provenance_complete": True,
+        "industry_snapshot_backdated_count": 0,
+        "onset_by_year": [],
+        "walk_forward_exact": _wf_block(monotone=False),
+        "walk_forward_expanded": _wf_block(monotone=True),
+        "walk_forward_expanded_delay37": _wf_block(monotone=True),
+        "walk_forward_mode_a": _wf_block(monotone=True),
+        "production_oof_reliability": {
+            "tiers": tiers_ok,
+            "is_monotone_non_decreasing": True,
+        },
+        "reliability_exact_2022_2025": {
+            "tiers": tiers_ok,
+            "is_monotone_non_decreasing": True,
+        },
+        "psi_exact": psi_ok,
+        "psi_expanded": psi_ok,
+        "case_studies": [],
+        "publish_info": None,
+    }
+    gates = eval_mod.compute_gate_ml_checks(summary)
+    by_gate = {g["gate"]: g for g in gates}
+    assert by_gate["GATE-ML-5"]["passed"] is False
+    assert by_gate["GATE-ML-6"]["passed"] is False
+    md = eval_mod.render_report_markdown(summary)
+    assert "**FAIL**" in md
+    assert "STRATIFIED_GROUP_OOF" in md
+    assert "[0.15, 5.0]" in md
+
+
+def test_p2_7_run_ml_eval_685_port_writes_inside_pipeline_write_lock() -> None:
+    """P2-7: publish_production_685_snapshot wraps Port DuckLake writes inside pipeline_write_lock."""
+    import inspect
+
+    import scripts.run_ml_eval_685 as eval_mod
+
+    src = inspect.getsource(eval_mod.publish_production_685_snapshot)
+    assert "pipeline_write_lock" in src
+    lock_pos = src.index("pipeline_write_lock")
+    port_pos = src.index('"regulatory_events"')
+    assert lock_pos < port_pos
+
+
+def test_p2_10_pit_cross_sectional_peer_filtering_blocks_late_filer_leakage() -> None:
+    """P2-10: Late filers (_period_available_at later) must not contaminate earlier filers' sector_z_* or asset rank."""
+    from finintel.ml.supervised.temporal_split import build_pit_two_way_split
+    from tests.unit.test_layer4_analytics import facts
+
+    def _mk_q(iid: str, assets: float, ebit: float, avail: date) -> pl.DataFrame:
+        rows = []
+        for yr in (2020, 2021, 2022):
+            for q in (1, 2, 3, 4):
+                p_avail = (
+                    avail
+                    if (yr == 2021 and q == 4)
+                    else date(yr, q * 3, 28) + timedelta(days=25)
+                )
+                rows.append(
+                    facts(
+                        {
+                            (yr, q): {
+                                "BS_TOTAL_ASSETS": assets,
+                                "BS_TOTAL_EQUITY": assets * 0.5,
+                                "BS_MINORITY_INTEREST": 0.0,
+                                "BS_TOTAL_LIABILITIES": assets * 0.5,
+                                "BS_CURRENT_ASSETS": assets * 0.4,
+                                "BS_CURRENT_LIABILITIES": assets * 0.2,
+                                "BS_CASH_AND_EQUIVALENTS": assets * 0.1,
+                                "BS_SHORT_TERM_BORROWINGS": assets * 0.1,
+                                "BS_LONG_TERM_BORROWINGS": assets * 0.1,
+                                "BS_RETAINED_EARNINGS": assets * 0.1,
+                                "BS_INVENTORIES": assets * 0.1,
+                                "BS_TRADE_RECEIVABLES_ST": assets * 0.1,
+                                "BS_TRADE_PAYABLES_ST": assets * 0.1,
+                                "BS_TANGIBLE_FIXED_ASSETS": assets * 0.3,
+                                "IS_NET_REVENUE": 100.0,
+                                "IS_COST_OF_GOODS_SOLD": 100.0 - ebit - 10.0,
+                                "IS_GROSS_PROFIT": ebit + 10.0,
+                                "IS_OPERATING_PROFIT": ebit,
+                                "IS_PROFIT_BEFORE_TAX": ebit,
+                                "IS_INTEREST_EXPENSE": 1.0,
+                                "IS_CURRENT_INCOME_TAX": 1.0,
+                                "IS_DEFERRED_INCOME_TAX": 0.0,
+                                "IS_NET_INCOME": ebit - 2.0,
+                                "IS_NET_INCOME_PARENT": ebit - 2.0,
+                                "IS_SELLING_EXPENSES": 5.0,
+                                "IS_ADMINISTRATIVE_EXPENSES": 5.0,
+                                "CF_OPERATING_CASH_FLOW": ebit,
+                                "CF_CAPITAL_EXPENDITURE": -2.0,
+                                "CF_DEPRECIATION_AMORTIZATION": 2.0,
+                            }
+                        },
+                        issuer_id=iid,
+                    ).with_columns(
+                        pl.lit("EXACT_FILING").alias("published_at_basis"),
+                        pl.lit(p_avail).alias("published_at"),
+                        pl.lit(p_avail).alias("effective_available_at"),
+                    )
+                )
+        return pl.concat(rows)
+
+    early_a = _mk_q("EARLY_A", 100.0, 10.0, date(2022, 1, 25))
+    early_b = _mk_q("EARLY_B", 200.0, 20.0, date(2022, 1, 25))
+    late_c = _mk_q("LATE_C", 50.0, 90.0, date(2023, 6, 15))
+    issuers_df = pl.DataFrame(
+        {
+            "issuer_id": ["EARLY_A", "EARLY_B", "LATE_C"],
+            "ticker": ["EA", "EB", "LC"],
+            "accounting_regime": ["CORPORATE"] * 3,
+        }
+    )
+    reg_events = pl.DataFrame(
+        {
+            "issuer_id": ["EARLY_A"],
+            "event_date": [date(2020, 6, 1)],
+            "effective_from": [date(2020, 6, 1)],
+            "resolution_date": [date(2020, 12, 1)],
+            "event_type": ["CONTROL"],
+            "event_stage": ["FIRST_ENTRY"],
+        }
+    )
+
+    split_early = build_pit_two_way_split(
+        pl.concat([early_a, early_b, late_c]),
+        issuers_df,
+        test_start=date(2021, 1, 1),
+        as_of=date(2023, 2, 1),
+        target_mode="REGULATORY_DISTRESS",
+        regulatory_events=reg_events,
+    )
+    split_late = build_pit_two_way_split(
+        pl.concat([early_a, early_b, late_c]),
+        issuers_df,
+        test_start=date(2021, 1, 1),
+        as_of=date(2023, 12, 31),
+        target_mode="REGULATORY_DISTRESS",
+        regulatory_events=reg_events,
+    )
+    row_early = (
+        split_early["test"]
+        .filter(
+            (pl.col("issuer_id") == "EARLY_A")
+            & (pl.col("fiscal_year") == 2021)
+            & (pl.col("fiscal_quarter") == 4)
+        )
+        .row(0, named=True)
+    )
+    row_late = (
+        split_late["test"]
+        .filter(
+            (pl.col("issuer_id") == "EARLY_A")
+            & (pl.col("fiscal_year") == 2021)
+            & (pl.col("fiscal_quarter") == 4)
+        )
+        .row(0, named=True)
+    )
+    assert row_early["cross_sectional_asset_size_pct"] == pytest.approx(
+        row_late["cross_sectional_asset_size_pct"]
+    )
+    assert row_early["sector_z_ebit_margin"] == pytest.approx(
+        row_late["sector_z_ebit_margin"]
+    )

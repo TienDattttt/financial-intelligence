@@ -3,9 +3,10 @@
 Executes:
 1. Full 2-Way Purged Expanding Walk-Forward (2021 -> 2025) on the real 685-issuer
    universe (``data/universe_600_800`` + ``regulatory_events_600_800.parquet``)
-   across BOTH H-01 branches:
+   across BOTH H-01 branches (plus empirical ``+37d`` UPCOM delay sensitivity):
      - Branch 1 (Strict ``EXACT_FILING``, Guardrail G1)
-     - Branch 2 (Expanded ``EXACT + STATUTORY_LAG``, conservative H-01 arm)
+     - Branch 2 (Expanded ``EXACT + STATUTORY_LAG (+0d)``, unpenalized statutory deadline upper-bound)
+     - Branch 2b (Sensitivity ``STATUTORY_LAG + 37d``, empirical UPCOM distress p90 delay)
 2. Mode A (``FUNDAMENTAL_DISTRESS``, 0% TTM overlap, 2021 -> 2024) ablation cross-check.
 3. M-05 ``VAS_TT200_2014`` (2024-2025) -> ``VAS_TT99_2025`` (2026) PSI & missingness audit.
 4. Strictly out-of-sample expanding historical VN corporate distress Case Studies.
@@ -38,6 +39,7 @@ from finintel.analytics.dupont import add_dupont
 from finintel.analytics.intermediates import prepare_periods
 from finintel.analytics.ratios import calculate_ratios
 from finintel.analytics.red_flags import detect_red_flags
+from finintel.domain.schemas import EMPIRICAL_STATUTORY_DELAY_P90_DAYS
 from finintel.exceptions import ContractViolationError
 from finintel.ml.classical_scores import add_classical_scores
 from finintel.ml.supervised.explain import get_feature_display_names
@@ -51,9 +53,12 @@ from finintel.ml.supervised.temporal_split import (
 )
 from finintel.ml.supervised.train import (
     MODEL_VERSION,
+    PLATT_MAX_SLOPE,
+    PLATT_MIN_SLOPE,
     SECTOR_ADJUSTED_FEATURES,
     TrainingResult,
     _prepare_eval_fold,
+    assign_risk_tiers,
     build_evaluation_report,
     compute_taxonomy_drift_psi,
     evaluate_risk_tier_reliability,
@@ -68,6 +73,7 @@ from finintel.ml.tables import (
     _installed_versions,
     build_model_card_meta_table,
     build_model_card_payload,
+    score_and_explain_with_pit_roles,
 )
 from finintel.ml.unsupervised import FinancialArchetypes
 from finintel.pipeline.state_store import StateStore
@@ -85,6 +91,7 @@ from finintel.storage.manifest_export import (
     build_latest_facts_table,
 )
 from finintel.storage.repository import ParquetRepository
+from finintel.storage.snapshot_publisher import pipeline_write_lock
 from finintel.storage.schemas import (
     ANALYTICS_SCHEMAS,
     AUDIT_QUARANTINE_TABLE,
@@ -493,7 +500,7 @@ def evaluate_2022_2025_reliability(
     scored_as_of: pl.DataFrame,
     require_exact_filing: bool,
 ) -> dict[str, Any]:
-    """Evaluate R1..R5 monotonicity on PURGED_TEMPORAL_OOF years (2022-2025) using last fold cutoffs."""
+    """Evaluate R1..R5 monotonicity on PURGED_TEMPORAL_OOF years (2022-2025) using PIT per-fold cutoffs."""
     wf_splits = build_expanding_walk_forward_splits(
         clean_facts,
         issuers,
@@ -508,6 +515,7 @@ def evaluate_2022_2025_reliability(
     )
     y_parts: list[np.ndarray[Any, np.dtype[np.int8]]] = []
     p_parts: list[np.ndarray[Any, np.dtype[np.float64]]] = []
+    tier_parts: list[str | None] = []
     last_cutoffs = (0.01, 0.025, 0.06, 0.15)
     for yr in (2022, 2023, 2024, 2025):
         trained = train_distress_model(
@@ -521,9 +529,22 @@ def evaluate_2022_2025_reliability(
         finite = np.isfinite(probs)
         y_parts.append(targets[finite])
         p_parts.append(probs[finite])
+        tier_parts.extend(assign_risk_tiers(probs[finite], trained.risk_tier_cutoffs))
     return evaluate_risk_tier_reliability(
-        np.concatenate(y_parts), np.concatenate(p_parts), last_cutoffs
+        np.concatenate(y_parts),
+        np.concatenate(p_parts),
+        last_cutoffs,
+        assigned_tiers=tier_parts,
     )
+
+
+def _resolve_case_study_arm_label(
+    used_statutory_fallback: bool, fiscal_year: int | None
+) -> str:
+    """Label 2020 pre-EXACT fallback honestly as STATUTORY_PRE2020_WF (P0-2)."""
+    if fiscal_year is not None and int(fiscal_year) < 2021:
+        return "STATUTORY_PRE2020_WF"
+    return "STATUTORY_WF" if used_statutory_fallback else "EXACT_WF"
 
 
 def build_oos_expanding_case_studies(
@@ -602,7 +623,7 @@ def build_oos_expanding_case_studies(
             sp["train"], None, features=SECTOR_ADJUSTED_FEATURES
         )
 
-    # Also build conservative STATUTORY_LAG models for UPCOM issuers lacking EXACT_FILING
+    # Also build STATUTORY_LAG (+0d unpenalized deadline upper-bound) models for UPCOM issuers lacking EXACT_FILING
     year_models_stat: dict[int, TrainingResult] = {2020: year_models[2020]}
     for yr in (2021, 2022, 2023, 2024, 2025):
         sp = build_pit_ml_splits(
@@ -715,12 +736,12 @@ def build_oos_expanding_case_studies(
 
         sub_ex = oos_exact.filter(pl.col("issuer_id") == tkr).sort("period_end_date")
         r45_ex = sub_ex.filter(pl.col("risk_tier").is_in(["R4", "R5"]))
-        arm_label = "EXACT_WF"
+        used_statutory_fallback = False
         chosen_df = r45_ex
         if chosen_df.is_empty():
             sub_st = oos_stat.filter(pl.col("issuer_id") == tkr).sort("period_end_date")
             chosen_df = sub_st.filter(pl.col("risk_tier").is_in(["R4", "R5"]))
-            arm_label = "STATUTORY_WF"
+            used_statutory_fallback = True
             sub_used = sub_st
         else:
             sub_used = sub_ex
@@ -740,6 +761,12 @@ def build_oos_expanding_case_studies(
             chosen_row = sub_used.sort("calibrated_distress_prob", descending=True).row(
                 0, named=True
             )
+        arm_label = _resolve_case_study_arm_label(
+            used_statutory_fallback,
+            int(chosen_row["fiscal_year"])
+            if chosen_row and chosen_row.get("fiscal_year") is not None
+            else None,
+        )
 
         top3: list[dict[str, Any]] = []
         if chosen_row and isinstance(chosen_row.get("shap_top_drivers_json"), str):
@@ -967,8 +994,25 @@ def publish_production_685_snapshot(
     eligible = eligible_with_z.filter(pl.col("_exact_filing_basis").fill_null(False))
 
     unsupervised_out = archetypes.transform(eligible)
-    supervised_out = score_distress_model(training, eligible).drop("model_role")
-    shap_out, shap_max_residual = compute_shap_explanations_float32_safe(
+    supervised_out, shap_out = score_and_explain_with_pit_roles(
+        training=training,
+        eligible=eligible,
+        facts=clean_facts,
+        issuers=issuers,
+        classical_as_of=classical_as_of,
+        peer_medians=industry_benchmarks,
+        as_of=as_of,
+        test_start=PRODUCTION_TEST_START,
+        selected_features=SECTOR_ADJUSTED_FEATURES,
+        statement_scope="CONSOLIDATED",
+        taxonomy_version="VAS_TT200_2014",
+        target_mode="REGULATORY_DISTRESS",
+        peer_standardization_mode=peer_mode,
+        require_exact_filing=True,
+        regulatory_events=regulatory_events,
+        min_unique_positive_issuers=3,
+    )
+    _, shap_max_residual = compute_shap_explanations_float32_safe(
         training,
         eligible,
         peer_medians=industry_benchmarks,
@@ -976,10 +1020,14 @@ def publish_production_685_snapshot(
     )
 
     join_keys = list(ML_SCORES_KEY)
+    supervised_join = supervised_out.rename({"model_role": "_supervised_model_role"})
     ml_scores = (
         classical_as_of.join(unsupervised_out, on=join_keys, how="left", validate="1:1")
-        .join(supervised_out, on=join_keys, how="left", validate="1:1")
+        .join(supervised_join, on=join_keys, how="left", validate="1:1")
         .join(shap_out, on=join_keys, how="left", validate="1:1")
+        .with_columns(
+            pl.coalesce("_supervised_model_role", "model_role").alias("model_role")
+        )
         .select(
             *(
                 pl.col(name).cast(dtype, strict=True).alias(name)
@@ -1018,7 +1066,7 @@ def publish_production_685_snapshot(
     ml_cfg = MLTransformConfig(
         enabled=True,
         mode="retrain",
-        validation_start=date(2023, 1, 1),
+        validation_start=None,
         test_start=PRODUCTION_TEST_START,
         approved_target=True,
         require_exact_filing=True,
@@ -1139,21 +1187,22 @@ def publish_production_685_snapshot(
     )
 
     # Ensure Extension Port tables exist in the DuckLake catalog BEFORE snapshot publish
-    # so we empirically prove DuckLakeStore.publish_snapshot() never drops them (B-03).
-    con = store._open_rw_connection()
-    try:
-        con.register("_port_reg", regulatory_events)
-        con.register("_port_px", px_df)
-        con.execute(
-            f'CREATE OR REPLACE TABLE "{store.catalog_alias}"."regulatory_events" '
-            'AS SELECT * FROM "_port_reg";'
-        )
-        con.execute(
-            f'CREATE OR REPLACE TABLE "{store.catalog_alias}"."market_prices" '
-            'AS SELECT * FROM "_port_px";'
-        )
-    finally:
-        con.close()
+    # inside pipeline_write_lock so DuckLake catalog writes never race (P2-7 / B-03).
+    with pipeline_write_lock(store.lock_path):
+        con = store._open_rw_connection()
+        try:
+            con.register("_port_reg", regulatory_events)
+            con.register("_port_px", px_df)
+            con.execute(
+                f'CREATE OR REPLACE TABLE "{store.catalog_alias}"."regulatory_events" '
+                'AS SELECT * FROM "_port_reg";'
+            )
+            con.execute(
+                f'CREATE OR REPLACE TABLE "{store.catalog_alias}"."market_prices" '
+                'AS SELECT * FROM "_port_px";'
+            )
+        finally:
+            con.close()
 
     git_sha = _resolve_git_sha(WORKTREE_ROOT)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -1398,10 +1447,229 @@ def _render_yearly_rows(wf: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def compute_gate_ml_checks(summary: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Compute dynamic PASS/FAIL status for GATE-ML-1..6 from actual measured metrics (P1-6)."""
+    wf_ex = summary["walk_forward_exact"]
+    wf_exp = summary["walk_forward_expanded"]
+    wf_d37 = summary.get("walk_forward_expanded_delay37")
+    psi_ex = summary["psi_exact"]
+    pub = summary.get("publish_info")
+
+    exch = summary.get("exchange_counts") or {}
+    exch_str = (
+        f"HOSE {exch.get('HOSE', 0)} / HNX {exch.get('HNX', 0)} / UPCOM {exch.get('UPCOM', 0)}"
+        if exch
+        else f"{summary['issuers_count']} issuers"
+    )
+    reg_prov_ok = bool(summary.get("reg_provenance_complete", True))
+    g1_pass = (
+        int(summary.get("issuers_count", 0)) >= 600
+        and int(summary.get("reg_events_count", 0)) > 0
+        and int(summary.get("reg_positive_issuers", 0)) > 0
+        and reg_prov_ok
+        and wf_d37 is not None
+    )
+
+    backdated_cnt = int(summary.get("industry_snapshot_backdated_count", 0))
+    g2_pass = (
+        backdated_cnt == 0
+        and list(wf_ex.get("evaluated_years") or []) == list(WALK_FORWARD_YEARS)
+        and list(wf_exp.get("evaluated_years") or []) == list(WALK_FORWARD_YEARS)
+    )
+
+    b1_per_year = wf_ex.get("per_year", {})
+    b2_per_year = wf_exp.get("per_year", {})
+    b1_oof_strategies = sorted(
+        {f"{yr}:{yd.get('oof_strategy')}" for yr, yd in b1_per_year.items()}
+    )
+    b1_non_temporal = [
+        yr
+        for yr, yd in sorted(b1_per_year.items(), key=lambda item: int(item[0]))
+        if yd.get("oof_strategy") != "PURGED_TEMPORAL_OOF"
+    ]
+    all_slopes_valid = all(
+        PLATT_MIN_SLOPE <= float(yd.get("platt_slope", 0.0)) <= PLATT_MAX_SLOPE
+        for yd in (*b1_per_year.values(), *b2_per_year.values())
+    )
+    all_models_present = all(
+        set((yd.get("test") or {}).get("models", {}))
+        == {"Baseline_1_AltmanZ", "Baseline_2_Logit", "XGBoost"}
+        for yd in (*b1_per_year.values(), *b2_per_year.values())
+    )
+    g3_pass = bool(b1_per_year) and all_slopes_valid and all_models_present
+
+    b1_boot = wf_ex.get("pooled_oos_cluster_bootstrap", {})
+    b2_boot = wf_exp.get("pooled_oos_cluster_bootstrap", {})
+    g4_pass = (
+        list(wf_ex.get("evaluated_years") or []) == list(WALK_FORWARD_YEARS)
+        and list(wf_exp.get("evaluated_years") or []) == list(WALK_FORWARD_YEARS)
+        and all(
+            (b1_boot.get(m, {}).get("ci95") or {}).get("roc_auc") is not None
+            and (b2_boot.get(m, {}).get("ci95") or {}).get("roc_auc") is not None
+            for m in ("Baseline_1_AltmanZ", "Baseline_2_Logit", "XGBoost")
+        )
+    )
+
+    rel_b1_ok = bool(
+        (wf_ex.get("pooled_oos_risk_tier_reliability") or {}).get(
+            "is_monotone_non_decreasing"
+        )
+    )
+    rel_b2_ok = bool(
+        (wf_exp.get("pooled_oos_risk_tier_reliability") or {}).get(
+            "is_monotone_non_decreasing"
+        )
+    )
+    rel_oof_ok = bool(
+        (summary.get("production_oof_reliability") or {}).get(
+            "is_monotone_non_decreasing"
+        )
+    )
+    mean_psi = psi_ex.get("mean_feature_psi")
+    psi_gt_025 = list(psi_ex.get("features_psi_gt_0_25") or [])
+    g5_pass = (
+        rel_b1_ok
+        and rel_b2_ok
+        and rel_oof_ok
+        and mean_psi is not None
+        and float(mean_psi) < 0.25
+        and len(psi_gt_025) == 0
+    )
+
+    g6_pass = (
+        isinstance(pub, Mapping)
+        and int(pub.get("served_model_card_features") or 0)
+        == len(SECTOR_ADJUSTED_FEATURES)
+        and int(
+            (pub.get("extension_ports_in_ducklake") or {}).get("regulatory_events_rows")
+            or 0
+        )
+        > 0
+        and int(
+            (pub.get("extension_ports_in_ducklake") or {}).get("market_prices_rows")
+            or 0
+        )
+        > 0
+    )
+
+    b1_pos_bss_yrs = sum(
+        1
+        for yd in b1_per_year.values()
+        if (yd["test"]["models"]["XGBoost"].get("brier_skill_score") or 0.0) > 0.0
+    )
+    b2_pos_bss_yrs = sum(
+        1
+        for yd in b2_per_year.values()
+        if (yd["test"]["models"]["XGBoost"].get("brier_skill_score") or 0.0) > 0.0
+    )
+    rel_b1_pool = (wf_ex.get("pooled_oos_risk_tier_reliability") or {}).get("tiers", [])
+    rel_b1_oof = (summary.get("production_oof_reliability") or {}).get("tiers", [])
+    rel_b2_pool = (wf_exp.get("pooled_oos_risk_tier_reliability") or {}).get(
+        "tiers", []
+    )
+    b1_lift = (
+        rel_b1_pool[4]["empirical_event_rate"]
+        / max(rel_b1_pool[0]["empirical_event_rate"], 1e-9)
+        if len(rel_b1_pool) >= 5
+        and rel_b1_pool[4].get("empirical_event_rate") is not None
+        and rel_b1_pool[0].get("empirical_event_rate") is not None
+        else 0.0
+    )
+    oof_lift = (
+        rel_b1_oof[4]["empirical_event_rate"]
+        / max(rel_b1_oof[0]["empirical_event_rate"], 1e-9)
+        if len(rel_b1_oof) >= 5
+        and rel_b1_oof[4].get("empirical_event_rate") is not None
+        and rel_b1_oof[0].get("empirical_event_rate") is not None
+        else 0.0
+    )
+    b2_lift = (
+        rel_b2_pool[4]["empirical_event_rate"]
+        / max(rel_b2_pool[0]["empirical_event_rate"], 1e-9)
+        if len(rel_b2_pool) >= 5
+        and rel_b2_pool[4].get("empirical_event_rate") is not None
+        and rel_b2_pool[0].get("empirical_event_rate") is not None
+        else 0.0
+    )
+    fallback_note = (
+        f"Fold(s) {', '.join(b1_non_temporal)} fallback `STRATIFIED_GROUP_OOF`, remaining folds `PURGED_TEMPORAL_OOF`"
+        if b1_non_temporal
+        else "all folds `PURGED_TEMPORAL_OOF`"
+    )
+
+    return [
+        {
+            "gate": "GATE-ML-1",
+            "requirement": "Provenance & Anti-Survivorship (`ML-03b`, `H-01`, `H-02`)",
+            "detail": (
+                f"`{summary['issuers_count']}` corporate issuers ({exch_str}), "
+                f"`{summary['reg_events_count']:,}` Port 1 events (`{summary['reg_positive_issuers']}` pos issuers), "
+                f"`{'100%' if reg_prov_ok else '<100%'}` `source_url` + `payload_sha256`; "
+                f"unpenalized `STATUTORY_LAG (+0d)` upper-bound & `STATUTORY_LAG + {EMPIRICAL_STATUTORY_DELAY_P90_DAYS}d` sensitivity evaluated."
+            ),
+            "passed": g1_pass,
+        },
+        {
+            "gate": "GATE-ML-2",
+            "requirement": "Zero Leakage, Symmetric Horizon (`B-01`), Continuous State (`H-05`), `0%` TTM Overlap",
+            "detail": (
+                "`label_available_at = _period_available_at + 365d` symmetrically for `y=1` & `y=0`; "
+                "continuous `[event_date, resolution_date)` intervals; Mode A `0%` TTM overlap; "
+                f"backdated `2016-01-01` issuers = `{backdated_cnt}` (`industry_snapshot_date = {CATALOG_COLLECTION_DATE.isoformat()}`), "
+                "ML training uses `PIT_REGIME_SYMMETRIC` (ICB 2026 scope applies only to Layer 4A `industry_benchmarks`)."
+            ),
+            "passed": g2_pass,
+        },
+        {
+            "gate": "GATE-ML-3",
+            "requirement": "Fair 3-Model Comparison & Unpenalized Platt (`H-07`)",
+            "detail": (
+                "Exact common sample across `Baseline_1_AltmanZ`, `Baseline_2_Logit` (`clip=[-5, 5]`), and `Monotone_XGBoost`; "
+                f"{fallback_note} ({', '.join(b1_oof_strategies)}); "
+                f"`MarginPlattCalibrator(penalty=None, slope clamped [{PLATT_MIN_SLOPE:.2f}, {PLATT_MAX_SLOPE:.1f}])`; "
+                "BSS benchmarked vs historical `train_prevalence_Y`."
+            ),
+            "passed": g3_pass,
+        },
+        {
+            "gate": "GATE-ML-4",
+            "requirement": "2-Way Purged Expanding Walk-Forward (`2021–2025`), Bootstrap 95% CI, `True Unseen Issuers`",
+            "detail": (
+                "Full 5-year expanding evaluation (`2021 -> 2025`), issuer-clustered bootstrap (`issuer_id`), "
+                "full `True Unseen Issuers` isolation across Branch 1, Branch 2 (`+0d`), and Branch 2b (`+37d`)."
+            ),
+            "passed": g4_pass,
+        },
+        {
+            "gate": "GATE-ML-5",
+            "requirement": "Anti-Overfitting, `R1 → R5` Monotonicity & `TT200 → TT99` PSI (`M-05`)",
+            "detail": (
+                f"Positive XGBoost BSS in **{b1_pos_bss_yrs}/{len(b1_per_year)}** (Branch 1) & **{b2_pos_bss_yrs}/{len(b2_per_year)}** (Branch 2) years; "
+                f"`TT200 -> TT99` mean PSI = **`{_fmt_float(mean_psi, 4)}`** (`{len(psi_gt_025)}/23` > `0.25`, "
+                f"`R4+R5` `{100 * (psi_ex.get('score_drift') or {}).get('r4_r5_share_delta', 0.0):+.2f} pp` in 2026); "
+                f"PIT-cutoff OOS monotonicity: Branch 1=`{rel_b1_ok}` ({b1_lift:.1f}×), Branch 2=`{rel_b2_ok}` ({b2_lift:.1f}×), OOF=`{rel_oof_ok}` ({oof_lift:.1f}×)."
+            ),
+            "passed": g5_pass,
+        },
+        {
+            "gate": "GATE-ML-6",
+            "requirement": "End-to-End DuckLake Persistence & Serving Parity (`ML-08`, `H-04`)",
+            "detail": (
+                "Published `model_card_meta.parquet` + `ml_scores_and_explanations.parquet` (`23` features, `model_role` preserved for `OUT_OF_SAMPLE_*` vs `IN_SAMPLE_TRAIN`) "
+                "into DuckLake snapshot; read back cleanly via `ParquetRepository` & `DashboardQueryService.get_model_card()`."
+                if g6_pass
+                else "DuckLake publish skipped or incomplete (`publish_info` missing/unverified)."
+            ),
+            "passed": g6_pass,
+        },
+    ]
+
+
 def render_report_markdown(summary: Mapping[str, Any]) -> str:
     """Render ``docs/refactor/ml_wave7_685_universe_report.md`` purely from real measurements."""
     wf_ex = summary["walk_forward_exact"]
     wf_exp = summary["walk_forward_expanded"]
+    wf_d37 = summary.get("walk_forward_expanded_delay37")
     wf_ma = summary["walk_forward_mode_a"]
     psi_ex = summary["psi_exact"]
     psi_exp = summary["psi_expanded"]
@@ -1409,6 +1677,7 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
     onset_rows = summary["onset_by_year"]
     cases = summary["case_studies"]
     pub = summary.get("publish_info")
+    gate_checks = compute_gate_ml_checks(summary)
 
     ex_xgb = next(
         r
@@ -1444,6 +1713,15 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
     rel_b1_pool = wf_ex["pooled_oos_risk_tier_reliability"]["tiers"]
     rel_b1_oof = summary["production_oof_reliability"]["tiers"]
     rel_b2_pool = wf_exp["pooled_oos_risk_tier_reliability"]["tiers"]
+    b1_mono = bool(
+        wf_ex["pooled_oos_risk_tier_reliability"]["is_monotone_non_decreasing"]
+    )
+    b2_mono = bool(
+        wf_exp["pooled_oos_risk_tier_reliability"]["is_monotone_non_decreasing"]
+    )
+    b1_lift = rel_b1_pool[4]["empirical_event_rate"] / max(
+        rel_b1_pool[0]["empirical_event_rate"], 1e-9
+    )
     oof_lift = rel_b1_oof[4]["empirical_event_rate"] / max(
         rel_b1_oof[0]["empirical_event_rate"], 1e-9
     )
@@ -1467,10 +1745,10 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
         "# Wave 7B Quantitative ML Re-Evaluation Report — `ML-03b` 685-Issuer Universe (`2021–2025`)",
         "",
         f"- **Generated (UTC):** `{summary['generated_at']}`",
-        f"- **Dataset (Read-Only Input):** `data/universe_600_800/curated/financial_facts/ml03b_full/financial_facts.parquet` + `data/universe_600_800/curated/issuers.parquet` (`{summary['issuers_count']}` corporate issuers, `{summary['facts_raw_rows']:,}` raw facts -> `{summary['qg1_clean_facts']:,}` QG1-clean facts, `{summary['qg1_critical_issuers']}/{summary['issuers_count']}` critical quarantined = `{summary['qg1_critical_ratio']:.2%}`, `as_of = {summary['as_of']}`, in-memory `industry_snapshot_date = {CATALOG_COLLECTION_DATE.isoformat()}` per `ML-02`)",
+        f"- **Dataset (Read-Only Input):** `data/universe_600_800/curated/financial_facts/ml03b_full/financial_facts.parquet` + `data/universe_600_800/curated/issuers.parquet` (`{summary['issuers_count']}` corporate issuers, `{summary['facts_raw_rows']:,}` raw facts -> `{summary['qg1_clean_facts']:,}` QG1-clean facts, `{summary['qg1_critical_issuers']}/{summary['issuers_count']}` critical quarantined = `{summary['qg1_critical_ratio']:.2%}`, `as_of = {summary['as_of']}`, `industry_snapshot_date = {CATALOG_COLLECTION_DATE.isoformat()}` per `ML-02`)",
         f"- **Exogenous Ground Truth (Port 1):** `data/regulatory_ledger/regulatory_events_600_800.parquet` (`{summary['reg_events_count']:,}` verified events across `{summary['reg_positive_issuers']}` distinct positive corporate issuers; `100%` `source_url` + `payload_sha256`)",
         "- **Peer Standardization & Feature Contract:** `PIT_REGIME_SYMMETRIC` + `SECTOR_ADJUSTED_FEATURES` (`23` ML-05 features + contextual missingness indicators)",
-        f"- **Data Hygiene Notes:** Harmonized `{summary['stub_harmonized_rows']}` stub-transition BS rows (`SJ1` 2016 ANNUAL 9-month stub) in memory to match IS/CF `fiscal_year_start_date`; `0` SMOTE/synthetic rows; `0` lookahead to `y_test.mean()` or future folds.",
+        f"- **Data Hygiene Notes:** Harmonized `{summary['stub_harmonized_rows']}` stub-transition BS rows (`SJ1` 2016 ANNUAL 9-month stub) to match IS/CF `fiscal_year_start_date`; `0` SMOTE/synthetic rows; `0` lookahead to `y_test.mean()` or future folds.",
         "",
         "---",
         "",
@@ -1478,22 +1756,25 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
         "",
         "| Gate | Requirement | Measured 685-Issuer Verification | Status |",
         "|---|---|---|---|",
-        f"| **`GATE-ML-1`** | Provenance & Anti-Survivorship (`ML-03b`, `H-01`, `H-02`) | `685` corporate issuers (`HOSE 280 / HNX 110 / UPCOM 295`), `{summary['reg_events_count']:,}` Port 1 events (`{summary['reg_positive_issuers']}` pos issuers, `101` mandatory delistings), `100%` `source_url` + `payload_sha256`; conservative `STATUTORY_LAG` branch retains `247` distressed UPCOM issuers. | **PASS** |",
-        "| **`GATE-ML-2`** | Zero Leakage, Symmetric Horizon (`B-01`), Continuous State (`H-05`), `0%` TTM Overlap | `label_available_at = _period_available_at + 365d` symmetrically for `y=1` & `y=0`; continuous `[event_date, resolution_date)` intervals; Mode A `0%` TTM overlap; zero `2016-01-01` ICB leakage (`2026-11-19` in-memory). | **PASS** |",
-        "| **`GATE-ML-3`** | Fair 3-Model Comparison & Unpenalized Platt (`H-07`) | Exact common sample across `Baseline_1_AltmanZ`, `Baseline_2_Logit` (`clip=[-5, 5]`), and `Monotone_XGBoost`; identical inner Purged Temporal OOF `MarginPlattCalibrator(penalty=None)`; BSS benchmarked vs historical `train_prevalence_Y`. | **PASS** |",
-        "| **`GATE-ML-4`** | 2-Way Purged Expanding Walk-Forward (`2021–2025`), Bootstrap 95% CI, `True Unseen Issuers` | Full 5-year expanding evaluation (`2021 -> 2025`), `1,000` issuer-clustered bootstrap draws (`issuer_id`), full `True Unseen Issuers` isolation on BOTH H-01 branches. | **PASS** |",
-        f"| **`GATE-ML-5`** | Anti-Overfitting, `R1 → R5` Monotonicity & `TT200 → TT99` PSI (`M-05`) | Train-to-OOS PR-AUC ratio controlled; positive XGBoost BSS in **{b1_pos_bss_yrs}/{len(b1_per_year)}** (Branch 1) & **{b2_pos_bss_yrs}/{len(b2_per_year)}** (Branch 2) years; `TT200 -> TT99` mean PSI = **`{psi_ex['mean_feature_psi']:.4f}`** (`{len(psi_ex['features_psi_gt_0_25'])}/23` > `0.25`, `R4+R5` `{100 * psi_ex['score_drift']['r4_r5_share_delta']:+.2f} pp` in 2026); OOF (`{oof_lift:.1f}×`) & Branch 2 (`{b2_lift:.1f}×`) `R1 → R5` strictly monotonic. | **PASS** |",
-        "| **`GATE-ML-6`** | End-to-End DuckLake Persistence & Serving Parity (`ML-08`, `H-04`) | Published `model_card_meta.parquet` + `ml_scores_and_explanations.parquet` (`23` features) into DuckLake snapshot; read back cleanly via `ParquetRepository` & `DashboardQueryService.get_model_card()`. | **PASS** |",
-        "",
-        "---",
-        "",
-        "## 2. Mode B & Mode A Onset Label Distribution (`685` Issuers, `as_of = "
-        + str(summary["as_of"])
-        + "`)",
-        "",
-        "| Fiscal Year | Mode B Branch 1 (`EXACT_FILING`) Rows | Pos Rows | Pos Issuers | Mode B Branch 2 (`EXACT + STATUTORY_LAG`) Rows | Pos Rows | Pos Issuers | Mode A (`0%` TTM) Rows | Pos Rows | Pos Issuers |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
+    for g in gate_checks:
+        status_str = "**PASS**" if g["passed"] else "**FAIL**"
+        lines.append(
+            f"| **`{g['gate']}`** | {g['requirement']} | {g['detail']} | {status_str} |"
+        )
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 2. Mode B & Mode A Onset Label Distribution (`685` Issuers, `as_of = "
+            + str(summary["as_of"])
+            + "`)",
+            "",
+            "| Fiscal Year | Mode B Branch 1 (`EXACT_FILING`) Rows | Pos Rows | Pos Issuers | Mode B Branch 2 (`EXACT + STATUTORY_LAG`) Rows | Pos Rows | Pos Issuers | Mode A (`0%` TTM) Rows | Pos Rows | Pos Issuers |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     for r in onset_rows:
         lines.append(
             f"| {r['fiscal_year']} | {r['mode_b_exact_rows']:,} | {r['mode_b_exact_pos']:,} | {r['mode_b_exact_pos_issuers']} | "
@@ -1522,9 +1803,9 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
             *_render_wf_summary_rows(wf_ex),
             "",
-            "### 3.2. `H-01` Branch 2 — Expanded `EXACT + STATUTORY_LAG` Conservative (`require_exact_filing=False`)",
+            "### 3.2. `H-01` Branch 2 — Expanded `EXACT + STATUTORY_LAG (+0d)` Unpenalized Statutory Deadline Upper-Bound (`require_exact_filing=False`)",
             "",
-            "Retains mandatory-delisted UPCOM/HNX issuers missing CafeF/VCI PDF disclosure links via conservative `effective_available_at` (`STATUTORY_LAG`), preventing survivorship bias across the 247 distressed UPCOM firms.",
+            "Retains mandatory-delisted UPCOM/HNX issuers missing CafeF/VCI PDF disclosure links at the unpenalized Circular 96 statutory deadline (`+0d` upper-bound, preventing survivorship bias across the 247 distressed UPCOM firms; see Section 3.2b for empirical `+37d` late-filing delay sensitivity).",
             "",
             "| Test Year | Inner OOF Strategy | `n_est` | Platt Slope | Train Rows (Pos / Iss) | Test Common (Pos / Iss) | Unseen Common (Pos / Iss) | XGB Train PR-AUC | OOS ROC-AUC (Alt / Log / **XGB**) | OOS PR-AUC (Alt / Log / **XGB**) | OOS BSS (Alt / Log / **XGB**) | OOS R@5% (Alt / Log / **XGB**) | OOS R@10% (Alt / Log / **XGB**) | Unseen ROC-AUC (Alt / Log / **XGB**) |",
             "|---:|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---|",
@@ -1536,6 +1817,29 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
             *_render_wf_summary_rows(wf_exp),
             "",
+        ]
+    )
+    if wf_d37 is not None:
+        lines.extend(
+            [
+                f"### 3.2b. `H-01` Branch 2 Empirical Delay Sensitivity — `EXACT + STATUTORY_LAG + {EMPIRICAL_STATUTORY_DELAY_P90_DAYS}d` (`p90` UPCOM Distress Delay)",
+                "",
+                f"Applies the empirical `p90 = +{EMPIRICAL_STATUTORY_DELAY_P90_DAYS}d` UPCOM distress late-filing offset onto `STATUTORY_LAG` records (`require_exact_filing=False`) to eliminate early-availability optimism on non-PDF filings.",
+                "",
+                "| Test Year | Inner OOF Strategy | `n_est` | Platt Slope | Train Rows (Pos / Iss) | Test Common (Pos / Iss) | Unseen Common (Pos / Iss) | XGB Train PR-AUC | OOS ROC-AUC (Alt / Log / **XGB**) | OOS PR-AUC (Alt / Log / **XGB**) | OOS BSS (Alt / Log / **XGB**) | OOS R@5% (Alt / Log / **XGB**) | OOS R@10% (Alt / Log / **XGB**) | Unseen ROC-AUC (Alt / Log / **XGB**) |",
+                "|---:|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---|",
+                *_render_yearly_rows(wf_d37),
+                "",
+                "#### Branch 2b (`+37d`) Summary (`ALL OOS` & `TRUE UNSEEN ISSUERS`, `n=1,000` Cluster Bootstrap 95% CI)",
+                "",
+                "| Evaluation Scope | Model | Yearly ROC-AUC (Mean ± Std) | Pooled ROC-AUC [95% CI] | Yearly PR-AUC (Mean ± Std) | Pooled PR-AUC [95% CI] | Pooled Brier | Pooled BSS (`train_prev_Y`) [95% CI] | Pooled R@5% | Pooled R@10% |",
+                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+                *_render_wf_summary_rows(wf_d37),
+                "",
+            ]
+        )
+    lines.extend(
+        [
             "### 3.3. Mode A Ablation Cross-Check (`FUNDAMENTAL_DISTRESS`, `0%` TTM Overlap, `2021–2024`, `EXACT_FILING`)",
             "",
             "| Evaluation Scope | Model | Yearly ROC-AUC (Mean ± Std) | Pooled ROC-AUC [95% CI] | Yearly PR-AUC (Mean ± Std) | Pooled PR-AUC [95% CI] | Pooled Brier | Pooled BSS (`train_prev_Y`) [95% CI] | Pooled R@5% | Pooled R@10% |",
@@ -1555,22 +1859,36 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
         lines.append(
             f"| `375` Issuers (`EXACT_FILING`, Wave 3) | `{m_key}` | {b375['yearly_roc_auc']} | {b375['pooled_roc_auc']} | {b375['yearly_pr_auc']} | {b375['pooled_pr_auc']} | {b375['pooled_brier']:.4f} | {b375['pooled_bss']:+.3f} | {100 * b375['pooled_recall_top5']:.1f}% | {100 * b375['pooled_recall_top10']:.1f}% |"
         )
-    for m_key, m_obj, arm_name in (
+    comp_rows: list[tuple[str, Mapping[str, Any], str]] = [
         ("XGBoost", ex_xgb, "`685` Issuers (`EXACT_FILING`, Branch 1)"),
         ("Baseline_2_Logit", ex_log, "`685` Issuers (`EXACT_FILING`, Branch 1)"),
         ("Baseline_1_AltmanZ", ex_alt, "`685` Issuers (`EXACT_FILING`, Branch 1)"),
-        ("XGBoost", exp_xgb, "`685` Issuers (`EXACT + STATUTORY_LAG`, Branch 2)"),
+        ("XGBoost", exp_xgb, "`685` Issuers (`STATUTORY_LAG +0d`, Branch 2)"),
         (
             "Baseline_2_Logit",
             exp_log,
-            "`685` Issuers (`EXACT + STATUTORY_LAG`, Branch 2)",
+            "`685` Issuers (`STATUTORY_LAG +0d`, Branch 2)",
         ),
         (
             "Baseline_1_AltmanZ",
             exp_alt,
-            "`685` Issuers (`EXACT + STATUTORY_LAG`, Branch 2)",
+            "`685` Issuers (`STATUTORY_LAG +0d`, Branch 2)",
         ),
-    ):
+    ]
+    if wf_d37 is not None:
+        d37_flat = format_walk_forward_summary_table(wf_d37)
+        for m_key in ("XGBoost", "Baseline_2_Logit", "Baseline_1_AltmanZ"):
+            m_d37 = next(
+                r for r in d37_flat if r["scope"] == "ALL_OOS" and r["model"] == m_key
+            )
+            comp_rows.append(
+                (
+                    m_key,
+                    m_d37,
+                    f"`685` Issuers (`STATUTORY_LAG +{EMPIRICAL_STATUTORY_DELAY_P90_DAYS}d`, Branch 2b)",
+                )
+            )
+    for m_key, m_obj, arm_name in comp_rows:
         roc_ci = m_obj["pooled_roc_auc_ci95"]
         pr_ci = m_obj["pooled_pr_auc_ci95"]
         roc_w = f" (`±{(roc_ci[1] - roc_ci[0]) / 2:.3f}`)" if roc_ci else ""
@@ -1630,9 +1948,9 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
             "",
             "## 5. Through-the-Cycle `R1 → R5` Monotonicity & `TT200 → TT99` PSI Audit (`GATE-ML-5`)",
             "",
-            "### 5.1. Empirical Event Rate Monotonicity Across `R1 → R5`",
+            "### 5.1. Empirical Event Rate Monotonicity Across `R1 → R5` (PIT Per-Fold Cutoffs)",
             "",
-            "| `risk_tier` (TTC) | Branch 1 (`EXACT`, `2021–2025` Pooled) | Branch 1 (`EXACT`, `2022–2025`) | Branch 1 Prod Inner OOF (`2016–2024`) | Branch 2 (`EXACT + STATUTORY_LAG`, `2021–2025` Pooled — Strictly Monotonic) |",
+            "| `risk_tier` (TTC) | Branch 1 (`EXACT`, `2021–2025` Pooled) | Branch 1 (`EXACT`, `2022–2025`) | Branch 1 Prod Inner OOF (`2016–2024`) | Branch 2 (`EXACT + STATUTORY_LAG +0d`, `2021–2025` Pooled) |",
             "|---|---:|---:|---:|---:|",
         ]
     )
@@ -1648,17 +1966,26 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
             f"`{t_oof['positive_count']} / {t_oof['count']:,}` (**`{_fmt_pct(t_oof['empirical_event_rate'], 2)}`**) | "
             f"`{t2['positive_count']} / {t2['count']:,}` (**`{_fmt_pct(t2['empirical_event_rate'], 2)}`**) |"
         )
+    b1_rate_str = " -> ".join(
+        _fmt_pct(t["empirical_event_rate"], 2) for t in rel_b1_pool
+    )
+    b2_rate_str = " -> ".join(
+        _fmt_pct(t["empirical_event_rate"], 2) for t in rel_b2_pool
+    )
+    oof_rate_str = " -> ".join(
+        _fmt_pct(t["empirical_event_rate"], 2) for t in rel_b1_oof
+    )
     lines.extend(
         [
             "",
-            f"- **Monotonicity Audit:** Branch 2 (`EXACT + STATUTORY_LAG`, `2021–2025` Pooled, `n={sum(t['count'] for t in rel_b2_pool):,}`) is **strictly monotonic** across all 5 tiers (`{' < '.join(_fmt_pct(t['empirical_event_rate'], 2) for t in rel_b2_pool)}`, `{b2_lift:.1f}×` `R5/R1` lift). Production inner OOF (`2016–2024`, `n={sum(t['count'] for t in rel_b1_oof):,}`) is also **strictly monotonic** (`{' < '.join(_fmt_pct(t['empirical_event_rate'], 2) for t in rel_b1_oof)}`, `{oof_lift:.1f}×` `R5/R1` lift). On Branch 1 (`EXACT_FILING`) pooled `2021–2025`, `R1` (`{_fmt_pct(rel_b1_pool[0]['empirical_event_rate'], 2)}`) sits slightly above `R2` (`{_fmt_pct(rel_b1_pool[1]['empirical_event_rate'], 2)}`), before rising monotonically `R3 ({_fmt_pct(rel_b1_pool[2]['empirical_event_rate'], 2)}) < R4 ({_fmt_pct(rel_b1_pool[3]['empirical_event_rate'], 2)}) < R5 ({_fmt_pct(rel_b1_pool[4]['empirical_event_rate'], 2)})`.",
+            f"- **Monotonicity Audit (PIT Per-Fold Cutoffs):** Branch 1 (`EXACT_FILING`, `2021–2025` Pooled, `n={sum(t['count'] for t in rel_b1_pool):,}`) `is_monotone_non_decreasing = {b1_mono}` (`{b1_rate_str}`, `{b1_lift:.1f}×` `R5/R1` lift). Branch 2 (`EXACT + STATUTORY_LAG +0d`, `2021–2025` Pooled, `n={sum(t['count'] for t in rel_b2_pool):,}`) `is_monotone_non_decreasing = {b2_mono}` (`{b2_rate_str}`, `{b2_lift:.1f}×` `R5/R1` lift). Production inner OOF (`2016–2024`, `n={sum(t['count'] for t in rel_b1_oof):,}`) (`{oof_rate_str}`, `{oof_lift:.1f}×` `R5/R1` lift).",
             "",
             "### 5.2. `M-05` Taxonomy Drift Audit: `VAS_TT200_2014` (`2024–2025`) → `VAS_TT99_2025` (`2026`)",
             "",
             "| Arm | Ref Rows (`2024–2025`) | Tgt Rows (`2026`) | Mean Feature PSI | Max Feature PSI | Features `> 0.25` | Mean Missing (`TT200 -> TT99`) | Score PSI | `R4+R5` Share (`TT200 -> TT99`) |",
             "|---|---:|---:|---:|---:|---:|---|---:|---|",
             f"| **Branch 1 (`EXACT_FILING`)** | {psi_ex['reference_rows']:,} | {psi_ex['target_rows']:,} | **`{psi_ex['mean_feature_psi']:.4f}`** | `{psi_ex['max_feature_psi']:.4f}` | `{len(psi_ex['features_psi_gt_0_25'])} / 23` | `{100 * psi_ex['mean_ref_missing_rate']:.3f}% -> {100 * psi_ex['mean_tgt_missing_rate']:.3f}%` | `{psi_ex['score_drift']['score_psi']:.4f}` | `{100 * psi_ex['score_drift']['ref_r4_r5_share']:.2f}% -> {100 * psi_ex['score_drift']['tgt_r4_r5_share']:.2f}%` (`{100 * psi_ex['score_drift']['r4_r5_share_delta']:+.2f} pp`) |",
-            f"| **Branch 2 (`EXACT + STATUTORY_LAG`)** | {psi_exp['reference_rows']:,} | {psi_exp['target_rows']:,} | **`{psi_exp['mean_feature_psi']:.4f}`** | `{psi_exp['max_feature_psi']:.4f}` | `{len(psi_exp['features_psi_gt_0_25'])} / 23` | `{100 * psi_exp['mean_ref_missing_rate']:.3f}% -> {100 * psi_exp['mean_tgt_missing_rate']:.3f}%` | `{psi_exp['score_drift']['score_psi']:.4f}` | `{100 * psi_exp['score_drift']['ref_r4_r5_share']:.2f}% -> {100 * psi_exp['score_drift']['tgt_r4_r5_share']:.2f}%` (`{100 * psi_exp['score_drift']['r4_r5_share_delta']:+.2f} pp`) |",
+            f"| **Branch 2 (`EXACT + STATUTORY_LAG +0d`)** | {psi_exp['reference_rows']:,} | {psi_exp['target_rows']:,} | **`{psi_exp['mean_feature_psi']:.4f}`** | `{psi_exp['max_feature_psi']:.4f}` | `{len(psi_exp['features_psi_gt_0_25'])} / 23` | `{100 * psi_exp['mean_ref_missing_rate']:.3f}% -> {100 * psi_exp['mean_tgt_missing_rate']:.3f}%` | `{psi_exp['score_drift']['score_psi']:.4f}` | `{100 * psi_exp['score_drift']['ref_r4_r5_share']:.2f}% -> {100 * psi_exp['score_drift']['tgt_r4_r5_share']:.2f}%` (`{100 * psi_exp['score_drift']['r4_r5_share_delta']:+.2f} pp`) |",
             "",
             "---",
             "",
@@ -1708,6 +2035,12 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
         )
 
     if pub is not None:
+        exch_map = summary.get("exchange_counts") or {}
+        exch_pub_str = (
+            f"HOSE {exch_map.get('HOSE', 0)} / HNX {exch_map.get('HNX', 0)} / UPCOM {exch_map.get('UPCOM', 0)}"
+            if exch_map
+            else f"{pub['issuers_count']} issuers"
+        )
         lines.extend(
             [
                 "",
@@ -1717,7 +2050,7 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
                 "",
                 f"- **Active Serving Store Root (`FININTEL_DATA_ROOT`):** `{pub['publish_root']}`",
                 f"- **Snapshot ID & DuckLake Version:** `{pub['snapshot_id']}` (DuckLake `version = {pub['ducklake_version']}`)",
-                f"- **Published Issuers & ML Scores:** `{pub['issuers_count']}` issuers (`HOSE 280 / HNX 110 / UPCOM 295`), `{pub['ml_scores_rows']:,}` total `ml_scores_and_explanations` rows (`{pub['ml_scored_issuers']}` issuers with supervised `EXACT_FILING` PD/TreeSHAP scores across `23` ML-05 features; float32 TreeSHAP max residual = `{pub['shap_max_float32_residual']:.2e} < 1e-5`)",
+                f"- **Published Issuers & ML Scores:** `{pub['issuers_count']}` issuers ({exch_pub_str}), `{pub['ml_scores_rows']:,}` total `ml_scores_and_explanations` rows (`{pub['ml_scored_issuers']}` issuers with supervised `EXACT_FILING` PD/TreeSHAP scores across `23` ML-05 features; float32 TreeSHAP max residual = `{pub['shap_max_float32_residual']:.2e} < 1e-5`)",
                 f"- **Extension Port Tables Preserved (`B-03`):** `regulatory_events` = `{pub['extension_ports_in_ducklake']['regulatory_events_rows']:,}` rows, `market_prices` = `{pub['extension_ports_in_ducklake']['market_prices_rows']:,}` rows (verified present in DuckLake & on disk after `publish_snapshot()`).",
                 f"- **Read-Back Verification (`ParquetRepository` + `DashboardQueryService`):** `get_model_card()` -> `run_id={pub['served_model_card_run_id']}`, `feature_count={pub['served_model_card_features']}`; `get_company_market_overlay('HBC')` -> `{pub['served_hbc_overlay_price_points']}` price points, `{pub['served_hbc_overlay_reg_markers']}` regulatory markers, `{pub['served_hbc_overlay_model_markers']}` model markers.",
             ]
@@ -1847,6 +2180,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         strict_years=True,
     )
 
+    logger.info(
+        "Running H-01 Branch 2b (EXACT + STATUTORY_LAG +%dd empirical UPCOM delay sensitivity) Walk-Forward 2021..2025...",
+        EMPIRICAL_STATUTORY_DELAY_P90_DAYS,
+    )
+    wf_expanded_delay37 = run_expanding_walk_forward_evaluation(
+        qg1.clean_facts,
+        issuers,
+        as_of=as_of,
+        test_years=WALK_FORWARD_YEARS,
+        features=SECTOR_ADJUSTED_FEATURES,
+        require_exact_filing=False,
+        statement_scope="CONSOLIDATED",
+        taxonomy_version="VAS_TT200_2014",
+        target_mode="REGULATORY_DISTRESS",
+        regulatory_events=reg_events,
+        min_unique_positive_issuers=3,
+        n_bootstrap=args.n_bootstrap,
+        seed=42,
+        precomputed_as_of_scored=None,
+        strict_years=True,
+        statutory_delay_days=EMPIRICAL_STATUTORY_DELAY_P90_DAYS,
+    )
+
     logger.info("Running Mode A (0%% TTM overlap) Ablation 2021..2024...")
     wf_mode_a = run_expanding_walk_forward_evaluation(
         qg1.clean_facts,
@@ -1968,10 +2324,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_bootstrap=args.n_bootstrap,
         )
 
+    exchange_counts = {
+        str(r["exchange"]): int(r["len"])
+        for r in issuers.group_by("exchange").len().to_dicts()
+    }
+    reg_provenance_complete = (
+        reg_events.filter(
+            pl.col("source_url").is_null() | pl.col("payload_sha256").is_null()
+        ).height
+        == 0
+    )
+    industry_snapshot_backdated_count = (
+        int(
+            issuers.filter(
+                pl.col("industry_snapshot_date").cast(pl.Date) < date(2020, 1, 1)
+            ).height
+        )
+        if "industry_snapshot_date" in issuers.columns
+        else 0
+    )
+
     summary: dict[str, Any] = {
         "generated_at": datetime.now(UTC).isoformat(),
         "as_of": as_of.isoformat(),
         "issuers_count": int(issuers.height),
+        "exchange_counts": exchange_counts,
         "facts_raw_rows": int(raw_facts.height),
         "stub_harmonized_rows": stub_rows,
         "qg1_clean_facts": int(qg1.clean_facts.height),
@@ -1979,9 +2356,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "qg1_critical_ratio": float(qg1.critical_issuer_ratio),
         "reg_events_count": int(reg_events.height),
         "reg_positive_issuers": int(reg_events["issuer_id"].n_unique()),
+        "reg_provenance_complete": reg_provenance_complete,
+        "industry_snapshot_backdated_count": industry_snapshot_backdated_count,
         "onset_by_year": onset_by_year,
         "walk_forward_exact": wf_exact,
         "walk_forward_expanded": wf_expanded,
+        "walk_forward_expanded_delay37": wf_expanded_delay37,
         "walk_forward_mode_a": wf_mode_a,
         "production_oof_reliability": prod_oof_rel,
         "reliability_exact_2022_2025": rel_ex_2225,

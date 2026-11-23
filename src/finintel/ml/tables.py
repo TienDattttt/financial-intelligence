@@ -39,6 +39,7 @@ from finintel.ml.supervised.train import (
     SECTOR_ADJUSTED_FEATURES,
     TrainingResult,
     build_evaluation_report,
+    compute_cross_sectional_risk_percentile,
     compute_taxonomy_drift_psi,
     evaluate_risk_tier_reliability,
     export_calibrator_spec,
@@ -47,7 +48,7 @@ from finintel.ml.supervised.train import (
     score_distress_model,
     train_distress_model,
 )
-from finintel.ml.unsupervised import FinancialArchetypes
+from finintel.ml.unsupervised import FinancialArchetypes, InsufficientModelData
 from finintel.storage.schemas import (
     ML_SCORES_KEY,
     ML_SCORES_SCHEMA,
@@ -191,6 +192,10 @@ def build_historical_case_studies(
         & pl.col("calibrated_distress_prob").is_not_null()
         & pl.col("calibrated_distress_prob").is_finite()
     )
+    if "model_role" in scored_q.columns:
+        scored_q = scored_q.filter(
+            pl.col("model_role").cast(pl.String).str.starts_with("OUT_OF_SAMPLE")
+        )
     if scored_q.is_empty():
         return []
 
@@ -646,7 +651,6 @@ def build_model_card_payload(
         n_bootstrap=walk_forward_n_bootstrap,
         precomputed_as_of_scored=precomputed_as_of_scored,
         strict_years=False,
-        tier_cutoffs=training.risk_tier_cutoffs,
     )
     walk_forward = _format_walk_forward_for_card(wf_raw)
 
@@ -793,6 +797,138 @@ def _installed_versions() -> dict[str, str | None]:
     return versions
 
 
+def score_and_explain_with_pit_roles(
+    *,
+    training: TrainingResult,
+    eligible: pl.DataFrame,
+    facts: pl.DataFrame,
+    issuers: pl.DataFrame,
+    classical_as_of: pl.DataFrame,
+    peer_medians: pl.DataFrame,
+    as_of: date,
+    test_start: date,
+    selected_features: Sequence[str],
+    statement_scope: str,
+    taxonomy_version: str,
+    target_mode: str,
+    peer_standardization_mode: Literal["PIT_ICB", "PIT_REGIME_SYMMETRIC"],
+    require_exact_filing: bool,
+    regulatory_events: pl.DataFrame | None,
+    min_unique_positive_issuers: int,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Score eligible quarters with honest PIT ``model_role`` (OUT_OF_SAMPLE_* vs IN_SAMPLE_TRAIN)."""
+    if eligible.is_empty():
+        return (
+            score_distress_model(training, eligible, model_role="OUT_OF_SAMPLE_LIVE"),
+            explain_distress(
+                training,
+                eligible,
+                peer_medians=peer_medians,
+                peer_standardization_mode=peer_standardization_mode,
+            ),
+        )
+
+    pend = pl.col("period_end_date").cast(pl.Date)
+    sup_parts: list[pl.DataFrame] = []
+    shap_parts: list[pl.DataFrame] = []
+
+    live_slice = eligible.filter(pend >= test_start)
+    if not live_slice.is_empty():
+        sup_parts.append(
+            score_distress_model(training, live_slice, model_role="OUT_OF_SAMPLE_LIVE")
+        )
+        shap_parts.append(
+            explain_distress(
+                training,
+                live_slice,
+                peer_medians=peer_medians,
+                peer_standardization_mode=peer_standardization_mode,
+            )
+        )
+
+    in_sample_slices: list[pl.DataFrame] = []
+    pre_wf_slice = eligible.filter(pend < date(2021, 1, 1))
+    if not pre_wf_slice.is_empty():
+        in_sample_slices.append(pre_wf_slice)
+
+    wf_start_year = 2021
+    wf_end_year = (
+        test_start.year
+        if test_start > date(test_start.year, 1, 1)
+        else test_start.year - 1
+    )
+    for yr in range(wf_start_year, wf_end_year + 1):
+        yr_start = date(yr, 1, 1)
+        yr_end = min(date(yr + 1, 1, 1), test_start)
+        if yr_start >= yr_end:
+            continue
+        yr_slice = eligible.filter((pend >= yr_start) & (pend < yr_end))
+        if yr_slice.is_empty():
+            continue
+        wf_model: TrainingResult | None = None
+        try:
+            wf_split = build_pit_ml_splits(
+                facts,
+                issuers,
+                validation_start=None,
+                test_start=yr_start,
+                test_end=yr_end,
+                as_of=as_of,
+                require_exact_filing=require_exact_filing,
+                statement_scope=statement_scope,
+                taxonomy_version=taxonomy_version,
+                target_mode=target_mode,
+                regulatory_events=regulatory_events,
+                precomputed_as_of_scored=classical_as_of,
+            )
+            if not wf_split["train"].is_empty():
+                wf_model = train_distress_model(
+                    wf_split["train"],
+                    None,
+                    features=tuple(selected_features),
+                    min_unique_positive_issuers=min_unique_positive_issuers,
+                )
+        except (InsufficientModelData, ContractViolationError):
+            wf_model = None
+
+        if wf_model is not None:
+            sup_parts.append(
+                score_distress_model(
+                    wf_model, yr_slice, model_role="OUT_OF_SAMPLE_WALK_FORWARD"
+                )
+            )
+            shap_parts.append(
+                explain_distress(
+                    wf_model,
+                    yr_slice,
+                    peer_medians=peer_medians,
+                    peer_standardization_mode=peer_standardization_mode,
+                )
+            )
+        else:
+            in_sample_slices.append(yr_slice)
+
+    if in_sample_slices:
+        in_sample_df = pl.concat(in_sample_slices, how="vertical")
+        sup_parts.append(
+            score_distress_model(training, in_sample_df, model_role="IN_SAMPLE_TRAIN")
+        )
+        shap_parts.append(
+            explain_distress(
+                training,
+                in_sample_df,
+                peer_medians=peer_medians,
+                peer_standardization_mode=peer_standardization_mode,
+            )
+        )
+
+    supervised_out = compute_cross_sectional_risk_percentile(
+        pl.concat(sup_parts, how="vertical")
+    )
+    shap_out = pl.concat(shap_parts, how="vertical")
+    return supervised_out, shap_out
+
+
 def build_ml_artifacts(
     facts: pl.DataFrame,
     issuers: pl.DataFrame,
@@ -932,19 +1068,34 @@ def build_ml_artifacts(
     )
 
     unsupervised_out = archetypes.transform(eligible)
-    supervised_out = score_distress_model(training, eligible).drop("model_role")
-    shap_out = explain_distress(
-        training,
-        eligible,
+    supervised_out, shap_out = score_and_explain_with_pit_roles(
+        training=training,
+        eligible=eligible,
+        facts=facts,
+        issuers=issuers,
+        classical_as_of=classical_as_of,
         peer_medians=benchmarks,
+        as_of=as_of,
+        test_start=test_start,
+        selected_features=selected_features,
+        statement_scope=statement_scope,
+        taxonomy_version=taxonomy_version,
+        target_mode=resolved_target_mode,
         peer_standardization_mode=peer_standardization_mode,
+        require_exact_filing=require_exact_filing,
+        regulatory_events=regulatory_events,
+        min_unique_positive_issuers=min_unique_positive_issuers,
     )
 
     join_keys = list(ML_SCORES_KEY)
+    supervised_join = supervised_out.rename({"model_role": "_supervised_model_role"})
     assembled = (
         classical_as_of.join(unsupervised_out, on=join_keys, how="left", validate="1:1")
-        .join(supervised_out, on=join_keys, how="left", validate="1:1")
+        .join(supervised_join, on=join_keys, how="left", validate="1:1")
         .join(shap_out, on=join_keys, how="left", validate="1:1")
+        .with_columns(
+            pl.coalesce("_supervised_model_role", "model_role").alias("model_role")
+        )
         .select(
             *(
                 pl.col(name).cast(dtype, strict=True).alias(name)
