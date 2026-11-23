@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   AUDIT_OPINION_LABELS,
+  formatRedFlagCodeLabel,
   RED_FLAG_EVIDENCE_META,
   SEVERITY_META,
 } from "@/lib/domain-labels";
@@ -121,7 +122,7 @@ export function RedFlagChecklist({
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <span className="rounded bg-surface-muted px-1.5 py-0.5 font-mono text-[11px] font-medium text-ink">
-                          {shortCode}
+                          {formatRedFlagCodeLabel(flag.flag_code)}
                         </span>
                         <span className="text-sm font-semibold text-ink">
                           {flag.flag_title_vn ??
@@ -192,7 +193,7 @@ export function RedFlagChecklist({
                 <div className="min-w-0">
                   <p className="font-medium text-ink">
                     <span className="mr-1.5 font-mono text-[11px] text-ink-subtle">
-                      {rule.flag_code.split("_").slice(0, 2).join("_")}
+                      {formatRedFlagCodeLabel(rule.flag_code)}
                     </span>
                     {rule.title_vn}
                   </p>

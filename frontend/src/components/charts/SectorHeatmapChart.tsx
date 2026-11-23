@@ -2,12 +2,83 @@
 
 import * as React from "react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
+import {
+  computeSectorRiskThresholds,
+  getSectorMetricValue,
+  getSectorRiskColor,
+} from "@/components/charts/SectorTreemapChart";
 import { Select } from "@/components/ui/primitives";
-import { useChartTheme } from "@/lib/echarts-theme";
+import { type ChartPalette, useChartTheme } from "@/lib/echarts-theme";
 import { formatNumber, formatPercent } from "@/lib/format";
 import type { SectorRiskItem } from "@/types/api";
 
-type HeatmapMetric = "distress_prob" | "distress_zone_pct" | "avg_red_flags";
+export type HeatmapMetric = "distress_prob" | "distress_zone_pct" | "avg_red_flags";
+
+export interface SectorHeatmapRow {
+  sector: SectorRiskItem;
+  numericValue: number | null;
+  plotValue: number;
+  isMissing: boolean;
+  color: string;
+  displayLabel: string;
+}
+
+export function buildSectorHeatmapData(
+  sectors: readonly SectorRiskItem[],
+  metric: HeatmapMetric,
+  palette: Pick<ChartPalette, "riskLow" | "riskMid" | "riskHigh" | "neutral">,
+): { rows: SectorHeatmapRow[]; hasMissing: boolean } {
+  const sorted = [...sectors].sort(
+    (a, b) => getSectorMetricValue(b, metric) - getSectorMetricValue(a, metric),
+  );
+  const thresholds = computeSectorRiskThresholds(sorted, metric);
+
+  let hasMissing = false;
+  const rows: SectorHeatmapRow[] = sorted.map((s) => {
+    const color = getSectorRiskColor(s, metric, palette, thresholds);
+    if (metric === "distress_prob") {
+      const p = s.median_distress_prob;
+      if (p === null || p === undefined || !Number.isFinite(p)) {
+        hasMissing = true;
+        return {
+          sector: s,
+          numericValue: null,
+          plotValue: 0,
+          isMissing: true,
+          color: palette.neutral,
+          displayLabel: "N/A",
+        };
+      }
+      const val = Number((p * 100).toFixed(2));
+      return {
+        sector: s,
+        numericValue: val,
+        plotValue: val,
+        isMissing: false,
+        color,
+        displayLabel: `${formatNumber(val, 1)}%`,
+      };
+    }
+
+    const val =
+      metric === "distress_zone_pct"
+        ? s.issuer_count > 0
+          ? Number(((s.distress_zone_count / s.issuer_count) * 100).toFixed(2))
+          : 0
+        : Number(s.avg_red_flags.toFixed(2));
+    return {
+      sector: s,
+      numericValue: val,
+      plotValue: val,
+      isMissing: false,
+      color,
+      displayLabel:
+        metric === "avg_red_flags" ? formatNumber(val, 2) : `${formatNumber(val, 1)}%`,
+    };
+  });
+
+  return { rows, hasMissing };
+}
 
 export function SectorHeatmapChart({
   sectors,
@@ -19,54 +90,24 @@ export function SectorHeatmapChart({
   const [metric, setMetric] = React.useState<HeatmapMetric>("distress_prob");
   const { palette } = useChartTheme();
 
-  const sorted = React.useMemo(() => {
-    const getVal = (s: SectorRiskItem) => {
-      if (metric === "distress_prob") return (s.median_distress_prob ?? 0) * 100;
-      if (metric === "distress_zone_pct") {
-        return s.issuer_count > 0 ? (s.distress_zone_count / s.issuer_count) * 100 : 0;
-      }
-      return s.avg_red_flags;
-    };
-    return [...sectors].sort((a, b) => getVal(b) - getVal(a));
-  }, [metric, sectors]);
+  const { rows } = React.useMemo(
+    () => buildSectorHeatmapData(sectors, metric, palette),
+    [metric, palette, sectors],
+  );
+
+  const sorted = React.useMemo(() => rows.map((r) => r.sector), [rows]);
 
   const option = React.useMemo<EChartsOption>(() => {
-    const getBarColor = (s: SectorRiskItem) => {
-      if (metric === "distress_prob") {
-        const p = s.median_distress_prob ?? 0;
-        if (p >= 0.08) return palette.riskHigh;
-        if (p >= 0.03) return palette.riskMid;
-        return palette.riskLow;
-      }
-      if (metric === "distress_zone_pct") {
-        const share = s.issuer_count > 0 ? s.distress_zone_count / s.issuer_count : 0;
-        if (share >= 0.25) return palette.riskHigh;
-        if (share >= 0.1) return palette.riskMid;
-        return palette.riskLow;
-      }
-      if (s.avg_red_flags >= 1.5) return palette.riskHigh;
-      if (s.avg_red_flags >= 0.7) return palette.riskMid;
-      return palette.riskLow;
-    };
-
-    const categories = sorted.map(
-      (s) => `${s.icb_name_level2} (${s.issuer_count})`,
+    const categories = rows.map(
+      (r) => `${r.sector.icb_name_level2} (${r.sector.issuer_count})`,
     );
 
-    const seriesData = sorted.map((s) => {
-      let val = 0;
-      if (metric === "distress_prob") {
-        val = (s.median_distress_prob ?? 0) * 100;
-      } else if (metric === "distress_zone_pct") {
-        val = s.issuer_count > 0 ? (s.distress_zone_count / s.issuer_count) * 100 : 0;
-      } else {
-        val = s.avg_red_flags;
-      }
-      return {
-        value: Number(val.toFixed(2)),
-        itemStyle: { color: getBarColor(s), borderRadius: [0, 4, 4, 0] },
-      };
-    });
+    const seriesData = rows.map((r) => ({
+      value: r.plotValue,
+      isMissing: r.isMissing,
+      displayLabel: r.displayLabel,
+      itemStyle: { color: r.color, borderRadius: [0, 4, 4, 0] },
+    }));
 
     const axisUnit = metric === "avg_red_flags" ? "" : "%";
 
@@ -115,7 +156,12 @@ export function SectorHeatmapChart({
             position: "right",
             fontSize: 11,
             color: palette.inkMuted,
-            formatter: (params: { value?: unknown }) => {
+            formatter: (params: { data?: unknown; value?: unknown }) => {
+              const dataItem = params.data as
+                | { isMissing?: boolean; displayLabel?: string }
+                | undefined;
+              if (dataItem?.isMissing) return "N/A";
+              if (dataItem?.displayLabel) return dataItem.displayLabel;
               const num = typeof params.value === "number" ? params.value : 0;
               return metric === "avg_red_flags"
                 ? formatNumber(num, 2)
@@ -125,7 +171,7 @@ export function SectorHeatmapChart({
         },
       ],
     };
-  }, [metric, palette, sorted]);
+  }, [metric, palette, rows, sorted]);
 
   const chartHeight = Math.min(540, Math.max(280, sorted.length * 26 + 56));
 
@@ -147,17 +193,23 @@ export function SectorHeatmapChart({
   ]);
 
   const dynamicTitle = React.useMemo(() => {
-    const top = sorted[0];
+    const top = rows[0];
     if (!top) return "Phân bố rủi ro tài chính theo ngành ICB cấp 2";
     if (metric === "distress_prob") {
-      return `Xếp hạng rủi ro ngành: ${top.icb_name_level2} dẫn đầu (${formatPercent(top.median_distress_prob)})`;
+      if (top.isMissing) {
+        return "Phân bố rủi ro tài chính theo ngành ICB cấp 2";
+      }
+      return `Xếp hạng rủi ro ngành: ${top.sector.icb_name_level2} dẫn đầu (${formatPercent(top.sector.median_distress_prob)})`;
     }
     if (metric === "distress_zone_pct") {
-      const share = top.issuer_count > 0 ? top.distress_zone_count / top.issuer_count : 0;
-      return `Xếp hạng vùng nguy cơ: ${top.icb_name_level2} chiếm ${formatPercent(share)} DN`;
+      const share =
+        top.sector.issuer_count > 0
+          ? top.sector.distress_zone_count / top.sector.issuer_count
+          : 0;
+      return `Xếp hạng vùng nguy cơ: ${top.sector.icb_name_level2} chiếm ${formatPercent(share)} DN`;
     }
-    return `Mật độ cờ đỏ ngành: ${top.icb_name_level2} đạt ${formatNumber(top.avg_red_flags, 2)} cờ/DN`;
-  }, [metric, sorted]);
+    return `Mật độ cờ đỏ ngành: ${top.sector.icb_name_level2} đạt ${formatNumber(top.sector.avg_red_flags, 2)} cờ/DN`;
+  }, [metric, rows]);
 
   return (
     <EChartBox

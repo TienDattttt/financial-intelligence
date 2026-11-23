@@ -66,10 +66,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     availableDates,
     publishedAt,
     snapshotId,
+    closeSourceDrawer,
     setCommandOpen,
     themePreference,
     setThemePreference,
   } = useAppState();
+
+  React.useEffect(() => {
+    closeSourceDrawer();
+  }, [pathname, closeSourceDrawer]);
 
   const [collapsed, setCollapsed] = React.useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);

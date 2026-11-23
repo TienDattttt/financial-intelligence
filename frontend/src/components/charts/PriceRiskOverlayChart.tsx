@@ -602,7 +602,7 @@ export function PitValuationStrip({
 }
 
 export const PRICE_OVERLAY_CHART_SUBTITLE =
-  "Đường giá điều chỉnh chia tách/cổ tức · Định giá P/E, P/B, Vốn hóa từ giá thực tế PIT (0% look-ahead)";
+  "Đường giá điều chỉnh chia tách/cổ tức · Định giá P/E, P/B, Vốn hóa chuẩn thời điểm công bố (không nhìn trước)";
 
 export function PriceRiskOverlayChart({
   ticker,
@@ -665,7 +665,7 @@ export function PriceRiskOverlayChart({
         option={option}
         height={360}
         isEmpty={!hasSeries}
-        emptyMessage={`Chưa có dữ liệu giá giao dịch lịch sử cho mã ${ticker} trong lát cắt hiện tại.`}
+        emptyMessage={`Chưa có dữ liệu giá giao dịch lịch sử (EOD) cho mã ${ticker} trong lát cắt hiện tại (thường gặp ở cổ phiếu UPCOM hoặc mã hạn chế dữ liệu thị trường). Hệ thống vẫn giữ nguyên đầy đủ BCTC, 38 tỷ số và 9 cờ đỏ VAS.`}
         tableHeaders={[
           "Ngày GD",
           "Giá ĐC (VND)",

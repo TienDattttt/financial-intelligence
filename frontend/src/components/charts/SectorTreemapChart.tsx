@@ -24,11 +24,68 @@ export interface SectorTreemapNode {
   color: string;
 }
 
+export interface SectorRiskThresholds {
+  mid: number;
+  high: number;
+  hasSpread: boolean;
+}
+
+export function computeSectorRiskThresholds(
+  sectors: readonly SectorRiskItem[],
+  metric: TreemapRiskMetric,
+): SectorRiskThresholds {
+  if (metric === "distress_zone_pct") {
+    return { mid: 0.1, high: 0.25, hasSpread: true };
+  }
+  if (metric === "avg_red_flags") {
+    return { mid: 0.7, high: 1.5, hasSpread: true };
+  }
+
+  const vals = sectors
+    .filter((s) => s.issuer_count > 0)
+    .map((s) => s.median_distress_prob)
+    .filter((p): p is number => typeof p === "number" && Number.isFinite(p))
+    .sort((a, b) => a - b);
+
+  if (vals.length === 0) {
+    return { mid: 0, high: 0, hasSpread: false };
+  }
+  const minVal = vals[0];
+  const maxVal = vals[vals.length - 1];
+  if (vals.length === 1 || minVal === maxVal) {
+    return { mid: minVal, high: maxVal, hasSpread: false };
+  }
+  if (vals.length === 2) {
+    return {
+      mid: (minVal + maxVal) / 2,
+      high: maxVal,
+      hasSpread: true,
+    };
+  }
+
+  let mid = vals[Math.floor((vals.length - 1) * 0.5)];
+  let high = vals[Math.ceil((vals.length - 1) * 0.75)];
+  if (mid === minVal) {
+    const nextAboveMin = vals.find((v) => v > minVal);
+    if (nextAboveMin !== undefined) {
+      mid = nextAboveMin;
+    }
+  }
+  if (high <= mid) {
+    const nextAboveMid = vals.find((v) => v > mid);
+    high = nextAboveMid ?? maxVal;
+  }
+  return { mid, high, hasSpread: true };
+}
+
 export function getSectorMetricValue(
   s: SectorRiskItem,
   metric: TreemapRiskMetric,
 ): number {
-  if (metric === "distress_prob") return (s.median_distress_prob ?? 0) * 100;
+  if (metric === "distress_prob") {
+    const p = s.median_distress_prob;
+    return typeof p === "number" && Number.isFinite(p) ? p * 100 : -1;
+  }
   if (metric === "distress_zone_pct") {
     return s.issuer_count > 0 ? (s.distress_zone_count / s.issuer_count) * 100 : 0;
   }
@@ -39,22 +96,28 @@ export function getSectorRiskColor(
   s: SectorRiskItem,
   metric: TreemapRiskMetric,
   palette: Pick<ChartPalette, "riskLow" | "riskMid" | "riskHigh" | "neutral">,
+  thresholds?: SectorRiskThresholds,
 ): string {
   if (metric === "distress_prob") {
     const p = s.median_distress_prob;
     if (p === null || p === undefined || !Number.isFinite(p)) return palette.neutral;
-    if (p >= 0.08) return palette.riskHigh;
-    if (p >= 0.03) return palette.riskMid;
+    if (!thresholds || !thresholds.hasSpread) return palette.riskMid;
+    if (p >= thresholds.high) return palette.riskHigh;
+    if (p >= thresholds.mid) return palette.riskMid;
     return palette.riskLow;
   }
   if (metric === "distress_zone_pct") {
     const share = s.issuer_count > 0 ? s.distress_zone_count / s.issuer_count : 0;
-    if (share >= 0.25) return palette.riskHigh;
-    if (share >= 0.1) return palette.riskMid;
+    const mid = thresholds?.mid ?? 0.1;
+    const high = thresholds?.high ?? 0.25;
+    if (share >= high) return palette.riskHigh;
+    if (share >= mid) return palette.riskMid;
     return palette.riskLow;
   }
-  if (s.avg_red_flags >= 1.5) return palette.riskHigh;
-  if (s.avg_red_flags >= 0.7) return palette.riskMid;
+  const mid = thresholds?.mid ?? 0.7;
+  const high = thresholds?.high ?? 1.5;
+  if (s.avg_red_flags >= high) return palette.riskHigh;
+  if (s.avg_red_flags >= mid) return palette.riskMid;
   return palette.riskLow;
 }
 
@@ -63,17 +126,19 @@ export function buildSectorTreemapNodes(
   metric: TreemapRiskMetric,
   palette: Pick<ChartPalette, "riskLow" | "riskMid" | "riskHigh" | "neutral">,
 ): SectorTreemapNode[] {
+  const thresholds = computeSectorRiskThresholds(sectors, metric);
   return [...sectors]
     .filter((s) => s.issuer_count > 0)
     .sort((a, b) => b.issuer_count - a.issuer_count)
     .map((s) => {
       const distressShare =
         s.issuer_count > 0 ? s.distress_zone_count / s.issuer_count : 0;
+      const rawMetricVal = getSectorMetricValue(s, metric);
       return {
         name: s.icb_name_level2,
         value: s.issuer_count,
         icbCode: s.icb_code_level2,
-        riskMetricValue: Number(getSectorMetricValue(s, metric).toFixed(2)),
+        riskMetricValue: rawMetricVal >= 0 ? Number(rawMetricVal.toFixed(2)) : -1,
         distressShare,
         medianDistressProb: s.median_distress_prob ?? null,
         avgRedFlags: s.avg_red_flags,
@@ -81,7 +146,7 @@ export function buildSectorTreemapNodes(
         beneishFlaggedCount: s.beneish_flagged_count,
         highRedFlagCount: s.high_red_flag_count,
         totalDebtSum: s.total_debt_sum,
-        color: getSectorRiskColor(s, metric, palette),
+        color: getSectorRiskColor(s, metric, palette, thresholds),
       };
     });
 }
@@ -100,6 +165,13 @@ export function buildSectorTreemapTitle(
   if (!topRisk) return "Bản đồ quy mô & mật độ rủi ro theo ngành ICB cấp 2";
 
   if (metric === "distress_prob") {
+    if (
+      topRisk.median_distress_prob === null ||
+      topRisk.median_distress_prob === undefined ||
+      !Number.isFinite(topRisk.median_distress_prob)
+    ) {
+      return "Bản đồ quy mô & mật độ rủi ro theo ngành ICB cấp 2";
+    }
     return `${topRisk.icb_name_level2} dẫn đầu rủi ro ngành (${formatPercent(topRisk.median_distress_prob)} XS kiệt quệ trung vị)`;
   }
   if (metric === "distress_zone_pct") {

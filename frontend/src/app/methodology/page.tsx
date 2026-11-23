@@ -25,6 +25,7 @@ import {
   formatCreditTrio,
   formatFormulaVi,
   formatPeerStandardizationMode,
+  formatRedFlagCodeLabel,
   formatRegulatoryEventType,
   formatTargetModeLabel,
   getMlFeatureLabel,
@@ -232,7 +233,7 @@ function MethodologyContent() {
             <Card>
               <CardHeader className="py-2.5">
                 <CardTitle className="text-[14px]">
-                  9 quy tắc phát hiện bất thường kế toán (RF_01 – RF_09)
+                  9 quy tắc phát hiện bất thường kế toán (Quy tắc 01 – 09)
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-0">
@@ -266,7 +267,7 @@ function MethodologyContent() {
                             className="border-b border-border/60 hover:bg-surface-muted/40"
                           >
                             <td className="px-3 py-2 font-mono font-semibold text-ink">
-                              {rf.flag_code.split("_").slice(0, 2).join("_")}
+                              {formatRedFlagCodeLabel(rf.flag_code)}
                             </td>
                             <td className="px-3 py-2 font-medium text-ink">
                               {rf.title_vn}

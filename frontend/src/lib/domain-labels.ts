@@ -860,6 +860,31 @@ export const RED_FLAG_EVIDENCE_META: Record<
   },
 };
 
+export const RED_FLAG_CODE_LABELS: Record<string, string> = {
+  RF_01: "Quy tắc 01",
+  RF_02: "Quy tắc 02",
+  RF_03: "Quy tắc 03",
+  RF_04: "Quy tắc 04",
+  RF_05: "Quy tắc 05",
+  RF_06: "Quy tắc 06",
+  RF_07: "Quy tắc 07",
+  RF_08: "Quy tắc 08",
+  RF_09: "Quy tắc 09",
+};
+
+export function formatRedFlagCodeLabel(flagCode: string | null | undefined): string {
+  if (!flagCode) return "Quy tắc cảnh báo";
+  const shortCode = flagCode.trim().toUpperCase().split("_").slice(0, 2).join("_");
+  if (shortCode in RED_FLAG_CODE_LABELS) {
+    return RED_FLAG_CODE_LABELS[shortCode];
+  }
+  const match = /^RF_?0?(\d+)$/i.exec(shortCode);
+  if (match) {
+    return `Quy tắc ${match[1].padStart(2, "0")}`;
+  }
+  return "Quy tắc cảnh báo";
+}
+
 export function selectMlScoreForPeriod<T extends { period_end_date: string }>(
   scores: readonly T[] | null | undefined,
   periodEndDate: string | null | undefined,
