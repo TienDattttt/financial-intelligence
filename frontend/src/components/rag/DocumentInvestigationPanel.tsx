@@ -35,19 +35,19 @@ export interface ForensicPresetQuery {
 export const FORENSIC_PRESET_QUERIES: readonly ForensicPresetQuery[] = [
   {
     flagCode: "RF_03",
-    shortLabel: "RF_03 Phải thu ngoài khách hàng",
+    shortLabel: "Phải thu ngoài khách hàng",
     question:
       "Thuyết minh phải thu ngắn hạn, phải thu khác và dự phòng phải thu khó đòi",
   },
   {
     flagCode: "RF_07",
-    shortLabel: "RF_07 Cảnh báo kiểm toán & Hoạt động liên tục",
+    shortLabel: "Cảnh báo kiểm toán & Hoạt động liên tục",
     question:
       "Ý kiến kiểm toán viên độc lập, cơ sở ý kiến ngoại trừ và vấn đề cần nhấn mạnh hoạt động liên tục",
   },
   {
     flagCode: "RF_09",
-    shortLabel: "RF_09 Xây dựng cơ bản dở dang",
+    shortLabel: "Xây dựng cơ bản dở dang",
     question:
       "Chi phí xây dựng cơ bản dở dang dài hạn trên Bảng cân đối kế toán và thuyết minh",
   },
@@ -645,11 +645,11 @@ export function DocumentInvestigationPanel({
                       Bộ nhớ đệm:{" "}
                       <strong
                         className={cn(
-                          "font-mono",
+                          "font-medium",
                           result.cached ? "text-up" : "text-ink",
                         )}
                       >
-                        {result.cached ? "Valkey HIT" : "Valkey MISS"}
+                        {result.cached ? "Dữ liệu đệm sẵn (Cache)" : "Truy xuất mới"}
                       </strong>
                     </span>
                     <span>
