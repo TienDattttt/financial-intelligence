@@ -11,6 +11,9 @@ const FORBIDDEN_TECHNICAL_LEAKS: readonly RegExp[] = [
   /\bSCREENING_INDICATOR\b/,
   /\bDERIVED_Q4_INPUT\b/,
   /\bBS_IDENTITY_MISMATCH\b/,
+  /\bValkey\b/i,
+  /look-ahead/i,
+  /\bRF_0[1-9]\b/,
   /\.parquet\b/i,
   /\.sqlite\b/i,
   /\bTraceback\b/,
@@ -672,13 +675,13 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
         await expect(page.locator("#rag-fiscal-year")).toBeVisible();
 
         const rf03Btn = page.getByRole("button", {
-          name: /RF_03 Phải thu ngoài khách hàng/i,
+          name: /Phải thu ngoài khách hàng/i,
         });
         const rf07Btn = page.getByRole("button", {
-          name: /RF_07 Cảnh báo kiểm toán & Hoạt động liên tục/i,
+          name: /Cảnh báo kiểm toán & Hoạt động liên tục/i,
         });
         const rf09Btn = page.getByRole("button", {
-          name: /RF_09 Xây dựng cơ bản dở dang/i,
+          name: /Xây dựng cơ bản dở dang/i,
         });
         await expect(rf03Btn).toBeVisible();
         await expect(rf07Btn).toBeVisible();
@@ -711,7 +714,9 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
         expect(invJson.answer).not.toMatch(/\bCHUNKS?\b/i);
         expect(invJson.abstention_reason ?? "").not.toMatch(/\bCHUNKS?\b/i);
 
-        await expect(page.getByText(/Valkey (HIT|MISS)/)).toBeVisible({
+        await expect(
+          page.getByText(/Dữ liệu đệm sẵn \(Cache\)|Truy xuất mới/),
+        ).toBeVisible({
           timeout: 15_000,
         });
         const firstBadge = page
