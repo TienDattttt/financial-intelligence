@@ -1,0 +1,110 @@
+{
+  "as_of": "2026-11-20",
+  "facts_before_qg1": 1110041,
+  "facts_after_qg1": 1108429,
+  "ratio_rows": 18476,
+  "split_counts": [
+    {
+      "Tập": "train",
+      "Số quan sát PIT": 2904,
+      "Số DN": 374,
+      "Nhãn 1": 107,
+      "Tỷ lệ nhãn 1 (%)": 3.684573002754821,
+      "Kỳ đầu": "2018-12-31",
+      "Kỳ cuối": "2020-09-30"
+    },
+    {
+      "Tập": "validation",
+      "Số quan sát PIT": 1102,
+      "Số DN": 373,
+      "Nhãn 1": 45,
+      "Tỷ lệ nhãn 1 (%)": 4.083484573502722,
+      "Kỳ đầu": "2021-12-31",
+      "Kỳ cuối": "2022-06-30"
+    },
+    {
+      "Tập": "test",
+      "Số quan sát PIT": 2241,
+      "Số DN": 375,
+      "Nhãn 1": 84,
+      "Tỷ lệ nhãn 1 (%)": 3.748326639892905,
+      "Kỳ đầu": "2023-09-30",
+      "Kỳ cuối": "2024-12-31"
+    }
+  ],
+  "comparison_counts": {
+    "train": {
+      "Tập": "train",
+      "Sau chia PIT": 2904,
+      "Đã kiệt quệ tại t bị loại": 112,
+      "Altman thiếu/không hữu hạn bị loại": 0,
+      "Mẫu so sánh còn lại": 2792,
+      "Nhãn 1 còn lại": 50
+    },
+    "validation": {
+      "Tập": "validation",
+      "Sau chia PIT": 1102,
+      "Đã kiệt quệ tại t bị loại": 42,
+      "Altman thiếu/không hữu hạn bị loại": 0,
+      "Mẫu so sánh còn lại": 1060,
+      "Nhãn 1 còn lại": 21
+    },
+    "test": {
+      "Tập": "test",
+      "Sau chia PIT": 2241,
+      "Đã kiệt quệ tại t bị loại": 118,
+      "Altman thiếu/không hữu hạn bị loại": 0,
+      "Mẫu so sánh còn lại": 2123,
+      "Nhãn 1 còn lại": 37
+    }
+  },
+  "integrity": [
+    [
+      "Tệp JSON nguồn hợp lệ và đúng hash",
+      true,
+      "11,974 tệp đã kiểm tra"
+    ],
+    [
+      "Không có dòng dư trùng khóa nghiệp vụ",
+      true,
+      "0"
+    ],
+    [
+      "Ngày trong manifest đọc được khi có giá trị",
+      true,
+      "Kiểm tra bốn trường thời gian"
+    ],
+    [
+      "Ánh xạ mẫu FPT khớp giá trị đã lưu",
+      true,
+      "5 khoản mục được đối chiếu"
+    ],
+    [
+      "Các tập PIT không vi phạm thời điểm/provenance",
+      true,
+      "0 vi phạm"
+    ],
+    [
+      "Nhãn của các tập mô hình đầy đủ",
+      true,
+      "Kiểm tra Train / Validation / Test"
+    ],
+    [
+      "Ma trận đặc trưng sau biến đổi hữu hạn",
+      true,
+      "Train-fit, Validation/Test-transform"
+    ],
+    [
+      "Tệp đầu vào Parquet/manifest ML giữ nguyên hash",
+      true,
+      "So sánh trước và sau phân tích"
+    ]
+  ],
+  "input_sha256": {
+    "data\\go_live_nfr_run\\curated\\financial_facts\\b6_norm_full_nfr_after_20261120T155606Z\\financial_facts.parquet": "dc2d886681060eb18dd2564481d415878c44de51512e0b5082fb8f6e337c7310",
+    "data\\go_live_nfr_run\\curated\\issuers.parquet": "4088ad7fd950b21198d9d82c58e6019096509d083c19b4c286549b51706461a0",
+    "data\\go_live_nfr_run\\metadata\\ml_runs\\e221ee76-98a1-4510-92ba-cb6a950e36f9\\ml_run_manifest.json": "5e0894b8d4a2d43907b64ef18075eab28e82c8deb2872d6ddd9b85d27298453f"
+  },
+  "outputs": 34,
+  "runtime_seconds": 35.71
+}

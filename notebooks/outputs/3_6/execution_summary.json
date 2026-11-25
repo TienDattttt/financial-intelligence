@@ -1,0 +1,98 @@
+{
+  "as_of": "2026-11-20",
+  "platt_slope": 0.47181392970026165,
+  "platt_intercept": -2.9035260607840248,
+  "f2_thresholds": {
+    "Baseline_1_AltmanZ": 0.6348262450883119,
+    "Baseline_2_Logit": 0.15077826326426327,
+    "XGBoost": 0.02254832934935423
+  },
+  "outputs": 21,
+  "files": [
+    {
+      "number": "01.png",
+      "title": "Bảng 3.6.1a. Cấu hình thực nghiệm và dữ liệu đầu vào"
+    },
+    {
+      "number": "02.png",
+      "title": "Bảng 3.6.1b. Quy mô tập Train, Validation và Test (PIT và mẫu đánh giá khởi phát)"
+    },
+    {
+      "number": "03.png",
+      "title": "Bảng 3.6.1c. Cấu hình mô hình đề xuất và các mô hình đối chứng"
+    },
+    {
+      "number": "04.png",
+      "title": "Bảng 3.6.2a. Hệ thống chỉ số đánh giá và giao thức kiểm chứng"
+    },
+    {
+      "number": "05.png",
+      "title": "Hình 3.6.3a. Phương sai giải thích của PCA trên tập Train (12 chỉ số)"
+    },
+    {
+      "number": "06.png",
+      "title": "Hình 3.6.3b. Lựa chọn số cụm K-Means theo chỉ số Silhouette (Train)"
+    },
+    {
+      "number": "07.png",
+      "title": "Bảng 3.6.3a. Phân bố cụm hình thái tài chính và tỷ lệ kiệt quệ theo tập"
+    },
+    {
+      "number": "08.png",
+      "title": "Hình 3.6.3c. Không gian PCA (PC1–PC2) phân cụm K-Means và điểm bất thường (Test)"
+    },
+    {
+      "number": "09.png",
+      "title": "Hình 3.6.3d. Phân phối điểm bất thường Isolation Forest trên Train, Validation và Test"
+    },
+    {
+      "number": "10.png",
+      "title": "Bảng 3.6.4a. Kết quả mô hình trên Train, Validation và Test (OOS)"
+    },
+    {
+      "number": "11.png",
+      "title": "Bảng 3.6.4b. Kết quả chi tiết theo từng năm tài chính trên Validation và Test"
+    },
+    {
+      "number": "12.png",
+      "title": "Hình 3.6.4a. Đường cong ROC trên Train, Validation và Test (OOS)"
+    },
+    {
+      "number": "13.png",
+      "title": "Hình 3.6.4b. Đường cong Precision–Recall trên Train, Validation và Test (OOS)"
+    },
+    {
+      "number": "14.png",
+      "title": "Hình 3.6.4c. Biểu đồ hiệu chỉnh xác suất (Reliability Diagram) trên Validation và Test"
+    },
+    {
+      "number": "15.png",
+      "title": "Hình 3.6.4d. Phân bố tỷ lệ phát hiện ca kiệt quệ theo 10 phân vị rủi ro (Test OOS)"
+    },
+    {
+      "number": "16.png",
+      "title": "Bảng 3.6.5a. Kiểm chứng tính cộng tính TreeSHAP trên Train, Validation và Test"
+    },
+    {
+      "number": "17.png",
+      "title": "Hình 3.6.5a. Tầm quan trọng toàn cục của Top 15 đặc trưng theo SHAP (Test OOS)"
+    },
+    {
+      "number": "18.png",
+      "title": "Hình 3.6.5b. Biểu đồ phân bố tác động SHAP (Beeswarm) của Top 12 đặc trưng (Test OOS)"
+    },
+    {
+      "number": "19.png",
+      "title": "Hình 3.6.5c. Giải thích cục bộ (SHAP Waterfall): CIG — kỳ 31/12/2023 (P = 19.82%)"
+    },
+    {
+      "number": "20.png",
+      "title": "Bảng 3.6.6a. Ma trận nhầm lẫn và đánh đổi sai số trên Test (ngưỡng F2 đóng băng)"
+    },
+    {
+      "number": "21.png",
+      "title": "Hình 3.6.6a. Độ nhạy Recall, Precision và F2-Score theo ngưỡng vận hành (Test OOS)"
+    }
+  ],
+  "runtime_seconds": 30.2
+}
