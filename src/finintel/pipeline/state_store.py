@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
-from collections.abc import Iterator, Mapping
+import time
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -45,6 +47,13 @@ _FHSC_DISCLOSURE_COOLDOWN_TABLE_DDL = """
         last_error_type TEXT,
         last_failure_at TEXT,
         updated_at TEXT NOT NULL
+    )
+    """
+
+_PROVIDER_RATE_LIMITS_TABLE_DDL = """
+    CREATE TABLE IF NOT EXISTS provider_rate_limits (
+        host TEXT PRIMARY KEY,
+        next_allowed_at_epoch REAL NOT NULL
     )
     """
 
@@ -102,6 +111,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     _FHSC_WATERMARK_TABLE_DDL,
     _FHSC_DISCLOSURE_COOLDOWN_TABLE_DDL,
+    _PROVIDER_RATE_LIMITS_TABLE_DDL,
 )
 SCHEMA = ";\n".join(statement.strip() for statement in SCHEMA_STATEMENTS) + ";\n"
 
@@ -112,6 +122,70 @@ def key_fingerprint(key: str) -> str:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def acquire_host_pacing_slot(
+    db_path: Path,
+    host: str,
+    *,
+    min_interval_seconds: float,
+    jitter_seconds: float = 0.0,
+    sleeper: Callable[[float], None] | None = None,
+    now_fn: Callable[[], float] | None = None,
+) -> float:
+    """Reserve the next polite request slot for ``host`` across OS processes (<1ms lock hold)."""
+    normalized_host = host.strip().lower()
+    if not normalized_host:
+        raise ValueError("host must be a non-empty hostname.")
+    if (
+        isinstance(min_interval_seconds, bool)
+        or not math.isfinite(min_interval_seconds)
+        or min_interval_seconds < 0.0
+    ):
+        raise ValueError("min_interval_seconds must be a finite non-negative float.")
+    if (
+        isinstance(jitter_seconds, bool)
+        or not math.isfinite(jitter_seconds)
+        or jitter_seconds < 0.0
+    ):
+        raise ValueError("jitter_seconds must be a finite non-negative float.")
+
+    clock = now_fn if now_fn is not None else time.time
+    sleep_fn = sleeper if sleeper is not None else time.sleep
+    interval = float(min_interval_seconds) + float(jitter_seconds)
+    resolved_db = db_path.resolve()
+    resolved_db.parent.mkdir(parents=True, exist_ok=True)
+
+    now_epoch = float(clock())
+    with closing(
+        sqlite3.connect(resolved_db, timeout=10.0, isolation_level=None)
+    ) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000;")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("BEGIN IMMEDIATE;")
+        try:
+            conn.execute(_PROVIDER_RATE_LIMITS_TABLE_DDL)
+            row = conn.execute(
+                "SELECT next_allowed_at_epoch FROM provider_rate_limits WHERE host = ?",
+                (normalized_host,),
+            ).fetchone()
+            earliest = float(row[0]) if row is not None else now_epoch
+            scheduled_at = max(now_epoch, earliest)
+            conn.execute(
+                "INSERT INTO provider_rate_limits(host, next_allowed_at_epoch) VALUES (?, ?) "
+                "ON CONFLICT(host) DO UPDATE SET next_allowed_at_epoch = excluded.next_allowed_at_epoch",
+                (normalized_host, scheduled_at + interval),
+            )
+            conn.execute("COMMIT;")
+        except BaseException:
+            conn.execute("ROLLBACK;")
+            raise
+
+    wait_seconds = max(0.0, scheduled_at - float(clock()))
+    if wait_seconds > 0.0:
+        sleep_fn(wait_seconds)
+    return wait_seconds
 
 
 class StateStore:
@@ -659,6 +733,25 @@ class StateStore:
                    WHERE provider_key = ?""",
                 (_now(), clean_key),
             )
+
+    def acquire_host_pacing_slot(
+        self,
+        host: str,
+        *,
+        min_interval_seconds: float = 1.75,
+        jitter_seconds: float = 0.0,
+        sleeper: Callable[[float], None] | None = None,
+        now_fn: Callable[[], float] | None = None,
+    ) -> float:
+        """Reserve the next polite request slot for ``host`` in this ``StateStore``."""
+        return acquire_host_pacing_slot(
+            self.path,
+            host,
+            min_interval_seconds=min_interval_seconds,
+            jitter_seconds=jitter_seconds,
+            sleeper=sleeper,
+            now_fn=now_fn,
+        )
 
     def _one(
         self, query: str, parameters: tuple[object, ...]

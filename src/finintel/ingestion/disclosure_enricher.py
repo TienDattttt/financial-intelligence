@@ -40,6 +40,10 @@ from finintel.ingestion.hasher import (
     compute_manifest_sig_sha256,
     payload_file_sha256,
 )
+from finintel.ingestion.ssrf_guard import (
+    DISCLOSURE_SOURCE_ALLOWED_HOSTS,
+    validate_https_allowlisted_url,
+)
 
 VN_TZ = timezone(timedelta(hours=7))
 DISCLOSURE_CONNECTOR = "disclosure_enricher_v1"
@@ -214,14 +218,12 @@ def is_valid_vietcap_iq_payload(content: bytes) -> bool:
         decoded = json.loads(content)
     except (ValueError, UnicodeError):
         return False
-    if not isinstance(decoded, dict):
-        return False
-    if decoded.get("successful") is False:
+    if not isinstance(decoded, dict) or decoded.get("successful") is False:
         return False
     status = decoded.get("status")
-    if status is not None and (isinstance(status, bool) or status != 200):
-        return False
-    return isinstance(decoded.get("data"), dict)
+    return (
+        status is None or (not isinstance(status, bool) and status == 200)
+    ) and isinstance(decoded.get("data"), dict)
 
 
 def parse_vietcap_iq_disclosures(
@@ -301,29 +303,31 @@ def _extract_cafef_filename_date(url: str) -> date | None:
     basename = url.split("?", 1)[0].rsplit("/", 1)[-1]
     if not basename:
         return None
-    m_iso = _URL_YYYYMMDD_RE.search(basename)
-    if m_iso is not None:
-        parsed = _safe_calendar_date(int(m_iso[1]), int(m_iso[2]), int(m_iso[3]))
-        if parsed is not None:
-            return parsed
-    m_ubck = _URL_DDMMYYYY_DASH_TIME_RE.search(basename)
-    if m_ubck is not None:
-        parsed = _safe_calendar_date(int(m_ubck[3]), int(m_ubck[2]), int(m_ubck[1]))
-        if parsed is not None:
-            return parsed
-    m_suf14 = _URL_DDMMYYYY_14_SUFFIX_RE.search(basename)
-    if m_suf14 is not None:
-        parsed = _safe_calendar_date(int(m_suf14[3]), int(m_suf14[2]), int(m_suf14[1]))
-        if parsed is not None:
-            return parsed
+    for pat, y_i, m_i, d_i in (
+        (_URL_YYYYMMDD_RE, 1, 2, 3),
+        (_URL_DDMMYYYY_DASH_TIME_RE, 3, 2, 1),
+        (_URL_DDMMYYYY_14_SUFFIX_RE, 3, 2, 1),
+    ):
+        if (m := pat.search(basename)) is not None:
+            if (
+                p := _safe_calendar_date(int(m[y_i]), int(m[m_i]), int(m[d_i]))
+            ) is not None:
+                return p
     m_epoch = _URL_EPOCH10_SUFFIX_RE.search(basename)
-    if m_epoch is not None:
-        epoch_sec = int(m_epoch[1])
-        return datetime.fromtimestamp(epoch_sec, tz=VN_TZ).date()
-    return None
+    return datetime.fromtimestamp(int(m_epoch[1]), tz=VN_TZ).date() if m_epoch else None
+
+
+def validate_disclosure_source_url(source_url: str) -> str:
+    """Validate HTTPS scheme, port 443, and disclosure host allowlist via ssrf_guard."""
+    validated, _ = validate_https_allowlisted_url(
+        source_url, allowed_hosts=DISCLOSURE_SOURCE_ALLOWED_HOSTS
+    )
+    return validated
 
 
 def _validate_cafef_source_url_ticker(source_url: str, clean_ticker: str) -> None:
+    if source_url.lower().startswith(("http://", "https://")):
+        validate_disclosure_source_url(source_url)
     parsed = urlsplit(source_url)
     for key, values in parse_qs(parsed.query).items():
         if key.lower() not in {"sym", "symbol"}:

@@ -28,6 +28,8 @@ from finintel.pipeline.state_store import (
 
 logger = logging.getLogger("finintel.pipeline")
 DEFAULT_MIN_FREE_BYTES = 100 * 1024**2
+DEFAULT_FHSC_HOST = "open-api.fhsc.com.vn"
+DEFAULT_FHSC_MIN_INTERVAL_SECONDS = 1.75
 
 if TYPE_CHECKING:
     from vnstock_oapi import Source
@@ -137,7 +139,28 @@ def fhsc_retried_rate_limit(envelope: Envelope) -> bool:
     return type(count) is int and count > 1
 
 
-def _check_connection(probe: Source) -> None:
+def _resolve_probe_host(probe: object) -> str:
+    spec = getattr(probe, "spec", None)
+    hosts = getattr(spec, "hosts", None)
+    if isinstance(hosts, (list, tuple)) and hosts and isinstance(hosts[0], str):
+        cleaned = hosts[0].strip().lower()
+        if cleaned:
+            return cleaned
+    return DEFAULT_FHSC_HOST
+
+
+def _check_connection(
+    probe: Source,
+    *,
+    store: StateStore | None = None,
+    pacing_sleeper: Callable[[float], None] | None = None,
+) -> None:
+    if store is not None and store.path.exists():
+        store.acquire_host_pacing_slot(
+            _resolve_probe_host(probe),
+            min_interval_seconds=DEFAULT_FHSC_MIN_INTERVAL_SECONDS,
+            sleeper=pacing_sleeper,
+        )
     with fhsc_source_errors():
         # Source.check() converts the structured HTTP status to text.
         pages = probe.raw("trading/market/session", exchange="HOSE")
@@ -153,6 +176,7 @@ def health_check(
     now: datetime | None = None,
     run_id: str | None = None,
     connectivity_check: Callable[[], None] | None = None,
+    pacing_sleeper: Callable[[float], None] | None = None,
 ) -> None:
     """Run the disk check for all sources and key checks before online ingestion."""
     if min_free_bytes < 0:
@@ -182,4 +206,4 @@ def health_check(
         if isinstance(rotation, dict) and rotation.get("due_on") is not None:
             expires = _parse_stamp(rotation["due_on"])
         _check_expiry(expires, checked_at, run_id)
-    _check_connection(probe)
+    _check_connection(probe, store=store, pacing_sleeper=pacing_sleeper)

@@ -33,11 +33,13 @@ from finintel.domain.schemas import (
 )
 from finintel.exceptions import ContractViolationError, RateLimitOrCircuitOpenError
 from finintel.pipeline.health import (
+    DEFAULT_FHSC_HOST,
+    DEFAULT_FHSC_MIN_INTERVAL_SECONDS,
     fhsc_retried_rate_limit,
     fhsc_source_errors,
     load_fhsc_source,
 )
-from finintel.pipeline.state_store import FHSC_CONNECTOR_VERSION
+from finintel.pipeline.state_store import FHSC_CONNECTOR_VERSION, StateStore
 
 if TYPE_CHECKING:
     from vnstock_oapi.core.envelope import Envelope
@@ -144,6 +146,7 @@ class FhscOapiAdapter(FinancialStatementProvider):
         | None = None,
         page_observer: Callable[[Sequence[Mapping[str, object]]], None] | None = None,
         checkpoint_path: Path | None = None,
+        state_store: StateStore | None = None,
         sleeper: Callable[[float], None] | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
@@ -196,6 +199,7 @@ class FhscOapiAdapter(FinancialStatementProvider):
             if checkpoint_path is not None
             else None
         )
+        self._state_store = state_store
         self._sleeper = sleeper
         self._clock = clock
         self._last_request_at: float | None = None
@@ -384,6 +388,17 @@ class FhscOapiAdapter(FinancialStatementProvider):
         )
         sleeper = self._sleeper if self._sleeper is not None else _default_sleep
         clock = self._clock if self._clock is not None else _default_clock
+        raw_hosts = getattr(source.spec, "hosts", ())
+        fhsc_host = (
+            str(raw_hosts[0]).strip().lower()
+            if isinstance(raw_hosts, (list, tuple)) and raw_hosts
+            else DEFAULT_FHSC_HOST
+        )
+        cross_proc_interval = (
+            self.min_request_interval_seconds
+            if self.min_request_interval_seconds is not None
+            else max(interval, DEFAULT_FHSC_MIN_INTERVAL_SECONDS)
+        )
 
         for page in range(self._next_page, max_pages + 1):
             query: dict[str, object] = {
@@ -392,7 +407,13 @@ class FhscOapiAdapter(FinancialStatementProvider):
             query.update(page=page, limit=self.limit)
             if self.year is not None:
                 query["year"] = self.year
-            if self._last_request_at is not None and interval > 0:
+            if self._state_store is not None:
+                self._state_store.acquire_host_pacing_slot(
+                    fhsc_host,
+                    min_interval_seconds=cross_proc_interval,
+                    sleeper=sleeper,
+                )
+            elif self._last_request_at is not None and interval > 0:
                 elapsed = clock() - self._last_request_at
                 remaining = interval - elapsed
                 if remaining > 0:

@@ -21,7 +21,9 @@ Guardrails:
 
 from __future__ import annotations
 
+import contextvars
 import logging
+import math
 import os
 import time
 import uuid
@@ -51,6 +53,98 @@ SPAN_VALKEY_CACHE = "valkey.cache"
 SPAN_DUCKDB_QUERY = "duckdb.query"
 SPAN_ANALYTICS_STRESS_TEST = "analytics.stress_test"
 SPAN_RAG_INVESTIGATE = "rag.investigate"
+
+VALID_ENTRY_POINTS: frozenset[str] = frozenset(
+    {"http_api", "dagster_sensor", "dagster_schedule", "cli"}
+)
+VALID_INGESTION_OUTCOMES: frozenset[str] = frozenset(
+    {"success", "quarantined", "rate_limited", "error"}
+)
+VALID_INGESTION_PROVIDERS: frozenset[str] = frozenset(
+    {"fhsc", "vietcap_iq", "cafef", "ssc", "hsx", "hnx", "vndirect", "other"}
+)
+
+_TELEMETRY_CONTEXT: contextvars.ContextVar[dict[str, str | None]] = (
+    contextvars.ContextVar(
+        "finintel_telemetry_context",
+        default={"entry_point": None, "run_id": None, "snapshot_id": None},
+    )
+)
+
+_INGESTION_METRICS_REGISTRY = CollectorRegistry()
+_INGESTION_REQUESTS_TOTAL = Counter(
+    "finintel_ingestion_requests_total",
+    "Total upstream provider ingestion requests partitioned by provider and outcome.",
+    labelnames=("provider", "outcome"),
+    registry=_INGESTION_METRICS_REGISTRY,
+)
+_INGESTION_DURATION_SECONDS = Histogram(
+    "finintel_ingestion_duration_seconds",
+    "Upstream provider ingestion request duration in seconds.",
+    labelnames=("provider",),
+    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0),
+    registry=_INGESTION_METRICS_REGISTRY,
+)
+
+
+def get_ingestion_metrics_registry() -> CollectorRegistry:
+    """Return the dedicated bounded-cardinality registry for ingestion metrics."""
+    return _INGESTION_METRICS_REGISTRY
+
+
+@contextmanager
+def bind_telemetry_context(
+    *,
+    entry_point: str,
+    run_id: str | None = None,
+    snapshot_id: str | None = None,
+) -> Iterator[dict[str, str | None]]:
+    """Bind ``entry_point``, ``run_id``, and ``snapshot_id`` for correlated telemetry."""
+    if entry_point not in VALID_ENTRY_POINTS:
+        raise ValueError(
+            f"entry_point must be one of {sorted(VALID_ENTRY_POINTS)}, got {entry_point!r}."
+        )
+    next_ctx: dict[str, str | None] = {
+        "entry_point": entry_point,
+        "run_id": run_id,
+        "snapshot_id": snapshot_id,
+    }
+    token = _TELEMETRY_CONTEXT.set(next_ctx)
+    try:
+        yield dict(next_ctx)
+    finally:
+        _TELEMETRY_CONTEXT.reset(token)
+
+
+def get_telemetry_context() -> dict[str, str | None]:
+    """Return a copy of the active correlated telemetry context."""
+    return dict(_TELEMETRY_CONTEXT.get())
+
+
+def record_ingestion_request(
+    provider: str,
+    outcome: str,
+    duration_seconds: float,
+) -> None:
+    """Record bounded-cardinality provider request metrics (never attaches ticker/filing_id)."""
+    clean_provider = provider.strip().lower()
+    if clean_provider not in VALID_INGESTION_PROVIDERS:
+        clean_provider = "other"
+    clean_outcome = outcome.strip().lower()
+    if clean_outcome not in VALID_INGESTION_OUTCOMES:
+        raise ValueError(
+            f"outcome must be one of {sorted(VALID_INGESTION_OUTCOMES)}, got {outcome!r}."
+        )
+    safe_dur = (
+        max(0.0, float(duration_seconds))
+        if not isinstance(duration_seconds, bool) and math.isfinite(duration_seconds)
+        else 0.0
+    )
+    _INGESTION_REQUESTS_TOTAL.labels(
+        provider=clean_provider, outcome=clean_outcome
+    ).inc()
+    _INGESTION_DURATION_SECONDS.labels(provider=clean_provider).observe(safe_dur)
+
 
 _STRUCTLOG_CONFIGURED = False
 _OTEL_TRACING_CONFIGURED = False
@@ -228,7 +322,10 @@ def generate_metrics_payload(registry: CollectorRegistry) -> bytes:
         rendered = bytes(generate_latest(mp_registry))
         if rendered:
             return rendered
-    return bytes(generate_latest(registry))
+    primary = bytes(generate_latest(registry))
+    if registry is _INGESTION_METRICS_REGISTRY:
+        return primary
+    return primary + bytes(generate_latest(_INGESTION_METRICS_REGISTRY))
 
 
 def mark_current_process_dead(live_gauges: Sequence[Any] = ()) -> None:
@@ -368,6 +465,7 @@ class RequestCorrelationMiddleware:
             log = structlog.get_logger("finintel.serving.http")
             log.info(
                 "http_request_completed",
+                entry_point="http_api",
                 request_id=req_id,
                 method=method,
                 path=path,
