@@ -8,7 +8,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium leading-4",
+        "inline-flex items-center gap-1 whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium leading-4",
         className,
       )}
       {...props}
@@ -23,7 +23,7 @@ export function Input({
   return (
     <input
       className={cn(
-        "h-8 w-full rounded border border-border bg-surface px-2.5 text-[13px] text-ink placeholder:text-ink-subtle focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50",
+        "h-8 w-full rounded-md border border-border-strong bg-surface px-2.5 text-[13px] text-ink placeholder:text-ink-subtle focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg",
         className,
       )}
       {...props}
@@ -39,7 +39,7 @@ export function Select({
   return (
     <select
       className={cn(
-        "h-8 rounded border border-border bg-surface px-2.5 text-[13px] text-ink focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50",
+        "h-8 rounded-md border border-border-strong bg-surface px-2.5 text-[13px] text-ink focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg",
         className,
       )}
       {...props}
@@ -56,7 +56,7 @@ export function Skeleton({
   return (
     <div
       aria-hidden="true"
-      className={cn("animate-pulse rounded bg-surface-muted", className)}
+      className={cn("animate-pulse rounded-md bg-surface-muted", className)}
       {...props}
     />
   );

@@ -64,7 +64,11 @@ function MethodologyContent() {
 
   const rawTab = searchParams.get("tab");
   const activeTab: MethodTab =
-    rawTab === "models" || rawTab === "quality" ? rawTab : "dictionary";
+    rawTab === "models" || rawTab === "model"
+      ? "models"
+      : rawTab === "quality"
+        ? "quality"
+        : "dictionary";
 
   const [dictSearch, setDictSearch] = React.useState("");
   const [catFilter, setCatFilter] = React.useState("");
@@ -313,65 +317,55 @@ function MethodologyContent() {
               <div className="space-y-5">
                 <section
                   aria-label="Thông số mô hình hiện hành"
-                  className="grid grid-cols-2 gap-3 lg:grid-cols-5"
+                  className="grid grid-cols-2 divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface sm:divide-x sm:divide-y-0 lg:grid-cols-5"
                 >
-                  <Card>
-                    <CardContent className="p-3">
-                      <p className="text-[11px] text-ink-muted">Phiên bản &amp; Vai trò</p>
-                      <p className="mt-1 font-mono text-sm font-semibold text-ink">
-                        {card.model_version}
-                      </p>
-                      <p className="mt-0.5 text-[11px] text-ink-subtle">
-                        {MODEL_ROLE_LABELS[card.model_role] ?? "Chỉ báo định lượng"}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-3">
-                      <p className="text-[11px] text-ink-muted">Chốt dữ liệu huấn luyện</p>
-                      <p className="num mt-1 text-base font-semibold text-ink">
-                        {formatDateVi(card.trained_as_of)}
-                      </p>
-                      <p className="mt-0.5 text-[11px] text-ink-subtle">
-                        Phạm vi {STATEMENT_SCOPE_LABELS[card.statement_scope] ?? "Hợp nhất"}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-3">
-                      <p className="text-[11px] text-ink-muted">Số biến định lượng</p>
-                      <p className="num mt-1 text-base font-semibold text-ink">
-                        {formatNumber(card.feature_count, 0)} biến
-                      </p>
-                      <p className="mt-0.5 text-[11px] text-ink-subtle">
-                        XGBoost đơn điệu + Hiệu chỉnh Platt
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-3">
-                      <p className="text-[11px] text-ink-muted">Tỷ lệ biến cố nền (Train)</p>
-                      <p className="num mt-1 text-base font-semibold text-ink">
-                        {formatPercent(card.train_prevalence, { decimals: 2 })}
-                      </p>
-                      <p className="mt-0.5 text-[11px] text-ink-subtle">
-                        Dùng tính hệ số rủi ro (× nền)
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card className="col-span-2 lg:col-span-1">
-                    <CardContent className="p-3">
-                      <p className="text-[11px] text-ink-muted">Ngưỡng cắt bậc R1–R5 (TTC)</p>
-                      <p className="num mt-1 text-xs font-semibold text-ink">
-                        R2 ≥ {formatPercent(cutoffs.R2_min_pd, { decimals: 2 })} · R3 ≥{" "}
-                        {formatPercent(cutoffs.R3_min_pd, { decimals: 2 })}
-                      </p>
-                      <p className="num mt-0.5 text-xs font-semibold text-risk-high">
-                        R4 ≥ {formatPercent(cutoffs.R4_min_pd, { decimals: 2 })} · R5 ≥{" "}
-                        {formatPercent(cutoffs.R5_min_pd, { decimals: 2 })}
-                      </p>
-                    </CardContent>
-                  </Card>
+                  <div className="p-3">
+                    <p className="text-[11px] text-ink-muted">Phiên bản &amp; Vai trò</p>
+                    <p className="mt-1 font-mono text-sm font-semibold text-ink">
+                      {card.model_version}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-ink-subtle">
+                      {MODEL_ROLE_LABELS[card.model_role] ?? "Chỉ báo định lượng"}
+                    </p>
+                  </div>
+                  <div className="p-3">
+                    <p className="text-[11px] text-ink-muted">Chốt dữ liệu huấn luyện</p>
+                    <p className="num mt-1 text-base font-semibold text-ink">
+                      {formatDateVi(card.trained_as_of)}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-ink-subtle">
+                      Phạm vi {STATEMENT_SCOPE_LABELS[card.statement_scope] ?? "Hợp nhất"}
+                    </p>
+                  </div>
+                  <div className="p-3">
+                    <p className="text-[11px] text-ink-muted">Số biến định lượng</p>
+                    <p className="num mt-1 text-base font-semibold text-ink">
+                      {formatNumber(card.feature_count, 0)} biến
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-ink-subtle">
+                      XGBoost đơn điệu + Hiệu chỉnh Platt
+                    </p>
+                  </div>
+                  <div className="p-3">
+                    <p className="text-[11px] text-ink-muted">Tỷ lệ biến cố nền (Train)</p>
+                    <p className="num mt-1 text-base font-semibold text-ink">
+                      {formatPercent(card.train_prevalence, { decimals: 2 })}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-ink-subtle">
+                      Dùng tính hệ số rủi ro (× nền)
+                    </p>
+                  </div>
+                  <div className="col-span-2 p-3 lg:col-span-1">
+                    <p className="text-[11px] text-ink-muted">Ngưỡng cắt bậc R1–R5 (TTC)</p>
+                    <p className="num mt-1 text-xs font-semibold text-ink">
+                      R2 ≥ {formatPercent(cutoffs.R2_min_pd, { decimals: 2 })} · R3 ≥{" "}
+                      {formatPercent(cutoffs.R3_min_pd, { decimals: 2 })}
+                    </p>
+                    <p className="num mt-0.5 text-xs font-semibold text-risk-high">
+                      R4 ≥ {formatPercent(cutoffs.R4_min_pd, { decimals: 2 })} · R5 ≥{" "}
+                      {formatPercent(cutoffs.R5_min_pd, { decimals: 2 })}
+                    </p>
+                  </div>
                 </section>
 
                 <Card>
@@ -779,7 +773,7 @@ function MethodologyContent() {
       ) : (
         <div className="space-y-4">
           {overviewQuery.data ? (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-5">
               {[
                 ["Tổng số DN", formatNumber(overviewQuery.data.total_issuers, 0)],
                 ["Tổng số kỳ tỷ số", formatNumber(overviewQuery.data.total_ratio_periods, 0)],
@@ -787,12 +781,10 @@ function MethodologyContent() {
                 ["Kỳ có cảnh báo", formatNumber(overviewQuery.data.warning_periods, 0)],
                 ["Bản ghi loại trừ kiểm tra", formatNumber(overviewQuery.data.quarantined_rows, 0)],
               ].map(([lbl, val]) => (
-                <Card key={lbl}>
-                  <CardContent className="p-3">
-                    <p className="text-[11px] text-ink-muted">{lbl}</p>
-                    <p className="num mt-1 text-lg font-semibold text-ink">{val}</p>
-                  </CardContent>
-                </Card>
+                <div key={lbl} className="bg-surface p-3">
+                  <p className="text-[11px] text-ink-muted">{lbl}</p>
+                  <p className="num mt-1 text-lg font-semibold text-ink">{val}</p>
+                </div>
               ))}
             </div>
           ) : null}
@@ -800,7 +792,7 @@ function MethodologyContent() {
           <Card>
             <CardHeader className="py-2.5">
               <CardTitle className="text-[14px]">
-                Nhật ký kiểm tra chất lượng theo kỳ ({summaryQuery.data?.total ?? 0})
+                Nhật ký kiểm tra chất lượng theo kỳ ({formatNumber(summaryQuery.data?.total ?? 0, 0)})
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
@@ -899,7 +891,7 @@ function MethodologyContent() {
           <Card>
             <CardHeader className="py-2.5">
               <CardTitle className="text-[14px]">
-                Danh sách hồ sơ bị giữ lại kiểm định ({quarantineQuery.data?.total ?? 0})
+                Danh sách hồ sơ bị giữ lại kiểm định ({formatNumber(quarantineQuery.data?.total ?? 0, 0)})
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
@@ -937,8 +929,8 @@ function MethodologyContent() {
                               <td className="px-3 py-2 font-mono font-semibold text-ink">
                                 {ticker}
                               </td>
-                              <td className="px-3 py-2 font-mono text-ink-muted">
-                                {row.filing_id}
+                              <td className="px-3 py-2 text-ink-muted">
+                                BCTC · {ticker} · {formatPeriodLabel(row.period_end_date, row.period_type)}
                               </td>
                               <td className="px-3 py-2">
                                 {formatPeriodLabel(row.period_end_date, row.period_type)}

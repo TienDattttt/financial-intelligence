@@ -8,7 +8,7 @@ import {
   getSectorRiskColor,
 } from "@/components/charts/SectorTreemapChart";
 import { Select } from "@/components/ui/primitives";
-import { type ChartPalette, useChartTheme } from "@/lib/echarts-theme";
+import { type ChartPalette, formatChartNumber, useChartTheme } from "@/lib/echarts-theme";
 import { formatNumber, formatPercent } from "@/lib/format";
 import type { SectorRiskItem } from "@/types/api";
 
@@ -136,7 +136,8 @@ export function SectorHeatmapChart({
       xAxis: {
         type: "value",
         axisLabel: {
-          formatter: `{value}${axisUnit}`,
+          formatter: (v: number) =>
+            `${formatChartNumber(v, 1, { trimTrailingZeros: true })}${axisUnit}`,
         },
       },
       yAxis: {

@@ -78,7 +78,7 @@ export function Combobox({
         aria-label={ariaLabel}
         disabled={disabled}
         className={cn(
-          "flex h-8 w-full items-center justify-between gap-2 rounded-[var(--radius-md)] border border-border bg-surface px-2.5 text-left text-[13px] text-ink shadow-xs transition-colors duration-150 hover:border-border-strong focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50",
+          "flex h-8 w-full items-center justify-between gap-2 rounded-md border border-border-strong bg-surface px-2.5 text-left text-[13px] text-ink shadow-xs transition-colors duration-150 hover:border-accent-ink/50 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg",
           className,
         )}
       >
@@ -108,7 +108,7 @@ export function Combobox({
         >
           <ComboboxPrimitive.Popup
             className={cn(
-              "w-[var(--anchor-width)] min-w-[220px] max-w-[320px] overflow-hidden rounded-[var(--radius-md)] border border-border-strong bg-surface text-ink shadow-[0_4px_16px_rgba(15,23,42,0.12)] transition-opacity duration-150 data-[starting-style]:opacity-0 data-[ending-style]:opacity-0 motion-reduce:transition-none dark:shadow-[0_4px_16px_rgba(0,0,0,0.48)]",
+              "w-[var(--anchor-width)] min-w-[220px] max-w-[320px] overflow-hidden rounded-lg border border-border-strong bg-surface text-ink shadow-popover transition-opacity duration-150 data-[starting-style]:opacity-0 data-[ending-style]:opacity-0 motion-reduce:transition-none",
               popupClassName,
             )}
           >

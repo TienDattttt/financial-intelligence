@@ -1,11 +1,15 @@
+import { cn } from "@/lib/utils";
+
 export function SparklineSvg({
   values,
   width = 64,
   height = 20,
+  className,
 }: {
   values: readonly (number | null | undefined)[];
   width?: number;
   height?: number;
+  className?: string;
 }) {
   const valid = values
     .map((v, idx) => ({ v, idx }))
@@ -33,18 +37,18 @@ export function SparklineSvg({
       width={width}
       height={height}
       viewBox={`0 0 ${width} ${height}`}
-      className="inline-block align-middle"
+      className={cn("inline-block align-middle text-accent-ink", className)}
       aria-hidden="true"
     >
       <polyline
         fill="none"
-        stroke="#1F4E79"
+        stroke="currentColor"
         strokeWidth="1.5"
         strokeLinejoin="round"
         strokeLinecap="round"
         points={coords.join(" ")}
       />
-      <circle cx={last[0]} cy={last[1]} r="2" fill="#1F4E79" />
+      <circle cx={last[0]} cy={last[1]} r="2" fill="currentColor" />
     </svg>
   );
 }

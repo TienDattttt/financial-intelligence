@@ -148,7 +148,7 @@ export function SourceDrawer() {
         <Dialog.Popup
           aria-modal="true"
           aria-label="Nguồn dữ liệu chỉ số"
-          className="fixed inset-y-0 right-0 z-50 flex h-full w-full max-w-[440px] flex-col border-l border-border-strong bg-surface text-ink shadow-[0_8px_32px_rgba(15,23,42,0.18)] transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] focus:outline-none data-[starting-style]:translate-x-full data-[ending-style]:translate-x-full motion-reduce:transition-none dark:shadow-[0_8px_32px_rgba(0,0,0,0.55)]"
+          className="fixed inset-y-0 right-0 z-50 flex h-full w-full max-w-[440px] flex-col border-l border-border-strong bg-surface text-ink shadow-popover transition-transform duration-150 ease-[cubic-bezier(0.2,0,0,1)] focus:outline-none data-[starting-style]:translate-x-full data-[ending-style]:translate-x-full motion-reduce:transition-none"
         >
           {sourceTarget ? (
             <>

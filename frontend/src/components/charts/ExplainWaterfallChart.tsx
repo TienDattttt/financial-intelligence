@@ -4,7 +4,7 @@ import * as React from "react";
 import { RotateCcw } from "lucide-react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
 import { Button } from "@/components/ui/button";
-import { useChartTheme } from "@/lib/echarts-theme";
+import { formatChartNumber, useChartTheme } from "@/lib/echarts-theme";
 import { formatNumber, formatPercent, MINUS_SIGN } from "@/lib/format";
 import { buildShapNarrativeVi } from "@/lib/narrative";
 import type { ShapExplanationItem } from "@/types/api";
@@ -192,7 +192,7 @@ export function ExplainWaterfallChart({
     const dataRows = steps.map((s, idx) => [idx, s.start, s.end, s.delta]);
 
     return {
-      grid: { left: 56, right: 20, top: 28, bottom: 72 },
+      grid: { left: 58, right: 20, top: 28, bottom: 88 },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
@@ -221,13 +221,18 @@ export function ExplainWaterfallChart({
         type: "category",
         data: categories,
         axisLabel: {
-          rotate: 28,
+          rotate: 22,
           interval: 0,
+          width: 110,
+          overflow: "truncate",
         },
       },
       yAxis: {
         type: "value",
         name: "log-odds",
+        axisLabel: {
+          formatter: (val: number) => formatChartNumber(val, 1, { trimTrailingZeros: true }),
+        },
       },
       series: [
         {

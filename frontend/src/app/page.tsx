@@ -8,7 +8,7 @@ import { SectorTreemapChart } from "@/components/charts/SectorTreemapChart";
 import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   useAllIssuers,
@@ -251,43 +251,41 @@ export default function MarketOverviewPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Link href="/screener">
-            <Button variant="outline" size="sm">
-              Mở bảng sàng lọc
-              <ArrowRight className="size-3.5" />
-            </Button>
+          <Link href="/screener" className={buttonVariants({ variant: "outline", size: "sm" })}>
+            Mở bảng sàng lọc
+            <ArrowRight className="size-3.5" />
           </Link>
-          <Link href="/stress-test">
-            <Button size="sm">
-              Mô phỏng kịch bản sốc
-              <ArrowRight className="size-3.5" />
-            </Button>
+          <Link href="/stress-test" className={buttonVariants({ variant: "default", size: "sm" })}>
+            Mô phỏng kịch bản sốc
+            <ArrowRight className="size-3.5" />
           </Link>
         </div>
       </div>
 
       <section
         aria-label="Chỉ số tổng hợp rủi ro"
-        className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+        className="grid grid-cols-1 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2 lg:grid-cols-4"
       >
         {kpiCards.map((kpi) => (
           <Link
             key={kpi.title}
             href={kpi.href}
-            className="group block rounded-lg border border-border bg-surface p-3.5 shadow-xs transition-colors duration-150 hover:border-accent-ink/60"
+            className="group flex flex-col justify-between bg-surface p-4 transition-colors duration-150 hover:bg-surface-hover/50"
           >
             <p className="text-xs font-medium text-ink-muted group-hover:text-accent-ink">
               {kpi.title}
             </p>
-            <p className={`num mt-1.5 text-[28px] font-semibold leading-8 ${kpi.toneClass}`}>
+            <p className={`num mt-1.5 text-[26px] font-semibold leading-8 ${kpi.toneClass}`}>
               {kpi.value}
             </p>
-            <p className="num mt-1.5 text-[11px] text-ink-muted">{kpi.sub}</p>
-            {kpi.delta ? (
-              <p className={`num mt-1 text-[11px] font-medium ${kpi.delta.toneClass}`}>
-                {kpi.delta.text}
-              </p>
-            ) : null}
+            <div className="mt-1.5 space-y-0.5">
+              <p className="num text-[11px] text-ink-muted">{kpi.sub}</p>
+              {kpi.delta ? (
+                <p className={`num text-[11px] font-medium ${kpi.delta.toneClass}`}>
+                  {kpi.delta.text}
+                </p>
+              ) : null}
+            </div>
           </Link>
         ))}
       </section>
@@ -299,8 +297,8 @@ export default function MarketOverviewPage() {
         }
       />
 
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        <Card className="lg:col-span-7">
+      <section className="grid grid-cols-1 items-start gap-4 lg:grid-cols-12">
+        <Card className="lg:col-span-8">
           <CardHeader className="py-2.5">
             <div>
               <CardTitle className="flex items-center gap-1.5 text-[14px]">
@@ -446,7 +444,65 @@ export default function MarketOverviewPage() {
           </CardContent>
         </Card>
 
-        <Card className="lg:col-span-5">
+        <div className="space-y-4 lg:col-span-4">
+          <Card>
+            <CardHeader className="py-2.5">
+              <CardTitle className="text-[14px]">Phân bố vùng sức khỏe Altman Z″</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2.5 p-3.5 text-xs">
+              {(() => {
+                const total = Math.max(1, data.total_issuers);
+                const bands = [
+                  {
+                    label: "Vùng an toàn (Z″ > 2,60)",
+                    count: data.safe_zone_count,
+                    pct: (data.safe_zone_count / total) * 100,
+                    barClass: "bg-risk-low",
+                    textClass: "text-risk-low",
+                    href: "/screener?altman_zone=SAFE_ZONE",
+                  },
+                  {
+                    label: "Vùng xám (1,10 – 2,60)",
+                    count: data.grey_zone_count,
+                    pct: (data.grey_zone_count / total) * 100,
+                    barClass: "bg-risk-mid",
+                    textClass: "text-risk-mid",
+                    href: "/screener?altman_zone=GREY_ZONE",
+                  },
+                  {
+                    label: "Vùng nguy cơ (Z″ < 1,10)",
+                    count: data.distress_zone_count,
+                    pct: (data.distress_zone_count / total) * 100,
+                    barClass: "bg-risk-high",
+                    textClass: "text-risk-high",
+                    href: "/screener?altman_zone=DISTRESS_ZONE",
+                  },
+                ];
+                return bands.map((b) => (
+                  <Link
+                    key={b.label}
+                    href={b.href}
+                    className="block rounded-md p-1.5 transition-colors hover:bg-surface-hover/60"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-ink">{b.label}</span>
+                      <span className={`num font-semibold ${b.textClass}`}>
+                        {formatNumber(b.count, 0)} DN ({formatPercent(b.pct / 100, { decimals: 1 })})
+                      </span>
+                    </div>
+                    <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-muted">
+                      <div
+                        className={`h-full rounded-full ${b.barClass}`}
+                        style={{ width: `${Math.min(100, Math.max(2, b.pct))}%` }}
+                      />
+                    </div>
+                  </Link>
+                ));
+              })()}
+            </CardContent>
+          </Card>
+
+          <Card>
           <CardHeader className="py-2.5">
             <div>
               <CardTitle className="text-[14px]">
@@ -560,6 +616,7 @@ export default function MarketOverviewPage() {
             )}
           </CardContent>
         </Card>
+        </div>
       </section>
     </div>
   );

@@ -303,7 +303,7 @@ export function buildPriceOverlayOption(
       lineStyle: { color: palette.company, width: 2 },
       itemStyle: { color: palette.company },
       areaStyle: {
-        color: palette.theme === "dark" ? "rgba(102, 157, 246, 0.10)" : "rgba(30, 58, 95, 0.08)",
+        color: palette.companyAreaTop,
       },
       data: seriesPoints.map((p) => p.close_adj),
       ...(earliestDate && pointByDate.has(earliestDate)
@@ -516,16 +516,14 @@ export function PitValuationStrip({
     return (
       <section
         aria-label="Đang tải định giá Point-in-Time"
-        className="grid grid-cols-1 gap-3 sm:grid-cols-3"
+        className="grid grid-cols-1 divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface sm:grid-cols-3 sm:divide-x sm:divide-y-0"
       >
         {[0, 1, 2].map((idx) => (
-          <Card key={idx}>
-            <CardContent className="p-3.5">
-              <div className="h-3 w-28 animate-pulse rounded bg-surface-muted" />
-              <div className="mt-2 h-7 w-24 animate-pulse rounded bg-surface-muted" />
-              <div className="mt-2 h-3 w-full animate-pulse rounded bg-surface-muted" />
-            </CardContent>
-          </Card>
+          <div key={idx} className="p-3.5">
+            <div className="h-3 w-28 animate-pulse rounded-md bg-surface-muted" />
+            <div className="mt-2 h-7 w-24 animate-pulse rounded-md bg-surface-muted" />
+            <div className="mt-2 h-3 w-full animate-pulse rounded-md bg-surface-muted" />
+          </div>
         ))}
       </section>
     );
@@ -534,69 +532,66 @@ export function PitValuationStrip({
   const cards = formatLatestValuationCards(latestValuation);
 
   return (
-    <section aria-label="Định giá Point-in-Time tại phiên gần nhất" className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <Card>
-        <CardContent className="p-3.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
-              <span>Vốn hóa thị trường (PIT)</span>
-              <InfoTooltip
-                text="Tính từ giá đóng cửa thực tế chưa điều chỉnh chia tách nhân số cổ phiếu lưu hành cùng thời điểm."
-                label="Giải thích Vốn hóa Point-in-Time"
-              />
-            </span>
-            <span className="num text-[11px] text-ink-subtle">{cards.tradeDateLabel}</span>
-          </div>
-          <p className="num mt-1.5 text-[22px] font-semibold leading-7 text-ink">
-            {cards.marketCapLabel}
-          </p>
-          <p className="mt-1.5 border-t border-border/60 pt-1.5 text-[11px] leading-4 text-ink-muted">
-            {cards.marketCapSubtext}
-          </p>
-        </CardContent>
-      </Card>
+    <section
+      aria-label="Định giá Point-in-Time tại phiên gần nhất"
+      className="grid grid-cols-1 divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface sm:grid-cols-3 sm:divide-x sm:divide-y-0"
+    >
+      <div className="p-3.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
+            <span>Vốn hóa thị trường (PIT)</span>
+            <InfoTooltip
+              text="Tính từ giá đóng cửa thực tế chưa điều chỉnh chia tách nhân số cổ phiếu lưu hành cùng thời điểm."
+              label="Giải thích Vốn hóa Point-in-Time"
+            />
+          </span>
+          <span className="num text-[11px] text-ink-subtle">{cards.tradeDateLabel}</span>
+        </div>
+        <p className="num mt-1 text-[20px] font-semibold leading-7 text-ink">
+          {cards.marketCapLabel}
+        </p>
+        <p className="mt-1 text-[11px] leading-4 text-ink-muted">
+          {cards.marketCapSubtext}
+        </p>
+      </div>
 
-      <Card>
-        <CardContent className="p-3.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
-              <span>P/E (TTM · PIT)</span>
-              <InfoTooltip
-                text="Tỷ số Giá / Thu nhập 4 quý gần nhất khớp tiến ngày công bố BCTC (không nhìn trước tương lai)."
-                label="Giải thích P/E Point-in-Time"
-              />
-            </span>
-            <span className="num text-[11px] text-ink-subtle">Giá gốc {cards.closeRawLabel}</span>
-          </div>
-          <p className="num mt-1.5 text-[22px] font-semibold leading-7 text-ink">
-            {cards.peLabel}
-          </p>
-          <p className="mt-1.5 border-t border-border/60 pt-1.5 text-[11px] leading-4 text-ink-muted">
-            {cards.peSubtext}
-          </p>
-        </CardContent>
-      </Card>
+      <div className="p-3.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
+            <span>P/E (TTM · PIT)</span>
+            <InfoTooltip
+              text="Tỷ số Giá / Thu nhập 4 quý gần nhất khớp tiến ngày công bố BCTC (không nhìn trước tương lai)."
+              label="Giải thích P/E Point-in-Time"
+            />
+          </span>
+          <span className="num text-[11px] text-ink-subtle">Giá gốc {cards.closeRawLabel}</span>
+        </div>
+        <p className="num mt-1 text-[20px] font-semibold leading-7 text-ink">
+          {cards.peLabel}
+        </p>
+        <p className="mt-1 text-[11px] leading-4 text-ink-muted">
+          {cards.peSubtext}
+        </p>
+      </div>
 
-      <Card>
-        <CardContent className="p-3.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
-              <span>P/B (PIT)</span>
-              <InfoTooltip
-                text="Tỷ số Giá / Giá trị sổ sách VCSH công ty mẹ tính từ giá thực tế chưa điều chỉnh."
-                label="Giải thích P/B Point-in-Time"
-              />
-            </span>
-            <span className="num text-[11px] text-ink-subtle">{cards.tradeDateLabel}</span>
-          </div>
-          <p className="num mt-1.5 text-[22px] font-semibold leading-7 text-ink">
-            {cards.pbLabel}
-          </p>
-          <p className="mt-1.5 border-t border-border/60 pt-1.5 text-[11px] leading-4 text-ink-muted">
-            {cards.pbSubtext}
-          </p>
-        </CardContent>
-      </Card>
+      <div className="p-3.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
+            <span>P/B (PIT)</span>
+            <InfoTooltip
+              text="Tỷ số Giá / Giá trị sổ sách VCSH công ty mẹ tính từ giá thực tế chưa điều chỉnh."
+              label="Giải thích P/B Point-in-Time"
+            />
+          </span>
+          <span className="num text-[11px] text-ink-subtle">{cards.tradeDateLabel}</span>
+        </div>
+        <p className="num mt-1 text-[20px] font-semibold leading-7 text-ink">
+          {cards.pbLabel}
+        </p>
+        <p className="mt-1 text-[11px] leading-4 text-ink-muted">
+          {cards.pbSubtext}
+        </p>
+      </div>
     </section>
   );
 }

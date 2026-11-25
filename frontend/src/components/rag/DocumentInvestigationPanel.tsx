@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { EmptyState, ErrorState } from "@/components/layout/StateBlocks";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge, Select, Skeleton } from "@/components/ui/primitives";
 import { useCompanyDocuments } from "@/hooks/use-finintel-queries";
 import { apiClient } from "@/lib/api-client";
@@ -375,19 +375,19 @@ export function DocumentInvestigationPanel({
   );
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        {/* LEFT COLUMN: Query & Cited Synthesis */}
-        <Card className="lg:col-span-6">
-          <CardHeader className="border-b border-border py-3">
+    <div className="overflow-hidden rounded-lg border border-border bg-surface">
+      <div className="grid grid-cols-1 divide-y divide-border lg:grid-cols-11 lg:divide-x lg:divide-y-0">
+        {/* LEFT PANE (55%): Query & Cited Synthesis */}
+        <section className="flex flex-col lg:col-span-6">
+          <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
             <div className="min-w-0">
-              <CardTitle className="flex items-center gap-2 text-[15px]">
+              <h2 className="flex items-center gap-2 text-[14px] font-semibold text-ink">
                 <FileSearch
                   className="size-4 shrink-0 text-accent-ink"
                   aria-hidden="true"
                 />
                 <span>Truy vấn &amp; Tổng hợp có trích dẫn</span>
-              </CardTitle>
+              </h2>
               <p className="mt-0.5 text-xs text-ink-muted">
                 Đối chiếu trực tiếp {totalDocuments} Báo cáo tài chính kiểm toán hợp nhất của {cleanTicker}
               </p>
@@ -395,9 +395,9 @@ export function DocumentInvestigationPanel({
             <Badge className="border border-border bg-surface-muted font-mono text-[11px] text-ink">
               {totalDocuments} PDF
             </Badge>
-          </CardHeader>
+          </div>
 
-          <CardContent className="space-y-4 p-4">
+          <div className="space-y-4 p-4">
             {/* Fiscal Year Filter */}
             <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
               <label
@@ -667,27 +667,27 @@ export function DocumentInvestigationPanel({
                 </p>
               </section>
             ) : null}
-          </CardContent>
-        </Card>
+          </div>
+        </section>
 
-        {/* RIGHT COLUMN: Original PDF Evidence — Verbatim Excerpt Viewer */}
-        <Card className="lg:col-span-6">
-          <CardHeader className="border-b border-border py-3">
+        {/* RIGHT PANE (45%): Original PDF Evidence — Verbatim Excerpt Viewer */}
+        <section className="flex flex-col bg-canvas/35 lg:col-span-5">
+          <div className="border-b border-border px-4 py-3">
             <div className="min-w-0">
-              <CardTitle className="flex items-center gap-2 text-[15px]">
+              <h2 className="flex items-center gap-2 text-[14px] font-semibold text-ink">
                 <FileText
                   className="size-4 shrink-0 text-accent-ink"
                   aria-hidden="true"
                 />
                 <span>Bằng chứng PDF Gốc — Nguyên văn đoạn trích</span>
-              </CardTitle>
+              </h2>
               <p className="mt-0.5 text-xs text-ink-muted">
-                Nhấp huy hiệu trích dẫn [1], [2] bên trái để đối chiếu nguyên văn và thông tin tờ khai
+                Nhấp huy hiệu [1], [2] bên trái để đối chiếu nguyên văn và tờ khai gốc
               </p>
             </div>
-          </CardHeader>
+          </div>
 
-          <CardContent className="space-y-3 p-4">
+          <div className="flex-1 space-y-3 p-4">
             {isInvestigating ? (
               <div className="space-y-3">
                 <Skeleton className="h-32 w-full" />
@@ -757,7 +757,7 @@ export function DocumentInvestigationPanel({
                 </p>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-surface">
                 {result.citations.map((cit, idx) => {
                   const isSelected = selectedCitationIndex === idx;
                   const sourceDoc = docByFilingId.get(cit.filing_id);
@@ -773,10 +773,10 @@ export function DocumentInvestigationPanel({
                       aria-current={isSelected ? "true" : undefined}
                       onClick={() => setSelectedCitationIndex(idx)}
                       className={cn(
-                        "cursor-pointer rounded-lg border p-3.5 transition-colors",
+                        "cursor-pointer p-3.5 transition-colors",
                         isSelected
-                          ? "border-accent-ink bg-accent-soft/40 ring-1 ring-accent-ink/30"
-                          : "border-border bg-canvas hover:border-border-strong",
+                          ? "bg-accent-soft/40"
+                          : "hover:bg-surface-hover/50",
                       )}
                     >
                       {/* Citation Header + Source URL */}
@@ -784,7 +784,7 @@ export function DocumentInvestigationPanel({
                         <div className="flex min-w-0 items-center gap-2">
                           <span
                             className={cn(
-                              "inline-flex shrink-0 items-center rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold",
+                              "inline-flex shrink-0 items-center rounded-sm px-1.5 py-0.5 font-mono text-[11px] font-semibold",
                               isSelected
                                 ? "bg-primary text-primary-foreground"
                                 : "bg-surface-muted text-ink",
@@ -792,9 +792,9 @@ export function DocumentInvestigationPanel({
                           >
                             [{idx + 1}]
                           </span>
-                          <h4 className="truncate text-xs font-semibold text-ink">
+                          <h3 className="truncate text-xs font-semibold text-ink">
                             {cit.document_title}
-                          </h4>
+                          </h3>
                         </div>
                         {safeUrl ? (
                           <a
@@ -802,7 +802,7 @@ export function DocumentInvestigationPanel({
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={(e) => e.stopPropagation()}
-                            className="inline-flex shrink-0 items-center gap-1 rounded border border-border bg-surface px-2 py-0.5 text-[11px] font-medium text-accent-ink hover:bg-accent-soft"
+                            className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-border bg-surface px-2 py-0.5 text-[11px] font-medium text-accent-ink hover:bg-accent-soft"
                           >
                             <span>Tài liệu nguồn</span>
                             <ExternalLink
@@ -813,30 +813,27 @@ export function DocumentInvestigationPanel({
                         ) : null}
                       </div>
 
-                      {/* Full Filing Metadata Badges */}
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-muted">
-                        <span className="rounded border border-border bg-surface px-2 py-0.5 font-medium text-ink">
-                          Năm {cit.fiscal_year}
-                        </span>
-                        <span className="rounded border border-border bg-surface px-2 py-0.5">
-                          {scopeLabel}
-                        </span>
-                        <span className="rounded border border-border bg-surface px-2 py-0.5 font-mono font-semibold text-accent-ink">
+                      {/* Single-line clean metadata strip (replaces 6 bordered pills) */}
+                      <p className="mt-1.5 text-[11px] leading-4 text-ink-muted">
+                        <span className="font-medium text-ink">FY{cit.fiscal_year}</span>
+                        {" · "}
+                        <span>{scopeLabel}</span>
+                        {" · "}
+                        <span className="font-mono font-semibold text-accent-ink">
                           Trang {cit.page_no}
                         </span>
-                        <span className="rounded border border-border bg-surface px-2 py-0.5">
-                          Mục: {cit.section_title}
+                        {" · "}
+                        <span>{cit.section_title}</span>
+                        {" · "}
+                        <span>ĐV: {cit.unit_scale}</span>
+                        {" · "}
+                        <span className="num">
+                          Khớp {formatSimilarityScore(cit.vector_similarity)}
                         </span>
-                        <span className="rounded border border-border bg-surface px-2 py-0.5">
-                          Đơn vị: {cit.unit_scale}
-                        </span>
-                        <span className="num rounded border border-border bg-surface px-2 py-0.5">
-                          Độ tương đồng: {formatSimilarityScore(cit.vector_similarity)}
-                        </span>
-                      </div>
+                      </p>
 
                       {/* Verbatim PDF Excerpt */}
-                      <blockquote className="mt-2.5 rounded border-l-2 border-accent-ink bg-surface px-3 py-2 text-xs leading-5 text-ink">
+                      <blockquote className="mt-2 border-l-2 border-accent-ink pl-3 text-xs leading-5 text-ink">
                         “{cit.verbatim_excerpt}”
                       </blockquote>
                     </article>
@@ -844,8 +841,8 @@ export function DocumentInvestigationPanel({
                 })}
               </div>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       </div>
     </div>
   );

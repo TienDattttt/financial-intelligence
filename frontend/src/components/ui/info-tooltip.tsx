@@ -33,7 +33,7 @@ export function InfoTooltip({
             <Tooltip.Popup
               role="tooltip"
               className={cn(
-                "max-w-64 rounded-[var(--radius-md)] border border-border bg-surface px-2.5 py-2 text-left text-xs font-normal leading-4 text-ink shadow-[0_4px_16px_rgba(15,23,42,0.12)] transition-opacity duration-150 data-[starting-style]:opacity-0 data-[ending-style]:opacity-0 motion-reduce:transition-none dark:shadow-[0_4px_16px_rgba(0,0,0,0.48)]",
+                "max-w-64 rounded-md border border-border-strong bg-surface px-2.5 py-2 text-left text-xs font-normal leading-4 text-ink shadow-popover transition-opacity duration-150 data-[starting-style]:opacity-0 data-[ending-style]:opacity-0 motion-reduce:transition-none",
               )}
             >
               {text}

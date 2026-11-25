@@ -6,7 +6,7 @@ import { Download, GitCompare, Plus, Trash2, Upload } from "lucide-react";
 import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/primitives";
 import { useAllIssuers, useMarketChanges } from "@/hooks/use-finintel-queries";
@@ -119,11 +119,12 @@ export default function WatchlistPage() {
 
         <div className="flex flex-wrap items-center gap-2">
           {compareTickers.length >= 2 ? (
-            <Link href={`/compare?tickers=${compareTickers.join(",")}`}>
-              <Button size="sm">
-                <GitCompare className="size-3.5" />
-                So sánh ({compareTickers.length} mã đầu)
-              </Button>
+            <Link
+              href={`/compare?tickers=${compareTickers.join(",")}`}
+              className={buttonVariants({ variant: "default", size: "sm" })}
+            >
+              <GitCompare className="size-3.5" />
+              So sánh ({compareTickers.length} mã đầu)
             </Link>
           ) : null}
           <Button variant="outline" size="sm" onClick={handleExport} disabled={watchlist.length === 0}>
@@ -206,10 +207,11 @@ export default function WatchlistPage() {
           title="Danh sách theo dõi đang trống"
           description="Thêm mã cổ phiếu bằng ô tìm kiếm bên trên hoặc nhấn nút Theo dõi trên hồ sơ từng doanh nghiệp."
           action={
-            <Link href="/screener">
-              <Button variant="outline" size="sm">
-                Đi tới bảng sàng lọc →
-              </Button>
+            <Link
+              href="/screener"
+              className={buttonVariants({ variant: "outline", size: "sm" })}
+            >
+              Đi tới bảng sàng lọc →
             </Link>
           }
         />
@@ -331,7 +333,7 @@ export default function WatchlistPage() {
                           {formatPeriodLabel(row.curr_period_end_date, periodType)}
                         </td>
                         <td className="px-3 py-2">
-                          <div className="flex flex-wrap items-center gap-1">
+                          <div className="flex items-center gap-2 whitespace-nowrap">
                             {prevTier.tier ? (
                               <span className="font-mono text-[11px] text-ink-muted">
                                 {prevTier.badgeText} →

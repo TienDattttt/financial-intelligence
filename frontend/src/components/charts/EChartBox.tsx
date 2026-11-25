@@ -215,19 +215,23 @@ export function EChartBox({
       <CardContent className="p-3 sm:p-4">
         {isEmpty ? (
           <div
+            key="empty"
             className="flex items-center justify-center rounded-lg border border-dashed border-border bg-canvas/50 px-4 text-center text-xs text-ink-muted"
             style={{ height }}
           >
             {emptyMessage}
           </div>
         ) : showTable ? (
-          <div className="max-h-[340px] overflow-auto rounded-lg border border-border">
+          <div
+            key="table"
+            className="max-h-[340px] overflow-auto rounded-lg border border-border"
+          >
             <table className="w-full border-collapse text-xs">
               <thead>
                 <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                   {tableHeaders.map((hdr, idx) => (
                     <th
-                      key={hdr}
+                      key={`${hdr}-${idx}`}
                       scope="col"
                       className={cn(
                         "sticky top-0 bg-surface-muted px-2.5 py-2 font-semibold",
@@ -265,6 +269,7 @@ export function EChartBox({
           </div>
         ) : (
           <div
+            key="chart"
             ref={containerRef}
             className="w-full"
             style={{ height }}

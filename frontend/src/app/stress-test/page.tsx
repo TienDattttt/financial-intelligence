@@ -22,7 +22,7 @@ import { StressSectorBarChart } from "@/components/charts/StressSectorBarChart";
 import { RiskBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/primitives";
 import { useAllIssuers } from "@/hooks/use-finintel-queries";
@@ -77,6 +77,10 @@ function DualShockControl({
   value: number;
   onChange: (next: number) => void;
 }) {
+  const span = max - min;
+  const hasZeroInside = min < 0 && max > 0 && span > 0;
+  const zeroPct = hasZeroInside ? ((0 - min) / span) * 100 : null;
+
   return (
     <div className="space-y-1.5 border-b border-border/60 pb-2.5 last:border-b-0 last:pb-0">
       <div className="flex items-center justify-between gap-2 text-xs">
@@ -97,20 +101,38 @@ function DualShockControl({
           <span className="w-8 text-[11px] text-ink-muted">{unit}</span>
         </div>
       </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        aria-label={`${label} thanh trượt`}
-        onChange={(e) => onChange(clampShockValue(e.target.value, min, max, 0))}
-        className="w-full accent-accent-ink"
-      />
-      <div className="num flex justify-between text-[10px] text-ink-subtle">
-        <span>{min}</span>
-        <span>0</span>
-        <span>+{max}</span>
+      <div className="relative pt-0.5">
+        {zeroPct !== null ? (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute top-0 h-2.5 w-px bg-border-strong"
+            style={{ left: `${zeroPct}%` }}
+          />
+        ) : null}
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          aria-label={`${label} thanh trượt`}
+          onChange={(e) => onChange(clampShockValue(e.target.value, min, max, 0))}
+          className="relative z-10 w-full accent-accent-ink"
+        />
+      </div>
+      <div className="num relative h-3.5 text-[10px] text-ink-subtle">
+        <span className="absolute left-0 top-0">{min}</span>
+        {zeroPct !== null ? (
+          <span
+            className="absolute top-0 -translate-x-1/2 font-medium text-ink-muted"
+            style={{ left: `${zeroPct}%` }}
+          >
+            0
+          </span>
+        ) : null}
+        <span className="absolute right-0 top-0">
+          {max > 0 ? `+${max}` : max}
+        </span>
       </div>
     </div>
   );
@@ -532,7 +554,7 @@ function StressTestContent() {
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded px-2.5 py-1 font-medium transition-colors duration-150",
                     scope === "MARKET"
-                      ? "bg-accent-ink text-white"
+                      ? "bg-primary text-primary-foreground"
                       : "text-ink-muted hover:text-ink",
                   )}
                 >
@@ -550,7 +572,7 @@ function StressTestContent() {
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded px-2.5 py-1 font-medium transition-colors duration-150",
                     scope === "COMPANY"
-                      ? "bg-accent-ink text-white"
+                      ? "bg-primary text-primary-foreground"
                       : "text-ink-muted hover:text-ink",
                   )}
                 >
@@ -568,7 +590,7 @@ function StressTestContent() {
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded px-2.5 py-1 font-medium transition-colors duration-150",
                     scope === "WATCHLIST"
-                      ? "bg-accent-ink text-white"
+                      ? "bg-primary text-primary-foreground"
                       : "text-ink-muted hover:text-ink",
                   )}
                 >
@@ -697,10 +719,11 @@ function StressTestContent() {
                     Dùng Watchlist cá nhân ({localWatchlist.length} mã)
                   </Button>
                 ) : null}
-                <Link href="/watchlist">
-                  <Button type="button" variant="ghost" size="xs">
-                    Quản lý Watchlist →
-                  </Button>
+                <Link
+                  href="/watchlist"
+                  className={buttonVariants({ variant: "ghost", size: "xs" })}
+                >
+                  Quản lý Watchlist →
                 </Link>
               </div>
             </div>
@@ -916,15 +939,17 @@ function StressTestContent() {
                 description="Thêm doanh nghiệp vào Danh sách theo dõi để mô phỏng tổng dư nợ chịu rủi ro của cả danh mục."
                 action={
                   <div className="flex flex-wrap items-center justify-center gap-2">
-                    <Link href="/watchlist">
-                      <Button variant="outline" size="sm">
-                        Mở Danh sách theo dõi →
-                      </Button>
+                    <Link
+                      href="/watchlist"
+                      className={buttonVariants({ variant: "outline", size: "sm" })}
+                    >
+                      Mở Danh sách theo dõi →
                     </Link>
-                    <Link href="/screener">
-                      <Button variant="ghost" size="sm">
-                        Đi tới Bảng sàng lọc
-                      </Button>
+                    <Link
+                      href="/screener"
+                      className={buttonVariants({ variant: "ghost", size: "sm" })}
+                    >
+                      Đi tới Bảng sàng lọc
                     </Link>
                   </div>
                 }
@@ -951,113 +976,101 @@ function StressTestContent() {
 
               {activeErrorMsg ? <ErrorState message={activeErrorMsg} /> : null}
 
-              {/* Top KPI Cards */}
+              {/* Top KPI Strip */}
               {scope === "WATCHLIST" && portfolioMetrics ? (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <Card>
-                    <CardContent className="p-3.5">
-                      <p className="text-xs font-medium text-ink-muted">
-                        Tổng nợ chịu rủi ro danh mục (ICR &lt; 1)
-                      </p>
-                      <p className="num mt-1 text-2xl font-semibold text-risk-high">
-                        {formatVndBillions(portfolioMetrics.stressedDebtAtRiskVnd, {
-                          decimals: 1,
-                        })}{" "}
-                        tỷ
-                      </p>
-                      <p className="num mt-1 text-[11px] text-ink-muted">
-                        Tỷ trọng: {formatPercent(portfolioMetrics.stressedDebtAtRiskPct)} (cơ sở{" "}
-                        {formatPercent(portfolioMetrics.baselineDebtAtRiskPct)} ·{" "}
-                        {formatPercentPoints(portfolioMetrics.deltaDebtAtRiskPct, 1)})
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-3.5">
-                      <p className="text-xs font-medium text-ink-muted">
-                        DN mới khó khăn trong danh mục
-                      </p>
-                      <p className="num mt-1 text-2xl font-semibold text-ink">
-                        {formatNumber(portfolioMetrics.newlyDistressedCount, 0)}
-                      </p>
-                      <p className="num mt-1 text-[11px] text-ink-muted">
-                        Đã đánh giá {formatNumber(portfolioMetrics.evaluatedCount, 0)} /{" "}
-                        {formatNumber(portfolioMetrics.requestedCount, 0)} mã
-                        {portfolioMetrics.missingCount > 0
-                          ? ` (${portfolioMetrics.missingCount} mã thiếu DL kỳ này)`
-                          : ""}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-3.5">
-                      <p className="text-xs font-medium text-ink-muted">
-                        Tổng dư nợ vay danh mục
-                      </p>
-                      <p className="num mt-1 text-2xl font-semibold text-ink">
-                        {formatVndBillions(portfolioMetrics.totalDebtVnd, {
-                          decimals: 0,
-                        })}{" "}
-                        tỷ
-                      </p>
-                      <p className="num mt-1 text-[11px] text-ink-muted">
-                        Tăng thêm nợ rủi ro:{" "}
-                        {formatSignedBillionsDelta(portfolioMetrics.deltaDebtAtRiskVnd)}
-                      </p>
-                    </CardContent>
-                  </Card>
+                <div className="grid grid-cols-1 divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+                  <div className="p-3.5">
+                    <p className="text-xs font-medium text-ink-muted">
+                      Tổng nợ chịu rủi ro danh mục (ICR &lt; 1)
+                    </p>
+                    <p className="num mt-1 text-2xl font-semibold text-risk-high">
+                      {formatVndBillions(portfolioMetrics.stressedDebtAtRiskVnd, {
+                        decimals: 1,
+                      })}{" "}
+                      tỷ
+                    </p>
+                    <p className="num mt-1 text-[11px] text-ink-muted">
+                      Tỷ trọng: {formatPercent(portfolioMetrics.stressedDebtAtRiskPct)} (cơ sở{" "}
+                      {formatPercent(portfolioMetrics.baselineDebtAtRiskPct)} ·{" "}
+                      {formatPercentPoints(portfolioMetrics.deltaDebtAtRiskPct, 1)})
+                    </p>
+                  </div>
+                  <div className="p-3.5">
+                    <p className="text-xs font-medium text-ink-muted">
+                      DN mới khó khăn trong danh mục
+                    </p>
+                    <p className="num mt-1 text-2xl font-semibold text-ink">
+                      {formatNumber(portfolioMetrics.newlyDistressedCount, 0)}
+                    </p>
+                    <p className="num mt-1 text-[11px] text-ink-muted">
+                      Đã đánh giá {formatNumber(portfolioMetrics.evaluatedCount, 0)} /{" "}
+                      {formatNumber(portfolioMetrics.requestedCount, 0)} mã
+                      {portfolioMetrics.missingCount > 0
+                        ? ` (${portfolioMetrics.missingCount} mã thiếu DL kỳ này)`
+                        : ""}
+                    </p>
+                  </div>
+                  <div className="p-3.5">
+                    <p className="text-xs font-medium text-ink-muted">
+                      Tổng dư nợ vay danh mục (tỷ đồng)
+                    </p>
+                    <p className="num mt-1 text-2xl font-semibold text-ink">
+                      {formatVndBillions(portfolioMetrics.totalDebtVnd, {
+                        decimals: 0,
+                      })}{" "}
+                      tỷ
+                    </p>
+                    <p className="num mt-1 text-[11px] text-ink-muted">
+                      Tăng thêm nợ rủi ro:{" "}
+                      {formatSignedBillionsDelta(portfolioMetrics.deltaDebtAtRiskVnd)}
+                    </p>
+                  </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <Card>
-                    <CardContent className="p-3.5">
-                      <p className="text-xs font-medium text-ink-muted">
-                        Tỷ trọng nợ rủi ro (ICR &lt; 1)
-                      </p>
-                      <p className="num mt-1 text-2xl font-semibold text-risk-high">
-                        {formatPercent(activeResult.stressed_debt_at_risk_pct)}
-                      </p>
-                      <p className="num mt-1 text-[11px] text-ink-muted">
-                        Cơ sở: {formatPercent(activeResult.baseline_debt_at_risk_pct)} · Thay đổi{" "}
-                        {formatPercentPoints(
-                          activeResult.stressed_debt_at_risk_pct -
-                            activeResult.baseline_debt_at_risk_pct,
-                          1,
-                        )}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-3.5">
-                      <p className="text-xs font-medium text-ink-muted">
-                        DN mới gặp khó khăn trả lãi
-                      </p>
-                      <p className="num mt-1 text-2xl font-semibold text-ink">
-                        {formatNumber(activeResult.newly_distressed_count, 0)}
-                      </p>
-                      <p className="num mt-1 text-[11px] text-ink-muted">
-                        Trên tổng {formatNumber(activeResult.total_issuers_evaluated, 0)} DN được đánh giá
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-3.5">
-                      <p className="text-xs font-medium text-ink-muted">
-                        Tổng dư nợ vay đánh giá
-                      </p>
-                      <p className="num mt-1 text-2xl font-semibold text-ink">
-                        {formatVndBillions(activeResult.total_debt_sum, { decimals: 0 })}
-                      </p>
-                      <p className="num mt-1 text-[11px] text-ink-muted">
-                        Nợ rủi ro sau sốc:{" "}
-                        {formatVndBillions(
-                          activeResult.total_debt_sum * activeResult.stressed_debt_at_risk_pct,
-                          { decimals: 0 },
-                        )}{" "}
-                        tỷ đồng
-                      </p>
-                    </CardContent>
-                  </Card>
+                <div className="grid grid-cols-1 divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+                  <div className="p-3.5">
+                    <p className="text-xs font-medium text-ink-muted">
+                      Tỷ trọng nợ rủi ro (ICR &lt; 1)
+                    </p>
+                    <p className="num mt-1 text-2xl font-semibold text-risk-high">
+                      {formatPercent(activeResult.stressed_debt_at_risk_pct)}
+                    </p>
+                    <p className="num mt-1 text-[11px] text-ink-muted">
+                      Cơ sở: {formatPercent(activeResult.baseline_debt_at_risk_pct)} · Thay đổi{" "}
+                      {formatPercentPoints(
+                        activeResult.stressed_debt_at_risk_pct -
+                          activeResult.baseline_debt_at_risk_pct,
+                        1,
+                      )}
+                    </p>
+                  </div>
+                  <div className="p-3.5">
+                    <p className="text-xs font-medium text-ink-muted">
+                      DN mới gặp khó khăn trả lãi
+                    </p>
+                    <p className="num mt-1 text-2xl font-semibold text-ink">
+                      {formatNumber(activeResult.newly_distressed_count, 0)}
+                    </p>
+                    <p className="num mt-1 text-[11px] text-ink-muted">
+                      Trên tổng {formatNumber(activeResult.total_issuers_evaluated, 0)} DN được đánh giá
+                    </p>
+                  </div>
+                  <div className="p-3.5">
+                    <p className="text-xs font-medium text-ink-muted">
+                      Tổng dư nợ vay đánh giá (tỷ đồng)
+                    </p>
+                    <p className="num mt-1 text-2xl font-semibold text-ink">
+                      {formatVndBillions(activeResult.total_debt_sum, { decimals: 0 })} tỷ
+                    </p>
+                    <p className="num mt-1 text-[11px] text-ink-muted">
+                      Nợ rủi ro sau sốc:{" "}
+                      {formatVndBillions(
+                        activeResult.total_debt_sum * activeResult.stressed_debt_at_risk_pct,
+                        { decimals: 0 },
+                      )}{" "}
+                      tỷ đồng
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -1091,10 +1104,11 @@ function StressTestContent() {
                               : "Đủ khả năng trả lãi (ICR ≥ 1)"
                         }
                       />
-                      <Link href={`/companies/${singleCompanyRow.ticker}`}>
-                        <Button variant="outline" size="xs">
-                          Xem hồ sơ DN →
-                        </Button>
+                      <Link
+                        href={`/companies/${singleCompanyRow.ticker}`}
+                        className={buttonVariants({ variant: "outline", size: "xs" })}
+                      >
+                        Xem hồ sơ DN →
                       </Link>
                     </div>
                   </CardHeader>
@@ -1285,7 +1299,7 @@ function StressTestContent() {
                         className={cn(
                           "rounded px-2.5 py-1 font-medium",
                           compareTab === "ISSUERS"
-                            ? "bg-accent-ink text-white"
+                            ? "bg-primary text-primary-foreground"
                             : "text-ink-muted hover:text-ink",
                         )}
                       >
@@ -1298,7 +1312,7 @@ function StressTestContent() {
                         className={cn(
                           "rounded px-2.5 py-1 font-medium",
                           compareTab === "SECTORS"
-                            ? "bg-accent-ink text-white"
+                            ? "bg-primary text-primary-foreground"
                             : "text-ink-muted hover:text-ink",
                         )}
                       >
@@ -1512,7 +1526,7 @@ function StressTestContent() {
                       className={cn(
                         "rounded px-2.5 py-1 font-medium",
                         activeTab === "NEWLY"
-                          ? "bg-accent-ink text-white"
+                          ? "bg-primary text-primary-foreground"
                           : "text-ink-muted hover:text-ink",
                       )}
                     >
@@ -1524,7 +1538,7 @@ function StressTestContent() {
                       className={cn(
                         "rounded px-2.5 py-1 font-medium",
                         activeTab === "TOP"
-                          ? "bg-accent-ink text-white"
+                          ? "bg-primary text-primary-foreground"
                           : "text-ink-muted hover:text-ink",
                       )}
                     >

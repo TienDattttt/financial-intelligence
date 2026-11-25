@@ -176,7 +176,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     // 2. Live Company Profile (/companies/FPT) renders real KPIs and 2 separate single-axis charts in Model tab
     await page.goto("/companies/FPT", { waitUntil: "networkidle" });
     await expect(page.getByText("FPT", { exact: false }).first()).toBeVisible();
-    await page.getByRole("button", { name: "Mô hình & SHAP" }).click();
+    await page.getByRole("tab", { name: "Mô hình & SHAP" }).click();
     await expect(
       page.getByText("Diễn biến lịch sử điểm Altman Z″ (EM)"),
     ).toBeVisible();
@@ -465,7 +465,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     await expect(drawer).toBeHidden();
 
     // 6. Ratios & Peers tab: Health Radar + Sector Box Plot
-    await page.getByRole("button", { name: "Tỷ số & Ngành" }).click();
+    await page.getByRole("tab", { name: "Tỷ số & Ngành" }).click();
     await expect(
       page.getByText(/Thang điểm 0–100 chuẩn hóa theo phân vị cùng ngành/i),
     ).toBeVisible();
@@ -474,7 +474,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     ).toBeVisible();
 
     // 7. Financial Statements tab: Hierarchical FinancialTable
-    await page.getByRole("button", { name: "Báo cáo tài chính" }).click();
+    await page.getByRole("tab", { name: "Báo cáo tài chính" }).click();
     await expect(page.locator("table").first()).toBeVisible();
     await expect(page.locator("tbody tr").nth(5)).toBeVisible({ timeout: 10_000 });
   });
@@ -628,13 +628,13 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
 
     await page.goto("/companies/HBC", { waitUntil: "networkidle" });
     await expect(page.getByText("HBC", { exact: false }).first()).toBeVisible();
-    const docTabBtn = page.getByRole("button", {
+    const docTabBtn = page.getByRole("tab", {
       name: "Điều tra Thuyết minh (PDF)",
     });
     await expect(docTabBtn).toBeVisible();
 
     // Navigate to Quality & Red Flags tab and test jump button on RF_03/RF_07/RF_09 when active
-    await page.getByRole("button", { name: "Chất lượng LN & Cờ đỏ" }).click();
+    await page.getByRole("tab", { name: "Chất lượng LN & Cờ đỏ" }).click();
     const listPromise = page.waitForResponse((res) =>
       res.url().includes("/api/v2/documents/HBC/list"),
     );

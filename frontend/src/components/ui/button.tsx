@@ -6,19 +6,21 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-colors duration-150 outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-md border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-colors duration-150 outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg disabled:border-border [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-[#173D60]",
+        default:
+          "bg-primary text-primary-foreground hover:bg-primary-hover",
         outline:
-          "border-border bg-surface text-foreground hover:bg-surface-muted aria-expanded:bg-surface-muted",
+          "border-border bg-surface text-foreground hover:bg-surface-hover aria-expanded:bg-surface-hover",
         secondary:
-          "bg-surface-muted text-foreground hover:bg-[#E5E2DB] aria-expanded:bg-surface-muted",
-        ghost: "text-foreground hover:bg-surface-muted aria-expanded:bg-surface-muted",
+          "bg-surface-muted text-foreground hover:bg-surface-hover aria-expanded:bg-surface-hover",
+        ghost:
+          "text-foreground hover:bg-surface-hover aria-expanded:bg-surface-hover disabled:bg-transparent disabled:border-transparent",
         destructive:
-          "bg-risk-high-soft text-risk-high border-risk-high/20 hover:bg-[#EED0CD]",
-        link: "text-primary underline-offset-4 hover:underline",
+          "bg-risk-high-soft text-risk-high border-risk-high/25 hover:bg-risk-high/15",
+        link: "text-accent-ink underline-offset-4 hover:underline disabled:bg-transparent disabled:border-transparent",
       },
       size: {
         default: "h-8 gap-1.5 px-3",

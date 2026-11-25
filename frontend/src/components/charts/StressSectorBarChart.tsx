@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
-import { useChartTheme } from "@/lib/echarts-theme";
+import { formatChartNumber, useChartTheme } from "@/lib/echarts-theme";
 import {
   formatNumber,
   formatPercent,
@@ -129,7 +129,7 @@ export function StressSectorBarChart({
     });
 
     return {
-      grid: { left: 190, right: 32, top: 38, bottom: 28 },
+      grid: { left: 220, right: 32, top: 38, bottom: 28 },
       legend: {
         top: 2,
         right: 8,
@@ -164,13 +164,23 @@ export function StressSectorBarChart({
       xAxis: {
         type: "value",
         max: 100,
-        axisLabel: { formatter: "{value}%" },
+        axisLabel: {
+          formatter: (v: number) =>
+            `${formatChartNumber(v, 1, { trimTrailingZeros: true })}%`,
+        },
       },
       yAxis: {
         type: "category",
         inverse: true,
         data: labels,
-        axisLabel: { color: palette.ink, fontSize: 11, width: 175, overflow: "truncate" },
+        axisLabel: {
+          color: palette.ink,
+          fontSize: 11,
+          width: 205,
+          overflow: "break",
+          lineHeight: 14,
+          interval: 0,
+        },
       },
       series: [
         {
@@ -202,7 +212,7 @@ export function StressSectorBarChart({
     seriesBLabel,
   ]);
 
-  const height = Math.min(560, Math.max(280, mergedRows.length * 30 + 68));
+  const height = Math.min(620, Math.max(300, mergedRows.length * 36 + 68));
 
   const topRow = mergedRows[0];
   const chartTitle = isCompareMode

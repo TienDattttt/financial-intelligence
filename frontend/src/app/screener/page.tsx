@@ -125,7 +125,7 @@ function SortableHeader({
       type="button"
       onClick={() => onSort(field)}
       className={cn(
-        "inline-flex w-full items-center gap-1 font-semibold hover:text-ink",
+        "inline-flex w-full items-center gap-0.5 font-semibold hover:text-ink",
         align === "right" ? "justify-end" : "justify-start",
         isActive ? "text-accent-ink" : "text-ink-muted",
       )}
@@ -177,6 +177,7 @@ function ScreenerContent() {
   const [viewMode, setViewMode] = React.useState<"TABLE" | "SCATTER">("TABLE");
   const [selectedTickers, setSelectedTickers] = React.useState<string[]>([]);
   const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = React.useState(false);
 
   // Full CSV export state
   const [isExporting, setIsExporting] = React.useState(false);
@@ -487,7 +488,7 @@ function ScreenerContent() {
             ? ALTMAN_ZONE_META[row.original.altman_zone]
             : null;
           return (
-            <div className="flex flex-col items-end gap-0.5">
+            <div className="flex flex-col items-end gap-0.5 whitespace-nowrap">
               <span className="num font-medium">{formatNumber(z, 2)}</span>
               {zone ? <RiskBadge tone={zone.tone} label={zone.shortLabel} /> : null}
             </div>
@@ -545,7 +546,7 @@ function ScreenerContent() {
             ? BENEISH_FLAG_META[row.original.beneish_flag]
             : null;
           return (
-            <div className="flex flex-col items-end gap-0.5">
+            <div className="flex flex-col items-end gap-0.5 whitespace-nowrap">
               <span className="num">{formatNumber(m, 2)}</span>
               {flag && row.original.beneish_flag !== "VALID" ? (
                 <RiskBadge tone={flag.tone} label={flag.shortLabel} />
@@ -781,7 +782,7 @@ function ScreenerContent() {
           const checked = selectedTickers.includes(item.ticker);
           const watched = watchlistSet.has(item.ticker);
           return (
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1">
               <input
                 type="checkbox"
                 checked={checked}
@@ -823,7 +824,7 @@ function ScreenerContent() {
         meta: { align: "left" } satisfies ScreenerColumnMeta,
         header: "Doanh nghiệp / Ngành",
         cell: ({ row }) => (
-          <div className="max-w-[200px]">
+          <div className="max-w-[160px]">
             <div
               className="truncate font-medium text-ink"
               title={row.original.company_name_vn ?? ""}
@@ -1224,15 +1225,15 @@ function ScreenerContent() {
         ) : null}
       </div>
 
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-        {/* Left Filter Rail (Desktop) / Collapsible Drawer (Mobile < lg) */}
+      <div className="space-y-3">
+        {/* Horizontal Filter Toolbar (Desktop >= lg) / Collapsible Drawer (Mobile < lg) */}
         <div
           id="screener-filter-drawer"
           role={mobileFiltersOpen ? "dialog" : undefined}
           aria-modal={mobileFiltersOpen ? true : undefined}
           aria-label={mobileFiltersOpen ? "Bộ lọc doanh nghiệp" : undefined}
           className={cn(
-            "lg:block lg:w-64 lg:shrink-0",
+            "lg:block",
             mobileFiltersOpen
               ? "fixed inset-0 z-40 flex bg-ink/30 lg:static lg:inset-auto lg:z-auto lg:bg-transparent"
               : "hidden",
@@ -1257,187 +1258,218 @@ function ScreenerContent() {
                 <X className="size-4" />
               </Button>
             </div>
-            <CardContent className="space-y-3 p-3.5 text-xs">
-              <div className="space-y-1">
-                <label htmlFor="scr-q" className="font-semibold text-ink">
-                  Tìm mã / tên doanh nghiệp
-                </label>
-                <Input
-                  id="scr-q"
-                  value={qDraft}
-                  onChange={(e) => setQDraft(e.target.value)}
-                  placeholder="VD: HPG, thép..."
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label htmlFor="scr-sector" className="font-semibold text-ink">
-                  Ngành ICB cấp 2
-                </label>
-                <Combobox
-                  id="scr-sector"
-                  options={sectorOptions}
-                  value={sectorParam}
-                  onValueChange={(next) =>
-                    updateParams({ icb_code_level2: next || null })
-                  }
-                  placeholder="Tất cả các ngành"
-                  searchPlaceholder="Tìm ngành (VD: thep, dien)..."
-                  ariaLabel="Ngành ICB cấp 2"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label htmlFor="scr-risk-tier" className="font-semibold text-ink">
-                  Bậc tín nhiệm (R1–R5)
-                </label>
-                <Combobox
-                  id="scr-risk-tier"
-                  options={riskTierOptions}
-                  value={riskTierParam}
-                  onValueChange={(next) =>
-                    updateParams({ risk_tier: next || null })
-                  }
-                  placeholder="Tất cả bậc R1–R5"
-                  searchPlaceholder="Chọn bậc R1–R5..."
-                  ariaLabel="Bậc tín nhiệm (R1–R5)"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label htmlFor="scr-altman" className="font-semibold text-ink">
-                  Phân vùng Altman Z″
-                </label>
-                <Combobox
-                  id="scr-altman"
-                  options={altmanOptions}
-                  value={altmanParam}
-                  onValueChange={(next) =>
-                    updateParams({ altman_zone: next || null })
-                  }
-                  placeholder="Tất cả"
-                  searchPlaceholder="Tìm phân vùng Altman..."
-                  ariaLabel="Phân vùng Altman Z″"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label htmlFor="scr-beneish" className="font-semibold text-ink">
-                  Beneish M-Score
-                </label>
-                <Combobox
-                  id="scr-beneish"
-                  options={beneishOptions}
-                  value={beneishParam}
-                  onValueChange={(next) =>
-                    updateParams({ beneish_flag: next || null })
-                  }
-                  placeholder="Tất cả"
-                  searchPlaceholder="Tìm trạng thái Beneish..."
-                  ariaLabel="Beneish M-Score"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label htmlFor="scr-fscore" className="font-semibold text-ink">
-                  Piotroski F-Score tối thiểu
-                </label>
-                <Combobox
-                  id="scr-fscore"
-                  options={fScoreOptions}
-                  value={minFParam}
-                  onValueChange={(next) =>
-                    updateParams({ min_f_score: next || null })
-                  }
-                  placeholder="Không giới hạn"
-                  searchPlaceholder="Chọn ngưỡng F-Score..."
-                  ariaLabel="Piotroski F-Score tối thiểu"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <label htmlFor="scr-prob-min" className="font-semibold text-ink">
-                    1Y PD từ (%)
+            <CardContent className="space-y-3 p-3 text-xs">
+              {/* Primary Horizontal Filter Row on Desktop */}
+              <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-12 lg:items-end">
+                <div className="space-y-1 lg:col-span-3">
+                  <label htmlFor="scr-q" className="block text-[11px] font-semibold text-ink-muted">
+                    Tìm mã / tên doanh nghiệp
                   </label>
                   <Input
-                    id="scr-prob-min"
-                    type="number"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={toPctDisplay(minProbParam)}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (!v) return updateParams({ min_distress_prob: null });
-                      const n = Number(v);
-                      if (Number.isFinite(n)) {
-                        const dec = Math.max(0, Math.min(1, n / 100));
-                        updateParams({ min_distress_prob: dec.toFixed(3) });
-                      }
-                    }}
-                    placeholder="0"
+                    id="scr-q"
+                    value={qDraft}
+                    onChange={(e) => setQDraft(e.target.value)}
+                    placeholder="VD: HPG, thép..."
                   />
                 </div>
-                <div className="space-y-1">
-                  <label htmlFor="scr-prob-max" className="font-semibold text-ink">
-                    Đến (%)
-                  </label>
-                  <Input
-                    id="scr-prob-max"
-                    type="number"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={toPctDisplay(maxProbParam)}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (!v) return updateParams({ max_distress_prob: null });
-                      const n = Number(v);
-                      if (Number.isFinite(n)) {
-                        const dec = Math.max(0, Math.min(1, n / 100));
-                        updateParams({ max_distress_prob: dec.toFixed(3) });
-                      }
-                    }}
-                    placeholder="100"
-                  />
-                </div>
-              </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <label htmlFor="scr-rf-min" className="font-semibold text-ink">
-                    Cờ đỏ từ
+                <div className="space-y-1 lg:col-span-3">
+                  <label htmlFor="scr-sector" className="block text-[11px] font-semibold text-ink-muted">
+                    Ngành ICB cấp 2
                   </label>
-                  <Input
-                    id="scr-rf-min"
-                    type="number"
-                    min={0}
-                    max={9}
-                    value={minRfParam}
-                    onChange={(e) =>
-                      updateParams({ min_red_flags: e.target.value || null })
+                  <Combobox
+                    id="scr-sector"
+                    options={sectorOptions}
+                    value={sectorParam}
+                    onValueChange={(next) =>
+                      updateParams({ icb_code_level2: next || null })
                     }
-                    placeholder="0"
+                    placeholder="Tất cả các ngành"
+                    searchPlaceholder="Tìm ngành (VD: thep, dien)..."
+                    ariaLabel="Ngành ICB cấp 2"
                   />
                 </div>
-                <div className="space-y-1">
-                  <label htmlFor="scr-rf-max" className="font-semibold text-ink">
-                    Đến
+
+                <div className="space-y-1 lg:col-span-2">
+                  <label htmlFor="scr-risk-tier" className="block text-[11px] font-semibold text-ink-muted">
+                    Bậc tín nhiệm (R1–R5)
                   </label>
-                  <Input
-                    id="scr-rf-max"
-                    type="number"
-                    min={0}
-                    max={9}
-                    value={maxRfParam}
-                    onChange={(e) =>
-                      updateParams({ max_red_flags: e.target.value || null })
+                  <Combobox
+                    id="scr-risk-tier"
+                    options={riskTierOptions}
+                    value={riskTierParam}
+                    onValueChange={(next) =>
+                      updateParams({ risk_tier: next || null })
                     }
-                    placeholder="9"
+                    placeholder="Tất cả bậc R1–R5"
+                    searchPlaceholder="Chọn bậc R1–R5..."
+                    ariaLabel="Bậc tín nhiệm (R1–R5)"
                   />
+                </div>
+
+                <div className="space-y-1 lg:col-span-2">
+                  <label htmlFor="scr-altman" className="block text-[11px] font-semibold text-ink-muted">
+                    Phân vùng Altman Z″
+                  </label>
+                  <Combobox
+                    id="scr-altman"
+                    options={altmanOptions}
+                    value={altmanParam}
+                    onValueChange={(next) =>
+                      updateParams({ altman_zone: next || null })
+                    }
+                    placeholder="Tất cả"
+                    searchPlaceholder="Tìm phân vùng Altman..."
+                    ariaLabel="Phân vùng Altman Z″"
+                  />
+                </div>
+
+                <div className="hidden lg:col-span-2 lg:flex lg:justify-end">
+                  <Button
+                    type="button"
+                    variant={advancedFiltersOpen ? "secondary" : "outline"}
+                    size="default"
+                    className="w-full"
+                    aria-expanded={advancedFiltersOpen}
+                    onClick={() => setAdvancedFiltersOpen((v) => !v)}
+                  >
+                    <SlidersHorizontal className="size-3.5" />
+                    <span>Bộ lọc nâng cao</span>
+                    {[beneishParam, minFParam, minProbParam, maxProbParam, minRfParam, maxRfParam].filter(Boolean).length > 0 ? (
+                      <span className="num rounded-sm bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold text-accent-ink">
+                        {[beneishParam, minFParam, minProbParam, maxProbParam, minRfParam, maxRfParam].filter(Boolean).length}
+                      </span>
+                    ) : null}
+                  </Button>
                 </div>
               </div>
+
+              {/* Advanced Filters Row (always visible inside mobile drawer; toggleable on desktop) */}
+              <div
+                className={cn(
+                  "grid grid-cols-1 gap-2.5 border-t border-border/70 pt-2.5 lg:grid-cols-12 lg:items-end",
+                  !advancedFiltersOpen && "lg:hidden",
+                )}
+              >
+                <div className="space-y-1 lg:col-span-3">
+                  <label htmlFor="scr-beneish" className="block text-[11px] font-semibold text-ink-muted">
+                    Beneish M-Score
+                  </label>
+                  <Combobox
+                    id="scr-beneish"
+                    options={beneishOptions}
+                    value={beneishParam}
+                    onValueChange={(next) =>
+                      updateParams({ beneish_flag: next || null })
+                    }
+                    placeholder="Tất cả"
+                    searchPlaceholder="Tìm trạng thái Beneish..."
+                    ariaLabel="Beneish M-Score"
+                  />
+                </div>
+
+                <div className="space-y-1 lg:col-span-3">
+                  <label htmlFor="scr-fscore" className="block text-[11px] font-semibold text-ink-muted">
+                    Piotroski F-Score tối thiểu
+                  </label>
+                  <Combobox
+                    id="scr-fscore"
+                    options={fScoreOptions}
+                    value={minFParam}
+                    onValueChange={(next) =>
+                      updateParams({ min_f_score: next || null })
+                    }
+                    placeholder="Không giới hạn"
+                    searchPlaceholder="Chọn ngưỡng F-Score..."
+                    ariaLabel="Piotroski F-Score tối thiểu"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 lg:col-span-3">
+                  <div className="space-y-1">
+                    <label htmlFor="scr-prob-min" className="block text-[11px] font-semibold text-ink-muted">
+                      1Y PD từ (%)
+                    </label>
+                    <Input
+                      id="scr-prob-min"
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={toPctDisplay(minProbParam)}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (!v) return updateParams({ min_distress_prob: null });
+                        const n = Number(v);
+                        if (Number.isFinite(n)) {
+                          const dec = Math.max(0, Math.min(1, n / 100));
+                          updateParams({ min_distress_prob: dec.toFixed(3) });
+                        }
+                      }}
+                      placeholder="0"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label htmlFor="scr-prob-max" className="block text-[11px] font-semibold text-ink-muted">
+                      Đến (%)
+                    </label>
+                    <Input
+                      id="scr-prob-max"
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={toPctDisplay(maxProbParam)}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (!v) return updateParams({ max_distress_prob: null });
+                        const n = Number(v);
+                        if (Number.isFinite(n)) {
+                          const dec = Math.max(0, Math.min(1, n / 100));
+                          updateParams({ max_distress_prob: dec.toFixed(3) });
+                        }
+                      }}
+                      placeholder="100"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 lg:col-span-3">
+                  <div className="space-y-1">
+                    <label htmlFor="scr-rf-min" className="block text-[11px] font-semibold text-ink-muted">
+                      Cờ đỏ từ
+                    </label>
+                    <Input
+                      id="scr-rf-min"
+                      type="number"
+                      min={0}
+                      max={9}
+                      value={minRfParam}
+                      onChange={(e) =>
+                        updateParams({ min_red_flags: e.target.value || null })
+                      }
+                      placeholder="0"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label htmlFor="scr-rf-max" className="block text-[11px] font-semibold text-ink-muted">
+                      Đến
+                    </label>
+                    <Input
+                      id="scr-rf-max"
+                      type="number"
+                      min={0}
+                      max={9}
+                      value={maxRfParam}
+                      onChange={(e) =>
+                        updateParams({ max_red_flags: e.target.value || null })
+                      }
+                      placeholder="9"
+                    />
+                  </div>
+                </div>
+              </div>
+
               <div className="pt-1 lg:hidden">
                 <Button
                   type="button"
@@ -1452,8 +1484,112 @@ function ScreenerContent() {
           </Card>
         </div>
 
-        {/* Main Screener Workspace */}
-        <div className="min-w-0 flex-1 space-y-3">
+        {/* Active Filter Chips */}
+        {activeFilterCount > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="text-[11px] font-medium text-ink-muted">Đang lọc:</span>
+            {qParam ? (
+              <button
+                type="button"
+                onClick={() => updateParams({ q: null })}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
+              >
+                <span>Từ khóa: &ldquo;{qParam}&rdquo;</span>
+                <X className="size-3 text-ink-muted" />
+              </button>
+            ) : null}
+            {sectorParam ? (
+              <button
+                type="button"
+                onClick={() => updateParams({ icb_code_level2: null })}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
+              >
+                <span>
+                  Ngành:{" "}
+                  {sectorsLevel2.find((s) => s.icb_code_level2 === sectorParam)
+                    ?.icb_name_level2 ?? sectorParam}
+                </span>
+                <X className="size-3 text-ink-muted" />
+              </button>
+            ) : null}
+            {riskTierParam ? (
+              <button
+                type="button"
+                onClick={() => updateParams({ risk_tier: null })}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
+              >
+                <span>Bậc: {riskTierParam}</span>
+                <X className="size-3 text-ink-muted" />
+              </button>
+            ) : null}
+            {altmanParam ? (
+              <button
+                type="button"
+                onClick={() => updateParams({ altman_zone: null })}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
+              >
+                <span>
+                  Altman: {ALTMAN_ZONE_META[altmanParam]?.shortLabel ?? altmanParam}
+                </span>
+                <X className="size-3 text-ink-muted" />
+              </button>
+            ) : null}
+            {beneishParam ? (
+              <button
+                type="button"
+                onClick={() => updateParams({ beneish_flag: null })}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
+              >
+                <span>
+                  Beneish: {BENEISH_FLAG_META[beneishParam]?.shortLabel ?? beneishParam}
+                </span>
+                <X className="size-3 text-ink-muted" />
+              </button>
+            ) : null}
+            {minFParam ? (
+              <button
+                type="button"
+                onClick={() => updateParams({ min_f_score: null })}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
+              >
+                <span>F-Score ≥ {minFParam}</span>
+                <X className="size-3 text-ink-muted" />
+              </button>
+            ) : null}
+            {minProbParam || maxProbParam ? (
+              <button
+                type="button"
+                onClick={() =>
+                  updateParams({ min_distress_prob: null, max_distress_prob: null })
+                }
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
+              >
+                <span>
+                  1Y PD: {toPctDisplay(minProbParam) || "0"}%–
+                  {toPctDisplay(maxProbParam) || "100"}%
+                </span>
+                <X className="size-3 text-ink-muted" />
+              </button>
+            ) : null}
+            {minRfParam || maxRfParam ? (
+              <button
+                type="button"
+                onClick={() =>
+                  updateParams({ min_red_flags: null, max_red_flags: null })
+                }
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
+              >
+                <span>
+                  Cờ đỏ: {minRfParam || "0"}–{maxRfParam || "9"}
+                </span>
+                <X className="size-3 text-ink-muted" />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* Main Full-Width Screener Workspace */}
+        <div className="min-w-0 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-surface px-3 py-2">
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <Button
@@ -1509,7 +1645,7 @@ function ScreenerContent() {
                   <div
                     role="dialog"
                     aria-label="Tùy chỉnh cột phân tích"
-                    className="absolute right-0 z-30 mt-1.5 w-80 max-w-[90vw] rounded-lg border border-border-strong bg-surface p-3 text-xs text-ink shadow-[0_4px_16px_rgba(15,23,42,0.12)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.48)]"
+                    className="absolute right-0 z-30 mt-1.5 w-80 max-w-[90vw] rounded-lg border border-border-strong bg-surface p-3 text-xs text-ink shadow-popover"
                   >
                     <div className="flex items-center justify-between border-b border-border pb-2">
                       <span className="font-semibold text-ink">
@@ -1601,7 +1737,7 @@ function ScreenerContent() {
                   className={cn(
                     "inline-flex items-center gap-1 rounded px-2 py-1 font-medium",
                     viewMode === "TABLE"
-                      ? "bg-accent-ink text-white"
+                      ? "bg-primary text-primary-foreground"
                       : "text-ink-muted hover:text-ink",
                   )}
                 >
@@ -1614,7 +1750,7 @@ function ScreenerContent() {
                   className={cn(
                     "inline-flex items-center gap-1 rounded px-2 py-1 font-medium",
                     viewMode === "SCATTER"
-                      ? "bg-accent-ink text-white"
+                      ? "bg-primary text-primary-foreground"
                       : "text-ink-muted hover:text-ink",
                   )}
                 >
@@ -1702,7 +1838,7 @@ function ScreenerContent() {
                               key={header.id}
                               scope="col"
                               className={cn(
-                                "px-2.5 py-2 font-semibold whitespace-nowrap",
+                                "px-1.5 py-2 font-semibold whitespace-nowrap first:pl-2.5 last:pr-2.5",
                                 idx === 0 &&
                                   "sticky left-0 z-10 border-r border-border bg-surface-muted text-left",
                                 idx !== 0 &&
@@ -1739,7 +1875,7 @@ function ScreenerContent() {
                             <td
                               key={cell.id}
                               className={cn(
-                                "px-2.5",
+                                "px-1.5 first:pl-2.5 last:pr-2.5",
                                 density === "compact" ? "py-1.5" : "py-2.5",
                                 idx === 0 &&
                                   "sticky left-0 z-10 border-r border-border bg-surface text-left",

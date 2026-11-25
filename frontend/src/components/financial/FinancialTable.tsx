@@ -422,9 +422,9 @@ export function FinancialTable({
         <div
           role="region"
           aria-label={`Biểu đồ xu hướng ${selectedRow.display_name_vn}`}
-          className="rounded-lg border border-accent-ink/30 bg-surface p-3 shadow-xs"
+          className="border-y border-accent-ink/30 bg-surface"
         >
-          <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-2 border-b border-border bg-accent-soft/30 px-3 py-1.5">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-accent-ink">
               <LineChart className="size-3.5" aria-hidden="true" />
               <span>
@@ -433,7 +433,7 @@ export function FinancialTable({
             </div>
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="xs"
               onClick={() => setSelectedMetricId(null)}
             >
@@ -442,10 +442,11 @@ export function FinancialTable({
             </Button>
           </div>
           <EChartBox
+            className="rounded-none border-0 shadow-none"
             title={`Diễn biến ${selectedRow.display_name_vn} (${trendPoints.length} kỳ gần nhất)`}
             subtitle={`Đơn vị: ${selectedRow.unit === "VND_PER_SHARE" ? "đồng/cổ phiếu" : "tỷ đồng"} · Nhấp phím Esc hoặc nút Đóng để thu gọn`}
             option={trendOption}
-            height={250}
+            height={230}
             isEmpty={trendPoints.every((pt) => pt.rawValue === null)}
             emptyMessage="Chưa có số liệu qua các kỳ cho dòng chỉ tiêu này."
             tableHeaders={[

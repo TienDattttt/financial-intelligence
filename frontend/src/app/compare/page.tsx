@@ -19,7 +19,7 @@ import {
   selectMlScoreForPeriod,
   STATEMENT_SCOPE_LABELS,
 } from "@/lib/domain-labels";
-import { useChartTheme } from "@/lib/echarts-theme";
+import { formatChartNumber, useChartTheme } from "@/lib/echarts-theme";
 import {
   buildCsvContent,
   formatNumber,
@@ -27,6 +27,7 @@ import {
   formatPeriodLabel,
   formatRatioValue,
   normalizeSearchText,
+  type RatioDirection,
 } from "@/lib/format";
 import type { RatioName } from "@/types/api";
 
@@ -46,6 +47,7 @@ const CHART_METRICS: {
   isMl: boolean;
   isPct: boolean;
   decimals: number;
+  unitSuffix?: string;
 }[] = [
   { key: "altman_z_double_prime", label: "Altman Z″", isMl: true, isPct: false, decimals: 2 },
   {
@@ -57,16 +59,38 @@ const CHART_METRICS: {
   },
   { key: "roe_total", label: "ROE (%)", isMl: false, isPct: true, decimals: 1 },
   { key: "ebit_margin", label: "Biên EBIT (%)", isMl: false, isPct: true, decimals: 1 },
-  { key: "debt_to_equity", label: "Nợ vay / VCSH (lần)", isMl: false, isPct: false, decimals: 2 },
+  {
+    key: "debt_to_equity",
+    label: "Nợ vay / VCSH (lần)",
+    isMl: false,
+    isPct: false,
+    decimals: 2,
+    unitSuffix: "x",
+  },
   {
     key: "interest_coverage",
     label: "Khả năng trả lãi EBIT/Lãi vay (lần)",
     isMl: false,
     isPct: false,
     decimals: 2,
+    unitSuffix: "x",
   },
-  { key: "current_ratio", label: "Thanh toán hiện hành (lần)", isMl: false, isPct: false, decimals: 2 },
-  { key: "ocf_to_net_income", label: "CFO / Lợi nhuận sau thuế (lần)", isMl: false, isPct: false, decimals: 2 },
+  {
+    key: "current_ratio",
+    label: "Thanh toán hiện hành (lần)",
+    isMl: false,
+    isPct: false,
+    decimals: 2,
+    unitSuffix: "x",
+  },
+  {
+    key: "ocf_to_net_income",
+    label: "CFO / Lợi nhuận sau thuế (lần)",
+    isMl: false,
+    isPct: false,
+    decimals: 2,
+    unitSuffix: "x",
+  },
 ];
 
 function CompareContent() {
@@ -194,11 +218,19 @@ function CompareContent() {
 
   const chartOption = React.useMemo<EChartsOption>(() => {
     const xLabels = chartData.dates.map((d) => formatPeriodLabel(d, periodType));
+    const suffix = metricConfig.unitSuffix ?? "";
     return {
       grid: { left: 54, right: 20, top: 36, bottom: 32 },
       legend: { top: 4, right: 8 },
       tooltip: {
         trigger: "axis",
+        valueFormatter: (val) => {
+          if (typeof val !== "number" || !Number.isFinite(val)) return "N/A";
+          if (metricConfig.isPct) {
+            return `${formatChartNumber(val, 1)}%`;
+          }
+          return `${formatChartNumber(val, metricConfig.decimals)}${suffix}`;
+        },
       },
       xAxis: {
         type: "category",
@@ -207,7 +239,10 @@ function CompareContent() {
       yAxis: {
         type: "value",
         axisLabel: {
-          formatter: metricConfig.isPct ? "{value}%" : "{value}",
+          formatter: (v: number) =>
+            metricConfig.isPct
+              ? `${formatChartNumber(v, 1, { trimTrailingZeros: true })}%`
+              : `${formatChartNumber(v, metricConfig.decimals, { trimTrailingZeros: true })}${suffix}`,
         },
       },
       series: tickers.map((t, idx) => {
@@ -222,7 +257,15 @@ function CompareContent() {
         };
       }),
     };
-  }, [chartData, metricConfig.isPct, palette.series, periodType, tickers]);
+  }, [
+    chartData,
+    metricConfig.decimals,
+    metricConfig.isPct,
+    metricConfig.unitSuffix,
+    palette.series,
+    periodType,
+    tickers,
+  ]);
 
   const chartTableHeaders = ["Kỳ", ...tickers];
   const chartTableRows = chartData.dates.map((d) => [
@@ -232,19 +275,27 @@ function CompareContent() {
       if (v === null || v === undefined) return "N/A";
       return metricConfig.isPct
         ? `${formatNumber(v, 1)}%`
-        : formatNumber(v, metricConfig.decimals);
+        : `${formatNumber(v, metricConfig.decimals)}${metricConfig.unitSuffix ?? ""}`;
     }),
   ]);
 
   // Extract latest ML score + summary metrics for each ticker
   const matrixData = React.useMemo(() => {
-    const ratioList = new Map<RatioName, { name: string; formatType: "PERCENT" | "MULTIPLE" | "DAYS" | "CURRENCY_PER_SHARE" | "NUMBER" }>();
+    const ratioList = new Map<
+      RatioName,
+      {
+        name: string;
+        formatType: "PERCENT" | "MULTIPLE" | "DAYS" | "CURRENCY_PER_SHARE" | "NUMBER";
+        direction: RatioDirection;
+      }
+    >();
     summaries.forEach((q) => {
       for (const item of q.data?.items ?? []) {
         if (!ratioList.has(item.metric_name)) {
           ratioList.set(item.metric_name, {
             name: item.display_name_vn,
             formatType: item.format_type,
+            direction: item.direction,
           });
         }
       }
@@ -675,37 +726,81 @@ function CompareContent() {
                       ))}
                     </tr>
 
-                    {Array.from(matrixData.ratioList.entries()).map(([metricName, meta]) => (
-                      <tr
-                        key={metricName}
-                        className="border-b border-border/60 hover:bg-surface-muted/40"
-                      >
-                        <th
-                          scope="row"
-                          className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-normal text-ink"
+                    {Array.from(matrixData.ratioList.entries()).map(([metricName, meta]) => {
+                      const rowItems = tickers.map((_, idx) =>
+                        summaries[idx]?.data?.items.find((x) => x.metric_name === metricName),
+                      );
+                      const numericVals = rowItems.map((item) =>
+                        !item
+                          ? null
+                          : matrixMode === "PERCENTILE"
+                            ? typeof item.percentile_rank === "number" &&
+                              Number.isFinite(item.percentile_rank)
+                              ? item.percentile_rank
+                              : null
+                            : typeof item.company_value === "number" &&
+                                Number.isFinite(item.company_value)
+                              ? item.company_value
+                              : null,
+                      );
+                      const validNums = numericVals.filter((v): v is number => v !== null);
+                      const canHighlight = validNums.length >= 2;
+                      const maxVal = canHighlight ? Math.max(...validNums) : null;
+                      const minVal = canHighlight ? Math.min(...validNums) : null;
+                      const hasSpread = maxVal !== null && minVal !== null && maxVal !== minVal;
+
+                      return (
+                        <tr
+                          key={metricName}
+                          className="border-b border-border/60 hover:bg-surface-hover/40"
                         >
-                          {meta.name}
-                        </th>
-                        {tickers.map((t, idx) => {
-                          const item = summaries[idx]?.data?.items.find(
-                            (x) => x.metric_name === metricName,
-                          );
-                          const display = !item
-                            ? "N/A"
-                            : matrixMode === "PERCENTILE"
-                              ? item.percentile_rank !== null &&
-                                item.percentile_rank !== undefined
-                                ? `${formatNumber(item.percentile_rank, 0)}%`
-                                : "N/A"
-                              : formatRatioValue(item.company_value, item.format_type);
-                          return (
-                            <td key={t} className="num px-3 py-2 text-right text-ink">
-                              {display}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
+                          <th
+                            scope="row"
+                            className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-normal text-ink"
+                          >
+                            {meta.name}
+                          </th>
+                          {tickers.map((t, idx) => {
+                            const item = rowItems[idx];
+                            const val = numericVals[idx];
+                            const display = !item
+                              ? "N/A"
+                              : matrixMode === "PERCENTILE"
+                                ? item.percentile_rank !== null &&
+                                  item.percentile_rank !== undefined
+                                  ? `${formatNumber(item.percentile_rank, 0)}%`
+                                  : "N/A"
+                                : formatRatioValue(item.company_value, item.format_type);
+
+                            const isBest =
+                              hasSpread &&
+                              val !== null &&
+                              ((meta.direction === "HIGHER_IS_BETTER" && val === maxVal) ||
+                                (meta.direction === "LOWER_IS_BETTER" && val === minVal));
+                            const isWorst =
+                              hasSpread &&
+                              val !== null &&
+                              ((meta.direction === "HIGHER_IS_BETTER" && val === minVal) ||
+                                (meta.direction === "LOWER_IS_BETTER" && val === maxVal));
+
+                            return (
+                              <td
+                                key={t}
+                                className={`num px-3 py-2 text-right ${
+                                  isBest
+                                    ? "bg-risk-low-soft/35 font-semibold text-risk-low"
+                                    : isWorst
+                                      ? "bg-risk-high-soft/25 text-risk-high"
+                                      : "text-ink"
+                                }`}
+                              >
+                                {display}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

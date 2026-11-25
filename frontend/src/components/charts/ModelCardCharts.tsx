@@ -9,7 +9,7 @@ import {
   getRiskTierMeta,
   RISK_TIER_ORDER,
 } from "@/lib/domain-labels";
-import { useChartTheme } from "@/lib/echarts-theme";
+import { formatChartNumber, useChartTheme } from "@/lib/echarts-theme";
 import { formatNumber, formatPercent } from "@/lib/format";
 import type {
   ModelMetricsItem,
@@ -354,6 +354,12 @@ export function WalkForwardCharts({
       xAxis: {
         type: "category",
         data: categories,
+        axisLabel: {
+          interval: 0,
+          width: 130,
+          overflow: "break",
+          lineHeight: 14,
+        },
       },
       yAxis: {
         type: "value",
@@ -361,7 +367,10 @@ export function WalkForwardCharts({
         min: meta.yMin,
         max: meta.yMax,
         axisLabel: {
-          formatter: meta.isPercent ? "{value}%" : "{value}",
+          formatter: (val: number) =>
+            meta.isPercent
+              ? `${formatChartNumber(val, 0)}%`
+              : formatChartNumber(val, 2, { trimTrailingZeros: true }),
         },
       },
       series,
@@ -383,7 +392,10 @@ export function WalkForwardCharts({
         min: meta.yMin,
         max: meta.yMax,
         axisLabel: {
-          formatter: meta.isPercent ? "{value}%" : "{value}",
+          formatter: (v: number) =>
+            meta.isPercent
+              ? `${formatChartNumber(v, 1, { trimTrailingZeros: true })}%`
+              : formatChartNumber(v, 3, { trimTrailingZeros: true }),
         },
       },
       series: yearly.series.map((s, idx) => {
@@ -541,7 +553,10 @@ export function TierReliabilityChart({
         type: "value",
         name: "Tỷ lệ (%)",
         min: 0,
-        axisLabel: { formatter: "{value}%" },
+        axisLabel: {
+          formatter: (v: number) =>
+            `${formatChartNumber(v, 1, { trimTrailingZeros: true })}%`,
+        },
       },
       series: [
         {

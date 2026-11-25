@@ -194,9 +194,22 @@ export function SectorTreemapChart({
   const [metric, setMetric] = React.useState<TreemapRiskMetric>("distress_prob");
   const { theme, palette } = useChartTheme();
 
+  const treemapPalette = React.useMemo(
+    () =>
+      theme === "dark"
+        ? {
+            riskLow: "#155E42",
+            riskMid: "#9A5510",
+            riskHigh: "#9E2126",
+            neutral: "#334155",
+          }
+        : palette,
+    [palette, theme],
+  );
+
   const nodes = React.useMemo(
-    () => buildSectorTreemapNodes(sectors, metric, palette),
-    [metric, palette, sectors],
+    () => buildSectorTreemapNodes(sectors, metric, treemapPalette),
+    [metric, treemapPalette, sectors],
   );
 
   const chartTitle = React.useMemo(
@@ -204,7 +217,7 @@ export function SectorTreemapChart({
     [metric, sectors],
   );
 
-  const tileLabelColor = theme === "dark" ? palette.canvas : palette.surface;
+  const tileLabelColor = "#FFFFFF";
 
   const option = React.useMemo<EChartsOption>(() => {
     const treemapData = nodes.map((node) => ({
@@ -256,6 +269,8 @@ export function SectorTreemapChart({
             fontSize: 11,
             fontWeight: 600,
             lineHeight: 15,
+            overflow: "break",
+            ellipsis: "…",
             formatter: (params: unknown) => {
               const p = params as { data?: { nodeMeta?: SectorTreemapNode } };
               const n = p.data?.nodeMeta;

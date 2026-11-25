@@ -6,6 +6,36 @@ export type ThemePreference = "light" | "dark" | "system";
 
 export const THEME_STORAGE_KEY = "finintel:theme:v1";
 
+/**
+ * Shared Vietnamese locale number formatter for ECharts axes & tooltips
+ * (e.g., 1234.5 -> "1.234,5"). Avoids mixing "." and "," decimal separators.
+ */
+export function formatChartNumber(
+  value: number,
+  decimals = 1,
+  options?: { trimTrailingZeros?: boolean },
+): string {
+  if (!Number.isFinite(value)) return "N/A";
+  const formatted = new Intl.NumberFormat("vi-VN", {
+    minimumFractionDigits: options?.trimTrailingZeros ? 0 : decimals,
+    maximumFractionDigits: decimals,
+  }).format(value);
+  return formatted;
+}
+
+export function formatChartPercent(
+  value: number,
+  decimals = 1,
+  options?: { isRatio?: boolean; signed?: boolean },
+): string {
+  if (!Number.isFinite(value)) return "N/A";
+  const pct = options?.isRatio ? value * 100 : value;
+  const absFormatted = formatChartNumber(Math.abs(pct), decimals);
+  if (pct < 0) return `−${absFormatted}%`;
+  if (pct > 0 && options?.signed) return `+${absFormatted}%`;
+  return `${absFormatted}%`;
+}
+
 export interface ChartPalette {
   theme: ResolvedTheme;
   fontFamily: string;
@@ -23,6 +53,8 @@ export interface ChartPalette {
   tooltipBorder: string;
   tooltipText: string;
   company: string;
+  companyAreaTop: string;
+  companyAreaBottom: string;
   peerMedian: string;
   peerMedianMuted: string;
   peerBandFill: string;
@@ -31,6 +63,8 @@ export interface ChartPalette {
   riskMid: string;
   riskHigh: string;
   riskHighMuted: string;
+  riskHighBandFill: string;
+  riskHighBandBorder: string;
   neutral: string;
   waterfall: {
     base: string;
@@ -55,47 +89,53 @@ export const LIGHT_CHART_PALETTE: ChartPalette = {
   splitLine: "#E2E8F0",
   ink: "#0F172A",
   inkMuted: "#475569",
-  inkSubtle: "#5D6C82",
+  inkSubtle: "#5B6B82",
   tooltipBg: "#FFFFFF",
   tooltipBorder: "#CBD5E1",
   tooltipText: "#0F172A",
-  company: "#1E3A5F",
+  company: "#163A5F",
+  companyAreaTop: "rgba(22, 58, 95, 0.16)",
+  companyAreaBottom: "rgba(22, 58, 95, 0.01)",
   peerMedian: "#475569",
   peerMedianMuted: "rgba(71, 85, 105, 0.28)",
   peerBandFill: "rgba(71, 85, 105, 0.14)",
-  fallbackAreaFill: "rgba(154, 91, 19, 0.10)",
-  riskLow: "#1F6E4E",
-  riskMid: "#9A5B13",
-  riskHigh: "#A61B1B",
-  riskHighMuted: "rgba(166, 27, 27, 0.28)",
-  neutral: "#5D6C82",
+  fallbackAreaFill: "rgba(146, 64, 14, 0.10)",
+  riskLow: "#166534",
+  riskMid: "#92400E",
+  riskHigh: "#991B1B",
+  riskHighMuted: "rgba(153, 27, 27, 0.28)",
+  riskHighBandFill: "rgba(153, 27, 27, 0.12)",
+  riskHighBandBorder: "rgba(153, 27, 27, 0.28)",
+  neutral: "#5B6B82",
   waterfall: {
     base: "#475569",
-    increase: "#A61B1B",
-    decrease: "#1F6E4E",
-    other: "#5D6C82",
-    final: "#1E3A5F",
+    increase: "#991B1B",
+    decrease: "#166534",
+    other: "#5B6B82",
+    final: "#163A5F",
   },
-  series: ["#1E3A5F", "#1F6E4E", "#9A5B13", "#A61B1B", "#475569"],
+  series: ["#163A5F", "#166534", "#92400E", "#991B1B", "#475569"],
 };
 
 export const DARK_CHART_PALETTE: ChartPalette = {
   theme: "dark",
   fontFamily: '"IBM Plex Sans", system-ui, -apple-system, sans-serif',
   monoFontFamily: '"IBM Plex Mono", ui-monospace, SFMono-Regular, monospace',
-  surface: "#111827",
-  surfaceMuted: "#1A2332",
+  surface: "#11161F",
+  surfaceMuted: "#171E2B",
   canvas: "#0B0F14",
-  border: "#232D3F",
+  border: "#222B3A",
   borderStrong: "#334155",
   splitLine: "#1E293B",
   ink: "#F1F5F9",
   inkMuted: "#94A3B8",
   inkSubtle: "#8B9BB2",
-  tooltipBg: "#111827",
+  tooltipBg: "#11161F",
   tooltipBorder: "#334155",
   tooltipText: "#F1F5F9",
-  company: "#669DF6",
+  company: "#60A5FA",
+  companyAreaTop: "rgba(96, 165, 250, 0.22)",
+  companyAreaBottom: "rgba(96, 165, 250, 0.02)",
   peerMedian: "#94A3B8",
   peerMedianMuted: "rgba(148, 163, 184, 0.28)",
   peerBandFill: "rgba(148, 163, 184, 0.16)",
@@ -104,15 +144,17 @@ export const DARK_CHART_PALETTE: ChartPalette = {
   riskMid: "#FBBF24",
   riskHigh: "#F87171",
   riskHighMuted: "rgba(248, 113, 113, 0.28)",
+  riskHighBandFill: "rgba(248, 113, 113, 0.18)",
+  riskHighBandBorder: "rgba(248, 113, 113, 0.36)",
   neutral: "#94A3B8",
   waterfall: {
     base: "#94A3B8",
     increase: "#F87171",
     decrease: "#34D399",
     other: "#8B9BB2",
-    final: "#669DF6",
+    final: "#60A5FA",
   },
-  series: ["#669DF6", "#34D399", "#FBBF24", "#F87171", "#94A3B8"],
+  series: ["#60A5FA", "#34D399", "#FBBF24", "#F87171", "#94A3B8"],
 };
 
 function readCssToken(
@@ -289,8 +331,8 @@ export function applyChartThemeDefaults(
             borderWidth: 1,
             extraCssText:
               theme === "dark"
-                ? "box-shadow: 0 4px 16px rgba(0, 0, 0, 0.48);"
-                : "box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);",
+                ? "box-shadow: 0 8px 24px rgba(0, 0, 0, 0.50);"
+                : "box-shadow: 0 4px 16px rgba(15, 23, 42, 0.10);",
             ...tooltip,
             textStyle: {
               color: palette.tooltipText,
@@ -320,10 +362,9 @@ export function applyChartThemeDefaults(
 }
 
 export function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = React.useState<boolean>(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return false;
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  });
+  // Always start with false to match SSR and prevent hydration mismatches;
+  // synchronize immediately after hydration inside useEffect.
+  const [reduced, setReduced] = React.useState<boolean>(false);
 
   React.useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
@@ -338,10 +379,9 @@ export function usePrefersReducedMotion(): boolean {
 }
 
 export function useResolvedDocumentTheme(): ResolvedTheme {
-  const [theme, setTheme] = React.useState<ResolvedTheme>(() => {
-    if (typeof document === "undefined") return "light";
-    return document.documentElement.classList.contains("dark") ? "dark" : "light";
-  });
+  // Always start with "light" on first render to match SSR and prevent hydration mismatches;
+  // synchronize immediately after hydration inside useEffect.
+  const [theme, setTheme] = React.useState<ResolvedTheme>("light");
 
   React.useEffect(() => {
     if (typeof document === "undefined") return;
@@ -358,6 +398,8 @@ export function useResolvedDocumentTheme(): ResolvedTheme {
   return theme;
 }
 
+const subscribeNoop = () => () => {};
+
 export function useChartTheme(): {
   theme: ResolvedTheme;
   palette: ChartPalette;
@@ -365,6 +407,18 @@ export function useChartTheme(): {
 } {
   const theme = useResolvedDocumentTheme();
   const reducedMotion = usePrefersReducedMotion();
-  const palette = React.useMemo(() => getChartPalette(theme), [theme]);
+  // useSyncExternalStore returns false on SSR and during the React hydration
+  // pass, then true on the client — preventing inline-style hydration
+  // mismatches from getComputedStyle() in dark mode or hex-case differences.
+  const hydrated = React.useSyncExternalStore(
+    subscribeNoop,
+    () => true,
+    () => false,
+  );
+
+  const palette = React.useMemo(
+    () => (hydrated ? getChartPalette(theme) : LIGHT_CHART_PALETTE),
+    [hydrated, theme],
+  );
   return { theme, palette, reducedMotion };
 }

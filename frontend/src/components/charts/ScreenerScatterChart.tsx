@@ -5,7 +5,7 @@ import { ArrowLeftRight } from "lucide-react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
 import { Button } from "@/components/ui/button";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
-import { type ChartPalette, useChartTheme } from "@/lib/echarts-theme";
+import { type ChartPalette, formatChartNumber, useChartTheme } from "@/lib/echarts-theme";
 import {
   formatMultiple,
   formatNumber,
@@ -426,22 +426,28 @@ export function buildScreenerScatterOption(
   );
 
   const xMarkLines =
-    xMetric.referenceLines?.map((rl) => ({
+    xMetric.referenceLines?.map((rl, idx) => ({
       xAxis: rl.value,
-      label: { formatter: rl.label },
+      label: {
+        formatter: rl.label,
+        position: idx % 2 === 0 ? ("insideEndTop" as const) : ("insideMiddleTop" as const),
+        distance: idx % 2 === 0 ? 4 : 18,
+      },
     })) ?? [];
   const yMarkLines =
     yMetric.referenceLines?.map((rl) => ({
       yAxis: rl.value,
-      label: { formatter: rl.label },
+      label: { formatter: rl.label, position: "insideEndTop" as const },
     })) ?? [];
   const allMarkLines = [...xMarkLines, ...yMarkLines];
 
   return {
-    grid: { left: 64, right: 24, top: 44, bottom: 48 },
+    grid: { left: 68, right: 24, top: 64, bottom: 48 },
     legend: {
       top: 4,
       right: 12,
+      left: 12,
+      type: "scroll",
     },
     tooltip: {
       trigger: "item",
@@ -454,18 +460,25 @@ export function buildScreenerScatterOption(
       nameGap: 28,
       ...(xMetric.axisMin !== undefined ? { min: xMetric.axisMin } : {}),
       ...(xMetric.axisMax !== undefined ? { max: xMetric.axisMax } : {}),
-      ...(xMetric.format === "PERCENT"
-        ? { axisLabel: { formatter: "{value}%" } }
-        : {}),
+      axisLabel: {
+        formatter: (v: number) =>
+          xMetric.format === "PERCENT"
+            ? `${formatChartNumber(v, 1, { trimTrailingZeros: true })}%`
+            : formatChartNumber(v, 1, { trimTrailingZeros: true }),
+      },
     },
     yAxis: {
       type: "value",
       name: yMetric.axisTitle,
+      nameGap: 14,
       ...(yMetric.axisMin !== undefined ? { min: yMetric.axisMin } : {}),
       ...(yMetric.axisMax !== undefined ? { max: yMetric.axisMax } : {}),
-      ...(yMetric.format === "PERCENT"
-        ? { axisLabel: { formatter: "{value}%" } }
-        : {}),
+      axisLabel: {
+        formatter: (v: number) =>
+          yMetric.format === "PERCENT"
+            ? `${formatChartNumber(v, 1, { trimTrailingZeros: true })}%`
+            : formatChartNumber(v, 1, { trimTrailingZeros: true }),
+      },
     },
     series: activeStyles.map((style, idx) => ({
       name: style.seriesName,
@@ -490,7 +503,13 @@ export function buildScreenerScatterOption(
                 color: palette.inkSubtle,
                 width: 1,
               },
-              label: { fontSize: 10, color: palette.inkMuted },
+              label: {
+                fontSize: 10,
+                color: palette.inkMuted,
+                backgroundColor: palette.surface,
+                padding: [1, 4],
+                borderRadius: 2,
+              },
               data: allMarkLines,
             },
           }
