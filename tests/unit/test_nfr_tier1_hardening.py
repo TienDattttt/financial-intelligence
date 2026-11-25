@@ -116,13 +116,10 @@ def test_nfr01_large_tables_not_cached_and_rollover_evicts_old_snapshot(
 
 
 def test_nfr02_no_sys_getframe_hack_in_serving() -> None:
-    queries_src = (
-        Path(__file__).resolve().parents[2]
-        / "src"
-        / "finintel"
-        / "serving"
-        / "queries.py"
-    ).read_text(encoding="utf-8")
+    serving_dir = Path(__file__).resolve().parents[2] / "src" / "finintel" / "serving"
+    query_files = sorted((serving_dir / "queries").rglob("*.py"))
+    assert len(query_files) >= 6
+    queries_src = "\n".join(p.read_text(encoding="utf-8") for p in query_files)
     assert "_getframe" not in queries_src
     assert "_FastStressInputDataFrame" not in queries_src
     assert "_STRESS_SIM_CACHE" not in queries_src
