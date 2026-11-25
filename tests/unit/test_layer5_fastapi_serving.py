@@ -1191,7 +1191,7 @@ def test_serving_queries_helpers_and_zero_anti_patterns() -> None:
 
     # Verify zero iter_rows(), zero blind .fill_null(0), zero streamlit/dashboard imports in serving/.
     serving_dir = Path(__file__).resolve().parents[2] / "src" / "finintel" / "serving"
-    for py_file in sorted(serving_dir.glob("*.py")):
+    for py_file in sorted(serving_dir.rglob("*.py")):
         src = py_file.read_text(encoding="utf-8")
         assert "iter_rows(" not in src, f"Forbidden iter_rows() in {py_file.name}"
         assert ".fill_null(0" not in src, f"Forbidden .fill_null(0) in {py_file.name}"

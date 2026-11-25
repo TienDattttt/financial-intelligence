@@ -313,3 +313,68 @@ def test_observability_entry_point_context_and_ingestion_metrics() -> None:
     assert 'finintel_ingestion_duration_seconds_count{provider="vietcap_iq"}' in text
     assert "ticker=" not in text
     assert "filing_id=" not in text
+
+
+def test_ingest_handler_and_disclosure_retry_honor_pacing_and_ssrf_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """IngestHandler passes state_store to FhscOapiAdapter and disclosure retry enforces ssrf_guard."""
+    from finintel.pipeline.ingest import (
+        IngestHandler,
+        fetch_disclosure_bytes_with_retry,
+    )
+    from finintel.pipeline.runner import RunRequest, Stage, StepContext, TriggerMode
+
+    store = StateStore(tmp_path / "metadata" / "state.sqlite")
+    store.initialize()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    handler = IngestHandler(
+        store,
+        config_dir,
+        {"default_statement_scope": "CONSOLIDATED"},
+    )
+    ctx = StepContext(
+        run_id="run_test",
+        stage=Stage.INGEST,
+        request=RunRequest(
+            source="fhsc",
+            tickers=("FPT",),
+            stage=Stage.INGEST,
+            trigger_mode=TriggerMode.CLI_MANUAL,
+        ),
+        tickers=("FPT",),
+        active_snapshot_id=None,
+    )
+    providers = list(handler._providers(ctx))
+    assert len(providers) == 6
+    assert all(getattr(p, "_state_store", None) is store for p in providers)
+
+    req_headers: dict[str, str] = {}
+
+    def mock_handler(req: httpx.Request) -> httpx.Response:
+        req_headers.update({k.lower(): v for k, v in req.headers.items()})
+        return httpx.Response(200, content=b'{"successful":true,"data":{}}')
+
+    with httpx.Client(
+        transport=httpx.MockTransport(mock_handler), follow_redirects=False
+    ) as mock_client:
+        out = fetch_disclosure_bytes_with_retry(
+            "https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/FPT/financial-statement?section=BALANCE_SHEET",
+            client=mock_client,
+        )
+        assert out == b'{"successful":true,"data":{}}'
+        assert req_headers.get("accept-encoding") == "identity"
+
+    monkeypatch.setattr(
+        "finintel.ingestion.ssrf_guard.socket.getaddrinfo",
+        lambda host, port, *a, **kw: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))
+        ],
+    )
+    with httpx.Client(follow_redirects=False) as real_client:
+        with pytest.raises(ContractViolationError, match="non-global"):
+            fetch_disclosure_bytes_with_retry(
+                "https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/FPT/financial-statement?section=BALANCE_SHEET",
+                client=real_client,
+            )

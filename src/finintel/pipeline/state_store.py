@@ -156,7 +156,6 @@ def acquire_host_pacing_slot(
     resolved_db = db_path.resolve()
     resolved_db.parent.mkdir(parents=True, exist_ok=True)
 
-    now_epoch = float(clock())
     with closing(
         sqlite3.connect(resolved_db, timeout=10.0, isolation_level=None)
     ) as conn:
@@ -164,6 +163,7 @@ def acquire_host_pacing_slot(
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
         conn.execute("BEGIN IMMEDIATE;")
+        now_epoch = float(clock())
         try:
             conn.execute(_PROVIDER_RATE_LIMITS_TABLE_DDL)
             row = conn.execute(

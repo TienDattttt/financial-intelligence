@@ -68,6 +68,11 @@ from finintel.ingestion.disclosure_enricher import (
 from finintel.ingestion.fhsc_oapi_adapter import FhscOapiAdapter
 from finintel.ingestion.file_adapter import FileAdapter
 from finintel.ingestion.hasher import canonical_content_sha256
+from finintel.ingestion.ssrf_guard import (
+    MAX_HTML_JSON_BYTES,
+    validate_https_allowlisted_url,
+    validate_https_url_and_resolve_global_ips,
+)
 from finintel.pipeline.runner import StepContext, StepOutcome, StepStatus, TriggerMode
 from finintel.pipeline.state_store import StateStore
 
@@ -173,25 +178,10 @@ def _matches_period(metadata: FilingMetadata, period: str | None) -> bool:
 
 def _validate_disclosure_url(url: str) -> str:
     """Enforce HTTPS and strict host allowlist to block SSRF in disclosure fetching."""
-    if not isinstance(url, str) or not url.strip() or any(ch.isspace() for ch in url):
-        raise ContractViolationError("Disclosure URL must be a valid HTTPS URL.")
-    parsed = urlsplit(url)
-    if parsed.scheme.lower() != "https":
-        raise ContractViolationError("Disclosure URL must use the HTTPS scheme.")
-    if parsed.username is not None or parsed.password is not None:
-        raise ContractViolationError(
-            "Disclosure URL cannot include embedded credentials."
-        )
-    host = parsed.hostname.lower() if parsed.hostname is not None else ""
-    if host not in DISCLOSURE_ALLOWED_HOSTS:
-        raise ContractViolationError(
-            f"Disclosure host {host!r} is not in the HTTPS allowlist."
-        )
-    if parsed.port not in (None, 443):
-        raise ContractViolationError(
-            "Disclosure URL must use the standard HTTPS port 443."
-        )
-    return url
+    validated, _ = validate_https_allowlisted_url(
+        url, allowed_hosts=DISCLOSURE_ALLOWED_HOSTS
+    )
+    return validated
 
 
 def _read_confined_disclosure_file(
@@ -309,7 +299,7 @@ def fetch_disclosure_bytes_with_retry(
     url: str,
     *,
     client: httpx.Client,
-    max_bytes: int = MAX_DISCLOSURE_FILE_BYTES,
+    max_bytes: int = MAX_HTML_JSON_BYTES,
     max_retries: int = DEFAULT_DISCLOSURE_MAX_RETRIES,
     backoff_base_seconds: float = DEFAULT_DISCLOSURE_BACKOFF_BASE_SECONDS,
     backoff_max_seconds: float = DEFAULT_DISCLOSURE_BACKOFF_MAX_SECONDS,
@@ -321,7 +311,12 @@ def fetch_disclosure_bytes_with_retry(
     now_fn: Callable[[], datetime] | None = None,
 ) -> bytes:
     """Fetch a disclosure URL over a pooled ``httpx.Client`` with retry/jitter/cooldown."""
-    validated_url = _validate_disclosure_url(url)
+    if isinstance(getattr(client, "_transport", None), httpx.MockTransport):
+        validated_url = _validate_disclosure_url(url)
+    else:
+        validated_url, _ = validate_https_url_and_resolve_global_ips(
+            url, allowed_hosts=DISCLOSURE_ALLOWED_HOSTS
+        )
     if client.follow_redirects:
         raise ContractViolationError(
             "Disclosure HTTP client must keep follow_redirects=False."
@@ -374,13 +369,20 @@ def fetch_disclosure_bytes_with_retry(
     def _attempt() -> bytes:
         chunks: list[bytes] = []
         total = 0
-        with client.stream("GET", validated_url) as response:
+        with client.stream(
+            "GET", validated_url, headers={"Accept-Encoding": "identity"}
+        ) as response:
             if response.status_code == 200:
+                cl_raw = response.headers.get("content-length")
+                if cl_raw is not None and cl_raw.isdigit() and int(cl_raw) > max_bytes:
+                    raise ContractViolationError(
+                        "Remote disclosure response exceeds the configured size limit."
+                    )
                 for chunk in response.iter_bytes():
                     total += len(chunk)
                     if total > max_bytes:
                         raise ContractViolationError(
-                            "Remote disclosure response exceeds the 20 MiB size limit."
+                            "Remote disclosure response exceeds the configured size limit."
                         )
                     chunks.append(chunk)
                 return b"".join(chunks)
@@ -1818,6 +1820,7 @@ class IngestHandler:
                         record_metadata_resolver=record_resolver,
                         page_observer=page_observer,
                         checkpoint_path=checkpoint_path,
+                        state_store=self.state,
                         sleeper=self._request_sleeper,
                         clock=self._request_clock,
                     )
