@@ -19,7 +19,16 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$DataRoot = Join-Path $RepoRoot "data\universe_600_800"
+if ($env:FININTEL_DATA_ROOT -and $env:FININTEL_DATA_ROOT.Trim()) {
+    $CandidateRoot = $env:FININTEL_DATA_ROOT.Trim()
+    if ([System.IO.Path]::IsPathRooted($CandidateRoot)) {
+        $DataRoot = [System.IO.Path]::GetFullPath($CandidateRoot)
+    } else {
+        $DataRoot = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $CandidateRoot))
+    }
+} else {
+    $DataRoot = Join-Path $RepoRoot "data\universe_600_800"
+}
 $StateSqlite = Join-Path $DataRoot "metadata\state.sqlite"
 $PythonExe = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 

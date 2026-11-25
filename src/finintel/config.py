@@ -235,11 +235,8 @@ def resolve_runtime_config(
         else ("parquet" if raw_backend_val == "parquet" else "auto")
     )
 
-    # 4. Paths & alias
-    use_yaml_paths = resolved_settings_path is not None and (
-        not data_root_overridden
-        or resolved_settings_path.parent.parent == resolved_data_root.parent
-    )
+    # 4. Paths & alias (explicit data_root or FININTEL_DATA_ROOT always wins over YAML ../data defaults)
+    use_yaml_paths = resolved_settings_path is not None and not data_root_overridden
     raw_state = raw_settings.get("state_path")
     if isinstance(raw_state, str) and raw_state.strip() and use_yaml_paths:
         state_path = _resolve_under(config_dir, raw_state.strip())

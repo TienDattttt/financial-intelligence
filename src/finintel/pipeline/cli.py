@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import subprocess
 from collections.abc import Callable, Mapping
@@ -108,8 +109,26 @@ def load_settings(path: Path) -> Settings:
         not isinstance(key, str) for key in storage
     ):
         raise ValueError("storage must be a YAML mapping.")
+    env_data_root = os.getenv("FININTEL_DATA_ROOT", "").strip()
+    if env_data_root:
+        root_override = Path(env_data_root).resolve()
+        resolved_state = (root_override / "metadata" / "state.sqlite").resolve()
+        merged_storage = dict(storage)
+        raw_cat = merged_storage.get("catalog")
+        merged_cat = dict(raw_cat) if isinstance(raw_cat, Mapping) else {}
+        merged_cat["sqlite_path"] = str(
+            (root_override / "metadata" / "ducklake_catalog.sqlite").resolve()
+        )
+        merged_storage["catalog"] = merged_cat
+        merged_storage["data_path"] = str(
+            (root_override / "lakehouse" / "data").resolve()
+        )
+        storage = merged_storage
+    else:
+        resolved_state = (path.resolve().parent / state_path).resolve()
+
     return Settings(
-        (path.resolve().parent / state_path).resolve(),
+        resolved_state,
         min_space,
         tuple(tickers),
         ingestion,

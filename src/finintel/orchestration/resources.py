@@ -91,6 +91,9 @@ class FinIntelPathsResource(dg.ConfigurableResource["FinIntelPathsResource"]):
         return _resolve_under(self.resolved_project_root(), self.config_dir)
 
     def resolved_data_root(self) -> Path:
+        env_root = os.getenv("FININTEL_DATA_ROOT", "").strip()
+        if env_root and self.data_root == "data" and self.project_root == ".":
+            return Path(env_root).resolve()
         return _resolve_under(self.resolved_project_root(), self.data_root)
 
     def resolved_settings_path(self) -> Path:
@@ -149,6 +152,9 @@ class StateStoreResource(dg.ConfigurableResource["StateStoreResource"]):
     state_path: str = "data/metadata/state.sqlite"
 
     def resolved_path(self) -> Path:
+        env_root = os.getenv("FININTEL_DATA_ROOT", "").strip()
+        if env_root and self.state_path == "data/metadata/state.sqlite":
+            return (Path(env_root).resolve() / "metadata" / "state.sqlite").resolve()
         return Path(self.state_path).resolve()
 
     def pipeline_lock_path(self) -> Path:
@@ -197,10 +203,34 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
         raw_storage = settings.get("storage")
         if raw_storage is not None and not isinstance(raw_storage, Mapping):
             raise ContractViolationError("settings.yaml 'storage' must be a mapping.")
+        effective_raw_storage: Mapping[str, object] | None = raw_storage
+        default_data_root = (paths.resolved_project_root() / "data").resolve()
+        resolved_data_root = paths.resolved_data_root()
+        if isinstance(raw_storage, Mapping) and (
+            bool(os.getenv("FININTEL_DATA_ROOT", "").strip())
+            or resolved_data_root != default_data_root
+        ):
+            rebased = dict(raw_storage)
+            if rebased.get("data_path") == "../data/lakehouse/data" or bool(
+                os.getenv("FININTEL_DATA_ROOT", "").strip()
+            ):
+                rebased.pop("data_path", None)
+            raw_cat_obj = rebased.get("catalog")
+            if isinstance(raw_cat_obj, Mapping):
+                cat_copy = dict(raw_cat_obj)
+                if cat_copy.get(
+                    "sqlite_path"
+                ) == "../data/metadata/ducklake_catalog.sqlite" or bool(
+                    os.getenv("FININTEL_DATA_ROOT", "").strip()
+                ):
+                    cat_copy.pop("sqlite_path", None)
+                rebased["catalog"] = cat_copy
+            effective_raw_storage = rebased
+
         base = StorageConfig.from_mapping(
-            raw_storage,
+            effective_raw_storage,
             config_dir=paths.resolved_config_dir(),
-            data_root=paths.resolved_data_root(),
+            data_root=resolved_data_root,
         )
 
         pg_env_override = os.getenv("FININTEL_DUCKLAKE_PG_DSN_ENV", "").strip()
@@ -471,7 +501,7 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
     vietcap_url_template: str = DEFAULT_VIETCAP_URL_TEMPLATE
     cafef_url_template: str = DEFAULT_CAFEF_URL_TEMPLATE
     raw_disclosures_dir: str | None = None
-    fetch_online: bool = False
+    fetch_online: bool = True
     on_error: str = "warn"
     max_date: str | None = None
     max_retries: int = DEFAULT_DISCLOSURE_MAX_RETRIES
@@ -725,6 +755,19 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
             if owned:
                 client.close()
 
+    def effective_fetch_online(self) -> bool:
+        """Resolve online disclosure fetching from explicit field or ``FININTEL_DISCLOSURE_FETCH_ONLINE``."""
+        if "fetch_online" in self.model_fields_set:
+            return bool(self.fetch_online)
+        raw_env = os.getenv("FININTEL_DISCLOSURE_FETCH_ONLINE", "true").strip().lower()
+        if raw_env in {"0", "false", "no", "off"}:
+            return False
+        if raw_env in {"1", "true", "yes", "on", ""}:
+            return True
+        raise ContractViolationError(
+            "FININTEL_DISCLOSURE_FETCH_ONLINE must be a boolean string ('true'/'false')."
+        )
+
     def fetch_payload(
         self,
         *,
@@ -741,7 +784,7 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
         local_bytes = self.read_local_confined(local_filename, base_dir=base_dir)
         if local_bytes is not None:
             return local_bytes
-        if not self.fetch_online:
+        if not self.effective_fetch_online():
             return None
         return self.fetch_bytes(
             validated_url,

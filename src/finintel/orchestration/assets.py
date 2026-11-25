@@ -615,7 +615,7 @@ def raw_fhsc_filings(
     )
     # Disclosure enrichment executes in its own downstream asset (public_disclosure_pool).
     fhsc_settings["disclosure_enrichment"] = {"enabled": False}
-    if paths.raw_root is not None and "raw_path" not in fhsc_settings:
+    if "raw_path" not in fhsc_settings:
         fhsc_settings["raw_path"] = str(paths.resolved_raw_root())
     if config.incremental_lookback_years is not None:
         fhsc_settings["incremental_lookback_years"] = config.incremental_lookback_years
@@ -708,109 +708,97 @@ def raw_public_disclosures(
     """Enrich archived FHSC filings with verified Vietcap IQ and CafeF disclosure dates."""
     disclosure_fetcher.validate_config()
     state_store = state.initialize()
+    batch_tickers = tuple(context.partition_keys)
+    online_enabled = disclosure_fetcher.effective_fetch_online()
+    if not online_enabled and disclosure_fetcher.raw_disclosures_dir is None:
+        for ticker in batch_tickers:
+            yield dg.AssetMaterialization(
+                asset_key=context.asset_key,
+                partition=ticker,
+                metadata={
+                    "ticker": ticker,
+                    "status": "SKIPPED_OFFLINE",
+                    "enriched_filings": 0,
+                    "matched_filings": 0,
+                    "upgraded_filings": 0,
+                    "unchanged_filings": 0,
+                    "skipped_pre_period_end": 0,
+                    "attempted_fetches": 0,
+                    "failed_fetches": 0,
+                    "parse_errors": 0,
+                },
+            )
+        yield dg.Output(value=None)
+        return
+
     archive = RawArchive(paths.resolved_raw_root(), state_store)
     max_date = disclosure_fetcher.parsed_max_date()
-    batch_tickers = tuple(context.partition_keys)
-
     vietcap_records: list[DisclosureRecord] = []
     cafef_records: list[DisclosureRecord] = []
     evidence_payloads: dict[str, bytes] = {}
     config_dir = paths.resolved_config_dir()
-    attempted_fetches = 0
-    failed_fetches = 0
-    parse_errors = 0
+    attempted_fetches, failed_fetches, parse_errors = 0, 0, 0
 
     with disclosure_fetcher.session():
         for ticker in batch_tickers:
-            vci_url = disclosure_fetcher.validate_url(
-                disclosure_fetcher.vietcap_url_template.format(ticker=ticker)
-            )
-            cafef_url = disclosure_fetcher.validate_url(
-                disclosure_fetcher.cafef_url_template.format(ticker=ticker)
-            )
-
-            vci_bytes: bytes | None = None
-            attempted_fetches += 1
-            try:
-                vci_bytes = disclosure_fetcher.fetch_payload(
-                    local_filename=f"{ticker}.json",
-                    source_url=vci_url,
-                    base_dir=config_dir,
-                    state_store=state_store,
-                )
-            except ContractViolationError:
-                raise
-            except Exception as exc:
-                failed_fetches += 1
-                if disclosure_fetcher.on_error == "fail":
-                    raise
-                context.log.warning(
-                    "Vietcap IQ disclosure fetch skipped for %s (%s)",
-                    ticker,
-                    type(exc).__name__,
-                )
-            if vci_bytes is not None:
+            for label, tmpl, ext, parser, sink in (
+                (
+                    "Vietcap IQ",
+                    disclosure_fetcher.vietcap_url_template,
+                    "json",
+                    parse_vietcap_iq_disclosures,
+                    vietcap_records,
+                ),
+                (
+                    "CafeF BCTC",
+                    disclosure_fetcher.cafef_url_template,
+                    "html",
+                    parse_cafef_bctc_disclosures,
+                    cafef_records,
+                ),
+            ):
+                src_url = disclosure_fetcher.validate_url(tmpl.format(ticker=ticker))
+                raw_payload: bytes | None = None
+                attempted_fetches += 1
                 try:
-                    parsed_vci = parse_vietcap_iq_disclosures(
-                        ticker,
-                        vci_bytes,
-                        source_url=vci_url,
-                        max_date=max_date,
+                    raw_payload = disclosure_fetcher.fetch_payload(
+                        local_filename=f"{ticker}.{ext}",
+                        source_url=src_url,
+                        base_dir=config_dir,
+                        state_store=state_store,
                     )
-                    evidence_payloads[vci_url] = vci_bytes
-                    vietcap_records.extend(parsed_vci)
+                except ContractViolationError:
+                    raise
                 except Exception as exc:
-                    parse_errors += 1
+                    failed_fetches += 1
                     if disclosure_fetcher.on_error == "fail":
                         raise
                     context.log.warning(
-                        "Vietcap IQ disclosure parse skipped for %s (%s)",
+                        "%s disclosure fetch skipped for %s (%s)",
+                        label,
                         ticker,
                         type(exc).__name__,
                     )
-
-            cafef_bytes: bytes | None = None
-            attempted_fetches += 1
-            try:
-                cafef_bytes = disclosure_fetcher.fetch_payload(
-                    local_filename=f"{ticker}.html",
-                    source_url=cafef_url,
-                    base_dir=config_dir,
-                    state_store=state_store,
-                )
-            except ContractViolationError:
-                raise
-            except Exception as exc:
-                failed_fetches += 1
-                if disclosure_fetcher.on_error == "fail":
-                    raise
-                context.log.warning(
-                    "CafeF BCTC disclosure fetch skipped for %s (%s)",
-                    ticker,
-                    type(exc).__name__,
-                )
-            if cafef_bytes is not None:
-                try:
-                    parsed_cafef = parse_cafef_bctc_disclosures(
-                        ticker,
-                        cafef_bytes,
-                        source_url=cafef_url,
-                        max_date=max_date,
-                    )
-                    evidence_payloads[cafef_url] = cafef_bytes
-                    cafef_records.extend(parsed_cafef)
-                except Exception as exc:
-                    parse_errors += 1
-                    if disclosure_fetcher.on_error == "fail":
-                        raise
-                    context.log.warning(
-                        "CafeF BCTC disclosure parse skipped for %s (%s)",
-                        ticker,
-                        type(exc).__name__,
-                    )
+                if raw_payload is not None:
+                    try:
+                        parsed = parser(
+                            ticker, raw_payload, source_url=src_url, max_date=max_date
+                        )
+                        evidence_payloads[src_url] = raw_payload
+                        sink.extend(parsed)
+                    except Exception as exc:
+                        parse_errors += 1
+                        if disclosure_fetcher.on_error == "fail":
+                            raise
+                        context.log.warning(
+                            "%s disclosure parse skipped for %s (%s)",
+                            label,
+                            ticker,
+                            type(exc).__name__,
+                        )
 
     if (
-        disclosure_fetcher.fetch_online
+        online_enabled
         and attempted_fetches > 0
         and (failed_fetches + parse_errors) >= attempted_fetches
         and not vietcap_records
@@ -843,6 +831,8 @@ def raw_public_disclosures(
             partition=ticker,
             metadata={
                 "ticker": ticker,
+                "status": "ENRICHED",
+                "enriched_filings": summary.upgraded_filings,
                 "matched_filings": summary.matched_filings,
                 "upgraded_filings": summary.upgraded_filings,
                 "unchanged_filings": summary.unchanged_filings,

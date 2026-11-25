@@ -677,3 +677,121 @@ def test_p1_1_quarterly_retrain_schedule_defaults(tmp_path: Path) -> None:
 
 def timezone_vn() -> tzinfo:
     return timezone(timedelta(hours=7))
+
+
+def test_task02_finintel_data_root_unifies_cli_config_and_dagster_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-01 (TASK-02): FININTEL_DATA_ROOT overrides CLI load_settings, config.py, and Dagster storage."""
+    from finintel.config import resolve_runtime_config
+
+    custom_root = (tmp_path / "unified_data_root").resolve()
+    monkeypatch.setenv("FININTEL_DATA_ROOT", str(custom_root))
+    settings_path = REPO_ROOT / "config" / "settings.yaml"
+
+    cli_cfg = load_settings(settings_path)
+    assert cli_cfg.state_path == (custom_root / "metadata" / "state.sqlite").resolve()
+    from collections.abc import Mapping
+
+    raw_storage = dict(cli_cfg.storage)
+    cat_obj = raw_storage.get("catalog")
+    assert isinstance(cat_obj, Mapping)
+    raw_cat = dict(cat_obj)
+    assert (
+        Path(str(raw_cat["sqlite_path"])).resolve()
+        == (custom_root / "metadata" / "ducklake_catalog.sqlite").resolve()
+    )
+    assert (
+        Path(str(raw_storage["data_path"])).resolve()
+        == (custom_root / "lakehouse" / "data").resolve()
+    )
+
+    rt_cfg = resolve_runtime_config(config_path=settings_path)
+    assert rt_cfg.data_root == custom_root
+    assert rt_cfg.state_path == (custom_root / "metadata" / "state.sqlite").resolve()
+    assert (
+        rt_cfg.catalog_sqlite_path
+        == (custom_root / "metadata" / "ducklake_catalog.sqlite").resolve()
+    )
+    assert rt_cfg.lakehouse_data_path == (custom_root / "lakehouse" / "data").resolve()
+
+    # Sibling root under REPO_ROOT (without touching disk) must also honor FININTEL_DATA_ROOT.
+    sibling_root = (REPO_ROOT / "tmp_nonexistent_sibling_probe").resolve()
+    monkeypatch.setenv("FININTEL_DATA_ROOT", str(sibling_root))
+    rt_sibling = resolve_runtime_config(config_path=settings_path)
+    assert rt_sibling.data_root == sibling_root
+    assert rt_sibling.state_path == sibling_root / "metadata" / "state.sqlite"
+    assert (
+        rt_sibling.catalog_sqlite_path
+        == sibling_root / "metadata" / "ducklake_catalog.sqlite"
+    )
+    assert rt_sibling.lakehouse_data_path == sibling_root / "lakehouse" / "data"
+
+    # Default Dagster resources honor FININTEL_DATA_ROOT dynamically even when constructed bare.
+    monkeypatch.setenv("FININTEL_DATA_ROOT", str(custom_root))
+    bare_paths = FinIntelPathsResource()
+    bare_state = StateStoreResource()
+    bare_storage = StorageResource()
+    assert bare_paths.resolved_data_root() == custom_root
+    assert bare_state.resolved_path() == custom_root / "metadata" / "state.sqlite"
+    storage_cfg = bare_storage.resolve_storage_config(bare_paths)
+    assert (
+        storage_cfg.catalog.sqlite_path
+        == custom_root / "metadata" / "ducklake_catalog.sqlite"
+    )
+    assert storage_cfg.data_path == custom_root / "lakehouse" / "data"
+
+
+def test_task02_disclosure_fetcher_online_env_and_skipped_offline_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-01 (TASK-02): DisclosureFetcherResource honors FININTEL_DISCLOSURE_FETCH_ONLINE and marks SKIPPED_OFFLINE."""
+    from finintel.orchestration.assets import raw_public_disclosures
+    from finintel.orchestration.resources import DisclosureFetcherResource
+
+    monkeypatch.delenv("FININTEL_DISCLOSURE_FETCH_ONLINE", raising=False)
+    default_res = build_default_resources()["disclosure_fetcher"]
+    assert isinstance(default_res, DisclosureFetcherResource)
+    assert default_res.effective_fetch_online() is True
+
+    monkeypatch.setenv("FININTEL_DISCLOSURE_FETCH_ONLINE", "false")
+    offline_res = build_default_resources()["disclosure_fetcher"]
+    assert isinstance(offline_res, DisclosureFetcherResource)
+    assert offline_res.effective_fetch_online() is False
+
+    paths_res, state_res, storage_res = _setup_workspace(tmp_path, backend="parquet")
+    with dg.DagsterInstance.ephemeral() as instance:
+        sync_corporate_ticker_partitions(instance, paths_res.resolved_issuers_path())
+        res = dg.materialize(
+            [raw_public_disclosures],
+            partition_key="FPT",
+            instance=instance,
+            resources={
+                "paths": paths_res,
+                "state": state_res,
+                "storage": storage_res,
+                "disclosure_fetcher": DisclosureFetcherResource(fetch_online=False),
+            },
+            selection=[raw_public_disclosures],
+        )
+        assert res.success
+        mats = [
+            m
+            for m in res.asset_materializations_for_node("raw_public_disclosures")
+            if "status" in m.metadata
+        ]
+        assert len(mats) == 1
+        meta = {k: v.value for k, v in mats[0].metadata.items()}
+        assert meta["status"] == "SKIPPED_OFFLINE"
+        assert meta["enriched_filings"] == 0
+        assert meta["attempted_fetches"] == 0
+
+
+def test_task02_start_demo_685_script_reads_finintel_data_root() -> None:
+    """TASK-02: scripts/start_demo_685.ps1 honors $env:FININTEL_DATA_ROOT with data/universe_600_800 fallback."""
+    script_text = (REPO_ROOT / "scripts" / "start_demo_685.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "$env:FININTEL_DATA_ROOT" in script_text
+    lines_before_check = script_text.split("Test-Path $StateSqlite")[0]
+    assert "$env:FININTEL_DATA_ROOT" in lines_before_check
