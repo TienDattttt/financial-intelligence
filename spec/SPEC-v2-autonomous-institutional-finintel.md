@@ -10,7 +10,7 @@
 ### 1.1. Bảng Khóa Phiên Bản Thực Tế Trong Kho Mã Nguồn
 Mọi cú pháp API trong đặc tả này được ghim cứng theo `pyproject.toml` và `frontend/package.json`:
 
-- **Backend (`Python >=3.11`):** `polars==1.35.2`, `duckdb==1.4.2`, `filelock==3.29.0`, `tenacity==9.1.2`, `httpx==0.28.1`, `vnstock-oapi==0.1.2`, `xgboost==2.1.4`, `scikit-learn==1.6.1`, `scipy==1.15.2`, `shap==0.49.1`, `dagster==1.13.30`, `dagster-webserver==1.13.30`, `dagster-postgres==0.29.30`, `fastapi==0.165.0`, `pydantic==2.14.4`, `psycopg[binary]==3.3.9`, `redis==8.1.0`, `structlog==26.1.0`, `prometheus-client==0.26.0`, `opentelemetry-api==1.45.2`, `opentelemetry-sdk==1.45.2`, `pymupdf==2.1`, `pgvector==0.5.1`.
+- **Backend (`Python >=3.11`):** `polars==1.35.2`, `duckdb==1.4.2`, `filelock==4.2.10`, `tenacity==9.2.1`, `httpx==0.28.1`, `vnstock-oapi==0.1.2`, `xgboost==2.1.4`, `scikit-learn==1.7.2`, `scipy==1.17.1`, `shap==0.49.1`, `dagster==1.13.30`, `dagster-webserver==1.13.30`, `dagster-postgres==0.29.30`, `fastapi==0.165.0`, `pydantic==2.14.4`, `psycopg[binary]==3.3.9`, `redis==8.1.0`, `structlog==26.1.0`, `prometheus-client==0.26.0`, `opentelemetry-api==1.45.2`, `opentelemetry-sdk==1.45.2`, `pymupdf==2.1`, `pgvector==0.5.1`.
 - **Frontend (`Node >=24`):** `next==16.3.5`, `react==19.2.4`, `@base-ui/react==^1.3.0`, `@tanstack/react-query==^5.90.0`, `echarts==^6.0.0`, `zod==^4.0.0`, `vitest==^4.0.0`, `@playwright/test==^1.65.1`, `@axe-core/playwright==^4.14.0`.
 
 ### 1.2. Nguồn Tài Liệu Chính Thống & Học Thuật Đã Đối Chiếu

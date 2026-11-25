@@ -25,7 +25,7 @@
 - **Triệu chứng:** Tốc độ tăng `rate(finintel_ingestion_requests_total{outcome="rate_limited"}[15m]) > 0` hoặc khóa `fhsc_cooldown:api.fiinquant.vn` xuất hiện trong bảng trạng thái điều phối; tiến trình thu thập tạm ngưng gọi mạng.
 - **Lệnh kiểm tra (`< 30s`):**
   ```powershell
-  uv run --no-sync python -c "import sqlite3, os, time; p = os.environ.get('FININTEL_DATA_ROOT', 'data') + '/state/state.sqlite'; c = sqlite3.connect(p); print('Now:', time.time(), 'Pacing:', c.execute('SELECT host, next_allowed_at_epoch FROM provider_rate_limits').fetchall())"
+  uv run --no-sync python -c "import sqlite3, os, time; p = os.environ.get('FININTEL_DATA_ROOT', 'data') + '/metadata/state.sqlite'; c = sqlite3.connect(p); print('Now:', time.time(), 'Pacing:', c.execute('SELECT host, next_allowed_at_epoch FROM provider_rate_limits').fetchall())"
   curl -s http://127.0.0.1:8000/metrics | Select-String "finintel_ingestion_requests_total"
   ```
 - **Hành động khắc phục:** **Không** xóa khóa `provider_rate_limits` để ép gọi lại khi máy chủ nguồn đang bảo trì hoặc khóa IP; xác nhận không có script CLI ngoài luồng chạy song song không đi qua `acquire_host_pacing_slot()` (`min_interval >= 1.75s` cho FHSC), chờ hết thời gian cooldown tự động và để Vietcap IQ / dữ liệu đã lưu trong kho CAS tiếp tục phục vụ snapshot hiện hành.
@@ -50,6 +50,6 @@
 - **Lệnh kiểm tra (`< 30s`):**
   ```powershell
   curl -i -s http://127.0.0.1:8000/health/ready
-  uv run --no-sync python -c "import sqlite3, os; p = os.environ.get('FININTEL_DATA_ROOT', 'data') + '/state/state.sqlite'; c = sqlite3.connect(p); print(c.execute('SELECT pointer_name, snapshot_id, ducklake_version FROM serving_pointers').fetchall())"
+  uv run --no-sync python -c "import sqlite3, os; p = os.environ.get('FININTEL_DATA_ROOT', 'data') + '/metadata/state.sqlite'; c = sqlite3.connect(p); print(c.execute('SELECT snapshot_id, run_id, published_at FROM active_snapshot').fetchall())"
   ```
 - **Hành động khắc phục:** Đảm bảo `FININTEL_DATA_ROOT` giống hệt nhau giữa container `api`, `dagster-daemon` và môi trường CLI; kích hoạt hàm đồng bộ tiến một chiều (`forward-only` theo `ducklake_version` cao nhất đã vượt `QG2`) để upsert lại `finintel_serving_pointer` trên PostgreSQL và làm sạch khóa đệm Valkey tương ứng.
