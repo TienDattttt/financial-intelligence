@@ -133,9 +133,16 @@ def resolve_runtime_config(
         resolved_settings_path = Path(env_settings).resolve()
         if not resolved_settings_path.is_file():
             raise FileNotFoundError(resolved_settings_path)
-    elif data_root_overridden:
+    elif data_root is not None:
         candidate = (resolved_data_root.parent / "config" / "settings.yaml").resolve()
         resolved_settings_path = candidate if candidate.is_file() else None
+    elif data_root_overridden:
+        candidate = (resolved_data_root.parent / "config" / "settings.yaml").resolve()
+        if candidate.is_file():
+            resolved_settings_path = candidate
+        else:
+            default_cfg = DEFAULT_SETTINGS_PATH.resolve()
+            resolved_settings_path = default_cfg if default_cfg.is_file() else None
     else:
         default_cfg = DEFAULT_SETTINGS_PATH.resolve()
         resolved_settings_path = default_cfg if default_cfg.is_file() else None
@@ -221,7 +228,18 @@ def resolve_runtime_config(
     elif resolved_driver == "postgres":
         raw_backend_val = "ducklake"
     elif isinstance(yaml_backend, str) and yaml_backend.strip():
-        raw_backend_val = yaml_backend.strip().lower()
+        candidate_backend = yaml_backend.strip().lower()
+        if (
+            data_root_overridden
+            and candidate_backend == "ducklake"
+            and not (
+                resolved_data_root / "metadata" / "ducklake_catalog.sqlite"
+            ).is_file()
+            and (resolved_data_root / "published" / "snapshots").is_dir()
+        ):
+            raw_backend_val = "auto"
+        else:
+            raw_backend_val = candidate_backend
     else:
         raw_backend_val = "auto"
 

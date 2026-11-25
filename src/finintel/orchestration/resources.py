@@ -31,6 +31,7 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import PrivateAttr
 
 from finintel.exceptions import ContractViolationError
+from finintel.ingestion.ssrf_guard import MAX_HTML_JSON_BYTES
 from finintel.pipeline.ingest import (
     DEFAULT_CAFEF_URL_TEMPLATE,
     DEFAULT_DISCLOSURE_BACKOFF_BASE_SECONDS,
@@ -497,11 +498,11 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
     """
 
     timeout_seconds: float = DEFAULT_DISCLOSURE_TIMEOUT_SECONDS
-    max_bytes: int = MAX_DISCLOSURE_FILE_BYTES
+    max_bytes: int = MAX_HTML_JSON_BYTES
     vietcap_url_template: str = DEFAULT_VIETCAP_URL_TEMPLATE
     cafef_url_template: str = DEFAULT_CAFEF_URL_TEMPLATE
     raw_disclosures_dir: str | None = None
-    fetch_online: bool = True
+    fetch_online: bool | None = None
     on_error: str = "warn"
     max_date: str | None = None
     max_retries: int = DEFAULT_DISCLOSURE_MAX_RETRIES
@@ -583,6 +584,7 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
         self.validate_url(self.vietcap_url_template.format(ticker="FPT"))
         self.validate_url(self.cafef_url_template.format(ticker="FPT"))
         self.parsed_max_date()
+        self.effective_fetch_online()
 
     def parsed_max_date(self) -> date | None:
         if self.max_date is None:
@@ -757,7 +759,7 @@ class DisclosureFetcherResource(dg.ConfigurableResource["DisclosureFetcherResour
 
     def effective_fetch_online(self) -> bool:
         """Resolve online disclosure fetching from explicit field or ``FININTEL_DISCLOSURE_FETCH_ONLINE``."""
-        if "fetch_online" in self.model_fields_set:
+        if self.fetch_online is not None:
             return bool(self.fetch_online)
         raw_env = os.getenv("FININTEL_DISCLOSURE_FETCH_ONLINE", "true").strip().lower()
         if raw_env in {"0", "false", "no", "off"}:

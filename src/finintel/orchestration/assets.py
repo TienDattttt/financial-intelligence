@@ -825,13 +825,18 @@ def raw_public_disclosures(
         tickers=batch_tickers,
     )
 
+    final_status = (
+        "SKIPPED_OFFLINE"
+        if (not online_enabled and not evidence_payloads)
+        else "ENRICHED"
+    )
     for ticker in batch_tickers:
         yield dg.AssetMaterialization(
             asset_key=context.asset_key,
             partition=ticker,
             metadata={
                 "ticker": ticker,
-                "status": "ENRICHED",
+                "status": final_status,
                 "enriched_filings": summary.upgraded_filings,
                 "matched_filings": summary.matched_filings,
                 "upgraded_filings": summary.upgraded_filings,

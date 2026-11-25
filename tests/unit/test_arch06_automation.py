@@ -706,7 +706,8 @@ def test_task02_finintel_data_root_unifies_cli_config_and_dagster_storage(
         == (custom_root / "lakehouse" / "data").resolve()
     )
 
-    rt_cfg = resolve_runtime_config(config_path=settings_path)
+    rt_cfg = resolve_runtime_config()
+    assert rt_cfg.settings_path == settings_path.resolve()
     assert rt_cfg.data_root == custom_root
     assert rt_cfg.state_path == (custom_root / "metadata" / "state.sqlite").resolve()
     assert (
@@ -770,7 +771,7 @@ def test_task02_disclosure_fetcher_online_env_and_skipped_offline_guard(
                 "paths": paths_res,
                 "state": state_res,
                 "storage": storage_res,
-                "disclosure_fetcher": DisclosureFetcherResource(fetch_online=False),
+                "disclosure_fetcher": DisclosureFetcherResource(),
             },
             selection=[raw_public_disclosures],
         )
