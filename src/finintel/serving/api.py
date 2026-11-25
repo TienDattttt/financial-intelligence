@@ -144,7 +144,7 @@ logger = logging.getLogger("finintel.serving.api")
 CACHE_CONTROL_HEADER = "private, max-age=0, must-revalidate"
 STRESS_CACHE_CONTROL_HEADER = "private, no-store"
 _TICKER_PATTERN = r"^[A-Z0-9]{1,10}$"
-_ICB_CODE_PATTERN = r"^[A-Za-z0-9_-]{1,20}$"
+_ICB_CODE_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 _PATH_LEAK_RE = re.compile(
     r"([A-Za-z]:\\|\\\\|/(?:[A-Za-z0-9_.-]+/)+|\.parquet\b|\.sqlite\b|\.json\b|\.py\b|Traceback)",
     re.IGNORECASE,

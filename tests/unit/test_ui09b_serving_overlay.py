@@ -619,3 +619,62 @@ def test_v2_market_overlay_real_fpt_and_hbc() -> None:
         assert hbc.earliest_warning_summary is not None
         assert hbc.earliest_warning_summary.to_current is not None
         assert hbc.earliest_warning_summary.to_current.drawdown_from_marker_pct < -50.0
+
+
+def test_overlay_preserves_shares_source_from_ratios_across_mid_quarter_split(
+    tmp_path: Path,
+) -> None:
+    """_build_overlay_financial_periods preserves shares_source='SHARES_OUTSTANDING_MARKET'."""
+    from finintel.storage.manifest_export import build_latest_facts_table
+
+    tables, market_prices_df, _ = _build_overlay_fixture_tables()
+    # Add precomputed ttm_value onto latest_facts so overlay reads financial_ratios directly,
+    # and mark FPT as a treasury-share issuer whose estimated shares came from market_prices.
+    facts_with_ttm = tables["financial_facts.parquet"].with_columns(
+        pl.when(pl.col("metric_id") == "IS_NET_INCOME_PARENT")
+        .then(pl.lit(500_000_000_000.0))
+        .otherwise(pl.col("ttm_value"))
+        .alias("ttm_value")
+    )
+    latest_facts = build_latest_facts_table(facts_with_ttm, as_of=date(2024, 12, 31))
+    ratios_market = tables[RATIOS_TABLE].with_columns(
+        pl.when(pl.col("issuer_id") == "FPT")
+        .then(pl.lit("SHARES_OUTSTANDING_MARKET"))
+        .otherwise(pl.col("shares_source"))
+        .alias("shares_source"),
+        pl.when(pl.col("issuer_id") == "FPT")
+        .then(pl.lit(100_000_000.0))
+        .otherwise(pl.col("estimated_shares_outstanding"))
+        .alias("estimated_shares_outstanding"),
+    )
+    tables["latest_facts.parquet"] = latest_facts
+    tables[RATIOS_TABLE] = ratios_market
+
+    data_root = tmp_path / "data"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    state.start_run("run_split_src", "MANUAL", {"source": "test"}, "sha_split_src")
+    SnapshotPublisher(data_root / "published" / "snapshots", state_store=state).publish(
+        "snap_split_src",
+        tables,
+        run_id="run_split_src",
+    )
+    state.finish_run("run_split_src", "SUCCEEDED", "snap_split_src")
+    (data_root / "market_prices").mkdir(parents=True, exist_ok=True)
+    market_prices_df.write_parquet(
+        data_root / "market_prices" / "market_prices.parquet"
+    )
+
+    with TestClient(create_app(data_root=data_root)) as client:
+        resp = client.get("/api/v2/companies/FPT/market-overlay")
+        assert resp.status_code == 200
+        body = CompanyMarketOverlayResponse(**resp.json())
+        by_date = {p.trade_date: p for p in body.price_series}
+        pre_split = by_date[date(2024, 5, 2)]
+        post_split = by_date[date(2024, 5, 3)]
+        assert pre_split.shares_source == "SHARES_OUTSTANDING_MARKET"
+        assert post_split.shares_source == "SHARES_OUTSTANDING_MARKET"
+        assert pre_split.market_cap_vnd == pytest.approx(6_000_000_000_000.0)
+        assert post_split.market_cap_vnd == pytest.approx(6_000_000_000_000.0)
+        assert pre_split.pe_ttm == pytest.approx(12.0)
+        assert post_split.pe_ttm == pytest.approx(12.0)

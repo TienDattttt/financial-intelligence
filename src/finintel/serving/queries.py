@@ -4777,6 +4777,7 @@ class DashboardQueryService:
                     "filing_id",
                     "parent_equity",
                     "estimated_shares_outstanding",
+                    "shares_source",
                 ),
                 avail_ratio_cols,
             )
@@ -4980,7 +4981,11 @@ class DashboardQueryService:
                                 .alias("_pp_estimated_shares")
                             )
                         if "shares_source" in pp_raw.columns:
-                            pp_select.append(pl.col("shares_source").cast(pl.String))
+                            pp_select.append(
+                                pl.col("shares_source")
+                                .cast(pl.String)
+                                .alias("_pp_shares_source")
+                            )
                         if "_period_available_at" in pp_raw.columns:
                             pp_select.append(
                                 pl.col("_period_available_at").cast(pl.Date)
@@ -5002,6 +5007,8 @@ class DashboardQueryService:
                 combined = combined.rename(
                     {"_pp_estimated_shares": "estimated_shares_outstanding"}
                 )
+            if "_pp_shares_source" in combined.columns:
+                combined = combined.rename({"_pp_shares_source": "shares_source"})
         elif not period_dates_df.is_empty():
             combined = period_dates_df.with_columns(
                 pl.lit(statement_scope).alias("statement_scope"),
@@ -5059,6 +5066,15 @@ class DashboardQueryService:
                 combined = combined.with_columns(
                     sh_expr.alias("estimated_shares_outstanding")
                 ).drop("_pp_estimated_shares")
+            if "_pp_shares_source" in combined.columns:
+                ss_expr = (
+                    pl.coalesce("shares_source", "_pp_shares_source")
+                    if "shares_source" in combined.columns
+                    else pl.col("_pp_shares_source")
+                )
+                combined = combined.with_columns(ss_expr.alias("shares_source")).drop(
+                    "_pp_shares_source"
+                )
 
         if (
             "published_at" not in combined.columns
