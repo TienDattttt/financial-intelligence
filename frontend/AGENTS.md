@@ -40,3 +40,13 @@
 - **KHÔNG lộ** thuật ngữ kỹ thuật backend (`REGIME_FALLBACK`, `snapshot_id`, `audit_quarantine`), đường dẫn đĩa, `.parquet`, hay traceback lên giao diện người dùng cuối.
 - **KHÔNG tự nối chuỗi** định dạng số tài chính — mọi con số đi qua `src/lib/format.ts` (`vi-VN`, `tabular-nums`, ngoặc đơn cho số âm BCTC, dấu `−` U+2212 cho tỷ lệ, `–` cho 0, `N/A` cho thiếu dữ liệu).
 - **KHÔNG sinh văn bản bằng LLM** — mọi câu diễn giải SHAP dùng quy tắc cố định trong `src/lib/narrative.ts`.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
