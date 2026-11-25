@@ -440,6 +440,7 @@ def run_collection(
     use_cache: bool = True,
     include_marketcap: bool = True,
     max_tickers: int | None = None,
+    max_pages: int = 10,
     progress_file: Path | None = None,
 ) -> int:
     """Execute end-to-end 375-ticker EOD collection, validation, and audit report."""
@@ -482,6 +483,7 @@ def run_collection(
             end_date=effective_end,
             use_cache=use_cache,
             include_marketcap=include_marketcap,
+            max_pages=max_pages,
         )
         all_bars.extend(bars)
         outcomes.append(outcome)
@@ -608,6 +610,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional cap for smoke testing.",
     )
     parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=10,
+        help="Maximum pagination pages per VNDirect/CafeF endpoint.",
+    )
+    parser.add_argument(
         "--progress-file",
         type=Path,
         default=None,
@@ -625,6 +633,7 @@ def main(argv: list[str] | None = None) -> int:
         use_cache=not args.no_cache,
         include_marketcap=not args.no_marketcap,
         max_tickers=args.max_tickers,
+        max_pages=args.max_pages,
         progress_file=args.progress_file,
     )
 

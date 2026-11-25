@@ -123,6 +123,7 @@ from finintel.transform.incremental import (
     PersistedMLArtifactBundle,
     _hash_facts_per_issuer,
     _hash_issuers_metadata,
+    _hash_market_shares_per_issuer,
     _hash_ml_config,
     _hash_transform_config,
     write_ml_artifact_bundle,
@@ -883,8 +884,22 @@ def publish_production_685_snapshot(
     issuer_hashes, _ = _hash_facts_per_issuer(clean_facts, as_of=as_of)
     issuers_meta_sha = _hash_issuers_metadata(issuers, as_of=as_of)
     transform_cfg_sha = _hash_transform_config(quality_config=QualityGateConfig())
+    market_prices_df = (
+        validate_market_prices(pl.read_parquet(market_prices_path))
+        if market_prices_path.is_file()
+        else None
+    )
+    issuer_market_hashes, market_shares_sha = _hash_market_shares_per_issuer(
+        market_prices_df, as_of=as_of
+    )
 
-    periods = prepare_periods(clean_facts, issuers, as_of=as_of, include_ml_inputs=True)
+    periods = prepare_periods(
+        clean_facts,
+        issuers,
+        as_of=as_of,
+        include_ml_inputs=True,
+        market_prices=market_prices_df,
+    )
     ratios_calc = calculate_ratios(periods)
     ratios_rich = add_dupont(ratios_calc)
     red_flags = (
@@ -1121,6 +1136,8 @@ def publish_production_685_snapshot(
         "ml_config_sha256": _hash_ml_config(ml_cfg),
         "facts_sha256": facts_sha256,
         "issuer_facts_sha256": issuer_hashes,
+        "market_shares_sha256": market_shares_sha,
+        "issuer_market_shares_sha256": issuer_market_hashes,
     }
     diff = TransformDiff(
         full_rebuild=True,
@@ -2121,6 +2138,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     issuers_path = universe_dir / "curated" / "issuers.parquet"
 
     raw_facts = canonicalize_financial_facts(pl.read_parquet(facts_path))
+    supp_facts_path = universe_dir / "curated" / "vietcap_supplement_facts.parquet"
+    if supp_facts_path.is_file():
+        supp_facts = canonicalize_financial_facts(pl.read_parquet(supp_facts_path))
+        if not supp_facts.is_empty():
+            logger.info(
+                "Merging %d supplementary Vietcap facts from %s",
+                supp_facts.height,
+                supp_facts_path,
+            )
+            raw_facts = pl.concat([raw_facts, supp_facts], how="vertical")
     facts, stub_rows = harmonize_stub_fiscal_year_start_dates(raw_facts)
     issuers = pl.read_parquet(issuers_path).with_columns(
         pl.lit(CATALOG_COLLECTION_DATE).cast(pl.Date).alias("industry_snapshot_date")

@@ -32,7 +32,7 @@ import shutil
 import sqlite3
 import time
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import asdict
 from datetime import UTC, date, datetime
@@ -53,6 +53,8 @@ from finintel.ingestion.disclosure_enricher import (
     DisclosureRecord,
     DisclosureSlot,
     enrich_fhsc_manifest_disclosures,
+    is_valid_vietcap_iq_payload,
+    load_fhsc_standalone_consolidated_slots,
     merge_disclosure_records,
     parse_cafef_bctc_disclosures,
     parse_vietcap_iq_disclosures,
@@ -67,7 +69,7 @@ from finintel.ingestion.regulatory_events_collector import (
 )
 from finintel.normalization.archive import normalize_archive_incremental
 from finintel.pipeline.health import fhsc_source_errors, load_fhsc_source
-from finintel.pipeline.ingest import IngestHandler
+from finintel.pipeline.ingest import DEFAULT_VIETCAP_URL_TEMPLATE, IngestHandler
 from finintel.pipeline.normalize import DEFAULT_TAXONOMY_DIR
 from finintel.pipeline.runner import RunRequest, Stage, StepContext, TriggerMode
 from finintel.pipeline.state_store import StateStore
@@ -107,7 +109,7 @@ DISTRESSED_EVENT_SEVERITY: dict[str, int] = {
     "WARNING": 5,
     "AUDITOR_QUALIFIED": 6,
 }
-VIETCAP_FS_URL = "https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/{ticker}/financial-statement"
+VIETCAP_FS_URL = DEFAULT_VIETCAP_URL_TEMPLATE
 CAFEF_BCTC_URL = "https://cafef.vn/du-lieu/Ajax/CongTy/BaoCaoTaiChinh.aspx?sym={ticker}"
 
 
@@ -334,16 +336,24 @@ def _safe_parse_disclosures(
     raw_bytes: bytes | None,
     *,
     source_url: str,
+    allow_unscoped_standalone_as_consolidated: bool = False,
+    standalone_consolidated_slots: Collection[tuple[PeriodType, int, int | None]]
+    | None = None,
 ) -> tuple[tuple[DisclosureRecord, ...], str | None]:
     if raw_bytes is None:
         return (), None
-    fn = (
-        parse_vietcap_iq_disclosures
-        if parser == "vci"
-        else parse_cafef_bctc_disclosures
-    )
     try:
-        return fn(ticker, raw_bytes, source_url=source_url), None
+        if parser == "vci":
+            return parse_vietcap_iq_disclosures(
+                ticker, raw_bytes, source_url=source_url
+            ), None
+        return parse_cafef_bctc_disclosures(
+            ticker,
+            raw_bytes,
+            source_url=source_url,
+            allow_unscoped_standalone_as_consolidated=allow_unscoped_standalone_as_consolidated,
+            standalone_consolidated_slots=standalone_consolidated_slots,
+        ), None
     except (ContractViolationError, UnicodeDecodeError, ValueError) as exc:
         return (), f"{type(exc).__name__}: {exc}"
 
@@ -354,13 +364,18 @@ def _fetch_bytes_with_cache(
     url: str,
     client: PoliteHostHttpClient,
     min_valid_bytes: int = 2,
+    validator: Callable[[bytes], bool] | None = None,
 ) -> tuple[bytes | None, str | None]:
     if cache_path.is_file() and cache_path.stat().st_size >= min_valid_bytes:
-        return cache_path.read_bytes(), None
+        cached_bytes = cache_path.read_bytes()
+        if validator is None or validator(cached_bytes):
+            return cached_bytes, None
     try:
         payload = client.get_bytes(url)
     except Exception as exc:  # noqa: BLE001 - network outage resilience during mass screen
         return None, f"{type(exc).__name__}: {exc}"
+    if validator is not None and not validator(payload):
+        return None, "Invalid payload rejected by validator"
     _atomic_write_bytes(cache_path, payload)
     return payload, None
 
@@ -427,6 +442,7 @@ def screen_candidate_universe(
             cache_path=vci_cache_dir / f"{ticker}.json",
             url=vci_url,
             client=client,
+            validator=is_valid_vietcap_iq_payload,
         )
         vci_years, vci_quarters = (
             _count_vci_json_periods(vci_bytes) if vci_bytes is not None else (0, 0)
@@ -703,18 +719,27 @@ def _enrich_ticker_disclosures_from_cache(
     cafef_records: list[DisclosureRecord] = []
     evidence: dict[str, bytes] = {}
 
+    archive = RawArchive(universe_dir / "raw", state)
+    standalone_slots = load_fhsc_standalone_consolidated_slots(archive, (ticker,))
+
     if vci_path.is_file() and vci_path.stat().st_size > 0:
         raw_vci = vci_path.read_bytes()
-        parsed_vci, _ = _safe_parse_disclosures(
-            "vci", ticker, raw_vci, source_url=vci_url
-        )
-        if parsed_vci:
-            evidence[vci_url] = raw_vci
-            vci_records.extend(parsed_vci)
+        if is_valid_vietcap_iq_payload(raw_vci):
+            parsed_vci, _ = _safe_parse_disclosures(
+                "vci", ticker, raw_vci, source_url=vci_url
+            )
+            if parsed_vci:
+                evidence[vci_url] = raw_vci
+                vci_records.extend(parsed_vci)
     if cafef_path.is_file() and cafef_path.stat().st_size > 0:
         raw_cafef = cafef_path.read_bytes()
         parsed_cafef, _ = _safe_parse_disclosures(
-            "cafef", ticker, raw_cafef, source_url=cafef_url
+            "cafef",
+            ticker,
+            raw_cafef,
+            source_url=cafef_url,
+            allow_unscoped_standalone_as_consolidated=True,
+            standalone_consolidated_slots=standalone_slots.get(ticker, set()),
         )
         if parsed_cafef:
             evidence[cafef_url] = raw_cafef
@@ -749,7 +774,6 @@ def _enrich_ticker_disclosures_from_cache(
     merged = merge_disclosure_records(
         vci_records, cafef_records, period_end_dates=period_end_dates
     )
-    archive = RawArchive(universe_dir / "raw", state)
     summary = enrich_fhsc_manifest_disclosures(
         archive,
         list(merged.values()),
