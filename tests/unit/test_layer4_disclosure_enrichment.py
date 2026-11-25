@@ -26,6 +26,7 @@ from finintel.ingestion.archive import RawArchive
 from finintel.ingestion.disclosure_enricher import (
     DisclosureRecord,
     enrich_fhsc_manifest_disclosures,
+    is_valid_vietcap_iq_payload,
     merge_disclosure_records,
     parse_cafef_bctc_disclosures,
     parse_vietcap_iq_disclosures,
@@ -929,3 +930,84 @@ def test_enrich_manifest_guards_none_audit_status_rev2_tickers_and_calendar_reca
             ).fetchone()
         )
     assert fpt_ann_after["is_filed_late"] == 0
+
+
+def test_is_valid_vietcap_iq_payload_and_cafef_standalone_window_guard() -> None:
+    """Reject HTTP 400 JSON errors and apply ±4Q window & NCI guards for unscoped CafeF rows."""
+    assert not is_valid_vietcap_iq_payload(
+        b'{"status": 400, "successful": false, "data": null}'
+    )
+    assert not is_valid_vietcap_iq_payload(b"not-json")
+    assert is_valid_vietcap_iq_payload(
+        b'{"status": 200, "successful": true, "data": {"years": [], "quarters": []}}'
+    )
+
+    html = """
+    <table>
+      <tr>
+        <td>Báo cáo tài chính hợp nhất năm 2015 (đã kiểm toán)</td>
+        <td>CN/2015</td>
+        <td><a href="https://cafefnew.mediacdn.vn/BCTC/abc_hn_2015.pdf">Tải</a></td>
+      </tr>
+      <tr>
+        <td>Báo cáo tài chính hợp nhất quý 1 năm 2022</td>
+        <td>Q1/2022</td>
+        <td><a href="https://cafefnew.mediacdn.vn/BCTC/abc_hn_2022q1_undated.pdf">Tải</a></td>
+      </tr>
+      <tr>
+        <td>Báo cáo tài chính quý 2 năm 2022</td>
+        <td>Q2/2022</td>
+        <td><a href="https://cafefnew.mediacdn.vn/BCTC/20220729_-_ABC_-_BCTC_Q2_2022.pdf">Tải</a></td>
+      </tr>
+      <tr>
+        <td>Báo cáo tài chính công ty mẹ quý 3 năm 2023</td>
+        <td>Q3/2023</td>
+        <td><a href="https://cafefnew.mediacdn.vn/BCTC/abc_ctm_2023q3.pdf">Tải</a></td>
+      </tr>
+      <tr>
+        <td>Báo cáo tài chính quý 1 năm 2024</td>
+        <td>Q1/2024</td>
+        <td><a href="https://cafefnew.mediacdn.vn/BCTC/20240425_-_ABC_-_BCTC_Q1_2024.pdf">Tải</a></td>
+      </tr>
+      <tr>
+        <td>Giải trình chênh lệch lợi nhuận quý 3 năm 2026</td>
+        <td>Q3/2026</td>
+        <td><a href="https://cafefnew.mediacdn.vn/BCTC/20261029_-_ABC_-_Giai_trinh_Q3_2026.pdf">Tải</a></td>
+      </tr>
+      <tr>
+        <td>Báo cáo tài chính riêng quý 3 năm 2026</td>
+        <td>Q3/2026</td>
+        <td><a href="https://cafefnew.mediacdn.vn/BCTC/20261029_-_ABC_-_BCTC_rieng_Q3_2026.pdf">Tải</a></td>
+      </tr>
+      <tr>
+        <td>Báo cáo tài chính quý 3 năm 2026</td>
+        <td>Q3/2026</td>
+        <td><a href="https://cafefnew.mediacdn.vn/BCTC/20261030_-_ABC_-_BCTC_Q3_2026.pdf">Tải</a></td>
+      </tr>
+    </table>
+    """
+    # 1. Default mode ignores unscoped rows cleanly
+    default_records = parse_cafef_bctc_disclosures(
+        "ABC",
+        html.encode("utf-8"),
+        source_url="https://cafef.vn/du-lieu/Ajax/CongTy/BaoCaoTaiChinh.aspx?sym=ABC",
+    )
+    assert default_records == ()
+
+    # 2. Standalone mode with ±4Q window & FHSC NCI slot guard:
+    # - Q2/2022 is 1Q away from undated Q1/2022 'hợp nhất' -> blocked!
+    # - Q1/2024 is 2Q away from undated Q3/2023 'công ty mẹ' -> blocked!
+    # - Q3/2026 is 43Q after 2015 'hợp nhất' and in standalone_consolidated_slots -> mapped!
+    # - 'Giải trình...' and 'Báo cáo tài chính riêng...' are ignored!
+    records = parse_cafef_bctc_disclosures(
+        "ABC",
+        html.encode("utf-8"),
+        source_url="https://cafef.vn/du-lieu/Ajax/CongTy/BaoCaoTaiChinh.aspx?sym=ABC",
+        allow_unscoped_standalone_as_consolidated=True,
+        standalone_consolidated_slots={(PeriodType.QUARTER, 2026, 3)},
+    )
+    assert len(records) == 1
+    assert records[0].statement_scope == StatementScope.CONSOLIDATED
+    assert records[0].period_type == PeriodType.QUARTER
+    assert (records[0].fiscal_year, records[0].fiscal_quarter) == (2026, 3)
+    assert records[0].published_at == date(2026, 10, 30)

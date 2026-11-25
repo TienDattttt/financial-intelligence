@@ -500,7 +500,7 @@ def _build_offline_disclosure_payloads(
     ticker: str,
 ) -> tuple[bytes, str, bytes, str]:
     """Generate offline Vietcap IQ JSON and CafeF BCTC HTML covering 2024..2026-Q3."""
-    vci_url = f"https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/{ticker}/financial-statement"
+    vci_url = f"https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/{ticker}/financial-statement?section=BALANCE_SHEET"
     cafef_url = f"https://s.cafef.vn/Ajax/CongTy/BaoCaoTaiChinh.aspx?sym={ticker}"
 
     vci_years: list[dict[str, object]] = [

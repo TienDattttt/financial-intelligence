@@ -367,3 +367,76 @@ def test_live_collector_fallback_retry_and_pit_alignment(tmp_path: Path) -> None
     )
     assert hbc_only.height == 1
     assert hbc_only["trade_date"].to_list() == [date(2023, 4, 17)]
+
+
+def test_upcom_vwap_denominator_and_hose_close_raw_preservation() -> None:
+    """UPCOM MARKETCAP divides by nmValue/nmVolume (fallback average*1000); HOSE uses close_raw."""
+    payload = json.dumps(
+        {
+            "currentPage": 1,
+            "totalPages": 1,
+            "data": [
+                {
+                    "code": "ACV",
+                    "date": "2018-01-02",
+                    "floor": "UPCOM",
+                    "close": 119.0,
+                    "average": 116.309,
+                    "adClose": 70.718,
+                    "nmVolume": 169087.0,
+                    "nmValue": 1.9666494e10,
+                    "ptVolume": 0.0,
+                },
+                {
+                    "code": "ACV",
+                    "date": "2018-01-03",
+                    "floor": "UPCOM",
+                    "close": 120.0,
+                    "average": 115.0,
+                    "adClose": 71.0,
+                    "nmVolume": 0.0,
+                    "nmValue": 0.0,
+                    "ptVolume": 1000.0,
+                },
+            ],
+        }
+    ).encode("utf-8")
+    bars, total_pages, dropped = parse_vndirect_stock_prices("ACV", payload)
+    assert total_pages == 1
+    assert dropped == 0
+    assert len(bars) == 2
+
+    vwap_expected = 1.9666494e10 / 169087.0
+    mcap_map = {
+        date(2018, 1, 2): 3_582_265_610.0 * vwap_expected,
+        date(2018, 1, 3): 3_582_265_610.0 * 115_000.0,
+    }
+    enriched = attach_shares_outstanding_market(bars, mcap_map)
+    assert enriched[0].shares_outstanding_market == pytest.approx(3_582_265_610.0)
+    assert enriched[1].shares_outstanding_market == pytest.approx(3_582_265_610.0)
+
+    hose_payload = json.dumps(
+        {
+            "currentPage": 1,
+            "totalPages": 1,
+            "data": [
+                {
+                    "code": "FPT",
+                    "date": "2018-01-02",
+                    "floor": "HOSE",
+                    "close": 59.8,
+                    "average": 59.0,
+                    "adClose": 14.026,
+                    "nmVolume": 5022160.0,
+                    "nmValue": 2.9630744e11,
+                }
+            ],
+        }
+    ).encode("utf-8")
+    hose_bars, _, _ = parse_vndirect_stock_prices("FPT", hose_payload)
+    hose_enriched = attach_shares_outstanding_market(
+        hose_bars, {date(2018, 1, 2): 31_746_547_994_200.0}
+    )
+    assert hose_enriched[0].shares_outstanding_market == pytest.approx(
+        31_746_547_994_200.0 / 59_800.0
+    )

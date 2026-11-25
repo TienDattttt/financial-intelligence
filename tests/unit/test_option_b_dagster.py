@@ -288,7 +288,7 @@ def _build_mock_disclosure_responses(tickers: tuple[str, ...]) -> dict[str, byte
     for ticker in tickers:
         vci_url = (
             f"https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/"
-            f"{ticker}/financial-statement"
+            f"{ticker}/financial-statement?section=BALANCE_SHEET"
         )
         vci_payload = {
             "status": 200,
@@ -593,7 +593,7 @@ def test_disclosure_fetcher_security_guards(tmp_path: Path) -> None:
 
     with pytest.raises(ContractViolationError, match="size limit"):
         _OversizedFetcher(fetch_online=True, max_bytes=1024).fetch_bytes(
-            "https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/FPT/financial-statement"
+            "https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/FPT/financial-statement?section=BALANCE_SHEET"
         )
 
     local_dir = tmp_path / "disclosures"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal, Protocol, runtime_checkable
 
 import polars as pl
@@ -45,6 +45,7 @@ def align_events_to_market_prices_pit(
     *,
     event_date_col: str = "published_at",
     price_date_col: str = "trade_date",
+    tolerance: str | timedelta | None = None,
 ) -> pl.DataFrame:
     """Point-in-time forward-align filing/event dates onto trading sessions (B-06).
 
@@ -77,6 +78,7 @@ def align_events_to_market_prices_pit(
         right_on=price_date_col,
         by="issuer_id",
         strategy=PIT_PRICE_JOIN_STRATEGY,
+        tolerance=tolerance,
         check_sortedness=False,
     )
 

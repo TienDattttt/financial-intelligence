@@ -107,6 +107,7 @@ class MarketPriceBar:
     volume: float
     shares_outstanding_market: float | None
     source_provider: str
+    marketcap_price_denominator: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -525,9 +526,24 @@ def parse_vndirect_stock_prices(
             dropped_non_positive += 1
             continue
 
+        floor = str(item.get("floor") or "").strip().upper()
         nm_vol = _to_finite_float(item.get("nmVolume"))
         pt_vol = _to_finite_float(item.get("ptVolume"))
         total_vol = max(0.0, (nm_vol or 0.0) + (pt_vol or 0.0))
+
+        mcap_denom: float | None = None
+        if floor == "UPCOM":
+            nm_val = _to_finite_float(item.get("nmValue"))
+            avg_k = _to_finite_float(item.get("average"))
+            if (
+                nm_vol is not None
+                and nm_vol > 0.0
+                and nm_val is not None
+                and nm_val > 0.0
+            ):
+                mcap_denom = nm_val / nm_vol
+            elif avg_k is not None and avg_k > 0.0:
+                mcap_denom = round(avg_k * VND_PRICE_MULTIPLIER, 4)
 
         bars.append(
             MarketPriceBar(
@@ -539,6 +555,7 @@ def parse_vndirect_stock_prices(
                 volume=total_vol,
                 shares_outstanding_market=None,
                 source_provider="vndirect_finfo",
+                marketcap_price_denominator=mcap_denom,
             )
         )
     return bars, total_pages, dropped_non_positive
@@ -672,20 +689,31 @@ def attach_shares_outstanding_market(
     bars: Sequence[MarketPriceBar],
     marketcap_by_date: Mapping[date, float],
 ) -> list[MarketPriceBar]:
-    """Attach PIT ``shares_outstanding_market = MARKETCAP / close_raw`` when valid."""
+    """Attach PIT ``shares_outstanding_market`` from ``MARKETCAP`` using VWAP on UPCOM."""
     if not marketcap_by_date:
         return list(bars)
     enriched: list[MarketPriceBar] = []
     for bar in bars:
         mcap = marketcap_by_date.get(bar.trade_date)
+        custom_denom = bar.marketcap_price_denominator
+        if (
+            custom_denom is not None
+            and math.isfinite(custom_denom)
+            and custom_denom > 0.0
+        ):
+            use_custom = True
+            denom = custom_denom
+        else:
+            use_custom = False
+            denom = bar.close_raw
         if (
             mcap is not None
             and math.isfinite(mcap)
             and mcap > 0.0
-            and math.isfinite(bar.close_raw)
-            and bar.close_raw > 0.0
+            and math.isfinite(denom)
+            and denom > 0.0
         ):
-            shares = mcap / bar.close_raw
+            shares = float(round(mcap / denom)) if use_custom else (mcap / denom)
             if math.isfinite(shares) and shares > 0.0:
                 enriched.append(replace(bar, shares_outstanding_market=shares))
                 continue

@@ -60,6 +60,7 @@ from finintel.ingestion.disclosure_enricher import (
     DisclosureSlot,
     EnrichmentSummary,
     enrich_fhsc_manifest_disclosures,
+    load_fhsc_standalone_consolidated_slots,
     merge_disclosure_records,
     parse_cafef_bctc_disclosures,
     parse_vietcap_iq_disclosures,
@@ -90,7 +91,10 @@ DEFAULT_MIN_EXACT_FILING_RATIO = 0.75
 DISCLOSURE_ALLOWED_HOSTS: frozenset[str] = frozenset(
     {"iq.vietcap.com.vn", "s.cafef.vn", "cafef.vn"}
 )
-DEFAULT_VIETCAP_URL_TEMPLATE = "https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/{ticker}/financial-statement"
+DEFAULT_VIETCAP_URL_TEMPLATE = (
+    "https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/"
+    "{ticker}/financial-statement?section=BALANCE_SHEET"
+)
 DEFAULT_CAFEF_URL_TEMPLATE = (
     "https://cafef.vn/du-lieu/Ajax/CongTy/BaoCaoTaiChinh.aspx?sym={ticker}"
 )
@@ -1321,6 +1325,11 @@ class IngestHandler:
             return {}
         return result
 
+    def _load_standalone_consolidated_slots(
+        self, archive: RawArchive, target_tickers: tuple[str, ...]
+    ) -> dict[str, set[tuple[PeriodType, int, int | None]]]:
+        return load_fhsc_standalone_consolidated_slots(archive, target_tickers)
+
     def _fetch_disclosure_payload(
         self,
         cfg: _DisclosureEnrichmentConfig,
@@ -1366,6 +1375,9 @@ class IngestHandler:
         vietcap_records: list[DisclosureRecord] = []
         cafef_records: list[DisclosureRecord] = []
         evidence_payloads: dict[str, bytes] = {}
+        standalone_slots = self._load_standalone_consolidated_slots(
+            archive, target_tickers
+        )
 
         with ExitStack() as stack:
             http_client: httpx.Client | None = None
@@ -1474,6 +1486,10 @@ class IngestHandler:
                             cafef_bytes,
                             source_url=cafef_url,
                             max_date=cfg.max_date,
+                            allow_unscoped_standalone_as_consolidated=True,
+                            standalone_consolidated_slots=standalone_slots.get(
+                                ticker, set()
+                            ),
                         )
                         evidence_payloads[cafef_url] = cafef_bytes
                         cafef_records.extend(parsed_cafef)

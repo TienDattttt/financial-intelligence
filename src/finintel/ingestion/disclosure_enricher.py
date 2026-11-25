@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from html import unescape
@@ -107,6 +108,16 @@ _CAFEF_NON_TICKER_PREFIXES = frozenset(
         "ZIP",
     }
 )
+_CAFEF_UNSCOPED_EXCLUDE_TERMS: tuple[str, ...] = (
+    "giải trình",
+    "đính chính",
+    "chênh lệch",
+    "thuyết minh",
+    "bổ sung",
+    "nghị quyết",
+    "đại hội",
+    "riêng",
+)
 _SQLITE_IN_CHUNK_SIZE = 500
 
 
@@ -195,6 +206,22 @@ def _parse_iso_prefix_date(raw: object) -> date | None:
         return date.fromisoformat(prefix)
     except ValueError:
         return None
+
+
+def is_valid_vietcap_iq_payload(content: bytes) -> bool:
+    """Return True when raw Vietcap IQ JSON represents a successful HTTP 200 payload."""
+    try:
+        decoded = json.loads(content)
+    except (ValueError, UnicodeError):
+        return False
+    if not isinstance(decoded, dict):
+        return False
+    if decoded.get("successful") is False:
+        return False
+    status = decoded.get("status")
+    if status is not None and (isinstance(status, bool) or status != 200):
+        return False
+    return isinstance(decoded.get("data"), dict)
 
 
 def parse_vietcap_iq_disclosures(
@@ -337,12 +364,42 @@ def _cafef_row_matches_ticker(tr_html: str, href: str, clean_ticker: str) -> boo
     return True
 
 
+def _slot_quarter_index(period_type: PeriodType, year: int, quarter: int | None) -> int:
+    return year * 4 + (quarter if quarter is not None else 4)
+
+
+def _cafef_audit_and_priority(
+    title_lower: str,
+    period_type: PeriodType,
+    quarter: int | None,
+) -> tuple[AuditStatus, int]:
+    is_reviewed = "soát xét" in title_lower
+    is_audited = "kiểm toán" in title_lower
+    if period_type == PeriodType.ANNUAL:
+        audit = AuditStatus.AUDITED if is_audited else AuditStatus.UNAUDITED
+        priority = 2 if is_audited else 1
+    elif quarter == 2:
+        audit = AuditStatus.REVIEWED if is_reviewed else AuditStatus.UNAUDITED
+        priority = 2 if is_reviewed else 1
+    else:
+        audit = (
+            AuditStatus.AUDITED
+            if is_audited
+            else (AuditStatus.REVIEWED if is_reviewed else AuditStatus.UNAUDITED)
+        )
+        priority = 2 if not (is_reviewed or is_audited) else 1
+    return audit, priority
+
+
 def parse_cafef_bctc_disclosures(
     ticker: str,
     content: bytes,
     *,
     source_url: str,
     max_date: date | None = None,
+    allow_unscoped_standalone_as_consolidated: bool = False,
+    standalone_consolidated_slots: Collection[tuple[PeriodType, int, int | None]]
+    | None = None,
 ) -> tuple[DisclosureRecord, ...]:
     """Extract explicit filing dates embedded in CafeF BCTC document table rows.
 
@@ -350,6 +407,10 @@ def parse_cafef_bctc_disclosures(
     or ``FPT_22Q2_BCTC_HNSX_2022-102346.pdf``) are strictly ignored rather than guessed.
     Mismatched ticker query parameters in ``source_url`` raise ``ContractViolationError``,
     and rows whose filenames or HTML attributes declare a different ticker are skipped.
+    When ``allow_unscoped_standalone_as_consolidated`` (or ``standalone_consolidated_slots``)
+    is enabled, unscoped standalone rows without any explicit ``hợp nhất`` / ``công ty mẹ``
+    / ``riêng`` row within a ±4-quarter window (and verified against FHSC NCI slots when
+    provided) map safely to ``StatementScope.CONSOLIDATED``.
     """
     clean_ticker = ticker.strip().upper()
     if not _TICKER_RE.fullmatch(clean_ticker):
@@ -360,6 +421,9 @@ def parse_cafef_bctc_disclosures(
     chosen: dict[
         tuple[StatementScope, PeriodType, int, int | None], tuple[int, DisclosureRecord]
     ] = {}
+    explicit_scope_q_indices: set[int] = set()
+    unscoped_candidates: list[tuple[int, PeriodType, int, int | None, date, str]] = []
+
     for row_idx, tr_match in enumerate(_TR_RE.finditer(html)):
         tr_html = tr_match[1]
         tds = [
@@ -377,17 +441,6 @@ def parse_cafef_bctc_disclosures(
         if not _cafef_row_matches_ticker(tr_html, href, clean_ticker):
             continue
 
-        if "hợp nhất" in title_lower:
-            scope = StatementScope.CONSOLIDATED
-        elif (
-            "công ty mẹ" in title_lower
-            or "bctc riêng" in title_lower
-            or "riêng lẻ" in title_lower
-        ):
-            scope = StatementScope.SEPARATE
-        else:
-            continue
-
         q_match = _PERIOD_Q_RE.fullmatch(period_text)
         a_match = _PERIOD_A_RE.fullmatch(period_text)
         if q_match is not None:
@@ -401,28 +454,40 @@ def parse_cafef_bctc_disclosures(
         else:
             continue
 
+        if "hợp nhất" in title_lower:
+            scope: StatementScope | None = StatementScope.CONSOLIDATED
+        elif (
+            "công ty mẹ" in title_lower
+            or "bctc riêng" in title_lower
+            or "riêng lẻ" in title_lower
+        ):
+            scope = StatementScope.SEPARATE
+        else:
+            scope = None
+
+        if scope is not None:
+            explicit_scope_q_indices.add(
+                _slot_quarter_index(period_type, year, quarter)
+            )
+
         pub_date = _extract_cafef_filename_date(href)
         if pub_date is None or pub_date < date(year, 1, 1):
             continue
         if max_date is not None and pub_date > max_date:
             continue
 
-        is_reviewed = "soát xét" in title_lower
-        is_audited = "kiểm toán" in title_lower
-        if period_type == PeriodType.ANNUAL:
-            audit = AuditStatus.AUDITED if is_audited else AuditStatus.UNAUDITED
-            priority = 2 if is_audited else 1
-        elif quarter == 2:
-            audit = AuditStatus.REVIEWED if is_reviewed else AuditStatus.UNAUDITED
-            priority = 2 if is_reviewed else 1
-        else:
-            audit = (
-                AuditStatus.AUDITED
-                if is_audited
-                else (AuditStatus.REVIEWED if is_reviewed else AuditStatus.UNAUDITED)
-            )
-            priority = 2 if not (is_reviewed or is_audited) else 1
+        if scope is None:
+            if (
+                "báo cáo tài chính" in title_lower or "bctc" in title_lower
+            ) and not any(
+                term in title_lower for term in _CAFEF_UNSCOPED_EXCLUDE_TERMS
+            ):
+                unscoped_candidates.append(
+                    (row_idx, period_type, year, quarter, pub_date, title_lower)
+                )
+            continue
 
+        audit, priority = _cafef_audit_and_priority(title_lower, period_type, quarter)
         rec = DisclosureRecord(
             ticker=clean_ticker,
             period_type=period_type,
@@ -439,6 +504,51 @@ def parse_cafef_bctc_disclosures(
         existing = chosen.get(slot)
         if existing is None or priority > existing[0]:
             chosen[slot] = (priority, rec)
+
+    if (
+        allow_unscoped_standalone_as_consolidated
+        or standalone_consolidated_slots is not None
+    ):
+        allowed_slots = (
+            set(standalone_consolidated_slots)
+            if standalone_consolidated_slots is not None
+            else None
+        )
+        for (
+            row_idx,
+            period_type,
+            year,
+            quarter,
+            pub_date,
+            title_lower,
+        ) in unscoped_candidates:
+            q_idx = _slot_quarter_index(period_type, year, quarter)
+            if any(abs(other_q - q_idx) <= 4 for other_q in explicit_scope_q_indices):
+                continue
+            if (
+                allowed_slots is not None
+                and (period_type, year, quarter) not in allowed_slots
+            ):
+                continue
+            audit, priority = _cafef_audit_and_priority(
+                title_lower, period_type, quarter
+            )
+            rec = DisclosureRecord(
+                ticker=clean_ticker,
+                period_type=period_type,
+                fiscal_year=year,
+                fiscal_quarter=quarter,
+                statement_scope=StatementScope.CONSOLIDATED,
+                published_at=pub_date,
+                source_name="cafef_bctc",
+                source_url=source_url,
+                raw_locator=f"/rows/{row_idx}",
+                audit_status=audit,
+            )
+            slot = (StatementScope.CONSOLIDATED, period_type, year, quarter)
+            existing = chosen.get(slot)
+            if existing is None or priority > existing[0]:
+                chosen[slot] = (priority, rec)
 
     return tuple(item[1] for item in chosen.values())
 
@@ -695,6 +805,95 @@ def _load_fhsc_manifest_rows(
         raise ContractViolationError(
             "Unable to read filings_manifest for enrichment."
         ) from exc
+
+
+def load_fhsc_standalone_consolidated_slots(
+    archive: RawArchive,
+    target_tickers: Sequence[str],
+) -> dict[str, set[tuple[PeriodType, int, int | None]]]:
+    """Return ``(period_type, fiscal_year, fiscal_quarter)`` slots where FHSC BS has zero/null NCI."""
+    if not target_tickers or not archive.state.path.exists():
+        return {}
+    clean_tickers = tuple(
+        dict.fromkeys(
+            t.strip().upper()
+            for t in target_tickers
+            if isinstance(t, str) and t.strip()
+        )
+    )
+    if not clean_tickers:
+        return {}
+    rows: list[dict[str, object]] = []
+    try:
+        with archive.state.connection() as conn:
+            has_table = (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'filings_manifest'"
+                ).fetchone()
+                is not None
+            )
+            if not has_table:
+                return {}
+            for start in range(0, len(clean_tickers), _SQLITE_IN_CHUNK_SIZE):
+                chunk = clean_tickers[start : start + _SQLITE_IN_CHUNK_SIZE]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows.extend(
+                    dict(row)
+                    for row in conn.execute(
+                        f"""SELECT * FROM filings_manifest
+                            WHERE source_provider = 'fhsc'
+                              AND statement_type = 'BALANCE_SHEET'
+                              AND statement_scope = 'CONSOLIDATED'
+                              AND ticker_at_filing IN ({placeholders})""",
+                        chunk,
+                    ).fetchall()
+                )
+    except sqlite3.Error:
+        return {}
+
+    result: dict[str, set[tuple[PeriodType, int, int | None]]] = {
+        ticker: set() for ticker in clean_tickers
+    }
+    resolved_root = archive.root.resolve()
+    payload_cache: dict[tuple[str, str], list[object]] = {}
+    for row in rows:
+        try:
+            meta_row = (
+                {k: v for k, v in row.items() if k != "manifest_sig_sha256"}
+                if "manifest_sig_sha256" in row
+                else row
+            )
+            meta = FilingMetadata.from_mapping(meta_row)
+            if meta.period_type not in (PeriodType.QUARTER, PeriodType.ANNUAL):
+                continue
+            metrics = _extract_fhsc_metrics(
+                archive.root,
+                row,
+                meta,
+                resolved_root=resolved_root,
+                payload_cache=payload_cache,
+            )
+        except (
+            ContractViolationError,
+            ArchiveIntegrityError,
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+        ):
+            continue
+        raw_nci = metrics.get("loiichcodongkhongkiemsoat")
+        is_standalone = raw_nci is None or (
+            isinstance(raw_nci, (int, float))
+            and not isinstance(raw_nci, bool)
+            and math.isfinite(float(raw_nci))
+            and abs(float(raw_nci)) <= 1e-6
+        )
+        if is_standalone:
+            result.setdefault(meta.ticker_at_filing, set()).add(
+                (meta.period_type, meta.fiscal_year, meta.fiscal_quarter)
+            )
+    return result
 
 
 def _evidence_receipt_sha256(payload: RawPayload, run_id: str | None) -> str:
