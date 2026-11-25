@@ -30,9 +30,13 @@ from finintel.exceptions import ContractViolationError
 from finintel.pipeline.normalize import NORMALIZATION_METADATA, _period_filter
 from finintel.pipeline.runner import StepContext, StepOutcome
 from finintel.pipeline.state_store import StateStore
+from finintel.ports.market_prices import validate_market_prices
 from finintel.quality.rules import QualityGateConfig
 from finintel.storage.repository import ParquetRepository
-from finintel.storage.schemas import ML_SCORES_TABLE, MODEL_CARD_META_TABLE
+from finintel.storage.schemas import (
+    ML_SCORES_TABLE,
+    MODEL_CARD_META_TABLE,
+)
 from finintel.transform.incremental import (
     TRANSFORM_STATE_FILENAME,
     MLTransformConfig,
@@ -172,6 +176,21 @@ class AnalyticsHandler:
         previous_red_flags: pl.DataFrame | None = None
         previous_ml_scores: pl.DataFrame | None = None
         previous_model_card_meta: pl.DataFrame | None = None
+        market_prices_df: pl.DataFrame | None = None
+        mp_path = self._input_path(
+            "market_prices_path",
+            data_root / "market_prices" / "market_prices.parquet",
+        )
+        if mp_path is None and (curated / "market_prices.parquet").is_file():
+            mp_path = curated / "market_prices.parquet"
+        if mp_path is not None:
+            try:
+                market_prices_df = validate_market_prices(pl.read_parquet(mp_path))
+            except (OSError, pl.exceptions.PolarsError) as exc:
+                raise ContractViolationError(
+                    "Analytics requires readable market_prices Parquet input."
+                ) from exc
+
         if (
             previous_state is not None
             and previous_snapshot_id is not None
@@ -217,6 +236,7 @@ class AnalyticsHandler:
             state_path=transform_state_path,
             ml_config=ml_cfg,
             quality_config=quality_cfg,
+            market_prices=market_prices_df,
             persist_state=False,
         )
 

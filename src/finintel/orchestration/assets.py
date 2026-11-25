@@ -75,6 +75,7 @@ from finintel.pipeline.runner import (
     TriggerMode,
 )
 from finintel.pipeline.state_store import StateStore
+from finintel.ports.market_prices import validate_market_prices
 from finintel.ports.regulatory import validate_regulatory_events
 from finintel.quality.rules import QualityGateConfig
 from finintel.storage.manifest_export import (
@@ -1041,6 +1042,17 @@ def published_financial_marts(
             previous_red_flags: pl.DataFrame | None = None
             previous_ml_scores: pl.DataFrame | None = None
             previous_model_card_meta: pl.DataFrame | None = None
+            market_prices_df: pl.DataFrame | None = None
+            for mp_candidate in (
+                paths.resolved_data_root() / "market_prices" / "market_prices.parquet",
+                paths.resolved_curated_root() / "market_prices.parquet",
+            ):
+                if mp_candidate.is_file():
+                    market_prices_df = validate_market_prices(
+                        pl.read_parquet(mp_candidate)
+                    )
+                    break
+
             if (
                 previous_state is not None
                 and previous_snapshot_id is not None
@@ -1086,6 +1098,7 @@ def published_financial_marts(
                 state_path=transform_state_path,
                 ml_config=ml_cfg,
                 quality_config=quality_cfg,
+                market_prices=market_prices_df,
                 persist_state=False,
             )
 

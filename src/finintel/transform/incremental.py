@@ -31,7 +31,7 @@ import logging
 import os
 import pickle
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -368,6 +368,54 @@ def _hash_facts_per_issuer(
     return ordered_hashes, facts_digest
 
 
+def _hash_market_shares_per_issuer(
+    market_prices: pl.DataFrame | None, *, as_of: date
+) -> tuple[dict[str, str], str]:
+    """Compute deterministic per-issuer SHA-256 digests over PIT-visible market shares."""
+    if market_prices is None or market_prices.is_empty():
+        return {}, hashlib.sha256(b"{}").hexdigest()
+    required = {"issuer_id", "trade_date", "shares_outstanding_market"}
+    if required - set(market_prices.columns):
+        return {}, hashlib.sha256(b"{}").hexdigest()
+    visible = market_prices.select(
+        pl.col("issuer_id").cast(pl.String),
+        pl.col("trade_date").cast(pl.Date),
+        pl.col("shares_outstanding_market").cast(pl.Float64),
+    ).filter(
+        (pl.col("trade_date") <= as_of)
+        & pl.col("shares_outstanding_market").is_not_null()
+        & pl.col("shares_outstanding_market").is_finite()
+        & (pl.col("shares_outstanding_market") > 0.0)
+    )
+    if visible.is_empty():
+        return {}, hashlib.sha256(b"{}").hexdigest()
+
+    normalized = _canonicalize_for_hash(visible).sort(
+        ["issuer_id", "trade_date"], nulls_last=True
+    )
+    schema_header = _schema_header_bytes(normalized)
+    partitions = normalized.partition_by("issuer_id", as_dict=True, maintain_order=True)
+    issuer_hashes: dict[str, str] = {}
+    for key, sub_df in partitions.items():
+        issuer_hashes[str(key[0])] = _sha256_frame(sub_df, schema_header=schema_header)
+
+    ordered_hashes = dict(sorted(issuer_hashes.items()))
+    digest = hashlib.sha256(
+        json.dumps(ordered_hashes, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return ordered_hashes, digest
+
+
+def _filter_market_prices(
+    market_prices: pl.DataFrame | None, issuer_ids: Sequence[str]
+) -> pl.DataFrame | None:
+    if market_prices is None or market_prices.is_empty() or not issuer_ids:
+        return market_prices
+    return market_prices.filter(pl.col("issuer_id").is_in(list(issuer_ids)))
+
+
 def _hash_issuers_metadata(issuers: pl.DataFrame, *, as_of: date | None = None) -> str:
     """Hash PIT-effective ICB, regime, snapshot date, and delisting metadata."""
     exprs: list[pl.Expr] = []
@@ -558,6 +606,7 @@ def _compute_ratios_and_red_flags(
     *,
     as_of: date,
     include_ml_inputs: bool = False,
+    market_prices: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame | None]:
     """Compute Layer 4A ratios and red flags keeping intermediate columns in RAM for RF_01..RF_09."""
     rf_schema = ANALYTICS_SCHEMAS[RED_FLAGS_TABLE]
@@ -569,7 +618,11 @@ def _compute_ratios_and_red_flags(
         )
 
     periods = prepare_periods(
-        facts_subset, issuers, as_of=as_of, include_ml_inputs=include_ml_inputs
+        facts_subset,
+        issuers,
+        as_of=as_of,
+        include_ml_inputs=include_ml_inputs,
+        market_prices=market_prices,
     )
     if periods.is_empty():
         return (
@@ -1042,6 +1095,7 @@ def _score_ml_classical_fallback(
     issuers: pl.DataFrame,
     *,
     as_of: date,
+    market_prices: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Compute classical screening scores matching ``ML_SCORES_SCHEMA`` without model artifact."""
     if facts_subset.is_empty():
@@ -1049,7 +1103,11 @@ def _score_ml_classical_fallback(
     from finintel.ml.classical_scores import add_classical_scores
 
     periods = prepare_periods(
-        facts_subset, issuers, as_of=as_of, include_ml_inputs=True
+        facts_subset,
+        issuers,
+        as_of=as_of,
+        include_ml_inputs=True,
+        market_prices=market_prices,
     )
     if periods.is_empty():
         return pl.DataFrame(schema=ML_SCORES_SCHEMA)
@@ -1086,6 +1144,7 @@ def _train_ml_with_bundle(
     facts_sha256: str,
     issuers_sha256: str,
     precomputed_ratios_as_of: pl.DataFrame | None,
+    market_prices: pl.DataFrame | None = None,
 ) -> tuple[
     pl.DataFrame,
     dict[str, Any],
@@ -1129,7 +1188,11 @@ def _train_ml_with_bundle(
         ratios_as_of = precomputed_ratios_as_of
     else:
         periods_as_of = prepare_periods(
-            clean_facts, issuers, as_of=as_of, include_ml_inputs=True
+            clean_facts,
+            issuers,
+            as_of=as_of,
+            include_ml_inputs=True,
+            market_prices=market_prices,
         )
         ratios_as_of = calculate_ratios(periods_as_of)
     classical_as_of = add_classical_scores(ratios_as_of)
@@ -1323,6 +1386,7 @@ def _score_ml_with_bundle(
     artifact: PersistedMLArtifactBundle,
     financial_ratios: pl.DataFrame,
     industry_benchmarks: pl.DataFrame,
+    market_prices: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Score only ``facts_subset`` (dirty issuers) using a persisted model artifact."""
     if facts_subset.is_empty():
@@ -1333,7 +1397,11 @@ def _score_ml_with_bundle(
     from finintel.ml.supervised.train import score_distress_model
 
     periods_sub = prepare_periods(
-        facts_subset, issuers, as_of=as_of, include_ml_inputs=True
+        facts_subset,
+        issuers,
+        as_of=as_of,
+        include_ml_inputs=True,
+        market_prices=market_prices,
     )
     if periods_sub.is_empty():
         return pl.DataFrame(schema=ML_SCORES_SCHEMA)
@@ -1408,6 +1476,7 @@ def run_incremental_analytics_transform(
     state_path: Path | None = None,
     ml_config: MLTransformConfig | None = None,
     quality_config: QualityGateConfig | None = None,
+    market_prices: pl.DataFrame | None = None,
     persist_state: bool = False,
 ) -> TransformBundle:
     """Run QG1, DBSP incremental Layer 4A ratios/red_flags/benchmarks, and gated Layer 4B ML.
@@ -1453,6 +1522,9 @@ def run_incremental_analytics_transform(
     # Step 2: Deterministic hashes & DBSP TransformDiff (as_of decoupled from algorithm config)
     issuer_facts_sha256, facts_sha256 = _hash_facts_per_issuer(
         qg1.clean_facts, as_of=as_of
+    )
+    issuer_market_shares_sha256, market_shares_sha256 = _hash_market_shares_per_issuer(
+        market_prices, as_of=as_of
     )
     issuers_metadata_sha256 = _hash_issuers_metadata(issuers, as_of=as_of)
     transform_config_sha256 = _hash_transform_config(
@@ -1503,10 +1575,14 @@ def run_incremental_analytics_transform(
     )
 
     prev_issuer_hashes: dict[str, str] = {}
+    prev_market_hashes: dict[str, str] = {}
     if loaded_prev_state is not None:
         raw_hashes = loaded_prev_state.get("issuer_facts_sha256")
         if isinstance(raw_hashes, Mapping):
             prev_issuer_hashes = {str(k): str(v) for k, v in raw_hashes.items()}
+        raw_mkt_hashes = loaded_prev_state.get("issuer_market_shares_sha256")
+        if isinstance(raw_mkt_hashes, Mapping):
+            prev_market_hashes = {str(k): str(v) for k, v in raw_mkt_hashes.items()}
 
     curr_ids = set(issuer_facts_sha256)
     prev_ids = set(prev_issuer_hashes)
@@ -1516,6 +1592,7 @@ def run_incremental_analytics_transform(
         iid
         for iid in (curr_ids & prev_ids)
         if issuer_facts_sha256[iid] != prev_issuer_hashes[iid]
+        or issuer_market_shares_sha256.get(iid) != prev_market_hashes.get(iid)
     }
     if not full_rebuild and previous_ratios is not None:
         for iid in _find_identity_changed_issuers(previous_ratios, issuers):
@@ -1541,6 +1618,7 @@ def run_incremental_analytics_transform(
                 issuers,
                 as_of=as_of,
                 include_ml_inputs=(effective_ml_mode == "retrain"),
+                market_prices=market_prices,
             )
         )
         new_ratios_pub = financial_ratios
@@ -1558,8 +1636,12 @@ def run_incremental_analytics_transform(
         else:
             dirty_list = list(dirty_issuers)
             dirty_facts = qg1.clean_facts.filter(pl.col("issuer_id").is_in(dirty_list))
+            dirty_market_prices = _filter_market_prices(market_prices, dirty_list)
             new_ratios_pub, new_red_flags, _ = _compute_ratios_and_red_flags(
-                dirty_facts, issuers, as_of=as_of
+                dirty_facts,
+                issuers,
+                as_of=as_of,
+                market_prices=dirty_market_prices,
             )
             kept_ratios = previous_ratios.filter(
                 ~pl.col("issuer_id").is_in(dirty_list)
@@ -1670,6 +1752,7 @@ def run_incremental_analytics_transform(
                 facts_sha256=diff.facts_sha256,
                 issuers_sha256=diff.issuers_metadata_sha256,
                 precomputed_ratios_as_of=precomputed_ml_ratios,
+                market_prices=market_prices,
             )
         else:
             from finintel.ml.tables import build_ml_artifacts
@@ -1693,6 +1776,7 @@ def run_incremental_analytics_transform(
                 facts_sha256=diff.facts_sha256,
                 issuers_sha256=diff.issuers_metadata_sha256,
                 precomputed_ratios_as_of=precomputed_ml_ratios,
+                market_prices=market_prices,
                 run_id=run_id,
             )
             ml_scores = ml_artifacts.scores_table
@@ -1732,6 +1816,9 @@ def run_incremental_analytics_transform(
                     dirty_ml_facts = qg1.clean_facts.filter(
                         pl.col("issuer_id").is_in(issuers_to_score)
                     )
+                    dirty_ml_prices = _filter_market_prices(
+                        market_prices, issuers_to_score
+                    )
                     new_ml = _score_ml_with_bundle(
                         dirty_ml_facts,
                         issuers,
@@ -1739,6 +1826,7 @@ def run_incremental_analytics_transform(
                         artifact=loaded_artifact,
                         financial_ratios=financial_ratios,
                         industry_benchmarks=industry_benchmarks,
+                        market_prices=dirty_ml_prices,
                     )
                 else:
                     new_ml = pl.DataFrame(schema=ML_SCORES_SCHEMA)
@@ -1760,6 +1848,7 @@ def run_incremental_analytics_transform(
                     artifact=loaded_artifact,
                     financial_ratios=financial_ratios,
                     industry_benchmarks=industry_benchmarks,
+                    market_prices=market_prices,
                 )
             validate_analytics_table(ML_SCORES_TABLE, ml_scores)
             if loaded_artifact.model_card is not None:
@@ -1799,8 +1888,12 @@ def run_incremental_analytics_transform(
                 dirty_ml_facts = qg1.clean_facts.filter(
                     pl.col("issuer_id").is_in(issuers_to_score)
                 )
+                dirty_ml_prices = _filter_market_prices(market_prices, issuers_to_score)
                 new_ml = _score_ml_classical_fallback(
-                    dirty_ml_facts, issuers, as_of=as_of
+                    dirty_ml_facts,
+                    issuers,
+                    as_of=as_of,
+                    market_prices=dirty_ml_prices,
                 )
             else:
                 new_ml = pl.DataFrame(schema=ML_SCORES_SCHEMA)
@@ -1842,6 +1935,8 @@ def run_incremental_analytics_transform(
         "ml_config_sha256": ml_config_sha256,
         "facts_sha256": facts_sha256,
         "issuer_facts_sha256": issuer_facts_sha256,
+        "market_shares_sha256": market_shares_sha256,
+        "issuer_market_shares_sha256": issuer_market_shares_sha256,
     }
     if persist_state and state_path is not None:
         write_transform_state(state_path, next_transform_state)

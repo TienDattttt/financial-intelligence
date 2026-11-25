@@ -949,6 +949,7 @@ def build_ml_artifacts(
     facts_sha256: str | None = None,
     issuers_sha256: str | None = None,
     precomputed_ratios_as_of: pl.DataFrame | None = None,
+    market_prices: pl.DataFrame | None = None,
     run_id: str | None = None,
     artifact_sha256: str | None = None,
     include_model_card: bool = True,
@@ -989,7 +990,11 @@ def build_ml_artifacts(
         ratios_as_of = precomputed_ratios_as_of
     else:
         periods_as_of = prepare_periods(
-            facts, issuers, as_of=as_of, include_ml_inputs=True
+            facts,
+            issuers,
+            as_of=as_of,
+            include_ml_inputs=True,
+            market_prices=market_prices,
         )
         ratios_as_of = calculate_ratios(periods_as_of)
     classical_as_of = add_classical_scores(ratios_as_of)

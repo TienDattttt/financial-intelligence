@@ -38,7 +38,9 @@ from finintel.exceptions import ContractViolationError
 from finintel.normalization.mapper import FACT_SCHEMA
 from finintel.normalization.periods import (
     BRIDGED_TTM_NOTE,
+    DEFAULT_PROVIDER_PRIORITY,
     KNOWN_SCOPES,
+    coalesce_cross_provider_facts,
     compute_ttm,
     derive_quarters,
 )
@@ -357,6 +359,7 @@ def _period_amounts(
     facts: pl.DataFrame, stocks: tuple[str, ...], flows: tuple[str, ...]
 ) -> pl.DataFrame:
     facts = _synthesize_missing_selling_expenses(facts)
+    facts = coalesce_cross_provider_facts(facts)
     reports = facts.filter(
         (pl.col("revision_reason") != "RESTATED_REGIME_CHANGE")
         & pl.col("period_type").is_in(["QUARTER", "ANNUAL"])
@@ -367,7 +370,7 @@ def _period_amounts(
         pl.col(name) if name in facts.columns else pl.lit(None, dtype=dtype).alias(name)
         for name, dtype in FACT_SCHEMA.items()
     )
-    quarterly_series = ["issuer_id", "statement_scope", "source_provider", "metric_id"]
+    quarterly_series = ["issuer_id", "statement_scope", "metric_id"]
     ttm_flow = compute_ttm(flow)
     if "ttm_exact_filing" in ttm_flow.columns:
         ttm_exact_expr = pl.col("ttm_exact_filing").fill_null(False)
@@ -383,15 +386,29 @@ def _period_amounts(
             )
         )
     quarterly = ttm_flow.with_columns(ttm_exact_expr.alias("_ttm_exact"))
-    anchor_columns = [*PERIOD, *REVISION_ORDER, "taxonomy_version", "derivation_method"]
+    anchor_columns = [
+        *PERIOD,
+        *REVISION_ORDER,
+        "source_provider",
+        "taxonomy_version",
+        "derivation_method",
+    ]
     derived_q4 = quarterly.filter(
         pl.col("derivation_method") == "DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX"
     ).select(anchor_columns)
+    provider_rank_expr = (
+        pl.col("source_provider")
+        .replace_strict(DEFAULT_PROVIDER_PRIORITY, default=99, return_dtype=pl.Int32)
+        .alias("_provider_rank")
+    )
     anchors = pl.concat(
         [reports.select(anchor_columns), derived_q4], how="vertical_relaxed"
-    )
+    ).with_columns(provider_rank_expr)
     anchors = (
-        anchors.sort([reported, *REVISION_ORDER])
+        anchors.sort(
+            ["_provider_rank", reported, *REVISION_ORDER],
+            descending=[True, False, False, False, False],
+        )
         .group_by(PERIOD)
         .agg(
             pl.col("filing_id").last(),
@@ -401,7 +418,7 @@ def _period_amounts(
     warnings = (
         reports.filter(reported)
         .sort(REVISION_ORDER)
-        .unique(subset=[*PERIOD, "source_provider", "metric_id"], keep="last")
+        .unique(subset=[*PERIOD, "metric_id"], keep="last")
         .filter(
             pl.col("audit_opinion").is_in(["EXCEPT_FOR", "ADVERSE", "DISCLAIMER"])
             | pl.col("is_filed_late")
@@ -439,6 +456,7 @@ def _period_amounts(
     raw = pl.concat([raw, closing_stocks]).select(
         *PERIOD,
         *REVISION_ORDER,
+        "source_provider",
         *data_columns,
         "value",
         "source_filing_ids",
@@ -456,6 +474,7 @@ def _period_amounts(
                     ),
                     "revision_no",
                     "filing_id",
+                    "source_provider",
                     *data_columns,
                     pl.col("ttm_value").alias("value"),
                     pl.col("ttm_source_filing_ids").alias("source_filing_ids"),
@@ -465,8 +484,16 @@ def _period_amounts(
             ],
             how="vertical_relaxed",
         )
-        .sort(REVISION_ORDER)
-        .unique(subset=[*PERIOD, "metric_id"], keep="last")
+        .with_columns(
+            pl.col("value").is_null().alias("_is_null"),
+            provider_rank_expr,
+        )
+        .sort(
+            ["_is_null", "_provider_rank", *REVISION_ORDER],
+            descending=[False, False, True, True, True],
+        )
+        .unique(subset=[*PERIOD, "metric_id"], keep="first")
+        .drop(["_is_null", "_provider_rank"])
     )
     wide = amounts.group_by(PERIOD).agg(
         *(
@@ -552,7 +579,11 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
     explicit_zero_treasury_shares = pl.when(
         (c(SHARES) > 0) & (c(TREASURY_SHARES) == 0)
     ).then(c(SHARES) / 10000.0)
-    market_shares = (
+    charter_shares = pl.when(c(SHARES) > 0).then(c(SHARES) / 10000.0)
+    has_nonzero_treasury = c(TREASURY_SHARES).is_not_null() & (
+        c(TREASURY_SHARES) != 0.0
+    )
+    raw_market_shares = (
         pl.when(
             c("shares_outstanding_market").is_finite()
             & (c("shares_outstanding_market") > 0)
@@ -562,6 +593,12 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         if "shares_outstanding_market" in frame.columns
         else pl.lit(None, dtype=pl.Float64)
     )
+    guarded_market_shares = pl.when(
+        raw_market_shares.is_not_null()
+        & pl.when(has_nonzero_treasury & charter_shares.is_not_null())
+        .then(raw_market_shares < charter_shares)
+        .otherwise(pl.lit(True))
+    ).then(raw_market_shares)
     result = frame.with_columns(
         pl.when(CORPORATE & ~input_has("mixed", *DEBT_INPUTS))
         .then(debt)
@@ -604,12 +641,14 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         pl.when(CORPORATE & ~input_has("mixed", *FCF_INPUTS))
         .then(c(CFO) - c(CAPEX).abs())
         .alias("fcf_ttm"),
-        pl.coalesce(par_shares, market_shares).alias("estimated_shares_outstanding"),
+        pl.coalesce(par_shares, guarded_market_shares).alias(
+            "estimated_shares_outstanding"
+        ),
         pl.when(par_shares.is_not_null() & c(TREASURY_SHARES).is_not_null())
         .then(pl.lit("BS_ORDINARY_SHARES_EXPLICIT_ZERO_TREASURY"))
         .when(par_shares.is_not_null() & c(TREASURY_SHARES).is_null())
         .then(pl.lit("BS_ORDINARY_SHARES_NULL_TREASURY_ASSUMED_ZERO"))
-        .when(market_shares.is_not_null())
+        .when(guarded_market_shares.is_not_null())
         .then(pl.lit("SHARES_OUTSTANDING_MARKET"))
         .otherwise(pl.lit("MISSING_SHARES"))
         .alias("shares_source"),
@@ -619,13 +658,17 @@ def _aggregates(frame: pl.DataFrame) -> pl.DataFrame:
         pl.when(annual).then(c(EPS)).alias("eps_basic_reported"),
     )
     return result.with_columns(
-        pl.coalesce("implied_weighted_shares", explicit_zero_treasury_shares).alias(
-            "_eps_shares"
-        ),
+        pl.coalesce(
+            "implied_weighted_shares",
+            explicit_zero_treasury_shares,
+            guarded_market_shares,
+        ).alias("_eps_shares"),
         pl.when(c("implied_weighted_shares").is_not_null())
         .then(pl.lit("IMPLIED_ANNUAL_WEIGHTED"))
         .when(explicit_zero_treasury_shares.is_not_null())
         .then(pl.lit("NO_TREASURY_AT_PERIOD_END"))
+        .when(guarded_market_shares.is_not_null())
+        .then(pl.lit("SHARES_OUTSTANDING_MARKET"))
         .alias("eps_estimate_basis"),
         (c("total_debt") - c("total_cash_and_st_investments")).alias("net_debt"),
         (c("total_debt") + c(EQUITY) - c(CASH)).alias("invested_capital"),
@@ -1162,6 +1205,7 @@ def _attach_market_shares_pit(
         alignable,
         validated_prices,
         event_date_col="_amounts_available_at",
+        tolerance="14d",
     ).select(*PERIOD, "shares_outstanding_market")
     return periods.join(
         aligned, on=PERIOD, how="left", nulls_equal=True, validate="1:1"

@@ -37,9 +37,10 @@ def build_analytics_tables(
     issuers: pl.DataFrame,
     *,
     as_of: date,
+    market_prices: pl.DataFrame | None = None,
 ) -> dict[str, pl.DataFrame]:
     """Generate snapshot-ready ratios, benchmarks and red flags at a PIT cutoff."""
-    periods = prepare_periods(facts, issuers, as_of=as_of)
+    periods = prepare_periods(facts, issuers, as_of=as_of, market_prices=market_prices)
     ratios = add_dupont(calculate_ratios(periods))
     financial_ratios = (
         ratios.with_columns(

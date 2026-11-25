@@ -1352,3 +1352,112 @@ class TestEmpiricalSnapshotIncrementalTransform:
             abs_tol=1e-12,
         )
         run_blocking_publish_audits(icb_inc, run_id="emp-icb-inc")
+
+
+def test_incremental_market_prices_change_marks_only_affected_treasury_issuer_dirty(
+    tmp_path: Path,
+) -> None:
+    """Changing market_prices for one treasury-share issuer triggers partial incremental recompute."""
+    as_of = date(2025, 6, 1)
+    state_path = tmp_path / "metadata" / TRANSFORM_STATE_FILENAME
+    issuers = _make_corporate_issuers(2)
+    issuer_ids = issuers["issuer_id"].to_list()
+    facts = _make_universe_facts(issuer_ids).with_columns(
+        pl.when(pl.col("metric_id") == "BS_TREASURY_SHARES")
+        .then(pl.lit(-10_000.0))
+        .when(pl.col("metric_id") == "BS_ORDINARY_SHARES_CAPITAL")
+        .then(pl.lit(10_000_000_000.0))
+        .otherwise(pl.col("value"))
+        .alias("value")
+    )
+    facts = canonicalize_financial_facts(facts)
+
+    trade_dates = [
+        date(2024, 1, 30),
+        date(2024, 5, 2),
+        date(2024, 7, 30),
+        date(2024, 10, 30),
+        date(2025, 1, 30),
+        date(2025, 3, 25),
+    ]
+
+    def _prices(c1_shares: float, c2_shares: float) -> pl.DataFrame:
+        rows: list[dict[str, object]] = []
+        for d in trade_dates:
+            for iid, ticker, sh in (
+                ("CORP_01", "C01", c1_shares),
+                ("CORP_02", "C02", c2_shares),
+            ):
+                rows.append(
+                    {
+                        "issuer_id": iid,
+                        "ticker": ticker,
+                        "trade_date": d,
+                        "close_raw": 20_000.0,
+                        "close_adj": 20_000.0,
+                        "volume": 100_000.0,
+                        "shares_outstanding_market": sh,
+                        "source_provider": "vndirect_finfo",
+                    }
+                )
+        return pl.DataFrame(rows)
+
+    prices_v1 = _prices(950_000.0, 960_000.0)
+    b1 = run_incremental_analytics_transform(
+        facts,
+        issuers,
+        as_of=as_of,
+        run_id="mkt-v1",
+        state_path=state_path,
+        market_prices=prices_v1,
+    )
+    write_transform_state(state_path, b1.next_transform_state, snapshot_id="snap_m1")
+
+    c1_r1 = b1.financial_ratios.filter(
+        (pl.col("issuer_id") == "CORP_01")
+        & (pl.col("period_type") == "QUARTER")
+        & (pl.col("period_end_date") == date(2024, 12, 31))
+    ).row(0, named=True)
+    assert c1_r1["shares_source"] == "SHARES_OUTSTANDING_MARKET"
+    assert c1_r1["estimated_shares_outstanding"] == pytest.approx(950_000.0)
+    assert c1_r1["eps_estimate_basis"] == "SHARES_OUTSTANDING_MARKET"
+    assert c1_r1["eps_ttm_estimated"] is not None
+
+    # Update market_prices ONLY for CORP_01 (950k -> 900k); facts & CORP_02 unchanged
+    prices_v2 = _prices(900_000.0, 960_000.0)
+    b2 = run_incremental_analytics_transform(
+        facts,
+        issuers,
+        as_of=as_of,
+        run_id="mkt-v2",
+        previous_ratios=b1.financial_ratios,
+        previous_benchmarks=b1.industry_benchmarks,
+        previous_red_flags=b1.accounting_red_flags,
+        previous_snapshot_id="snap_m1",
+        state_path=state_path,
+        market_prices=prices_v2,
+    )
+    assert b2.diff.full_rebuild is False
+    assert b2.diff.dirty_issuers == ("CORP_01",)
+    assert b2.diff.modified_issuers == ("CORP_01",)
+
+    b2_full = run_incremental_analytics_transform(
+        facts,
+        issuers,
+        as_of=as_of,
+        run_id="mkt-v2-full",
+        market_prices=prices_v2,
+    )
+    _assert_frames_close(
+        b2.financial_ratios,
+        b2_full.financial_ratios,
+        sort_keys=RATIO_KEY,
+        abs_tol=1e-12,
+    )
+    c1_r2 = b2.financial_ratios.filter(
+        (pl.col("issuer_id") == "CORP_01")
+        & (pl.col("period_type") == "QUARTER")
+        & (pl.col("period_end_date") == date(2024, 12, 31))
+    ).row(0, named=True)
+    assert c1_r2["estimated_shares_outstanding"] == pytest.approx(900_000.0)
+    assert c1_r2["eps_ttm_estimated"] > c1_r1["eps_ttm_estimated"]

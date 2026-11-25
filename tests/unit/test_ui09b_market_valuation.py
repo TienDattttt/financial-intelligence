@@ -581,3 +581,78 @@ def test_real_data_split_tickers_and_case_studies() -> None:
         assert summary is not None
         assert summary["to_current"] is not None
         assert summary["to_current"]["drawdown_from_marker_pct"] < max_allowed_dd
+
+
+def test_market_shares_pit_14d_tolerance_and_strict_treasury_guard() -> None:
+    """Block pre-2018 market-share lookahead via 14d tolerance and guard unadjusted MARKETCAP."""
+    from finintel.analytics.ratios import calculate_ratios
+
+    facts = _facts_rows(
+        [
+            # Pre-2018 annual: market_prices starting 2018-01-02 MUST NOT leak backward
+            (
+                2014,
+                None,
+                date(2015, 4, 30),
+                {
+                    "BS_ORDINARY_SHARES_CAPITAL": 1_200_000_000_000.0,
+                    "BS_TREASURY_SHARES": -50_000_000_000.0,
+                    "BS_TOTAL_EQUITY": 3_000_000_000_000.0,
+                    "IS_NET_INCOME_PARENT": 500_000_000_000.0,
+                },
+            ),
+            # 2024 annual: unadjusted market shares == charter_shares (120M) with treasury < 0 -> REJECT
+            (
+                2024,
+                None,
+                date(2025, 3, 10),
+                {
+                    "BS_ORDINARY_SHARES_CAPITAL": 1_200_000_000_000.0,
+                    "BS_TREASURY_SHARES": -50_000_000_000.0,
+                    "BS_TOTAL_EQUITY": 3_200_000_000_000.0,
+                    "IS_NET_INCOME_PARENT": 600_000_000_000.0,
+                },
+            ),
+            # 2025 annual: market shares (118.5M) strictly < charter_shares (120M) -> ACCEPT for EPS
+            (
+                2025,
+                None,
+                date(2026, 3, 10),
+                {
+                    "BS_ORDINARY_SHARES_CAPITAL": 1_200_000_000_000.0,
+                    "BS_TREASURY_SHARES": -50_000_000_000.0,
+                    "BS_TOTAL_EQUITY": 3_600_000_000_000.0,
+                    "IS_NET_INCOME_PARENT": 592_500_000_000.0,
+                },
+            ),
+        ]
+    )
+    prices = _prices_frame(
+        [
+            (date(2018, 1, 2), 30_000.0, 15_000.0, 110_000_000.0),
+            (date(2025, 3, 10), 40_000.0, 40_000.0, 120_000_000.0),
+            (date(2026, 3, 10), 42_000.0, 42_000.0, 118_500_000.0),
+        ]
+    )
+    periods = prepare_periods(
+        facts, _issuer(), as_of=date(2026, 4, 1), market_prices=prices
+    )
+    ratios = calculate_ratios(periods).sort("fiscal_year")
+    rows = ratios.to_dicts()
+
+    # 2014: 2018 market shares MUST NOT leak back via unbounded forward join
+    assert rows[0]["estimated_shares_outstanding"] is None
+    assert rows[0]["shares_source"] == "MISSING_SHARES"
+    assert rows[0]["eps_ttm_estimated"] is None
+
+    # 2024: shares_outstanding_market == charter_shares with treasury < 0 -> rejected
+    assert rows[1]["estimated_shares_outstanding"] is None
+    assert rows[1]["shares_source"] == "MISSING_SHARES"
+    assert rows[1]["eps_ttm_estimated"] is None
+    assert rows[1]["eps_estimate_basis"] is None
+
+    # 2025: 118.5M < 120M -> accepted for both estimated_shares_outstanding & eps_ttm_estimated
+    assert rows[2]["estimated_shares_outstanding"] == pytest.approx(118_500_000.0)
+    assert rows[2]["shares_source"] == "SHARES_OUTSTANDING_MARKET"
+    assert rows[2]["eps_ttm_estimated"] == pytest.approx(5_000.0)
+    assert rows[2]["eps_estimate_basis"] == "SHARES_OUTSTANDING_MARKET"

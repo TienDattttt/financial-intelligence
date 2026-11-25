@@ -134,6 +134,7 @@ FINANCIAL_RATIOS_SCHEMA = pl.Schema(
         "taxonomy_version": pl.String,
         "source_filing_ids": pl.List(pl.String),
         "eps_estimate_basis": pl.String,
+        "shares_source": pl.String,
         **{name: pl.Float64 for name in RATIO_INTERMEDIATES},
         **{name: pl.String for name in RATIO_INTERMEDIATE_FLAGS},
         **{
