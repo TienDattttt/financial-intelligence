@@ -205,6 +205,13 @@ def fetch_guarded_https_bytes(
                 raise ContractViolationError(
                     f"Blocked HTTP redirect ({response.status_code}) from {validated_url!r}."
                 )
+            content_encoding = (
+                (response.headers.get("content-encoding") or "").strip().lower()
+            )
+            if content_encoding and content_encoding != "identity":
+                raise ContractViolationError(
+                    f"Blocked unsolicited Content-Encoding {content_encoding!r} from {validated_url!r}."
+                )
             content_length_raw = response.headers.get("content-length")
             if content_length_raw is not None:
                 try:

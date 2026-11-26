@@ -487,10 +487,22 @@ def download_curated_pdf(
 
     chunks: list[bytes] = []
     total_bytes = 0
-    with client.stream("GET", validated_url, follow_redirects=False) as response:
+    with client.stream(
+        "GET",
+        validated_url,
+        headers={"Accept-Encoding": "identity"},
+        follow_redirects=False,
+    ) as response:
         if response.status_code != 200:
             raise ContractViolationError(
                 f"PDF download failed with HTTP {response.status_code} for {validated_url}."
+            )
+        content_encoding = (
+            (response.headers.get("content-encoding") or "").strip().lower()
+        )
+        if content_encoding and content_encoding != "identity":
+            raise ContractViolationError(
+                f"Blocked unsolicited Content-Encoding {content_encoding!r} for {validated_url}."
             )
         for chunk in response.iter_bytes():
             total_bytes += len(chunk)
