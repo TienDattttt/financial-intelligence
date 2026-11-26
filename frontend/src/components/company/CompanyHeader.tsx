@@ -50,6 +50,7 @@ export function CompanyHeader({
   onToggleWatchlist,
   activeTab,
   onChangeTab,
+  ragAvailable = true,
 }: {
   ticker: string;
   companyName: string;
@@ -65,6 +66,7 @@ export function CompanyHeader({
   onToggleWatchlist: () => void;
   activeTab: CompanyTab;
   onChangeTab: (tab: CompanyTab) => void;
+  ragAvailable?: boolean;
 }) {
   const metaLine = [
     sectorLevel2 ?? "Chưa phân loại",
@@ -79,13 +81,13 @@ export function CompanyHeader({
   return (
     <div className="md:sticky md:top-[52px] lg:top-[89px] md:z-20 overflow-hidden rounded-lg border border-border bg-surface">
       {/* Compact Single-Row Sticky Ticker Strip (~52px on desktop) */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2 lg:flex-nowrap">
+      <div className="flex flex-col items-stretch justify-between gap-2 px-3.5 py-2 sm:flex-row sm:flex-wrap sm:items-center lg:flex-nowrap">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 lg:flex-nowrap">
           <span className="shrink-0 rounded-sm bg-primary px-2 py-0.5 font-mono text-sm font-semibold text-primary-foreground">
             {ticker}
           </span>
           <h1
-            className="min-w-0 max-w-[260px] shrink truncate text-[15px] font-semibold leading-6 text-ink xl:max-w-[320px]"
+            className="min-w-0 flex-1 text-[15px] font-semibold leading-6 text-ink sm:flex-initial sm:max-w-[260px] sm:truncate xl:max-w-[320px]"
             title={companyName}
           >
             {companyName}
@@ -109,7 +111,7 @@ export function CompanyHeader({
           </span>
         </div>
 
-        <div className="no-print flex shrink-0 items-center gap-1.5">
+        <div className="no-print flex shrink-0 flex-wrap items-center gap-1.5">
           <Button
             type="button"
             variant={isWatched ? "default" : "outline"}
@@ -152,6 +154,11 @@ export function CompanyHeader({
           options={COMPANY_TABS.map((t) => ({
             value: t.id,
             label: t.label,
+            disabled: t.id === "documents" && !ragAvailable,
+            title:
+              t.id === "documents" && !ragAvailable
+                ? "Dịch vụ tra cứu Thuyết minh PDF hiện chưa bật"
+                : undefined,
           }))}
         />
       </div>

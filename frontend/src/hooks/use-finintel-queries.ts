@@ -17,19 +17,35 @@ import type {
 } from "@/types/api";
 
 const SNAPSHOT_STALE_MS = 1000 * 60 * 60; // Immutable snapshot data pinned by snapshotId
+const HEALTH_STALE_MS = 5 * 60_000;
+
+export function shouldRetryFinintelQuery(
+  failureCount: number,
+  error: unknown,
+): boolean {
+  if (
+    error instanceof ApiError &&
+    (error.status === 404 || error.status === 422)
+  ) {
+    return false;
+  }
+  return failureCount < 1;
+}
 
 export function useHealth() {
   return useQuery({
     queryKey: ["health"],
-    queryFn: apiClient.getHealth,
-    staleTime: 30_000,
+    queryFn: ({ signal }) => apiClient.getHealth(signal),
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
+    staleTime: HEALTH_STALE_MS,
   });
 }
 
 export function useSnapshotOverview(snapshotId?: string | null) {
   return useQuery({
     queryKey: ["snapshot-overview", snapshotId ?? "latest"],
-    queryFn: apiClient.getSnapshotOverview,
+    queryFn: ({ signal }) => apiClient.getSnapshotOverview(signal),
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -37,7 +53,8 @@ export function useSnapshotOverview(snapshotId?: string | null) {
 export function useMetaPeriods(snapshotId?: string | null) {
   return useQuery({
     queryKey: ["meta-periods", snapshotId ?? "latest"],
-    queryFn: apiClient.getMetaPeriods,
+    queryFn: ({ signal }) => apiClient.getMetaPeriods(signal),
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -45,7 +62,8 @@ export function useMetaPeriods(snapshotId?: string | null) {
 export function useMetaDictionary(snapshotId?: string | null) {
   return useQuery({
     queryKey: ["meta-dictionary", snapshotId ?? "latest"],
-    queryFn: apiClient.getMetaDictionary,
+    queryFn: ({ signal }) => apiClient.getMetaDictionary(signal),
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -56,14 +74,9 @@ export function useModelCard(
 ) {
   return useQuery({
     queryKey: ["model-card", snapshotId ?? "latest"],
-    queryFn: apiClient.getModelCard,
+    queryFn: ({ signal }) => apiClient.getModelCard(signal),
     enabled: options?.enabled ?? true,
-    retry: (failureCount, error) => {
-      if (error instanceof ApiError && error.status === 404) {
-        return false;
-      }
-      return failureCount < 1;
-    },
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -71,19 +84,20 @@ export function useModelCard(
 export function useAllIssuers(snapshotId?: string | null) {
   return useQuery({
     queryKey: ["all-issuers", snapshotId ?? "latest"],
-    queryFn: async (): Promise<IssuerItem[]> => {
-      const first = await apiClient.getIssuersPage(200, 0);
+    queryFn: async ({ signal }): Promise<IssuerItem[]> => {
+      const first = await apiClient.getIssuersPage(200, 0, signal);
       if (first.total <= first.items.length) {
         return first.items;
       }
       const pagesNeeded = Math.ceil((first.total - first.items.length) / 200);
       const rest = await Promise.all(
         Array.from({ length: pagesNeeded }, (_, idx) =>
-          apiClient.getIssuersPage(200, (idx + 1) * 200),
+          apiClient.getIssuersPage(200, (idx + 1) * 200, signal),
         ),
       );
       return [...first.items, ...rest.flatMap((page) => page.items)];
     },
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -103,12 +117,17 @@ export function useCompanyProfile(
       statementScope,
       periodView,
     ],
-    queryFn: () =>
-      apiClient.getCompanyProfile(cleanTicker, {
-        statement_scope: statementScope,
-        period_view: periodView,
-      }),
+    queryFn: ({ signal }) =>
+      apiClient.getCompanyProfile(
+        cleanTicker,
+        {
+          statement_scope: statementScope,
+          period_view: periodView,
+        },
+        signal,
+      ),
     enabled: cleanTicker.length > 0,
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -135,16 +154,21 @@ export function useCompanyBenchmarks(
       opts.periodType,
       opts.periodEndDate ?? "latest",
     ],
-    queryFn: () =>
-      apiClient.getCompanyBenchmarks(cleanTicker, {
-        metric_name: opts.metricName,
-        statement_scope: opts.statementScope,
-        period_type: opts.periodType,
-        period_end_date: opts.periodEndDate,
-        include_history: true,
-        peer_limit: 200,
-      }),
+    queryFn: ({ signal }) =>
+      apiClient.getCompanyBenchmarks(
+        cleanTicker,
+        {
+          metric_name: opts.metricName,
+          statement_scope: opts.statementScope,
+          period_type: opts.periodType,
+          period_end_date: opts.periodEndDate,
+          include_history: true,
+          peer_limit: 200,
+        },
+        signal,
+      ),
     enabled: (opts.enabled ?? true) && cleanTicker.length > 0,
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -171,14 +195,19 @@ export function useCompanyBenchmarksSummary(
       opts.periodEndDate ?? "latest",
       opts.metrics?.join(",") ?? "core",
     ],
-    queryFn: () =>
-      apiClient.getCompanyBenchmarksSummary(cleanTicker, {
-        statement_scope: opts.statementScope,
-        period_type: opts.periodType,
-        period_end_date: opts.periodEndDate,
-        metrics: opts.metrics,
-      }),
+    queryFn: ({ signal }) =>
+      apiClient.getCompanyBenchmarksSummary(
+        cleanTicker,
+        {
+          statement_scope: opts.statementScope,
+          period_type: opts.periodType,
+          period_end_date: opts.periodEndDate,
+          metrics: opts.metrics,
+        },
+        signal,
+      ),
     enabled: (opts.enabled ?? true) && cleanTicker.length > 0,
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -205,14 +234,19 @@ export function useCompanyStatements(
       opts.periodType,
       opts.periodsLimit ?? 8,
     ],
-    queryFn: () =>
-      apiClient.getCompanyStatements(cleanTicker, {
-        statement_type: opts.statementType,
-        statement_scope: opts.statementScope,
-        period_type: opts.periodType,
-        periods_limit: opts.periodsLimit ?? 8,
-      }),
+    queryFn: ({ signal }) =>
+      apiClient.getCompanyStatements(
+        cleanTicker,
+        {
+          statement_type: opts.statementType,
+          statement_scope: opts.statementScope,
+          period_type: opts.periodType,
+          periods_limit: opts.periodsLimit ?? 8,
+        },
+        signal,
+      ),
     enabled: (opts.enabled ?? true) && cleanTicker.length > 0,
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -230,11 +264,16 @@ export function useCompanyFilings(
       cleanTicker,
       opts?.statementScope ?? "ALL",
     ],
-    queryFn: () =>
-      apiClient.getCompanyFilings(cleanTicker, {
-        statement_scope: opts?.statementScope,
-      }),
+    queryFn: ({ signal }) =>
+      apiClient.getCompanyFilings(
+        cleanTicker,
+        {
+          statement_scope: opts?.statementScope,
+        },
+        signal,
+      ),
     enabled: (opts?.enabled ?? true) && cleanTicker.length > 0,
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -254,9 +293,10 @@ export function useCompanyMarketOverlay(
       statementScope,
       asOf ?? "latest",
     ],
-    queryFn: () =>
-      apiClient.getCompanyMarketOverlay(cleanTicker, statementScope, asOf),
+    queryFn: ({ signal }) =>
+      apiClient.getCompanyMarketOverlay(cleanTicker, statementScope, asOf, signal),
     enabled: cleanTicker.length > 0,
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -268,16 +308,13 @@ export function useCompanyDocuments(
   const cleanTicker = ticker.trim().toUpperCase();
   return useQuery({
     queryKey: ["company-documents", cleanTicker],
-    queryFn: () => apiClient.getCompanyDocuments(cleanTicker),
+    queryFn: ({ signal }) => apiClient.getCompanyDocuments(cleanTicker, signal),
     enabled: (options?.enabled ?? true) && cleanTicker.length > 0,
     retry: (failureCount, error) => {
-      if (
-        error instanceof ApiError &&
-        (error.status === 404 || error.status === 422 || error.status === 503)
-      ) {
+      if (error instanceof ApiError && error.status === 503) {
         return false;
       }
-      return failureCount < 1;
+      return shouldRetryFinintelQuery(failureCount, error);
     },
     staleTime: SNAPSHOT_STALE_MS,
   });
@@ -305,16 +342,21 @@ export function useRatioLineage(
       opts?.periodType ?? "QUARTER",
       opts?.periodEndDate ?? "latest",
     ],
-    queryFn: () => {
+    queryFn: ({ signal }) => {
       if (!opts) throw new Error("Missing lineage lookup parameters");
-      return apiClient.getRatioLineage(ticker, {
-        ratio_name: opts.ratioName,
-        statement_scope: opts.statementScope,
-        period_type: opts.periodType,
-        period_end_date: opts.periodEndDate,
-      });
+      return apiClient.getRatioLineage(
+        ticker,
+        {
+          ratio_name: opts.ratioName,
+          statement_scope: opts.statementScope,
+          period_type: opts.periodType,
+          period_end_date: opts.periodEndDate,
+        },
+        signal,
+      );
     },
     enabled: Boolean(opts && (opts.enabled ?? true) && ticker),
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -325,8 +367,9 @@ export function useScreener(
 ) {
   return useQuery({
     queryKey: ["screener", snapshotId ?? "latest", params],
-    queryFn: () => apiClient.getScreener(params),
+    queryFn: ({ signal }) => apiClient.getScreener(params, signal),
     placeholderData: keepPreviousData,
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -347,12 +390,16 @@ export function useSectorRiskSummary(
       opts.periodType,
       opts.periodEndDate ?? "latest",
     ],
-    queryFn: () =>
-      apiClient.getSectorRiskSummary({
-        statement_scope: opts.statementScope,
-        period_type: opts.periodType,
-        period_end_date: opts.periodEndDate,
-      }),
+    queryFn: ({ signal }) =>
+      apiClient.getSectorRiskSummary(
+        {
+          statement_scope: opts.statementScope,
+          period_type: opts.periodType,
+          period_end_date: opts.periodEndDate,
+        },
+        signal,
+      ),
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -376,14 +423,18 @@ export function useMarketChanges(
       opts.periodType,
       opts.limit ?? 30,
     ],
-    queryFn: () =>
-      apiClient.getMarketChanges({
-        tickers: opts.tickers,
-        statement_scope: opts.statementScope,
-        period_type: opts.periodType,
-        limit: opts.limit ?? 30,
-      }),
+    queryFn: ({ signal }) =>
+      apiClient.getMarketChanges(
+        {
+          tickers: opts.tickers,
+          statement_scope: opts.statementScope,
+          period_type: opts.periodType,
+          limit: opts.limit ?? 30,
+        },
+        signal,
+      ),
     enabled: opts.enabled ?? true,
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -405,11 +456,17 @@ export function useCompareCompanies(
         statementScope,
         periodView,
       ],
-      queryFn: () =>
-        apiClient.getCompanyProfile(ticker, {
-          statement_scope: statementScope,
-          period_view: periodView,
-        }),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        apiClient.getCompanyProfile(
+          ticker,
+          {
+            statement_scope: statementScope,
+            period_view: periodView,
+          },
+          signal,
+        ),
+      retry: (failureCount: number, error: Error) =>
+        shouldRetryFinintelQuery(failureCount, error),
       staleTime: SNAPSHOT_STALE_MS,
     })),
   });
@@ -425,12 +482,18 @@ export function useCompareCompanies(
         periodEndDate ?? "latest",
         "core",
       ],
-      queryFn: () =>
-        apiClient.getCompanyBenchmarksSummary(ticker, {
-          statement_scope: statementScope,
-          period_type: periodType,
-          period_end_date: periodEndDate,
-        }),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        apiClient.getCompanyBenchmarksSummary(
+          ticker,
+          {
+            statement_scope: statementScope,
+            period_type: periodType,
+            period_end_date: periodEndDate,
+          },
+          signal,
+        ),
+      retry: (failureCount: number, error: Error) =>
+        shouldRetryFinintelQuery(failureCount, error),
       staleTime: SNAPSHOT_STALE_MS,
     })),
   });
@@ -441,7 +504,8 @@ export function useCompareCompanies(
 export function useQualitySummary(limit = 50, offset = 0, snapshotId?: string | null) {
   return useQuery({
     queryKey: ["quality-summary", snapshotId ?? "latest", limit, offset],
-    queryFn: () => apiClient.getQualitySummary(limit, offset),
+    queryFn: ({ signal }) => apiClient.getQualitySummary(limit, offset, signal),
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
@@ -449,7 +513,8 @@ export function useQualitySummary(limit = 50, offset = 0, snapshotId?: string | 
 export function useQualityQuarantine(limit = 50, offset = 0, snapshotId?: string | null) {
   return useQuery({
     queryKey: ["quality-quarantine", snapshotId ?? "latest", limit, offset],
-    queryFn: () => apiClient.getQualityQuarantine(limit, offset),
+    queryFn: ({ signal }) => apiClient.getQualityQuarantine(limit, offset, signal),
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
     staleTime: SNAPSHOT_STALE_MS,
   });
 }

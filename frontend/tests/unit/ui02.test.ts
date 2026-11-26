@@ -152,7 +152,29 @@ describe("UI-02 Combobox (@base-ui/react/combobox)", () => {
     expect(matchesComboboxQuery(sampleIndustries[4], "ngan hang")).toBe(false);
   });
 
-  it("filters via unaccented search, navigates with keyboard, and selects on Enter", async () => {
+  it("hides search input when options.length <= 6 unless searchable={true} (U8)", async () => {
+    const onValueChange = vi.fn();
+
+    render(
+      React.createElement(Combobox, {
+        id: "test-small-dropdown",
+        options: sampleIndustries,
+        value: "",
+        onValueChange,
+        ariaLabel: "Ngành ICB nhỏ",
+      }),
+    );
+
+    const trigger = screen.getByRole("combobox", { name: "Ngành ICB nhỏ" });
+    fireEvent.click(trigger);
+
+    await screen.findByText("Điện, nước & xăng dầu khí đốt");
+    expect(
+      screen.queryByPlaceholderText("Tìm nhanh (hỗ trợ không dấu)..."),
+    ).toBeNull();
+  });
+
+  it("filters via unaccented search, navigates with keyboard, and selects on Enter when searchable={true}", async () => {
     const onValueChange = vi.fn();
 
     render(
@@ -162,6 +184,7 @@ describe("UI-02 Combobox (@base-ui/react/combobox)", () => {
         value: "",
         onValueChange,
         ariaLabel: "Ngành ICB cấp 2",
+        searchable: true,
       }),
     );
 
@@ -200,6 +223,7 @@ describe("UI-02 Combobox (@base-ui/react/combobox)", () => {
         value: "1700",
         onValueChange,
         ariaLabel: "Ngành ICB cấp 2",
+        searchable: true,
       }),
     );
 
@@ -213,6 +237,36 @@ describe("UI-02 Combobox (@base-ui/react/combobox)", () => {
       expect(screen.queryByPlaceholderText("Tìm nhanh (hỗ trợ không dấu)...")).toBeNull();
     });
     expect(onValueChange).not.toHaveBeenCalled();
+  });
+
+  it("automatically shows search input when options.length > 6 without searchable prop (U8)", async () => {
+    const sevenIndustries: ComboboxOption[] = [
+      ...sampleIndustries,
+      { value: "5300", label: "Bán lẻ", hint: "(19)" },
+      { value: "9500", label: "Công nghệ thông tin", hint: "(12)" },
+    ];
+    const onValueChange = vi.fn();
+
+    render(
+      React.createElement(Combobox, {
+        id: "test-seven-dropdown",
+        options: sevenIndustries,
+        value: "",
+        onValueChange,
+        ariaLabel: "Ngành ICB > 6",
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Ngành ICB > 6" }));
+    const searchInput = await screen.findByPlaceholderText(
+      "Tìm nhanh (hỗ trợ không dấu)...",
+    );
+    expect(document.body.contains(searchInput)).toBe(true);
+    fireEvent.change(searchInput, { target: { value: "cong nghe" } });
+    await waitFor(() => {
+      expect(screen.getByText("Công nghệ thông tin")).toBeTruthy();
+      expect(screen.queryByText("Bất động sản")).toBeNull();
+    });
   });
 
   it("handles 38 financial metrics scale and displays empty state when no metric matches", async () => {

@@ -46,10 +46,8 @@ import {
   formatPercent,
   formatPercentPoints,
   formatPeriodLabel,
-  MINUS_SIGN,
   normalizeSearchText,
 } from "@/lib/format";
-import { cn } from "@/lib/utils";
 
 type MethodTab = "dictionary" | "models" | "quality";
 const SCROLL_REGION_CLS =
@@ -69,7 +67,8 @@ const DIRECTION_LABELS: Record<string, string> = {
 function MethodologyContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { snapshotId } = useAppState();
+  const { snapshotId, cacheSnapshotKey } = useAppState();
+  const effectiveCacheKey = cacheSnapshotKey ?? snapshotId;
 
   const rawTab = searchParams.get("tab");
   const activeTab: MethodTab =
@@ -84,14 +83,14 @@ function MethodologyContent() {
   const [qOffset, setQOffset] = React.useState(0);
   const [quarOffset, setQuarOffset] = React.useState(0);
 
-  const dictQuery = useMetaDictionary(snapshotId);
-  const modelCardQuery = useModelCard(snapshotId, {
+  const dictQuery = useMetaDictionary(effectiveCacheKey);
+  const modelCardQuery = useModelCard(effectiveCacheKey, {
     enabled: activeTab === "models",
   });
-  const overviewQuery = useSnapshotOverview(snapshotId);
-  const summaryQuery = useQualitySummary(25, qOffset, snapshotId);
-  const quarantineQuery = useQualityQuarantine(25, quarOffset, snapshotId);
-  const issuersQuery = useAllIssuers(snapshotId);
+  const overviewQuery = useSnapshotOverview(effectiveCacheKey);
+  const summaryQuery = useQualitySummary(25, qOffset, effectiveCacheKey);
+  const quarantineQuery = useQualityQuarantine(25, quarOffset, effectiveCacheKey);
+  const issuersQuery = useAllIssuers(effectiveCacheKey);
 
   const issuerTickerMap = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -106,6 +105,10 @@ function MethodologyContent() {
       scroll: false,
     });
   };
+
+  const totalRatios = dictQuery.data?.ratios.length ?? 38;
+  const totalRedFlags = dictQuery.data?.red_flags.length ?? 10;
+  const isRatiosFiltered = Boolean(dictSearch.trim() || catFilter);
 
   const filteredRatios = React.useMemo(() => {
     const list = dictQuery.data?.ratios ?? [];
@@ -149,7 +152,9 @@ function MethodologyContent() {
             <Card>
               <CardHeader className="flex-wrap gap-2 py-2.5">
                 <CardTitle className="text-[14px]">
-                  38 tỷ số tài chính chuẩn hóa ({filteredRatios.length})
+                  {isRatiosFiltered
+                    ? `Hiển thị ${filteredRatios.length} / ${totalRatios} tỷ số tài chính chuẩn hóa`
+                    : `${totalRatios} tỷ số tài chính chuẩn hóa`}
                 </CardTitle>
                 <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                   <Input
@@ -175,8 +180,13 @@ function MethodologyContent() {
                 </div>
               </CardHeader>
               <CardContent className="p-0">
-                <div tabIndex={0} role="region" aria-label="Bảng từ điển 38 tỷ số tài chính" className={SCROLL_REGION_CLS}>
-                  <table className="w-full border-collapse text-xs">
+                <div
+                  tabIndex={0}
+                  role="region"
+                  aria-label={`Bảng từ điển ${totalRatios} tỷ số tài chính`}
+                  className={SCROLL_REGION_CLS}
+                >
+                  <table className="w-full min-w-[720px] border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                         <th scope="col" className="px-3 py-2 text-left font-semibold">
@@ -228,12 +238,17 @@ function MethodologyContent() {
             <Card>
               <CardHeader className="py-2.5">
                 <CardTitle className="text-[14px]">
-                  10 quy tắc phát hiện bất thường kế toán (Quy tắc 01 – 10)
+                  {`${totalRedFlags} quy tắc phát hiện bất thường kế toán (Quy tắc 01 – ${String(totalRedFlags).padStart(2, "0")})`}
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-0">
-                <div tabIndex={0} role="region" aria-label="Bảng 10 quy tắc phát hiện bất thường kế toán" className={SCROLL_REGION_CLS}>
-                  <table className="w-full border-collapse text-xs">
+                <div
+                  tabIndex={0}
+                  role="region"
+                  aria-label={`Bảng ${totalRedFlags} quy tắc phát hiện bất thường kế toán`}
+                  className={SCROLL_REGION_CLS}
+                >
+                  <table className="w-full min-w-[720px] border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                         <th scope="col" className="px-3 py-2 text-left font-semibold">
@@ -384,10 +399,10 @@ function MethodologyContent() {
                   <CardHeader className="py-2.5">
                     <div>
                       <CardTitle className="text-[14px]">
-                        Case Studies lịch sử Việt Nam — Bằng chứng cảnh báo sớm R4/R5 trước sự kiện pháp lý
+                        Case Studies lịch sử Việt Nam — Đối chiếu cảnh báo R4/R5 và sự kiện pháp lý
                       </CardTitle>
                       <p className="mt-0.5 text-xs text-ink-muted">
-                        Nhấp vào từng mã doanh nghiệp để mở Hồ sơ phân tích chi tiết và lớp phủ diễn biến giá EOD
+                        Phân biệt trường hợp mô hình cảnh báo sớm trước ngày sự kiện công bố (Sớm X quý) và trường hợp phân loại hồi cứu sau khi đã có sự kiện kiểm soát/cảnh báo. Nhấp vào mã doanh nghiệp để mở Hồ sơ chi tiết và lớp phủ giá EOD.
                       </p>
                     </div>
                   </CardHeader>
@@ -398,7 +413,7 @@ function MethodologyContent() {
                       </p>
                     ) : (
                       <div tabIndex={0} role="region" aria-label="Bảng Case Studies cảnh báo sớm lịch sử" className={SCROLL_REGION_CLS}>
-                        <table className="w-full border-collapse text-xs">
+                        <table className="w-full min-w-[920px] border-collapse text-xs">
                           <thead>
                             <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                               <th scope="col" className="px-3 py-2 text-left font-semibold">
@@ -513,28 +528,44 @@ function MethodologyContent() {
                                   <td className="num px-3 py-2 text-right">
                                     {cs.early_warning_lead_quarters !== null &&
                                     cs.early_warning_lead_quarters !== undefined ? (
-                                      <>
-                                        <div
-                                          className={cn(
-                                            "font-semibold",
-                                            cs.early_warning_lead_quarters >= 1
-                                              ? "text-risk-low"
-                                              : "text-ink-muted",
-                                          )}
-                                        >
-                                          {cs.early_warning_lead_quarters >= 0
-                                            ? `${cs.early_warning_lead_quarters} quý`
-                                            : `${MINUS_SIGN}${Math.abs(cs.early_warning_lead_quarters)} quý`}
-                                        </div>
-                                        {cs.early_warning_lead_days !== null &&
-                                        cs.early_warning_lead_days !== undefined ? (
-                                          <div className="text-[11px] text-ink-subtle">
-                                            ({formatNumber(cs.early_warning_lead_days, 0)} ngày)
+                                      (() => {
+                                        const leadQ = cs.early_warning_lead_quarters;
+                                        const leadD = cs.early_warning_lead_days;
+                                        const isRetrospective =
+                                          leadQ < 0 ||
+                                          (leadD !== null && leadD !== undefined && leadD < 0);
+                                        if (isRetrospective) {
+                                          const afterLabel =
+                                            leadD !== null && leadD !== undefined
+                                              ? `Sau sự kiện ${formatNumber(Math.abs(leadD), 0)} ngày · Phân loại hồi cứu`
+                                              : `Sau sự kiện ${Math.abs(leadQ)} quý · Phân loại hồi cứu`;
+                                          return (
+                                            <div className="flex flex-col items-end gap-1">
+                                              <RiskBadge tone="mid" label={afterLabel} />
+                                              <span className="text-[11px] text-ink-subtle">
+                                                Trễ {Math.abs(leadQ)} quý so với sự kiện
+                                              </span>
+                                            </div>
+                                          );
+                                        }
+                                        const earlyLabel =
+                                          leadQ > 0 ? `Sớm ${leadQ} quý` : "Cùng kỳ cảnh báo";
+                                        return (
+                                          <div className="flex flex-col items-end gap-1">
+                                            <RiskBadge tone="low" label={earlyLabel} />
+                                            {leadD !== null && leadD !== undefined ? (
+                                              <span className="text-[11px] text-ink-subtle">
+                                                ({formatNumber(leadD, 0)} ngày)
+                                              </span>
+                                            ) : null}
                                           </div>
-                                        ) : null}
-                                      </>
+                                        );
+                                      })()
                                     ) : (
-                                      <span className="text-ink-subtle">N/A</span>
+                                      <RiskBadge
+                                        tone="neutral"
+                                        label="Chưa ghi nhận ngày sự kiện"
+                                      />
                                     )}
                                   </td>
                                   <td className="px-3 py-2">
@@ -632,7 +663,7 @@ function MethodologyContent() {
                         aria-label="Bảng độ ổn định PSI 23 biến đầu vào"
                         className="max-h-[340px] overflow-auto rounded-lg border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
-                        <table className="w-full border-collapse text-xs">
+                        <table className="w-full min-w-[680px] border-collapse text-xs">
                           <thead>
                             <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                               <th scope="col" className="sticky top-0 bg-surface-muted px-3 py-2 text-left font-semibold">
@@ -774,7 +805,7 @@ function MethodologyContent() {
               ) : (
                 <>
                   <div tabIndex={0} role="region" aria-label="Bảng nhật ký kiểm tra chất lượng theo kỳ" className={SCROLL_REGION_CLS}>
-                    <table className="w-full border-collapse text-xs">
+                    <table className="w-full min-w-[680px] border-collapse text-xs">
                       <thead>
                         <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                           <th scope="col" className="px-3 py-2 text-left font-semibold">Mã DN</th>
@@ -877,7 +908,7 @@ function MethodologyContent() {
               ) : (
                 <>
                   <div tabIndex={0} role="region" aria-label="Bảng danh sách hồ sơ bị giữ lại kiểm định" className={SCROLL_REGION_CLS}>
-                    <table className="w-full border-collapse text-xs">
+                    <table className="w-full min-w-[720px] border-collapse text-xs">
                       <thead>
                         <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                           <th scope="col" className="px-3 py-2 text-left font-semibold">Mã DN</th>
@@ -960,7 +991,7 @@ export default function MethodologyPage() {
           Dữ liệu, Từ điển chỉ số &amp; Phương pháp mô hình
         </h1>
         <p className="mt-0.5 text-xs text-ink-muted">
-          Tài liệu minh bạch công thức 38 tỷ số tài chính, 10 quy tắc kế toán điều tra, mô hình định lượng và kiểm tra chất lượng dữ liệu
+          Tài liệu minh bạch công thức các tỷ số tài chính chuẩn hóa, quy tắc phát hiện bất thường kế toán, mô hình định lượng và kiểm tra chất lượng dữ liệu
         </p>
       </div>
       <React.Suspense fallback={<PageSkeleton />}>

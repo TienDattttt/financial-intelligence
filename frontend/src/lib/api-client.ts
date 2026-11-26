@@ -191,25 +191,29 @@ async function requestJson<T>(
 }
 
 export const apiClient = {
-  getHealth: () => requestJson<HealthResponse>("/api/v1/health"),
+  getHealth: (signal?: AbortSignal) =>
+    requestJson<HealthResponse>("/api/v1/health", { signal }),
 
-  getSnapshotOverview: () =>
-    requestJson<SnapshotOverviewResponse>("/api/v1/snapshot/overview"),
+  getSnapshotOverview: (signal?: AbortSignal) =>
+    requestJson<SnapshotOverviewResponse>("/api/v1/snapshot/overview", { signal }),
 
-  getIssuersPage: (limit = 200, offset = 0) =>
+  getIssuersPage: (limit = 200, offset = 0, signal?: AbortSignal) =>
     requestJson<IssuersPageResponse>(
       buildUrl("/api/v1/issuers", { limit, offset }),
+      { signal },
     ),
 
-  getMetaPeriods: () =>
-    requestJson<MetaPeriodsWithFreshness>("/api/v2/meta/periods"),
+  getMetaPeriods: (signal?: AbortSignal) =>
+    requestJson<MetaPeriodsWithFreshness>("/api/v2/meta/periods", { signal }),
 
-  getMetaDictionary: () =>
-    requestJson<MetaDictionaryResponse>("/api/v2/meta/dictionary"),
+  getMetaDictionary: (signal?: AbortSignal) =>
+    requestJson<MetaDictionaryResponse>("/api/v2/meta/dictionary", { signal }),
 
-  getModelCard: async (): Promise<ModelCardResponse | null> => {
+  getModelCard: async (signal?: AbortSignal): Promise<ModelCardResponse | null> => {
     try {
-      return await requestJson<ModelCardResponse>("/api/v2/meta/model-card");
+      return await requestJson<ModelCardResponse>("/api/v2/meta/model-card", {
+        signal,
+      });
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
         return null;
@@ -221,12 +225,14 @@ export const apiClient = {
   getCompanyProfile: (
     ticker: string,
     opts?: { statement_scope?: StatementScope; period_view?: PeriodView },
+    signal?: AbortSignal,
   ) =>
     requestJson<CompanyProfileResponse>(
       buildUrl(`/api/v1/companies/${encodeURIComponent(ticker.toUpperCase())}/profile`, {
         statement_scope: opts?.statement_scope,
         period_view: opts?.period_view,
       }),
+      { signal },
     ),
 
   getCompanyBenchmarks: (
@@ -239,6 +245,7 @@ export const apiClient = {
       include_history?: boolean;
       peer_limit?: number;
     },
+    signal?: AbortSignal,
   ) =>
     requestJson<CompanyBenchmarksResponse>(
       buildUrl(`/api/v1/companies/${encodeURIComponent(ticker.toUpperCase())}/benchmarks`, {
@@ -249,6 +256,7 @@ export const apiClient = {
         include_history: opts?.include_history ?? true,
         peer_limit: opts?.peer_limit ?? 200,
       }),
+      { signal },
     ),
 
   getCompanyBenchmarksSummary: (
@@ -259,6 +267,7 @@ export const apiClient = {
       period_end_date?: string | null;
       metrics?: readonly RatioName[];
     },
+    signal?: AbortSignal,
   ) =>
     requestJson<CompanyBenchmarksSummaryResponse>(
       buildUrl(
@@ -270,6 +279,7 @@ export const apiClient = {
           metrics: opts?.metrics,
         },
       ),
+      { signal },
     ),
 
   getCompanyStatements: (
@@ -280,6 +290,7 @@ export const apiClient = {
       period_type?: PeriodType;
       periods_limit?: number;
     },
+    signal?: AbortSignal,
   ) =>
     requestJson<CompanyStatementsResponse>(
       buildUrl(`/api/v2/companies/${encodeURIComponent(ticker.toUpperCase())}/statements`, {
@@ -288,34 +299,40 @@ export const apiClient = {
         period_type: opts?.period_type,
         periods_limit: opts?.periods_limit ?? 8,
       }),
+      { signal },
     ),
 
   getCompanyFilings: (
     ticker: string,
     opts?: { statement_scope?: StatementScope; limit?: number },
+    signal?: AbortSignal,
   ) =>
     requestJson<CompanyFilingsResponse>(
       buildUrl(`/api/v2/companies/${encodeURIComponent(ticker.toUpperCase())}/filings`, {
         statement_scope: opts?.statement_scope,
         limit: opts?.limit ?? 100,
       }),
+      { signal },
     ),
 
   getCompanyMarketOverlay: (
     ticker: string,
     statementScope?: StatementScope,
     asOf?: string | null,
+    signal?: AbortSignal,
   ) =>
     requestJson<CompanyMarketOverlayResponse>(
       buildUrl(`/api/v2/companies/${encodeURIComponent(ticker.toUpperCase())}/market-overlay`, {
         statement_scope: statementScope,
         as_of: asOf,
       }),
+      { signal },
     ),
 
-  getCompanyDocuments: (ticker: string) =>
+  getCompanyDocuments: (ticker: string, signal?: AbortSignal) =>
     requestJson<DocumentListResponse>(
       `/api/v2/documents/${encodeURIComponent(ticker.trim().toUpperCase())}/list`,
+      { signal },
     ),
 
   postCompanyInvestigate: async (
@@ -361,6 +378,7 @@ export const apiClient = {
       period_type?: PeriodType;
       period_end_date?: string | null;
     },
+    signal?: AbortSignal,
   ) =>
     requestJson<RatioLineageResponse>(
       buildUrl(`/api/v1/companies/${encodeURIComponent(ticker.toUpperCase())}/lineage`, {
@@ -369,32 +387,48 @@ export const apiClient = {
         period_type: opts.period_type,
         period_end_date: opts.period_end_date,
       }),
+      { signal },
     ),
 
-  getScreener: (params: ScreenerQueryParams) =>
+  getScreener: (params: ScreenerQueryParams, signal?: AbortSignal) =>
     requestJson<ScreenerResponse>(
       buildUrl("/api/v1/screener", params as Record<string, string | number | undefined | null>),
+      { signal },
     ),
 
-  getSectorRiskSummary: (opts?: {
-    statement_scope?: StatementScope;
-    period_type?: PeriodType;
-    period_end_date?: string | null;
-  }) =>
+  getScreenerExportUrl: (params: Omit<ScreenerQueryParams, "limit" | "offset">) => {
+    const exportParams = { ...(params as Record<string, string | number | undefined | null>) };
+    delete exportParams.limit;
+    delete exportParams.offset;
+    return buildUrl("/api/v1/screener/export", exportParams);
+  },
+
+  getSectorRiskSummary: (
+    opts?: {
+      statement_scope?: StatementScope;
+      period_type?: PeriodType;
+      period_end_date?: string | null;
+    },
+    signal?: AbortSignal,
+  ) =>
     requestJson<SectorRiskSummaryResponse>(
       buildUrl("/api/v2/sectors/risk-summary", {
         statement_scope: opts?.statement_scope,
         period_type: opts?.period_type,
         period_end_date: opts?.period_end_date,
       }),
+      { signal },
     ),
 
-  getMarketChanges: (opts?: {
-    tickers?: readonly string[];
-    statement_scope?: StatementScope;
-    period_type?: PeriodType;
-    limit?: number;
-  }) =>
+  getMarketChanges: (
+    opts?: {
+      tickers?: readonly string[];
+      statement_scope?: StatementScope;
+      period_type?: PeriodType;
+      limit?: number;
+    },
+    signal?: AbortSignal,
+  ) =>
     requestJson<MarketChangesResponse>(
       buildUrl("/api/v2/market/changes", {
         tickers: opts?.tickers && opts.tickers.length > 0 ? opts.tickers.join(",") : undefined,
@@ -402,16 +436,19 @@ export const apiClient = {
         period_type: opts?.period_type,
         limit: opts?.limit ?? 30,
       }),
+      { signal },
     ),
 
-  getQualitySummary: (limit = 50, offset = 0) =>
+  getQualitySummary: (limit = 50, offset = 0, signal?: AbortSignal) =>
     requestJson<QualitySummaryPageResponse>(
       buildUrl("/api/v1/quality/summary", { limit, offset }),
+      { signal },
     ),
 
-  getQualityQuarantine: (limit = 50, offset = 0) =>
+  getQualityQuarantine: (limit = 50, offset = 0, signal?: AbortSignal) =>
     requestJson<AuditQuarantinePageResponse>(
       buildUrl("/api/v1/quality/quarantine", { limit, offset }),
+      { signal },
     ),
 
   postStressTest: async (

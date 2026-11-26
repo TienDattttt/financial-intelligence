@@ -22,6 +22,7 @@ import {
   RISK_TIER_ORDER,
   sanitizeModelLimitationText,
 } from "@/lib/domain-labels";
+import { formatTopRiskPercentileLabel } from "@/lib/saved-screens-store";
 import type {
   RiskTierReliabilityReportItem,
   WalkForwardModelSummaryItem,
@@ -63,6 +64,26 @@ describe("UI-07 Credit Trio (R1–R5 TTC + Top X% PIT + 1Y PD × nền) & Domain
       relative_risk_lift: 12.1,
     });
     expect(topEdge.topPercentLabel).toBe("Top 0,1% rủi ro nhất");
+
+    const lowRisk = formatCreditTrio({
+      risk_tier: "R1",
+      risk_market_percentile: 12,
+      calibrated_distress_prob: 0.008,
+      relative_risk_lift: 0.4,
+    });
+    expect(lowRisk.topPercent).toBe(88);
+    expect(lowRisk.topPercentLabel).toBe("An toàn hơn 88% DN");
+    expect(lowRisk.compactSummary).toBe("R1 · An toàn hơn 88% DN · 0,4× nền");
+    expect(formatTopRiskPercentileLabel(12)).toBe(lowRisk.topPercentLabel);
+
+    const ultraSafe = formatCreditTrio({
+      risk_tier: "R1",
+      risk_market_percentile: 4.5,
+      calibrated_distress_prob: 0.004,
+      relative_risk_lift: 0.2,
+    });
+    expect(ultraSafe.topPercentLabel).toBe("An toàn hơn 95,5% DN");
+    expect(formatTopRiskPercentileLabel(4.5)).toBe(ultraSafe.topPercentLabel);
   });
 
   it("contains zero hardcoded <3% / 3–8% / >=8% thresholds in UI-07 pages and helpers", () => {

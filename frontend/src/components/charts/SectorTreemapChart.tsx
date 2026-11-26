@@ -269,7 +269,7 @@ export function SectorTreemapChart({
             fontSize: 11,
             fontWeight: 600,
             lineHeight: 15,
-            overflow: "break",
+            overflow: "truncate",
             ellipsis: "…",
             formatter: (params: unknown) => {
               const p = params as { data?: { nodeMeta?: SectorTreemapNode } };
@@ -283,6 +283,16 @@ export function SectorTreemapChart({
                     : `${formatNumber(n.avgRedFlags, 2)} cờ`;
               return `${n.name}\n${n.value} DN · ${metricStr}`;
             },
+          },
+          labelLayout: (params) => {
+            const rect = params.rect;
+            if (!rect || rect.width < 68 || rect.height < 38) {
+              return { x: -9999, y: -9999, fontSize: 0, hideOverlap: true };
+            }
+            return {
+              hideOverlap: true,
+              width: Math.max(40, Math.floor(rect.width - 10)),
+            };
           },
           upperLabel: { show: false },
           itemStyle: {

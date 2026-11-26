@@ -47,9 +47,18 @@ describe("narrative.ts deterministic TreeSHAP explanation", () => {
     expect(first[2]).toContain(`${MINUS_SIGN}0,34 log-odds`);
   });
 
-  it("handles missing values cleanly and returns empty array for null input", () => {
+  it("filters null/near-zero drivers cleanly with fallback and returns empty array for null/empty input", () => {
     expect(buildShapNarrativeVi(null)).toEqual([]);
     expect(buildShapNarrativeVi(undefined)).toEqual([]);
+    expect(
+      buildShapNarrativeVi({
+        base_value: -1,
+        prediction_score: -1,
+        other_features_delta: 0,
+        top_risk_increasing: [],
+        top_risk_decreasing: [],
+      }),
+    ).toEqual([]);
 
     const partial = buildShapNarrativeVi({
       base_value: -1,
@@ -63,11 +72,18 @@ describe("narrative.ts deterministic TreeSHAP explanation", () => {
           peer_median: null,
           shap_delta: 0.4,
         },
+        {
+          feature: "roa",
+          display_name_vn: "ROA",
+          value: 0.08,
+          peer_median: 0.06,
+          shap_delta: 0.002, // < 0.005 threshold, filtered out
+        },
       ],
       top_risk_decreasing: [],
     });
     expect(partial).toEqual([
-      "Thanh toán hiện hành góp phần làm tăng điểm rủi ro mô hình (+0,40 log-odds).",
+      "Không có chỉ số định lượng đơn lẻ nào có đóng góp đáng kể trong kỳ này (các yếu tố đều ở mức trung tính hoặc thiếu dữ liệu đầu vào).",
     ]);
   });
 
@@ -145,10 +161,57 @@ describe("narrative.ts deterministic TreeSHAP explanation", () => {
       ],
     });
     expect(out[0]).toContain("cao hơn trung vị ngành");
+    expect(out[0]).toContain("ghi nhận tác động tương tác trong mô hình (+0,15 log-odds)");
     expect(out[0]).not.toContain("bất lợi hơn");
+    expect(out[0]).not.toContain("đóng góp làm tăng");
     expect(out[1]).toContain("tương đương trung vị ngành");
+    expect(out[1]).toContain("ghi nhận tác động tương tác trong mô hình (+0,05 log-odds)");
     expect(out[2]).toContain("cao hơn trung vị ngành");
+    expect(out[2]).toContain(`ghi nhận tác động tương tác trong mô hình (${MINUS_SIGN}0,10 log-odds)`);
     expect(out[2]).not.toContain("tích cực hơn");
+    expect(out[2]).not.toContain("giúp giảm áp lực");
+  });
+
+  it("uses neutral model-interaction phrasing on counter-intuitive drivers and excludes (+0 log-odds) noise (U2)", () => {
+    const out = buildShapNarrativeVi({
+      base_value: -2.0,
+      prediction_score: -1.7,
+      other_features_delta: 0,
+      top_risk_increasing: [
+        {
+          feature: "roa",
+          display_name_vn: "ROA",
+          value: 0.14,
+          peer_median: 0.08,
+          shap_delta: 0.18,
+        },
+        {
+          feature: "ebit_margin",
+          display_name_vn: "Biên EBIT",
+          value: 0.11,
+          peer_median: 0.09,
+          shap_delta: 0.004,
+        },
+      ],
+      top_risk_decreasing: [
+        {
+          feature: "dso",
+          display_name_vn: "Số ngày phải thu bình quân",
+          value: 95,
+          peer_median: 42,
+          shap_delta: -0.12,
+        },
+      ],
+    });
+    expect(out).toHaveLength(2);
+    expect(out[0]).toBe(
+      "ROA (14,0%) đang ở mức cao hơn trung vị ngành (8,0%), ghi nhận tác động tương tác trong mô hình (+0,18 log-odds).",
+    );
+    expect(out[1]).toBe(
+      `Số ngày phải thu bình quân (95 ngày) đang ở mức cao hơn trung vị ngành (42 ngày), ghi nhận tác động tương tác trong mô hình (${MINUS_SIGN}0,12 log-odds).`,
+    );
+    expect(out.join(" ")).not.toContain("Biên EBIT");
+    expect(out.join(" ")).not.toContain("+0,00 log-odds");
   });
 
   it("formats ML-05 VN-specific features (overdue/late count, consecutive loss, asset size pct) cleanly", () => {

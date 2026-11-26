@@ -11,7 +11,11 @@ import React, {
   useState,
   useSyncExternalStore,
 } from "react";
-import { useHealth, useMetaPeriods } from "@/hooks/use-finintel-queries";
+import {
+  shouldRetryFinintelQuery,
+  useHealth,
+  useMetaPeriods,
+} from "@/hooks/use-finintel-queries";
 import {
   subscribeObservedSnapshotId,
   type DataFreshnessItem,
@@ -32,7 +36,7 @@ export interface SourceLookupTarget {
   periodEndDate?: string | null;
 }
 
-interface AppContextValue {
+export interface AppContextValue {
   statementScope: StatementScope;
   setStatementScope: (scope: StatementScope) => void;
   periodType: PeriodType;
@@ -41,6 +45,9 @@ interface AppContextValue {
   setPeriodEndDate: (dateStr: string | null) => void;
   periodView: PeriodView;
   snapshotId: string | null;
+  cacheSnapshotKey: string;
+  ragAvailable: boolean;
+  hasSeparateData: boolean;
   publishedAt: string | null;
   freshness: DataFreshnessItem | null;
   availableDates: string[];
@@ -175,6 +182,15 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
     activeSnapshotRef.current = snapshotId;
   }, [snapshotId]);
 
+  const [initialSnapshotId, setInitialSnapshotId] = useState<string | null>(null);
+  if (snapshotId && initialSnapshotId === null) {
+    setInitialSnapshotId(snapshotId);
+  }
+  const cacheSnapshotKey =
+    snapshotId && initialSnapshotId && snapshotId !== initialSnapshotId
+      ? snapshotId
+      : "active";
+
   useEffect(() => {
     return subscribeObservedSnapshotId((nextSnapId) => {
       if (nextSnapId && nextSnapId !== activeSnapshotRef.current) {
@@ -186,12 +202,27 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
     }, 150);
   }, [queryClient]);
 
-  const metaPeriods = useMetaPeriods(snapshotId);
+  const metaPeriods = useMetaPeriods(cacheSnapshotKey);
+
+  const ragAvailable = health.data?.rag_available ?? false;
+
+  const hasSeparateData = useMemo(() => {
+    if (!metaPeriods.data) return true;
+    const sep = metaPeriods.data.available_periods?.SEPARATE;
+    const qLen = sep?.QUARTER?.length ?? 0;
+    const aLen = sep?.ANNUAL?.length ?? 0;
+    return qLen > 0 || aLen > 0;
+  }, [metaPeriods.data]);
+
+  const effectiveStatementScope: StatementScope =
+    !hasSeparateData && statementScope === "SEPARATE"
+      ? "CONSOLIDATED"
+      : statementScope;
 
   const availableDates = useMemo(() => {
-    const scopeMap = metaPeriods.data?.available_periods?.[statementScope];
+    const scopeMap = metaPeriods.data?.available_periods?.[effectiveStatementScope];
     return scopeMap?.[periodType] ?? [];
-  }, [metaPeriods.data, periodType, statementScope]);
+  }, [effectiveStatementScope, metaPeriods.data, periodType]);
 
   const effectivePeriodEndDate = useMemo(() => {
     if (selectedPeriodEndDate && availableDates.includes(selectedPeriodEndDate)) {
@@ -200,10 +231,18 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
     return availableDates[0] ?? null;
   }, [availableDates, selectedPeriodEndDate]);
 
-  const setStatementScope = useCallback((next: StatementScope) => {
-    setStatementScopeState(next);
-    setSelectedPeriodEndDate(null);
-  }, []);
+  const setStatementScope = useCallback(
+    (next: StatementScope) => {
+      if (next === "SEPARATE" && !hasSeparateData) {
+        setStatementScopeState("CONSOLIDATED");
+        setSelectedPeriodEndDate(null);
+        return;
+      }
+      setStatementScopeState(next);
+      setSelectedPeriodEndDate(null);
+    },
+    [hasSeparateData],
+  );
 
   const setPeriodType = useCallback((next: PeriodType) => {
     setPeriodTypeState(next);
@@ -222,7 +261,7 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<AppContextValue>(
     () => ({
-      statementScope,
+      statementScope: effectiveStatementScope,
       setStatementScope,
       periodType,
       setPeriodType,
@@ -230,6 +269,9 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
       setPeriodEndDate: setSelectedPeriodEndDate,
       periodView,
       snapshotId,
+      cacheSnapshotKey,
+      ragAvailable,
+      hasSeparateData,
       publishedAt: metaPeriods.data?.published_at ?? null,
       freshness: metaPeriods.data?.freshness ?? null,
       availableDates,
@@ -245,20 +287,23 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
     }),
     [
       availableDates,
+      cacheSnapshotKey,
       closeSourceDrawer,
       commandOpen,
       effectivePeriodEndDate,
+      effectiveStatementScope,
+      hasSeparateData,
       metaPeriods.data,
       openSourceDrawer,
       periodType,
       periodView,
+      ragAvailable,
       resolvedTheme,
       setPeriodType,
       setStatementScope,
       setThemePreference,
       snapshotId,
       sourceTarget,
-      statementScope,
       themePreference,
     ],
   );
@@ -280,7 +325,8 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            retry: 1,
+            retry: shouldRetryFinintelQuery,
+            staleTime: 60_000,
             refetchOnWindowFocus: false,
           },
         },

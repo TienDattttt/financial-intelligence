@@ -6,8 +6,13 @@ export type HealthResponse = Schema["HealthResponse"];
 export type SnapshotOverviewResponse = Schema["SnapshotOverviewResponse"];
 export type IssuerItem = Schema["IssuerItem"];
 export type IssuersPageResponse = Schema["IssuersPageResponse"];
-export type CompanyProfileResponse = Schema["CompanyProfileResponse"];
+export type PiotroskiNaReason =
+  | "TT200_TT99_TAXONOMY_GUARD"
+  | "MISSING_DILUTION_DATA"
+  | "MISSING_PRIOR_YEAR_BASE"
+  | "INSUFFICIENT_COMPONENTS";
 export type MLScoreItem = Schema["MLScoreItem"];
+export type CompanyProfileResponse = Schema["CompanyProfileResponse"];
 export type ShapDriverItem = Schema["ShapDriverItem"];
 export type ShapExplanationItem = Schema["ShapExplanationItem"];
 export type GrowthPoint = Schema["GrowthPoint"];
@@ -89,4 +94,5 @@ export type ScreenerQueryParams = NonNullable<
   operations["screen_market_api_v1_screener_get"]["parameters"]["query"]
 >;
 export type ScreenerSortField = NonNullable<ScreenerQueryParams["sort_by"]>;
+export type ExchangeCode = NonNullable<ScreenerQueryParams["exchange"]>;
 export type SortDirection = NonNullable<ScreenerQueryParams["sort_dir"]>;

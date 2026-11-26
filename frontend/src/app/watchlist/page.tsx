@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { Download, GitCompare, Plus, Trash2, Upload } from "lucide-react";
 import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
-import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
+import { EmptyState, ErrorState } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -34,7 +34,7 @@ import {
 } from "@/lib/watchlist-store";
 
 export default function WatchlistPage() {
-  const { statementScope, periodType, snapshotId } = useAppState();
+  const { statementScope, periodType, cacheSnapshotKey } = useAppState();
   const watchlist = React.useSyncExternalStore(
     subscribePreferences,
     getWatchlistSnapshot,
@@ -42,10 +42,11 @@ export default function WatchlistPage() {
   );
 
   const [tickerInput, setTickerInput] = React.useState("");
+  const [tickerError, setTickerError] = React.useState<string | null>(null);
   const [importStatus, setImportStatus] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
-  const issuersQuery = useAllIssuers(snapshotId);
+  const issuersQuery = useAllIssuers(cacheSnapshotKey);
   const changesQuery = useMarketChanges(
     {
       tickers: watchlist,
@@ -54,25 +55,79 @@ export default function WatchlistPage() {
       limit: 50,
       enabled: watchlist.length > 0,
     },
-    snapshotId,
+    cacheSnapshotKey,
   );
 
   const issuerMatches = React.useMemo(() => {
     const q = normalizeSearchText(tickerInput);
     if (!q) return [];
     const list = issuersQuery.data ?? [];
+    const rankOf = (iss: (typeof list)[number]): number => {
+      const tickerNorm = normalizeSearchText(iss.ticker);
+      if (tickerNorm === q) return 0;
+      if (tickerNorm.startsWith(q)) return 1;
+      if (tickerNorm.includes(q)) return 2;
+      return 3;
+    };
     return list
       .filter((iss) => {
         const tickerNorm = normalizeSearchText(iss.ticker);
         const nameNorm = normalizeSearchText(iss.company_name_vn ?? "");
         return tickerNorm.includes(q) || nameNorm.includes(q);
       })
+      .sort((a, b) => {
+        const diff = rankOf(a) - rankOf(b);
+        if (diff !== 0) return diff;
+        return a.ticker.localeCompare(b.ticker);
+      })
       .slice(0, 8);
   }, [issuersQuery.data, tickerInput]);
 
-  const handleAdd = (ticker: string) => {
-    addWatchlistTicker(ticker);
+  const resolveSubmittedTicker = (): string => {
+    const trimmed = tickerInput.trim();
+    const clean = trimmed.toUpperCase();
+    const allIssuers = issuersQuery.data ?? [];
+    if (
+      clean.length > 0 &&
+      !/\s/.test(clean) &&
+      (watchlist.includes(clean) ||
+        allIssuers.some((iss) => iss.ticker.toUpperCase() === clean) ||
+        (/^[A-Z0-9]{1,5}$/.test(clean) &&
+          issuerMatches[0]?.ticker.toUpperCase() !== clean))
+    ) {
+      return clean;
+    }
+    return issuerMatches[0]?.ticker ?? trimmed;
+  };
+
+  const handleAdd = (rawTicker: string) => {
+    const clean = rawTicker.trim().toUpperCase();
+    if (!/^[A-Z0-9]{1,10}$/.test(clean)) {
+      setTickerError("Mã cổ phiếu chỉ gồm 1–10 ký tự chữ hoặc số.");
+      return;
+    }
+    if (watchlist.includes(clean)) {
+      setTickerError(`Mã ${clean} đã có trong danh sách theo dõi.`);
+      return;
+    }
+    if (watchlist.length >= 50) {
+      setTickerError("Danh sách theo dõi đã đạt tối đa 50 mã.");
+      return;
+    }
+    if (issuersQuery.data && issuersQuery.data.length > 0) {
+      const exists = issuersQuery.data.some(
+        (iss) => iss.ticker.toUpperCase() === clean,
+      );
+      if (!exists) {
+        setTickerError(
+          `Không tìm thấy doanh nghiệp mã "${clean}" trong phạm vi dữ liệu FinIntel.`,
+        );
+        return;
+      }
+    }
+    addWatchlistTicker(clean);
     setTickerInput("");
+    setTickerError(null);
     setImportStatus(null);
   };
 
@@ -154,11 +209,14 @@ export default function WatchlistPage() {
             <div className="relative w-full max-w-sm">
               <Input
                 value={tickerInput}
-                onChange={(e) => setTickerInput(e.target.value)}
+                onChange={(e) => {
+                  setTickerInput(e.target.value);
+                  if (tickerError) setTickerError(null);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && tickerInput.trim()) {
                     e.preventDefault();
-                    handleAdd(issuerMatches[0]?.ticker ?? tickerInput.trim());
+                    handleAdd(resolveSubmittedTicker());
                   }
                 }}
                 placeholder="Nhập mã hoặc tên DN (VD: HPG, FPT...)"
@@ -169,12 +227,18 @@ export default function WatchlistPage() {
               type="button"
               size="sm"
               disabled={!tickerInput.trim()}
-              onClick={() => handleAdd(issuerMatches[0]?.ticker ?? tickerInput.trim())}
+              onClick={() => handleAdd(resolveSubmittedTicker())}
             >
               <Plus className="size-3.5" />
               Thêm mã
             </Button>
           </div>
+
+          {tickerError ? (
+            <p role="alert" className="text-xs text-risk-high">
+              {tickerError}
+            </p>
+          ) : null}
 
           {issuerMatches.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 pt-1">
@@ -215,200 +279,212 @@ export default function WatchlistPage() {
             </Link>
           }
         />
-      ) : changesQuery.isLoading ? (
-        <PageSkeleton />
-      ) : changesQuery.isError ? (
-        <ErrorState
-          message={changesQuery.error.message}
-          onRetry={() => changesQuery.refetch()}
-        />
       ) : (
-        <Card>
-          <CardHeader className="py-2.5">
-            <CardTitle className="text-[14px]">
-              Biến động rủi ro giữa kỳ gần nhất và kỳ liền trước
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
-                    <th scope="col" className="px-3 py-2 text-left font-semibold">
-                      Mã
-                    </th>
-                    <th scope="col" className="px-3 py-2 text-left font-semibold">
-                      Doanh nghiệp
-                    </th>
-                    <th scope="col" className="px-3 py-2 text-left font-semibold">
-                      Kỳ so sánh
-                    </th>
-                    <th scope="col" className="px-3 py-2 text-left font-semibold">
-                      Bậc tín nhiệm &amp; Vị thế
-                    </th>
-                    <th scope="col" className="px-3 py-2 text-left font-semibold">
-                      Chuyển vùng Altman
-                    </th>
-                    <th scope="col" className="px-3 py-2 text-right font-semibold">
-                      1Y PD (Trước → Nay · × nền)
-                    </th>
-                    <th scope="col" className="px-3 py-2 text-right font-semibold">
-                      Biến động
-                    </th>
-                    <th scope="col" className="px-3 py-2 text-right font-semibold">
-                      Cờ đỏ
-                    </th>
-                    <th scope="col" className="px-3 py-2 text-right font-semibold">
-                      Thao tác
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {watchlist.map((ticker) => {
-                    const row = changesQuery.data?.items.find((it) => it.ticker === ticker);
-                    if (!row) {
+        <div className="space-y-3">
+          {changesQuery.isError ? (
+            <ErrorState
+              message={changesQuery.error.message}
+              onRetry={() => changesQuery.refetch()}
+            />
+          ) : null}
+
+          <Card>
+            <CardHeader className="py-2.5">
+              <CardTitle className="text-[14px]">
+                Biến động rủi ro giữa kỳ gần nhất và kỳ liền trước
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">
+                        Mã
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">
+                        Doanh nghiệp
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">
+                        Kỳ so sánh
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">
+                        Bậc tín nhiệm &amp; Vị thế
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">
+                        Chuyển vùng Altman
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-right font-semibold">
+                        1Y PD (Trước → Nay · × nền)
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-right font-semibold">
+                        Biến động
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-right font-semibold">
+                        Cờ đỏ
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-right font-semibold">
+                        Thao tác
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {watchlist.map((ticker) => {
+                      const row = changesQuery.data?.items.find((it) => it.ticker === ticker);
+                      if (!row) {
+                        return (
+                          <tr key={ticker} className="border-b border-border/60">
+                            <td className="px-3 py-2 font-mono font-semibold text-accent-ink">
+                              <Link href={`/companies/${ticker}`} className="hover:underline">
+                                {ticker}
+                              </Link>
+                            </td>
+                            <td colSpan={7} className="px-3 py-2 text-ink-subtle">
+                              {changesQuery.isLoading
+                                ? "Đang tải dữ liệu biến động..."
+                                : changesQuery.isError
+                                  ? "Không thể tải dữ liệu biến động cho phạm vi/loại kỳ đang chọn."
+                                  : "Không có đủ dữ liệu cho phạm vi/loại kỳ đang chọn."}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="xs"
+                                aria-label={`Bỏ theo dõi ${ticker}`}
+                                onClick={() => removeWatchlistTicker(ticker)}
+                                className="text-ink-muted hover:text-risk-high"
+                              >
+                                <Trash2 className="size-3.5" aria-hidden="true" />
+                                <span>Xóa</span>
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      const prevMeta = row.altman_zone_prev
+                        ? ALTMAN_ZONE_META[row.altman_zone_prev]
+                        : null;
+                      const currMeta = row.altman_zone_curr
+                        ? ALTMAN_ZONE_META[row.altman_zone_curr]
+                        : null;
+                      const prevTier = getRiskTierMeta(row.risk_tier_prev);
+                      const trio = formatCreditTrio({
+                        risk_tier: row.risk_tier_curr,
+                        risk_market_percentile: row.risk_market_percentile_curr,
+                        calibrated_distress_prob: row.distress_prob_curr,
+                        relative_risk_lift: row.relative_risk_lift_curr,
+                        market_base_rate: row.market_base_rate_curr,
+                      });
+
                       return (
-                        <tr key={ticker} className="border-b border-border/60">
-                          <td className="px-3 py-2 font-mono font-semibold text-accent-ink">
-                            <Link href={`/companies/${ticker}`}>{ticker}</Link>
+                        <tr
+                          key={ticker}
+                          className="border-b border-border/60 hover:bg-surface-muted/40"
+                        >
+                          <td className="px-3 py-2">
+                            <Link
+                              href={`/companies/${row.ticker}`}
+                              className="font-mono font-semibold text-accent-ink hover:underline"
+                            >
+                              {row.ticker}
+                            </Link>
                           </td>
-                          <td colSpan={7} className="px-3 py-2 text-ink-subtle">
-                            Không có đủ dữ liệu cho phạm vi/loại kỳ đang chọn.
+                          <td className="max-w-[220px] truncate px-3 py-2">
+                            <div className="truncate font-medium text-ink">
+                              {row.company_name_vn ?? row.ticker}
+                            </div>
+                            <div className="truncate text-[11px] text-ink-muted">
+                              {row.icb_name_level2 ?? "—"}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-ink-muted">
+                            {row.prev_period_end_date
+                              ? `${formatPeriodLabel(row.prev_period_end_date, periodType)} → `
+                              : ""}
+                            {formatPeriodLabel(row.curr_period_end_date, periodType)}
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-2 whitespace-nowrap">
+                              {prevTier.tier ? (
+                                <span className="font-mono text-[11px] text-ink-muted">
+                                  {prevTier.badgeText} →
+                                </span>
+                              ) : null}
+                              <RiskTierBadge riskTier={row.risk_tier_curr} compact />
+                            </div>
+                            {trio.topPercent !== null ? (
+                              <div className="mt-0.5 text-[11px] text-ink-muted">
+                                {trio.topPercentLabel}
+                              </div>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="text-ink-muted">
+                                {prevMeta?.shortLabel ?? "N/A"} →
+                              </span>
+                              <RiskBadge
+                                tone={currMeta?.tone ?? "neutral"}
+                                label={currMeta?.shortLabel ?? "N/A"}
+                              />
+                            </div>
+                          </td>
+                          <td className="num px-3 py-2 text-right">
+                            <div>
+                              {formatPercent(row.distress_prob_prev)} →{" "}
+                              <strong className="text-ink">
+                                {formatPercent(row.distress_prob_curr)}
+                              </strong>
+                            </div>
+                            {trio.liftLabel ? (
+                              <div className="text-[11px] text-ink-muted">{trio.liftLabel}</div>
+                            ) : null}
+                          </td>
+                          <td className="num px-3 py-2 text-right">
+                            <span
+                              className={
+                                (row.distress_prob_delta ?? 0) > 0.005
+                                  ? "font-medium text-risk-high"
+                                  : (row.distress_prob_delta ?? 0) < -0.005
+                                    ? "font-medium text-risk-low"
+                                    : "text-ink-muted"
+                              }
+                            >
+                              {formatPercentPoints(row.distress_prob_delta, 1)}
+                            </span>
+                          </td>
+                          <td className="num px-3 py-2 text-right">
+                            <span>{row.red_flag_count_curr}</span>
+                            {row.new_red_flag_codes.length > 0 ? (
+                              <span className="ml-1 text-[11px] font-medium text-risk-high">
+                                (+{row.new_red_flag_codes.length})
+                              </span>
+                            ) : null}
                           </td>
                           <td className="px-3 py-2 text-right">
                             <Button
                               type="button"
                               variant="ghost"
-                              size="icon-xs"
-                              aria-label={`Bỏ theo dõi ${ticker}`}
-                              onClick={() => removeWatchlistTicker(ticker)}
+                              size="xs"
+                              aria-label={`Bỏ theo dõi ${row.ticker}`}
+                              onClick={() => removeWatchlistTicker(row.ticker)}
+                              className="text-ink-muted hover:text-risk-high"
                             >
-                              <Trash2 className="size-3.5 text-ink-muted" />
+                              <Trash2 className="size-3.5" aria-hidden="true" />
+                              <span>Xóa</span>
                             </Button>
                           </td>
                         </tr>
                       );
-                    }
-
-                    const prevMeta = row.altman_zone_prev
-                      ? ALTMAN_ZONE_META[row.altman_zone_prev]
-                      : null;
-                    const currMeta = row.altman_zone_curr
-                      ? ALTMAN_ZONE_META[row.altman_zone_curr]
-                      : null;
-                    const prevTier = getRiskTierMeta(row.risk_tier_prev);
-                    const trio = formatCreditTrio({
-                      risk_tier: row.risk_tier_curr,
-                      risk_market_percentile: row.risk_market_percentile_curr,
-                      calibrated_distress_prob: row.distress_prob_curr,
-                      relative_risk_lift: row.relative_risk_lift_curr,
-                      market_base_rate: row.market_base_rate_curr,
-                    });
-
-                    return (
-                      <tr
-                        key={ticker}
-                        className="border-b border-border/60 hover:bg-surface-muted/40"
-                      >
-                        <td className="px-3 py-2">
-                          <Link
-                            href={`/companies/${row.ticker}`}
-                            className="font-mono font-semibold text-accent-ink hover:underline"
-                          >
-                            {row.ticker}
-                          </Link>
-                        </td>
-                        <td className="max-w-[220px] truncate px-3 py-2">
-                          <div className="truncate font-medium text-ink">
-                            {row.company_name_vn ?? row.ticker}
-                          </div>
-                          <div className="truncate text-[11px] text-ink-muted">
-                            {row.icb_name_level2 ?? "—"}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2 text-ink-muted">
-                          {row.prev_period_end_date
-                            ? `${formatPeriodLabel(row.prev_period_end_date, periodType)} → `
-                            : ""}
-                          {formatPeriodLabel(row.curr_period_end_date, periodType)}
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-2 whitespace-nowrap">
-                            {prevTier.tier ? (
-                              <span className="font-mono text-[11px] text-ink-muted">
-                                {prevTier.badgeText} →
-                              </span>
-                            ) : null}
-                            <RiskTierBadge riskTier={row.risk_tier_curr} compact />
-                          </div>
-                          {trio.topPercent !== null ? (
-                            <div className="mt-0.5 text-[11px] text-ink-muted">
-                              {trio.topPercentLabel}
-                            </div>
-                          ) : null}
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex flex-wrap items-center gap-1">
-                            <span className="text-ink-muted">
-                              {prevMeta?.shortLabel ?? "N/A"} →
-                            </span>
-                            <RiskBadge
-                              tone={currMeta?.tone ?? "neutral"}
-                              label={currMeta?.shortLabel ?? "N/A"}
-                            />
-                          </div>
-                        </td>
-                        <td className="num px-3 py-2 text-right">
-                          <div>
-                            {formatPercent(row.distress_prob_prev)} →{" "}
-                            <strong className="text-ink">
-                              {formatPercent(row.distress_prob_curr)}
-                            </strong>
-                          </div>
-                          {trio.liftLabel ? (
-                            <div className="text-[11px] text-ink-muted">{trio.liftLabel}</div>
-                          ) : null}
-                        </td>
-                        <td className="num px-3 py-2 text-right">
-                          <span
-                            className={
-                              (row.distress_prob_delta ?? 0) > 0.005
-                                ? "font-medium text-risk-high"
-                                : (row.distress_prob_delta ?? 0) < -0.005
-                                  ? "font-medium text-risk-low"
-                                  : "text-ink-muted"
-                            }
-                          >
-                            {formatPercentPoints(row.distress_prob_delta, 1)}
-                          </span>
-                        </td>
-                        <td className="num px-3 py-2 text-right">
-                          <span>{row.red_flag_count_curr}</span>
-                          {row.new_red_flag_codes.length > 0 ? (
-                            <span className="ml-1 text-[11px] font-medium text-risk-high">
-                              (+{row.new_red_flag_codes.length})
-                            </span>
-                          ) : null}
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-xs"
-                            aria-label={`Bỏ theo dõi ${row.ticker}`}
-                            onClick={() => removeWatchlistTicker(row.ticker)}
-                          >
-                            <Trash2 className="size-3.5 text-ink-muted hover:text-risk-high" />
-                          </Button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       )}
     </div>
   );

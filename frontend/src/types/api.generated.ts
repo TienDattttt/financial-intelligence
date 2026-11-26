@@ -657,11 +657,8 @@ export interface components {
              * @enum {string}
              */
             period_type: "QUARTER" | "ANNUAL";
-            /**
-             * Period End Date
-             * Format: date
-             */
-            period_end_date: string;
+            /** Period End Date */
+            period_end_date?: string | null;
             /** Items */
             items: components["schemas"]["BenchmarkSummaryItem"][];
         };
@@ -1059,6 +1056,11 @@ export interface components {
             active_snapshot_id: string | null;
             /** Storage Backend */
             storage_backend: string;
+            /**
+             * Rag Available
+             * @default false
+             */
+            rag_available: boolean;
         };
         /**
          * HistoricalCaseStudyItem
@@ -1288,6 +1290,10 @@ export interface components {
             piotroski_f_score?: number | null;
             /** Piotroski Valid Components Count */
             piotroski_valid_components_count?: number | null;
+            /** Piotroski Missing Criteria */
+            piotroski_missing_criteria?: string[];
+            /** Piotroski Na Reason */
+            piotroski_na_reason?: string | null;
             /** Beneish M8 Score */
             beneish_m8_score?: number | null;
             /** Beneish Flag */
@@ -2288,6 +2294,8 @@ export interface components {
             interest_coverage?: number | null;
             /** Stressed Interest Coverage */
             stressed_interest_coverage?: number | null;
+            /** Scenario A Icr */
+            scenario_a_icr?: number | null;
             /** Stressed Interest Coverage Flag */
             stressed_interest_coverage_flag?: string | null;
             /** Ebit Ttm */
@@ -2367,6 +2375,10 @@ export interface components {
             include_all_newly_distressed?: boolean | null;
             /** Tickers */
             tickers?: string[] | null;
+            /** Reference Icrs */
+            reference_icrs?: {
+                [key: string]: number | null;
+            } | null;
         };
         /**
          * StressSectorSummaryItem
@@ -2419,6 +2431,12 @@ export interface components {
             stressed_debt_at_risk_pct: number;
             /** Newly Distressed Count */
             newly_distressed_count: number;
+            /** Total Newly Distressed */
+            total_newly_distressed?: number | null;
+            /** Issuer Icrs */
+            issuer_icrs?: {
+                [key: string]: number | null;
+            };
             /** Sector Summary */
             sector_summary: components["schemas"]["StressSectorSummaryItem"][];
             /** Newly Distressed Issuers */
@@ -2871,16 +2889,18 @@ export interface operations {
                 period_end_date?: string | null;
                 statement_scope?: "CONSOLIDATED" | "SEPARATE";
                 icb_code_level2?: string | null;
+                exchange?: ("HOSE" | "HNX" | "UPCOM") | null;
                 min_f_score?: number | null;
                 altman_zone?: ("SAFE_ZONE" | "GREY_ZONE" | "DISTRESS_ZONE") | null;
                 risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
+                risk_tiers?: string | null;
                 beneish_flag?: ("VALID" | "HIGH_MANIPULATION_RISK_SCREEN" | "MIXED_TAXONOMY" | "MISSING_PRIOR_YEAR_BASE" | "MISSING_DEPRECIATION_DIRECT_CF" | "MISSING_OR_INVALID_INPUT") | null;
                 max_distress_prob?: number | null;
                 min_distress_prob?: number | null;
                 max_red_flags?: number | null;
                 min_red_flags?: number | null;
                 q?: string | null;
-                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "debt_to_equity";
+                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "debt_to_equity" | "ebit_margin" | "interest_coverage";
                 sort_dir?: "asc" | "desc";
                 limit?: number;
                 offset?: number;
@@ -2920,16 +2940,18 @@ export interface operations {
                 period_end_date?: string | null;
                 statement_scope?: "CONSOLIDATED" | "SEPARATE";
                 icb_code_level2?: string | null;
+                exchange?: ("HOSE" | "HNX" | "UPCOM") | null;
                 min_f_score?: number | null;
                 altman_zone?: ("SAFE_ZONE" | "GREY_ZONE" | "DISTRESS_ZONE") | null;
                 risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
+                risk_tiers?: string | null;
                 beneish_flag?: ("VALID" | "HIGH_MANIPULATION_RISK_SCREEN" | "MIXED_TAXONOMY" | "MISSING_PRIOR_YEAR_BASE" | "MISSING_DEPRECIATION_DIRECT_CF" | "MISSING_OR_INVALID_INPUT") | null;
                 max_distress_prob?: number | null;
                 min_distress_prob?: number | null;
                 max_red_flags?: number | null;
                 min_red_flags?: number | null;
                 q?: string | null;
-                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "debt_to_equity";
+                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "debt_to_equity" | "ebit_margin" | "interest_coverage";
                 sort_dir?: "asc" | "desc";
             };
             header?: {

@@ -24,6 +24,7 @@ export interface ComboboxProps {
   emptyText?: string;
   ariaLabel?: string;
   disabled?: boolean;
+  searchable?: boolean;
   className?: string;
   popupClassName?: string;
 }
@@ -50,9 +51,11 @@ export function Combobox({
   emptyText = "Không tìm thấy mục phù hợp.",
   ariaLabel,
   disabled = false,
+  searchable,
   className,
   popupClassName,
 }: ComboboxProps) {
+  const showSearch = searchable ?? options.length > 6;
   const selectedOption = React.useMemo(
     () => options.find((opt) => opt.value === value) ?? null,
     [options, value],
@@ -112,17 +115,19 @@ export function Combobox({
               popupClassName,
             )}
           >
-            <div className="flex items-center gap-1.5 border-b border-border bg-surface-muted/40 px-2.5 py-1.5">
-              <Search
-                className="size-3.5 shrink-0 text-ink-muted"
-                aria-hidden="true"
-              />
-              <ComboboxPrimitive.Input
-                placeholder={searchPlaceholder}
-                aria-label={searchPlaceholder}
-                className="h-7 w-full bg-transparent text-xs text-ink placeholder:text-ink-subtle focus:outline-none"
-              />
-            </div>
+            {showSearch ? (
+              <div className="flex items-center gap-1.5 border-b border-border bg-surface-muted/40 px-2.5 py-1.5">
+                <Search
+                  className="size-3.5 shrink-0 text-ink-muted"
+                  aria-hidden="true"
+                />
+                <ComboboxPrimitive.Input
+                  placeholder={searchPlaceholder}
+                  aria-label={searchPlaceholder}
+                  className="h-7 w-full bg-transparent text-xs text-ink placeholder:text-ink-subtle focus:outline-none"
+                />
+              </div>
+            ) : null}
 
             <ComboboxPrimitive.Empty className="text-xs text-ink-muted">
               <div className="px-3 py-2.5">{emptyText}</div>

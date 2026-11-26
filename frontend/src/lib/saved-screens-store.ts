@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { RiskTone } from "@/lib/domain-labels";
 import { formatNumber } from "@/lib/format";
 import type {
+  ExchangeCode,
   ScreenerItem,
   ScreenerQueryParams,
   ScreenerSortField,
@@ -14,6 +15,10 @@ const MAX_SAVED_SCREENS = 30;
 
 export const VALID_RISK_TIERS = ["R1", "R2", "R3", "R4", "R5"] as const;
 export type ScreenerRiskTier = (typeof VALID_RISK_TIERS)[number];
+const VALID_RISK_TIER_SET = new Set<string>(VALID_RISK_TIERS);
+
+export const VALID_EXCHANGES = ["HOSE", "HNX", "UPCOM"] as const satisfies readonly ExchangeCode[];
+const VALID_EXCHANGE_SET = new Set<string>(VALID_EXCHANGES);
 
 export const VALID_ALTMAN_ZONES = [
   "SAFE_ZONE",
@@ -38,14 +43,18 @@ export const VALID_SORT_FIELDS = [
   "beneish_m8_score",
   "red_flag_count",
   "roe_total",
+  "ebit_margin",
   "debt_to_equity",
+  "interest_coverage",
 ] as const satisfies readonly ScreenerSortField[];
 
 export const ScreenerFilterStateSchema = z.object({
   q: z.string().max(80).default(""),
+  exchange: z.enum(["", ...VALID_EXCHANGES]).optional(),
   icb_code_level2: z.string().max(20).default(""),
   altman_zone: z.enum(["", ...VALID_ALTMAN_ZONES]).default(""),
   risk_tier: z.enum(["", ...VALID_RISK_TIERS]).default(""),
+  risk_tiers: z.array(z.enum(VALID_RISK_TIERS)).max(5).optional(),
   beneish_flag: z.enum(["", ...VALID_BENEISH_FLAGS]).default(""),
   min_f_score: z
     .string()
@@ -61,11 +70,11 @@ export const ScreenerFilterStateSchema = z.object({
     .default(""),
   min_red_flags: z
     .string()
-    .regex(/^$|^[0-9]$/)
+    .regex(/^$|^([0-9]|10)$/)
     .default(""),
   max_red_flags: z
     .string()
-    .regex(/^$|^[0-9]$/)
+    .regex(/^$|^([0-9]|10)$/)
     .default(""),
   sort_by: z.enum(VALID_SORT_FIELDS).default("calibrated_distress_prob"),
   sort_dir: z.enum(["asc", "desc"] as const).default("desc"),
@@ -75,9 +84,11 @@ export type ScreenerFilterState = z.infer<typeof ScreenerFilterStateSchema>;
 
 export const DEFAULT_SCREENER_FILTERS: ScreenerFilterState = {
   q: "",
+  exchange: "",
   icb_code_level2: "",
   altman_zone: "",
   risk_tier: "",
+  risk_tiers: [],
   beneish_flag: "",
   min_f_score: "",
   min_distress_prob: "",
@@ -114,10 +125,9 @@ export const BUILTIN_SCREENER_PRESETS: readonly ScreenerPreset[] = [
     id: "preset-high-risk-r4-r5",
     name: "Rủi ro cao R4–R5",
     description:
-      "Nhóm doanh nghiệp thuộc vùng nguy cơ kiệt quệ và có cờ đỏ kế toán, xếp theo xác suất kiệt quệ giảm dần.",
+      "Nhóm doanh nghiệp xếp bậc rủi ro R4–R5 theo mô hình, xếp theo xác suất kiệt quệ giảm dần.",
     filters: {
-      altman_zone: "DISTRESS_ZONE",
-      min_red_flags: "1",
+      risk_tiers: ["R4", "R5"],
       sort_by: "calibrated_distress_prob",
       sort_dir: "desc",
     },
@@ -137,8 +147,9 @@ export const BUILTIN_SCREENER_PRESETS: readonly ScreenerPreset[] = [
     id: "preset-healthy-r1-r2",
     name: "Sức khỏe ổn định R1–R2",
     description:
-      "Vùng an toàn Altman, điểm Piotroski F-Score từ 6/9 trở lên và tối đa 1 cờ đỏ, xếp theo ROE.",
+      "Nhóm doanh nghiệp bậc R1–R2, vùng an toàn Altman, F-Score từ 6/9 và tối đa 1 cờ đỏ, xếp theo ROE.",
     filters: {
+      risk_tiers: ["R1", "R2"],
       altman_zone: "SAFE_ZONE",
       min_f_score: "6",
       max_red_flags: "1",
@@ -234,6 +245,11 @@ export function formatTopRiskPercentileLabel(
   }
   const clamped = Math.max(0, Math.min(100, riskMarketPercentile));
   const topPct = Math.max(0.1, 100 - clamped);
+  if (topPct > 50) {
+    const saferPct = Math.min(99.9, topPct);
+    const decimals = saferPct > 90 ? 1 : 0;
+    return `An toàn hơn ${formatNumber(saferPct, decimals)}% DN`;
+  }
   const decimals = topPct < 10 ? 1 : 0;
   return `Top ${formatNumber(topPct, decimals)}% rủi ro nhất`;
 }
@@ -293,10 +309,12 @@ const EXPORT_PARAM_ORDER: readonly (keyof ScreenerExportParams)[] = [
   "period_type",
   "period_end_date",
   "statement_scope",
+  "exchange",
   "icb_code_level2",
   "min_f_score",
   "altman_zone",
   "risk_tier",
+  "risk_tiers",
   "beneish_flag",
   "max_distress_prob",
   "min_distress_prob",
@@ -412,6 +430,7 @@ export interface ScreenerColumnOption {
   group: ScreenerColumnGroupId;
   defaultVisible: boolean;
   align: "left" | "right";
+  redundantWithDefault?: boolean;
 }
 
 export const SCREENER_COLUMN_GROUPS: readonly {
@@ -434,24 +453,27 @@ export const SCREENER_OPTIONAL_COLUMNS: readonly ScreenerColumnOption[] = [
   },
   {
     id: "risk_tier",
-    label: "Bậc rủi ro (R1–R5)",
+    label: "Bậc rủi ro (R1–R5 · tách riêng)",
     group: "credit_risk",
     defaultVisible: false,
     align: "left",
+    redundantWithDefault: true,
   },
   {
     id: "risk_market_percentile",
-    label: "Vị thế rủi ro (Top X%)",
+    label: "Vị thế rủi ro (Top X% · tách riêng)",
     group: "credit_risk",
     defaultVisible: false,
     align: "right",
+    redundantWithDefault: true,
   },
   {
     id: "relative_risk_lift",
-    label: "Hệ số so nền (× nền)",
+    label: "Hệ số so nền (× nền · tách riêng)",
     group: "credit_risk",
     defaultVisible: false,
     align: "right",
+    redundantWithDefault: true,
   },
   {
     id: "market_base_rate",
@@ -778,15 +800,136 @@ export function deleteSavedScreen(id: string): void {
   }
 }
 
+export interface ScreenerSearchParamsLike {
+  get(name: string): string | null;
+}
+
+export function parseScreenerFilters(
+  searchParams: ScreenerSearchParamsLike,
+): ScreenerFilterState {
+  const shape = ScreenerFilterStateSchema.shape;
+  const parseField = <T>(
+    schema: z.ZodType<T>,
+    raw: unknown,
+    fallback: T,
+  ): T => {
+    const res = schema.safeParse(raw);
+    return res.success ? res.data : fallback;
+  };
+
+  const rawExchange = (searchParams.get("exchange") ?? "").trim().toUpperCase();
+  const exchange: ScreenerFilterState["exchange"] = VALID_EXCHANGE_SET.has(
+    rawExchange,
+  )
+    ? (rawExchange as ExchangeCode)
+    : "";
+
+  const rawTiers = (searchParams.get("risk_tiers") ?? "")
+    .split(",")
+    .map((item) => item.trim().toUpperCase())
+    .filter((item): item is ScreenerRiskTier => VALID_RISK_TIER_SET.has(item));
+  const rawSingleTier = (searchParams.get("risk_tier") ?? "").trim().toUpperCase();
+  const singleTier: ScreenerRiskTier | "" = VALID_RISK_TIER_SET.has(rawSingleTier)
+    ? (rawSingleTier as ScreenerRiskTier)
+    : "";
+
+  const risk_tiers: ScreenerRiskTier[] =
+    rawTiers.length > 0
+      ? Array.from(new Set(rawTiers))
+      : singleTier
+        ? [singleTier]
+        : [];
+
+  const risk_tier: ScreenerFilterState["risk_tier"] =
+    risk_tiers.length === 1 ? risk_tiers[0] : "";
+
+  const rawQ = searchParams.get("q") ?? "";
+  const rawIcb = searchParams.get("icb_code_level2") ?? "";
+
+  return {
+    q: parseField(shape.q, rawQ.slice(0, 80), DEFAULT_SCREENER_FILTERS.q),
+    exchange,
+    icb_code_level2: parseField(
+      shape.icb_code_level2,
+      rawIcb.slice(0, 20),
+      DEFAULT_SCREENER_FILTERS.icb_code_level2,
+    ),
+    altman_zone: parseField(
+      shape.altman_zone,
+      searchParams.get("altman_zone") ?? "",
+      DEFAULT_SCREENER_FILTERS.altman_zone,
+    ),
+    risk_tier,
+    risk_tiers,
+    beneish_flag: parseField(
+      shape.beneish_flag,
+      searchParams.get("beneish_flag") ?? "",
+      DEFAULT_SCREENER_FILTERS.beneish_flag,
+    ),
+    min_f_score: parseField(
+      shape.min_f_score,
+      searchParams.get("min_f_score") ?? "",
+      DEFAULT_SCREENER_FILTERS.min_f_score,
+    ),
+    min_distress_prob: parseField(
+      shape.min_distress_prob,
+      searchParams.get("min_distress_prob") ?? "",
+      DEFAULT_SCREENER_FILTERS.min_distress_prob,
+    ),
+    max_distress_prob: parseField(
+      shape.max_distress_prob,
+      searchParams.get("max_distress_prob") ?? "",
+      DEFAULT_SCREENER_FILTERS.max_distress_prob,
+    ),
+    min_red_flags: parseField(
+      shape.min_red_flags,
+      searchParams.get("min_red_flags") ?? "",
+      DEFAULT_SCREENER_FILTERS.min_red_flags,
+    ),
+    max_red_flags: parseField(
+      shape.max_red_flags,
+      searchParams.get("max_red_flags") ?? "",
+      DEFAULT_SCREENER_FILTERS.max_red_flags,
+    ),
+    sort_by: parseField(
+      shape.sort_by,
+      searchParams.get("sort_by") ?? DEFAULT_SCREENER_FILTERS.sort_by,
+      DEFAULT_SCREENER_FILTERS.sort_by,
+    ),
+    sort_dir: parseField(
+      shape.sort_dir,
+      searchParams.get("sort_dir") ?? DEFAULT_SCREENER_FILTERS.sort_dir,
+      DEFAULT_SCREENER_FILTERS.sort_dir,
+    ),
+  };
+}
+
 export function filtersToUrlPatch(
   filters: Partial<ScreenerFilterState>,
 ): Record<string, string | null> {
   const merged = { ...DEFAULT_SCREENER_FILTERS, ...filters };
+  const explicitTiers = (filters.risk_tiers ?? []).filter(
+    (t): t is ScreenerRiskTier => VALID_RISK_TIER_SET.has(t),
+  );
+  const dedupedTiers = Array.from(new Set(explicitTiers));
+  const effectiveTiers: ScreenerRiskTier[] =
+    dedupedTiers.length > 0
+      ? dedupedTiers
+      : filters.risk_tier && VALID_RISK_TIER_SET.has(filters.risk_tier)
+        ? [filters.risk_tier]
+        : [];
+
+  const riskTierParam = effectiveTiers.length === 1 ? effectiveTiers[0] : null;
+  const riskTiersParam =
+    effectiveTiers.length >= 2 ? effectiveTiers.join(",") : null;
+
   return {
     q: merged.q || null,
+    exchange: merged.exchange || null,
     icb_code_level2: merged.icb_code_level2 || null,
     altman_zone: merged.altman_zone || null,
-    risk_tier: merged.risk_tier || null,
+    risk_tier: riskTierParam,
+    risk_tiers: riskTiersParam,
     beneish_flag: merged.beneish_flag || null,
     min_f_score: merged.min_f_score || null,
     min_distress_prob: merged.min_distress_prob || null,

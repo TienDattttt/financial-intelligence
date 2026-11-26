@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Download, Plus, X } from "lucide-react";
+import { CompareFivePillarChart } from "@/components/charts/CompareFivePillarChart";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
 import { RiskTierBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
@@ -93,10 +94,31 @@ const CHART_METRICS: {
   },
 ];
 
+function getComparePeriodKey(
+  periodEndDate: string,
+  periodType: string,
+  fiscalYear?: unknown,
+): string {
+  if (periodType === "ANNUAL") {
+    if (typeof fiscalYear === "number" && Number.isFinite(fiscalYear)) {
+      return String(Math.trunc(fiscalYear));
+    }
+    return periodEndDate.slice(0, 4);
+  }
+  return periodEndDate;
+}
+
+function formatCompareAxisLabel(periodKey: string, periodType: string): string {
+  if (periodType === "ANNUAL") {
+    return `Năm ${periodKey}`;
+  }
+  return formatPeriodLabel(periodKey, periodType);
+}
+
 function CompareContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { statementScope, periodType, periodEndDate, snapshotId } = useAppState();
+  const { statementScope, periodType, periodEndDate, cacheSnapshotKey } = useAppState();
   const { palette } = useChartTheme();
 
   const tickers = React.useMemo(() => {
@@ -109,17 +131,19 @@ function CompareContent() {
   }, [searchParams]);
 
   const [tickerInput, setTickerInput] = React.useState("");
+  const [tickerError, setTickerError] = React.useState<string | null>(null);
+  const [dismissedErrors, setDismissedErrors] = React.useState<string[]>([]);
   const [chartMetric, setChartMetric] =
     React.useState<CompareMetricKey>("calibrated_distress_prob");
   const [matrixMode, setMatrixMode] = React.useState<"VALUE" | "PERCENTILE">("VALUE");
 
-  const issuersQuery = useAllIssuers(snapshotId);
+  const issuersQuery = useAllIssuers(cacheSnapshotKey);
   const { profiles, summaries } = useCompareCompanies(
     tickers,
     statementScope,
     periodType,
     periodEndDate,
-    snapshotId,
+    cacheSnapshotKey,
   );
 
   const setTickersUrl = React.useCallback(
@@ -136,13 +160,37 @@ function CompareContent() {
 
   const addTicker = (t: string) => {
     const clean = t.trim().toUpperCase();
-    if (!/^[A-Z0-9]{1,10}$/.test(clean) || tickers.includes(clean)) return;
-    if (tickers.length >= 5) return;
+    if (!/^[A-Z0-9]{1,10}$/.test(clean)) {
+      setTickerError("Mã cổ phiếu chỉ gồm 1–10 ký tự chữ hoặc số.");
+      return;
+    }
+    if (tickers.includes(clean)) {
+      setTickerError(`Mã ${clean} đã có trong danh sách so sánh.`);
+      return;
+    }
+    if (tickers.length >= 5) {
+      setTickerError("Đã chọn tối đa 5/5 doanh nghiệp để so sánh.");
+      return;
+    }
+    if (issuersQuery.data && issuersQuery.data.length > 0) {
+      const exists = issuersQuery.data.some(
+        (iss) => iss.ticker.toUpperCase() === clean,
+      );
+      if (!exists) {
+        setTickerError(
+          `Không tìm thấy doanh nghiệp mã "${clean}" trong phạm vi dữ liệu FinIntel.`,
+        );
+        return;
+      }
+    }
+    setTickerError(null);
     setTickersUrl([...tickers, clean]);
     setTickerInput("");
   };
 
   const removeTicker = (t: string) => {
+    setTickerError(null);
+    setDismissedErrors((prev) => prev.filter((x) => x !== t));
     setTickersUrl(tickers.filter((x) => x !== t));
   };
 
@@ -157,14 +205,76 @@ function CompareContent() {
   const issuerSuggestions = React.useMemo(() => {
     const q = normalizeSearchText(tickerInput);
     if (!q) return [];
-    return (issuersQuery.data ?? [])
+    const list = issuersQuery.data ?? [];
+    const rankOf = (iss: (typeof list)[number]): number => {
+      const tickerNorm = normalizeSearchText(iss.ticker);
+      if (tickerNorm === q) return 0;
+      if (tickerNorm.startsWith(q)) return 1;
+      if (tickerNorm.includes(q)) return 2;
+      return 3;
+    };
+    return list
       .filter((iss) => {
         const tickerNorm = normalizeSearchText(iss.ticker);
         const nameNorm = normalizeSearchText(iss.company_name_vn ?? "");
-        return !tickers.includes(iss.ticker) && (tickerNorm.includes(q) || nameNorm.includes(q));
+        return (
+          !tickers.includes(iss.ticker.toUpperCase()) &&
+          (tickerNorm.includes(q) || nameNorm.includes(q))
+        );
+      })
+      .sort((a, b) => {
+        const diff = rankOf(a) - rankOf(b);
+        if (diff !== 0) return diff;
+        return a.ticker.localeCompare(b.ticker);
       })
       .slice(0, 8);
   }, [issuersQuery.data, tickerInput, tickers]);
+
+  const resolveSubmittedTicker = (): string => {
+    const trimmed = tickerInput.trim();
+    const clean = trimmed.toUpperCase();
+    const allIssuers = issuersQuery.data ?? [];
+    if (
+      clean.length > 0 &&
+      !/\s/.test(clean) &&
+      (tickers.includes(clean) ||
+        allIssuers.some((iss) => iss.ticker.toUpperCase() === clean) ||
+        (/^[A-Z0-9]{1,5}$/.test(clean) &&
+          issuerSuggestions[0]?.ticker.toUpperCase() !== clean))
+    ) {
+      return clean;
+    }
+    return issuerSuggestions[0]?.ticker ?? trimmed;
+  };
+
+  const activeEntries = React.useMemo(
+    () =>
+      tickers
+        .map((ticker, idx) => ({
+          ticker,
+          idx,
+          profileQuery: profiles[idx],
+          summaryQuery: summaries[idx],
+        }))
+        .filter((entry) => !entry.profileQuery?.isError),
+    [profiles, summaries, tickers],
+  );
+  const activeTickers = React.useMemo(
+    () => activeEntries.map((e) => e.ticker),
+    [activeEntries],
+  );
+
+  const failedEntries = React.useMemo(
+    () =>
+      tickers
+        .map((ticker, idx) => ({
+          ticker,
+          error: profiles[idx]?.error ?? null,
+          isError: Boolean(profiles[idx]?.isError),
+        }))
+        .filter((entry) => entry.isError),
+    [profiles, tickers],
+  );
 
   const metricConfig =
     CHART_METRICS.find((m) => m.key === chartMetric) ?? CHART_METRICS[0];
@@ -173,13 +283,18 @@ function CompareContent() {
     const dateSet = new Set<string>();
     const perTickerMap = new Map<string, Map<string, number | null>>();
 
-    tickers.forEach((ticker, idx) => {
-      const profile = profiles[idx]?.data;
+    activeEntries.forEach(({ ticker, profileQuery }) => {
+      const profile = profileQuery?.data;
       const map = new Map<string, number | null>();
       if (profile) {
         if (metricConfig.isMl) {
           for (const row of profile.ml_scores) {
-            dateSet.add(row.period_end_date);
+            const key = getComparePeriodKey(
+              row.period_end_date,
+              periodType,
+              (row as Record<string, unknown>).fiscal_year,
+            );
+            dateSet.add(key);
             const rawVal =
               metricConfig.key === "altman_z_double_prime"
                 ? row.altman_z_double_prime
@@ -190,34 +305,45 @@ function CompareContent() {
                   ? rawVal * 100
                   : rawVal
                 : null;
-            map.set(row.period_end_date, scaled ?? null);
+            map.set(key, scaled ?? null);
           }
         } else {
           for (const row of profile.ratios_table) {
             const d = typeof row.period_end_date === "string" ? row.period_end_date : "";
             if (!d) continue;
-            dateSet.add(d);
+            const key = getComparePeriodKey(
+              d,
+              periodType,
+              (row as Record<string, unknown>).fiscal_year,
+            );
+            dateSet.add(key);
             const rawVal = row[metricConfig.key];
             const num =
               typeof rawVal === "number" && Number.isFinite(rawVal) ? rawVal : null;
             const scaled =
               num !== null ? (metricConfig.isPct ? num * 100 : num) : null;
-            map.set(d, scaled);
+            map.set(key, scaled);
           }
         }
       }
       perTickerMap.set(ticker, map);
     });
 
+    const maxBound = periodEndDate
+      ? periodType === "ANNUAL"
+        ? periodEndDate.slice(0, 4)
+        : periodEndDate
+      : null;
+
     const dates = Array.from(dateSet)
-      .filter((d) => !periodEndDate || d <= periodEndDate)
+      .filter((d) => !maxBound || d <= maxBound)
       .sort()
       .slice(-12);
     return { dates, perTickerMap };
-  }, [metricConfig, periodEndDate, profiles, tickers]);
+  }, [activeEntries, metricConfig, periodEndDate, periodType]);
 
   const chartOption = React.useMemo<EChartsOption>(() => {
-    const xLabels = chartData.dates.map((d) => formatPeriodLabel(d, periodType));
+    const xLabels = chartData.dates.map((d) => formatCompareAxisLabel(d, periodType));
     const suffix = metricConfig.unitSuffix ?? "";
     return {
       grid: { left: 54, right: 20, top: 36, bottom: 32 },
@@ -245,7 +371,7 @@ function CompareContent() {
               : `${formatChartNumber(v, metricConfig.decimals, { trimTrailingZeros: true })}${suffix}`,
         },
       },
-      series: tickers.map((t, idx) => {
+      series: activeTickers.map((t, idx) => {
         const seriesColor = palette.series[idx % palette.series.length];
         return {
           name: t,
@@ -258,19 +384,19 @@ function CompareContent() {
       }),
     };
   }, [
+    activeTickers,
     chartData,
     metricConfig.decimals,
     metricConfig.isPct,
     metricConfig.unitSuffix,
     palette.series,
     periodType,
-    tickers,
   ]);
 
-  const chartTableHeaders = ["Kỳ", ...tickers];
+  const chartTableHeaders = ["Kỳ", ...activeTickers];
   const chartTableRows = chartData.dates.map((d) => [
-    formatPeriodLabel(d, periodType),
-    ...tickers.map((t) => {
+    formatCompareAxisLabel(d, periodType),
+    ...activeTickers.map((t) => {
       const v = chartData.perTickerMap.get(t)?.get(d);
       if (v === null || v === undefined) return "N/A";
       return metricConfig.isPct
@@ -279,7 +405,7 @@ function CompareContent() {
     }),
   ]);
 
-  // Extract latest ML score + summary metrics for each ticker
+  // Extract latest ML score + summary metrics for each valid ticker
   const matrixData = React.useMemo(() => {
     const ratioList = new Map<
       RatioName,
@@ -289,8 +415,8 @@ function CompareContent() {
         direction: RatioDirection;
       }
     >();
-    summaries.forEach((q) => {
-      for (const item of q.data?.items ?? []) {
+    activeEntries.forEach(({ summaryQuery }) => {
+      for (const item of summaryQuery?.data?.items ?? []) {
         if (!ratioList.has(item.metric_name)) {
           ratioList.set(item.metric_name, {
             name: item.display_name_vn,
@@ -301,12 +427,12 @@ function CompareContent() {
       }
     });
 
-    const latestMl = tickers.map((_, idx) =>
-      selectMlScoreForPeriod(profiles[idx]?.data?.ml_scores, periodEndDate),
+    const latestMl = activeEntries.map(({ profileQuery }) =>
+      selectMlScoreForPeriod(profileQuery?.data?.ml_scores, periodEndDate),
     );
 
-    const latestFlagsCount = tickers.map((_, idx) => {
-      const p = profiles[idx]?.data;
+    const latestFlagsCount = activeEntries.map(({ profileQuery }, idx) => {
+      const p = profileQuery?.data;
       if (!p) return 0;
       const targetDate = latestMl[idx]?.period_end_date ?? periodEndDate;
       return targetDate
@@ -315,10 +441,10 @@ function CompareContent() {
     });
 
     return { ratioList, latestMl, latestFlagsCount };
-  }, [periodEndDate, profiles, summaries, tickers]);
+  }, [activeEntries, periodEndDate]);
 
   const handleExportCsv = () => {
-    const headers = ["Chỉ tiêu", ...tickers];
+    const headers = ["Chỉ tiêu", ...activeTickers];
     const rows: unknown[][] = [];
     rows.push([
       "Altman Z″",
@@ -378,8 +504,8 @@ function CompareContent() {
     for (const [metricName, meta] of matrixData.ratioList.entries()) {
       rows.push([
         meta.name,
-        ...tickers.map((_, idx) => {
-          const item = summaries[idx]?.data?.items.find((x) => x.metric_name === metricName);
+        ...activeEntries.map(({ summaryQuery }) => {
+          const item = summaryQuery?.data?.items.find((x) => x.metric_name === metricName);
           if (!item) return "N/A";
           return matrixMode === "PERCENTILE"
             ? item.percentile_rank !== null && item.percentile_rank !== undefined
@@ -395,7 +521,7 @@ function CompareContent() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `finintel-so-sanh-${tickers.join("-")}.csv`;
+    a.download = `finintel-so-sanh-${activeTickers.join("-")}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -403,7 +529,10 @@ function CompareContent() {
   const anyLoading =
     tickers.length > 0 &&
     (profiles.some((p) => p.isLoading) || summaries.some((s) => s.isLoading));
-  const firstError = profiles.find((p) => p.isError)?.error;
+  const visibleFailedEntries = failedEntries.filter(
+    (entry) => !dismissedErrors.includes(entry.ticker),
+  );
+  const allFailed = tickers.length > 0 && activeEntries.length === 0 && failedEntries.length > 0;
 
   return (
     <div className="space-y-4">
@@ -418,7 +547,7 @@ function CompareContent() {
             {periodEndDate ? ` · ${formatPeriodLabel(periodEndDate, periodType)}` : ""}
           </p>
         </div>
-        {tickers.length > 0 ? (
+        {activeTickers.length > 0 ? (
           <Button variant="outline" size="sm" onClick={handleExportCsv}>
             <Download className="size-3.5" />
             Xuất CSV so sánh
@@ -429,38 +558,48 @@ function CompareContent() {
       <Card className="rounded-lg shadow-xs">
         <CardContent className="space-y-3 p-3.5">
           <div className="flex flex-wrap items-center gap-2">
-            {tickers.map((t, idx) => (
-              <span
-                key={t}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-canvas px-2.5 py-1 text-xs font-medium text-ink"
-              >
+            {tickers.map((t) => {
+              const activeIdx = activeTickers.indexOf(t);
+              const badgeColor =
+                activeIdx >= 0
+                  ? palette.series[activeIdx % palette.series.length]
+                  : palette.neutral;
+              return (
                 <span
-                  className="size-2 rounded-full"
-                  style={{ backgroundColor: palette.series[idx % palette.series.length] }}
-                />
-                <Link href={`/companies/${t}`} className="font-mono font-semibold hover:underline">
-                  {t}
-                </Link>
-                <button
-                  type="button"
-                  aria-label={`Xóa ${t} khỏi so sánh`}
-                  onClick={() => removeTicker(t)}
-                  className="text-ink-subtle hover:text-risk-high"
+                  key={t}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-canvas px-2.5 py-1 text-xs font-medium text-ink"
                 >
-                  <X className="size-3.5" />
-                </button>
-              </span>
-            ))}
+                  <span
+                    className="size-2 rounded-full"
+                    style={{ backgroundColor: badgeColor }}
+                  />
+                  <Link href={`/companies/${t}`} className="font-mono font-semibold hover:underline">
+                    {t}
+                  </Link>
+                  <button
+                    type="button"
+                    aria-label={`Xóa ${t} khỏi so sánh`}
+                    onClick={() => removeTicker(t)}
+                    className="text-ink-subtle hover:text-risk-high"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </span>
+              );
+            })}
 
             {tickers.length < 5 ? (
               <div className="flex items-center gap-1.5">
                 <Input
                   value={tickerInput}
-                  onChange={(e) => setTickerInput(e.target.value)}
+                  onChange={(e) => {
+                    setTickerInput(e.target.value);
+                    if (tickerError) setTickerError(null);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && tickerInput.trim()) {
                       e.preventDefault();
-                      addTicker(issuerSuggestions[0]?.ticker ?? tickerInput.trim());
+                      addTicker(resolveSubmittedTicker());
                     }
                   }}
                   placeholder="Thêm mã so sánh (VD: FPT)"
@@ -471,14 +610,24 @@ function CompareContent() {
                   type="button"
                   size="xs"
                   disabled={!tickerInput.trim()}
-                  onClick={() => addTicker(issuerSuggestions[0]?.ticker ?? tickerInput.trim())}
+                  onClick={() => addTicker(resolveSubmittedTicker())}
                 >
                   <Plus className="size-3" />
                   Thêm
                 </Button>
               </div>
-            ) : null}
+            ) : (
+              <span className="text-xs font-medium text-ink-muted">
+                Đã chọn tối đa 5/5 doanh nghiệp
+              </span>
+            )}
           </div>
+
+          {tickerError ? (
+            <p role="alert" className="text-xs text-risk-high">
+              {tickerError}
+            </p>
+          ) : null}
 
           {issuerSuggestions.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
@@ -519,10 +668,57 @@ function CompareContent() {
         />
       ) : anyLoading ? (
         <PageSkeleton />
-      ) : firstError ? (
-        <ErrorState message={firstError.message} />
+      ) : allFailed ? (
+        <ErrorState
+          message={
+            failedEntries[0]?.error?.message ??
+            "Không thể tải dữ liệu so sánh cho các mã đã chọn."
+          }
+          onRetry={() => setTickersUrl([])}
+        />
       ) : (
         <>
+          {visibleFailedEntries.length > 0 ? (
+            <div
+              role="alert"
+              className="space-y-1.5 rounded-lg border border-risk-high/35 bg-risk-high-soft/50 p-3 text-xs"
+            >
+              {visibleFailedEntries.map((entry) => (
+                <div
+                  key={entry.ticker}
+                  className="flex flex-wrap items-center justify-between gap-2"
+                >
+                  <span className="text-ink">
+                    <strong className="font-mono text-risk-high">{entry.ticker}</strong>:{" "}
+                    {entry.error?.message ?? "Không thể tải hồ sơ doanh nghiệp này."}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => removeTicker(entry.ticker)}
+                    >
+                      Loại bỏ {entry.ticker}
+                    </Button>
+                    <button
+                      type="button"
+                      aria-label={`Đóng cảnh báo ${entry.ticker}`}
+                      onClick={() =>
+                        setDismissedErrors((prev) =>
+                          prev.includes(entry.ticker) ? prev : [...prev, entry.ticker],
+                        )
+                      }
+                      className="rounded p-1 text-ink-muted hover:bg-surface/60 hover:text-ink"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <EChartBox
             title={`So sánh diễn biến: ${metricConfig.label}`}
             subtitle="Độ dài chuỗi tối đa 12 kỳ công bố gần nhất"
@@ -545,6 +741,14 @@ function CompareContent() {
                 ))}
               </Select>
             }
+          />
+
+          <CompareFivePillarChart
+            companies={activeEntries.map((e) => ({
+              ticker: e.ticker,
+              items: e.summaryQuery?.data?.items ?? [],
+            }))}
+            isLoading={summaries.some((s) => s.isLoading)}
           />
 
           <Card className="rounded-lg shadow-xs">
@@ -587,11 +791,11 @@ function CompareContent() {
                     <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                       <th
                         scope="col"
-                        className="sticky left-0 z-10 min-w-[230px] border-r border-border bg-surface-muted px-3 py-2 text-left font-semibold"
+                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface-muted px-3 py-2 text-left font-semibold md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
                       >
                         Chỉ tiêu
                       </th>
-                      {tickers.map((t) => (
+                      {activeTickers.map((t) => (
                         <th key={t} scope="col" className="min-w-[120px] px-3 py-2 text-right">
                           <Link
                             href={`/companies/${t}`}
@@ -607,12 +811,12 @@ function CompareContent() {
                     <tr className="border-b border-border/60 bg-surface-muted/30">
                       <th
                         scope="row"
-                        className="sticky left-0 z-10 border-r border-border bg-surface-muted/60 px-3 py-2 text-left font-semibold text-ink"
+                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface-muted/60 px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
                       >
                         Altman Z″
                       </th>
                       {matrixData.latestMl.map((m, i) => (
-                        <td key={tickers[i]} className="num px-3 py-2 text-right font-medium">
+                        <td key={activeTickers[i]} className="num px-3 py-2 text-right font-medium">
                           {formatNumber(m?.altman_z_double_prime, 2)}
                         </td>
                       ))}
@@ -620,12 +824,12 @@ function CompareContent() {
                     <tr className="border-b border-border/60">
                       <th
                         scope="row"
-                        className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
+                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
                       >
                         Piotroski F-Score
                       </th>
                       {matrixData.latestMl.map((m, i) => (
-                        <td key={tickers[i]} className="num px-3 py-2 text-right">
+                        <td key={activeTickers[i]} className="num px-3 py-2 text-right">
                           {m?.piotroski_f_score !== null && m?.piotroski_f_score !== undefined
                             ? `${m.piotroski_f_score}/9`
                             : "N/A"}
@@ -635,12 +839,12 @@ function CompareContent() {
                     <tr className="border-b border-border/60">
                       <th
                         scope="row"
-                        className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
+                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
                       >
                         Beneish M-Score
                       </th>
                       {matrixData.latestMl.map((m, i) => (
-                        <td key={tickers[i]} className="num px-3 py-2 text-right">
+                        <td key={activeTickers[i]} className="num px-3 py-2 text-right">
                           {formatNumber(m?.beneish_m8_score, 2)}
                         </td>
                       ))}
@@ -648,12 +852,12 @@ function CompareContent() {
                     <tr className="border-b border-border/60">
                       <th
                         scope="row"
-                        className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
+                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
                       >
                         Bậc rủi ro (R1–R5)
                       </th>
                       {matrixData.latestMl.map((m, i) => (
-                        <td key={tickers[i]} className="px-3 py-2 text-right">
+                        <td key={activeTickers[i]} className="px-3 py-2 text-right">
                           <div className="flex justify-end">
                             <RiskTierBadge riskTier={m?.risk_tier} />
                           </div>
@@ -663,7 +867,7 @@ function CompareContent() {
                     <tr className="border-b border-border/60">
                       <th
                         scope="row"
-                        className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
+                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
                       >
                         Vị thế rủi ro cùng kỳ
                       </th>
@@ -676,7 +880,7 @@ function CompareContent() {
                           market_base_rate: m?.market_base_rate,
                         });
                         return (
-                          <td key={tickers[i]} className="num px-3 py-2 text-right text-ink-muted">
+                          <td key={activeTickers[i]} className="num px-3 py-2 text-right text-ink-muted">
                             {trio.topPercentLabel}
                           </td>
                         );
@@ -685,7 +889,7 @@ function CompareContent() {
                     <tr className="border-b border-border/60">
                       <th
                         scope="row"
-                        className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
+                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
                       >
                         Xác suất kiệt quệ 1 năm (so với TB)
                       </th>
@@ -698,7 +902,7 @@ function CompareContent() {
                           market_base_rate: m?.market_base_rate,
                         });
                         return (
-                          <td key={tickers[i]} className="num px-3 py-2 text-right font-medium">
+                          <td key={activeTickers[i]} className="num px-3 py-2 text-right font-medium">
                             <span>{trio.pdLabel}</span>
                             {trio.liftLabel ? (
                               <span className="ml-1.5 text-[11px] font-normal text-ink-muted">
@@ -712,13 +916,13 @@ function CompareContent() {
                     <tr className="border-b border-border bg-surface-muted/30">
                       <th
                         scope="row"
-                        className="sticky left-0 z-10 border-r border-border bg-surface-muted/60 px-3 py-2 text-left font-semibold text-ink"
+                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface-muted/60 px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
                       >
                         Số cờ đỏ đang kích hoạt
                       </th>
                       {matrixData.latestFlagsCount.map((cnt, i) => (
                         <td
-                          key={tickers[i]}
+                          key={activeTickers[i]}
                           className={`num px-3 py-2 text-right font-medium ${cnt >= 2 ? "text-risk-high" : "text-ink"}`}
                         >
                           {cnt}
@@ -727,8 +931,8 @@ function CompareContent() {
                     </tr>
 
                     {Array.from(matrixData.ratioList.entries()).map(([metricName, meta]) => {
-                      const rowItems = tickers.map((_, idx) =>
-                        summaries[idx]?.data?.items.find((x) => x.metric_name === metricName),
+                      const rowItems = activeEntries.map(({ summaryQuery }) =>
+                        summaryQuery?.data?.items.find((x) => x.metric_name === metricName),
                       );
                       const numericVals = rowItems.map((item) =>
                         !item
@@ -756,11 +960,11 @@ function CompareContent() {
                         >
                           <th
                             scope="row"
-                            className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-normal text-ink"
+                            className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-normal text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
                           >
                             {meta.name}
                           </th>
-                          {tickers.map((t, idx) => {
+                          {activeTickers.map((t, idx) => {
                             const item = rowItems[idx];
                             const val = numericVals[idx];
                             const display = !item

@@ -3,7 +3,10 @@
 import * as React from "react";
 import { RotateCcw } from "lucide-react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
-import { ExplainWaterfallChart } from "@/components/charts/ExplainWaterfallChart";
+import {
+  ExplainWaterfallChart,
+  resolveMlFeatureFormatType,
+} from "@/components/charts/ExplainWaterfallChart";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getMlFeatureLabel, MODEL_ROLE_LABELS } from "@/lib/domain-labels";
@@ -11,6 +14,7 @@ import {
   formatNumber,
   formatPercent,
   formatPeriodLabel,
+  formatRatioByType,
   MINUS_SIGN,
 } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -23,6 +27,7 @@ import type {
 
 export function ModelShapTab({
   sortedMl,
+  mlDistressItems,
   activeMl,
   activeMlPeriodLabel,
   isCustomMlPeriod,
@@ -30,10 +35,12 @@ export function ModelShapTab({
   mlAltmanOption,
   mlDistressProbOption,
   onRiskPeriodClick,
+  onDistressPeriodClick,
   periodType,
   ratioDictMap,
 }: {
   sortedMl: readonly MLScoreItem[];
+  mlDistressItems?: readonly MLScoreItem[];
   activeMl: MLScoreItem | null;
   activeMlPeriodLabel: string | null;
   isCustomMlPeriod: boolean;
@@ -41,9 +48,11 @@ export function ModelShapTab({
   mlAltmanOption: EChartsOption;
   mlDistressProbOption: EChartsOption;
   onRiskPeriodClick: (payload: { dataIndex?: number }) => void;
+  onDistressPeriodClick?: (payload: { dataIndex?: number }) => void;
   periodType: PeriodType;
   ratioDictMap: ReadonlyMap<RatioName, RatioDictionaryItem>;
 }) {
+  const distressRows = mlDistressItems ?? sortedMl;
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -70,10 +79,10 @@ export function ModelShapTab({
           subtitle="Đơn vị: phần trăm (%) · Xác suất kiệt quệ trong 12 tháng tới"
           option={mlDistressProbOption}
           height={290}
-          isEmpty={sortedMl.length === 0}
-          onChartClick={onRiskPeriodClick}
+          isEmpty={distressRows.length === 0}
+          onChartClick={onDistressPeriodClick ?? onRiskPeriodClick}
           tableHeaders={["Kỳ", "XS 1 năm", "Bậc", "F-Score", "Beneish M"]}
-          tableRows={sortedMl.map((m) => [
+          tableRows={distressRows.map((m) => [
             formatPeriodLabel(m.period_end_date, periodType),
             formatPercent(m.calibrated_distress_prob),
             m.risk_tier ?? "N/A",
@@ -91,6 +100,7 @@ export function ModelShapTab({
         periodLabel={activeMlPeriodLabel}
         isCustomPeriod={isCustomMlPeriod}
         onResetToLatest={onResetToLatest}
+        ratioDictMap={ratioDictMap}
       />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
@@ -141,6 +151,10 @@ export function ModelShapTab({
                         drv.display_name_vn !== drv.feature
                           ? drv.display_name_vn
                           : (ratioFallback ?? getMlFeatureLabel(drv.feature));
+                      const featureFormatType = resolveMlFeatureFormatType(
+                        drv.feature,
+                        ratioDictMap,
+                      );
                       return (
                         <tr
                           key={drv.feature}
@@ -150,10 +164,10 @@ export function ModelShapTab({
                             {driverLabel}
                           </td>
                           <td className="num px-3 py-2 text-right">
-                            {formatNumber(drv.value, 3)}
+                            {formatRatioByType(drv.value, featureFormatType)}
                           </td>
                           <td className="num px-3 py-2 text-right text-ink-muted">
-                            {formatNumber(drv.peer_median, 3)}
+                            {formatRatioByType(drv.peer_median, featureFormatType)}
                           </td>
                           <td
                             className={cn(

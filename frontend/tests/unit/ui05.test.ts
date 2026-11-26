@@ -30,6 +30,7 @@ import {
   getVisibleColumnsSnapshot,
   parseContentDispositionFilename,
   parseSavedScreensJson,
+  parseScreenerFilters,
   parseVisibleColumnsJson,
   renameSavedScreen,
   resetVisibleColumns,
@@ -37,6 +38,7 @@ import {
   showAllScreenerColumns,
   toggleVisibleColumn,
   toggleVisibleColumnGroup,
+  VALID_SORT_FIELDS,
 } from "@/lib/saved-screens-store";
 import type { ScreenerItem, ScreenerQueryParams } from "@/types/api";
 
@@ -236,8 +238,35 @@ describe("UI-05a Screener export URL builder, saved screens store, columns & sca
       "Sức khỏe ổn định R1–R2",
     ]);
     const patch = filtersToUrlPatch(BUILTIN_SCREENER_PRESETS[0].filters);
-    expect(patch.altman_zone).toBe("DISTRESS_ZONE");
+    expect(patch.risk_tiers).toBe("R4,R5");
+    expect(patch.risk_tier).toBeNull();
+    expect(patch.altman_zone).toBeNull();
     expect(patch.sort_by).toBe("calibrated_distress_prob");
+
+    const healthyPatch = filtersToUrlPatch(BUILTIN_SCREENER_PRESETS[2].filters);
+    expect(healthyPatch.risk_tiers).toBe("R1,R2");
+    expect(healthyPatch.altman_zone).toBe("SAFE_ZONE");
+    expect(healthyPatch.min_f_score).toBe("6");
+    expect(healthyPatch.max_red_flags).toBe("1");
+    expect(healthyPatch.sort_by).toBe("roe_total");
+
+    expect(VALID_SORT_FIELDS).toContain("ebit_margin");
+    expect(VALID_SORT_FIELDS).toContain("interest_coverage");
+
+    const parsedMulti = parseScreenerFilters(
+      new URLSearchParams("exchange=HOSE&risk_tiers=R4,R5&sort_by=ebit_margin"),
+    );
+    expect(parsedMulti.exchange).toBe("HOSE");
+    expect(parsedMulti.risk_tiers).toEqual(["R4", "R5"]);
+    expect(parsedMulti.risk_tier).toBe("");
+    expect(parsedMulti.sort_by).toBe("ebit_margin");
+
+    const parsedSingle = parseScreenerFilters(
+      new URLSearchParams("risk_tier=R4&sort_by=interest_coverage"),
+    );
+    expect(parsedSingle.risk_tiers).toEqual(["R4"]);
+    expect(parsedSingle.risk_tier).toBe("R4");
+    expect(parsedSingle.sort_by).toBe("interest_coverage");
 
     // Empty name rejected
     const invalidRes = saveScreenerView("   ", { risk_tier: "R5" });
@@ -328,6 +357,8 @@ describe("UI-05a Screener export URL builder, saved screens store, columns & sca
 
     expect(formatTopRiskPercentileLabel(98.3)).toBe("Top 1,7% rủi ro nhất");
     expect(formatTopRiskPercentileLabel(80)).toBe("Top 20% rủi ro nhất");
+    expect(formatTopRiskPercentileLabel(12)).toBe("An toàn hơn 88% DN");
+    expect(formatTopRiskPercentileLabel(5)).toBe("An toàn hơn 95,0% DN");
     expect(formatTopRiskPercentileLabel(null)).toBeNull();
 
     expect(formatRelativeRiskLiftLabel(14.6)).toBe("14,6× nền");

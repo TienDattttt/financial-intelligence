@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/primitives";
 import { formatFormulaVi, RATIO_CATEGORY_LABELS } from "@/lib/domain-labels";
-import { formatRatioValue, normalizeSearchText } from "@/lib/format";
+import { formatRatioByType, normalizeSearchText } from "@/lib/format";
 import type {
   PeriodType,
   RatioDictionaryItem,
@@ -46,7 +46,7 @@ export function SourcesTab({
       <CardHeader className="flex-wrap gap-2 py-2.5">
         <div>
           <CardTitle className="text-[14px]">
-            Truy xuất nguồn gốc 38 tỷ số tài chính
+            Truy xuất nguồn gốc {ratios.length || 38} tỷ số tài chính
           </CardTitle>
           <p className="mt-0.5 text-xs text-ink-muted">
             Nhấn Truy nguồn để xem tử số, mẫu số, mã hồ sơ gốc và hàm băm kiểm chứng dữ liệu
@@ -101,7 +101,7 @@ export function SourcesTab({
                         {formatFormulaVi(r.formula_display)}
                       </td>
                       <td className="num px-3 py-2 text-right font-medium text-ink">
-                        {formatRatioValue(val, r.format_type)}
+                        {formatRatioByType(val, r.format_type)}
                       </td>
                       <td className="px-3 py-2 text-right">
                         <Button

@@ -24,6 +24,16 @@ import type {
   RedFlagDictionaryItem,
 } from "@/types/api";
 
+const STATEMENT_TYPE_LABELS: Record<string, string> = {
+  BS: "CĐKT",
+  BALANCE_SHEET: "CĐKT",
+  IS: "KQKD",
+  INCOME_STATEMENT: "KQKD",
+  CF: "LCTT",
+  CASH_FLOW: "LCTT",
+  NOTES: "Thuyết minh",
+};
+
 export function QualityTab({
   profile,
   periodType,
@@ -137,6 +147,7 @@ export function QualityTab({
                   <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                     <th scope="col" className="sticky top-0 bg-surface-muted px-3 py-2 text-left font-semibold">Kỳ</th>
                     <th scope="col" className="sticky top-0 bg-surface-muted px-3 py-2 text-left font-semibold">Phạm vi</th>
+                    <th scope="col" className="sticky top-0 bg-surface-muted px-3 py-2 text-left font-semibold">Loại BCTC</th>
                     <th scope="col" className="sticky top-0 bg-surface-muted px-3 py-2 text-left font-semibold">Chuẩn</th>
                     <th scope="col" className="sticky top-0 bg-surface-muted px-3 py-2 text-left font-semibold">Kiểm toán</th>
                     <th scope="col" className="sticky top-0 bg-surface-muted px-3 py-2 text-left font-semibold">Ý kiến</th>
@@ -157,6 +168,11 @@ export function QualityTab({
                         {(f.statement_scope &&
                           STATEMENT_SCOPE_LABELS[f.statement_scope]) ??
                           f.statement_scope ??
+                          "—"}
+                      </td>
+                      <td className="px-3 py-2 text-ink-muted">
+                        {(f.statement_type &&
+                          STATEMENT_TYPE_LABELS[f.statement_type.toUpperCase()]) ??
                           "—"}
                       </td>
                       <td className="px-3 py-2 text-ink-muted">

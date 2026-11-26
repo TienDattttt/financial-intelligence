@@ -199,15 +199,17 @@ export interface DocumentInvestigationPanelProps {
   ticker: string;
   companyName?: string | null;
   initialPreset?: DocumentInvestigationPreset | null;
+  ragAvailable?: boolean;
 }
 
 export function DocumentInvestigationPanel({
   ticker,
   companyName,
   initialPreset,
+  ragAvailable = true,
 }: DocumentInvestigationPanelProps) {
   const cleanTicker = ticker.trim().toUpperCase();
-  const docsQuery = useCompanyDocuments(cleanTicker);
+  const docsQuery = useCompanyDocuments(cleanTicker, { enabled: ragAvailable });
   const documents = React.useMemo(
     () => docsQuery.data?.documents ?? [],
     [docsQuery.data?.documents],
@@ -329,6 +331,15 @@ export function DocumentInvestigationPanel({
         : [],
     [result],
   );
+
+  if (!ragAvailable) {
+    return (
+      <EmptyState
+        title="Dịch vụ tra cứu Thuyết minh PDF hiện chưa bật"
+        description={`Kho đối chiếu Thuyết minh Báo cáo tài chính (PDF) hiện chưa được kích hoạt trên môi trường này. Các tab tổng quan, BCTC chuẩn hóa, 10 cờ đỏ VAS và giải thích TreeSHAP cho ${companyName ? `${cleanTicker} (${companyName})` : cleanTicker} vẫn hoạt động đầy đủ.`}
+      />
+    );
+  }
 
   if (docsQuery.isLoading) {
     return (

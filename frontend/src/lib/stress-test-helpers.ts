@@ -53,7 +53,7 @@ export const STRESS_PRESETS: { label: string; values: ShockUiState }[] = [
     },
   },
   {
-    label: "Suy giảm cầu (DT −15%, biên −2 đ%)",
+    label: "Suy giảm cầu (DT −15%, biên −2 điểm %)",
     values: {
       scenarioName: "Suy giảm cầu",
       revPct: -15,
@@ -505,8 +505,15 @@ export function computeScenarioComparison(
         status,
         totalDebt: itemB?.total_debt ?? itemA?.total_debt ?? null,
         icrBaseline: itemB?.interest_coverage ?? itemA?.interest_coverage ?? null,
-        icrA: itemA?.stressed_interest_coverage ?? null,
-        icrB: itemB?.stressed_interest_coverage ?? null,
+        icrA:
+          scenarioA.issuer_icrs &&
+          Object.prototype.hasOwnProperty.call(scenarioA.issuer_icrs, ticker)
+            ? (scenarioA.issuer_icrs[ticker] ?? null)
+            : (itemA?.stressed_interest_coverage ?? itemB?.scenario_a_icr ?? null),
+        icrB:
+          itemB?.stressed_interest_coverage ??
+          scenarioB.issuer_icrs?.[ticker] ??
+          null,
       };
     })
     .sort((x, y) => {

@@ -6,6 +6,7 @@ import { BarChart3, Download, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { applyChartThemeDefaults, getChartPalette, useChartTheme } from "@/lib/echarts-theme";
+import { buildCsvContent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export type EChartsOption = echarts.EChartsOption;
@@ -30,6 +31,22 @@ export function buildSafeExportFilename(title: string): string {
   return `${base || "finintel-chart"}.png`;
 }
 
+function extractCellText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") {
+    return "";
+  }
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map((item) => extractCellText(item)).join("");
+  }
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) {
+    return extractCellText(node.props.children);
+  }
+  return "";
+}
+
 export function EChartBox({
   title,
   subtitle,
@@ -38,6 +55,7 @@ export function EChartBox({
   height = 300,
   tableHeaders,
   tableRows,
+  csvRows,
   headerRight,
   onChartClick,
   emptyMessage = "Chưa có dữ liệu biểu đồ cho lát cắt này.",
@@ -52,7 +70,8 @@ export function EChartBox({
   option: EChartsOption;
   height?: number;
   tableHeaders: readonly string[];
-  tableRows: readonly (readonly string[])[];
+  tableRows: readonly (readonly React.ReactNode[])[];
+  csvRows?: readonly (readonly string[])[];
   headerRight?: React.ReactNode;
   onChartClick?: (params: ChartClickPayload) => void;
   emptyMessage?: string;
@@ -159,6 +178,24 @@ export function EChartBox({
     document.body.removeChild(link);
   }, [isEmpty, showTable, theme, title]);
 
+  const hasTableData = tableHeaders.length > 0 && tableRows.length > 0;
+
+  const handleExportCsv = React.useCallback(() => {
+    if (!showTable || isEmpty || !hasTableData) return;
+    const exportRows =
+      csvRows ?? tableRows.map((row) => row.map((cell) => extractCellText(cell)));
+    const csv = buildCsvContent(tableHeaders, exportRows);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = buildSafeExportFilename(title).replace(/\.png$/, ".csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [csvRows, hasTableData, isEmpty, showTable, tableHeaders, tableRows, title]);
+
   return (
     <Card className={cn("overflow-hidden rounded-lg shadow-xs transition-colors duration-150", className)}>
       <CardHeader className="flex-wrap gap-2 py-2.5">
@@ -192,22 +229,36 @@ export function EChartBox({
             </Button>
           ) : null}
           {!isEmpty && enableExportPng ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              onClick={handleExportPng}
-              disabled={showTable}
-              title={
-                showTable
-                  ? "Chuyển về chế độ biểu đồ để xuất ảnh PNG"
-                  : "Tải xuống biểu đồ dạng ảnh PNG"
-              }
-              aria-label={`Xuất PNG: ${title}`}
-            >
-              <Download className="size-3" />
-              <span>Xuất PNG</span>
-            </Button>
+            showTable ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={handleExportCsv}
+                disabled={!hasTableData}
+                title={
+                  hasTableData
+                    ? "Tải xuống dữ liệu bảng dạng CSV"
+                    : "Không có dữ liệu bảng để xuất CSV"
+                }
+                aria-label={`Xuất CSV: ${title}`}
+              >
+                <Download className="size-3" />
+                <span>Xuất CSV</span>
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={handleExportPng}
+                title="Tải xuống biểu đồ dạng ảnh PNG"
+                aria-label={`Xuất PNG: ${title}`}
+              >
+                <Download className="size-3" />
+                <span>Xuất PNG</span>
+              </Button>
+            )
           ) : null}
         </div>
       </CardHeader>

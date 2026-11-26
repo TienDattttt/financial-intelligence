@@ -16,6 +16,7 @@ import {
   Monitor,
   Moon,
   Search,
+  SlidersHorizontal,
   Sun,
   X,
 } from "lucide-react";
@@ -99,6 +100,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     publishedAt,
     freshness,
     snapshotId,
+    cacheSnapshotKey,
+    hasSeparateData = true,
     closeSourceDrawer,
     setCommandOpen,
     themePreference,
@@ -110,6 +113,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [pathname, closeSourceDrawer]);
 
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
+  const [mobileControlsOpen, setMobileControlsOpen] = React.useState(false);
   const mounted = React.useSyncExternalStore(
     subscribeNoop,
     () => true,
@@ -126,7 +130,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     getLastViewedTickerSnapshot,
     getLastViewedTickerServerSnapshot,
   );
-  const issuersQuery = useAllIssuers(snapshotId);
+  const issuersQuery = useAllIssuers(cacheSnapshotKey ?? snapshotId);
 
   const currentRouteTicker = React.useMemo(() => {
     if (!pathname.startsWith("/companies/")) return null;
@@ -247,11 +251,118 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </Dialog.Portal>
       </Dialog.Root>
 
+      {/* Mobile Period/Scope/Freshness Sheet (< md) */}
+      <Dialog.Root open={mobileControlsOpen} onOpenChange={setMobileControlsOpen}>
+        <Dialog.Portal>
+          <Dialog.Backdrop className="fixed inset-0 z-50 bg-ink/40 transition-opacity duration-150 data-[starting-style]:opacity-0 data-[ending-style]:opacity-0 dark:bg-black/60 md:hidden" />
+          <Dialog.Viewport className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4 md:hidden">
+            <Dialog.Popup
+              aria-modal="true"
+              aria-label="Thiết lập kỳ dữ liệu và phạm vi báo cáo"
+              className="w-full max-w-md rounded-t-xl border border-border-strong bg-surface p-4 text-ink shadow-popover outline-none sm:rounded-xl"
+            >
+              <div className="flex items-center justify-between gap-2 border-b border-border pb-2.5">
+                <Dialog.Title className="text-sm font-semibold text-ink">
+                  Kỳ dữ liệu &amp; Phạm vi báo cáo
+                </Dialog.Title>
+                <Dialog.Close
+                  type="button"
+                  aria-label="Đóng bảng chọn kỳ"
+                  className="inline-flex size-7 items-center justify-center rounded-md text-ink-muted hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <X className="size-4" />
+                </Dialog.Close>
+              </div>
+              <div className="mt-3 space-y-3">
+                <label className="block space-y-1 text-xs">
+                  <span className="font-medium text-ink-muted">Kỳ dữ liệu</span>
+                  <Select
+                    aria-label="Chọn kỳ dữ liệu"
+                    value={periodEndDate ?? ""}
+                    onChange={(e) => setPeriodEndDate(e.target.value || null)}
+                    className="h-9 w-full text-xs"
+                  >
+                    {availableDates.length === 0 ? (
+                      <option value="">Kỳ mới nhất</option>
+                    ) : (
+                      availableDates.map((d) => (
+                        <option key={d} value={d}>
+                          {formatPeriodLabel(d, periodType)} ({formatDateVi(d)})
+                        </option>
+                      ))
+                    )}
+                  </Select>
+                </label>
+
+                <label className="block space-y-1 text-xs">
+                  <span className="font-medium text-ink-muted">Loại kỳ</span>
+                  <Select
+                    aria-label="Chọn loại kỳ"
+                    value={periodType}
+                    onChange={(e) => setPeriodType(e.target.value as PeriodType)}
+                    className="h-9 w-full text-xs"
+                  >
+                    {Object.entries(PERIOD_TYPE_LABELS).map(([k, lbl]) => (
+                      <option key={k} value={k}>
+                        {lbl}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+
+                <label className="block space-y-1 text-xs">
+                  <span className="font-medium text-ink-muted">Phạm vi báo cáo</span>
+                  <Select
+                    aria-label="Chọn phạm vi báo cáo"
+                    value={statementScope}
+                    onChange={(e) => setStatementScope(e.target.value as StatementScope)}
+                    className="h-9 w-full text-xs"
+                  >
+                    {Object.entries(STATEMENT_SCOPE_LABELS).map(([k, lbl]) => {
+                      const disabledSeparate = k === "SEPARATE" && !hasSeparateData;
+                      return (
+                        <option key={k} value={k} disabled={disabledSeparate}>
+                          {disabledSeparate ? `${lbl} (Chưa có dữ liệu kỳ này)` : lbl}
+                        </option>
+                      );
+                    })}
+                  </Select>
+                </label>
+
+                <div
+                  aria-label="Độ tươi dữ liệu ba tầng"
+                  className="rounded-md border border-border bg-canvas px-3 py-2 text-[11px] text-ink-muted"
+                >
+                  <p className="mb-1 font-medium text-ink">Cập nhật dữ liệu</p>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                    {freshnessItems.map((item) => (
+                      <span key={item.key} className="inline-flex items-center gap-1">
+                        <span>{item.label}:</span>
+                        <strong className="num font-medium text-ink">{item.value}</strong>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 flex justify-end">
+                <Dialog.Close
+                  type="button"
+                  className="inline-flex h-8 items-center justify-center rounded-md bg-primary px-3.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Xong
+                </Dialog.Close>
+              </div>
+            </Dialog.Popup>
+          </Dialog.Viewport>
+        </Dialog.Portal>
+      </Dialog.Root>
+
       {/* Top Sticky Header: Row 1 Brand + Global Controls, Row 2 Navigation, Row 3 3-Tier Freshness */}
       <header className="sticky top-0 z-30 border-b border-border bg-surface">
         {/* Row 1: Brand + Search + Global Period/Scope + Theme */}
-        <div className="mx-auto flex min-h-[50px] max-w-[1440px] flex-wrap items-center justify-between gap-2 px-3 py-1.5 sm:px-6">
-          <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-initial sm:gap-2.5">
+        <div className="mx-auto flex h-[52px] max-w-[1440px] items-center justify-between gap-1 px-2 md:h-auto md:min-h-[50px] md:flex-wrap md:gap-2 md:px-6 md:py-1.5">
+          <div className="flex min-w-0 items-center gap-1 sm:gap-2.5 md:flex-initial">
             <button
               type="button"
               aria-label="Mở menu điều hướng"
@@ -263,77 +374,105 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
             <Link
               href="/"
-              className="flex shrink-0 items-center gap-1.5 font-semibold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md sm:gap-2"
+              aria-label="FinIntel — Trang chủ"
+              className="flex shrink-0 items-center gap-1.5 rounded-md font-semibold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:gap-2"
             >
               <span className="inline-flex size-6 items-center justify-center rounded-md bg-primary font-mono text-xs font-semibold text-primary-foreground">
                 FI
               </span>
-              <span className="tracking-tight text-[15px]">FinIntel</span>
+              <span className="hidden tracking-tight text-[15px] sm:inline">FinIntel</span>
             </Link>
 
             <button
               type="button"
               onClick={() => setCommandOpen(true)}
-              className="flex h-8 min-w-0 flex-1 items-center justify-between gap-2 rounded-md border border-border-strong bg-canvas px-2 text-left text-[13px] text-ink-muted transition-colors duration-150 hover:border-accent-ink/50 hover:text-ink sm:w-64 sm:flex-none sm:px-2.5 md:w-72"
+              aria-label="Tìm kiếm doanh nghiệp (Ctrl+K)"
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border-strong bg-canvas text-ink-muted transition-colors duration-150 hover:border-accent-ink/50 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:hidden"
+            >
+              <Search className="size-4" aria-hidden="true" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCommandOpen(true)}
+              className="hidden h-8 w-56 items-center justify-between gap-2 rounded-md border border-border-strong bg-canvas px-2.5 text-left text-[13px] text-ink-muted transition-colors duration-150 hover:border-accent-ink/50 hover:text-ink md:flex lg:w-72"
             >
               <span className="flex min-w-0 items-center gap-1.5 truncate">
                 <Search className="size-3.5 shrink-0" aria-hidden="true" />
                 <span className="truncate">Tìm mã hoặc tên DN...</span>
               </span>
-              <kbd className="hidden rounded-sm border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-subtle sm:inline">
+              <kbd className="rounded-sm border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-subtle">
                 Ctrl+K
               </kbd>
             </button>
           </div>
 
-          <div className="flex max-w-full flex-wrap items-center gap-1.5 sm:gap-2">
-            <Select
-              aria-label="Chọn kỳ dữ liệu"
-              value={periodEndDate ?? ""}
-              onChange={(e) => setPeriodEndDate(e.target.value || null)}
-              className="h-8 text-xs"
+          <div className="flex shrink-0 items-center gap-1 sm:gap-2 md:max-w-full md:flex-wrap">
+            <button
+              type="button"
+              onClick={() => setMobileControlsOpen(true)}
+              aria-label="Chọn kỳ dữ liệu và phạm vi báo cáo"
+              aria-expanded={mobileControlsOpen}
+              className="inline-flex h-8 max-w-[82px] shrink-0 items-center gap-1 rounded-md border border-border bg-canvas px-1.5 text-[11px] font-medium text-ink transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:max-w-[160px] sm:px-2 sm:text-xs md:hidden"
             >
-              {availableDates.length === 0 ? (
-                <option value="">Kỳ mới nhất</option>
-              ) : (
-                availableDates.map((d) => (
-                  <option key={d} value={d}>
-                    {formatPeriodLabel(d, periodType)} ({formatDateVi(d)})
+              <SlidersHorizontal className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+              <span className="num truncate">
+                {periodEndDate ? formatPeriodLabel(periodEndDate, periodType) : "Kỳ mới nhất"}
+              </span>
+            </button>
+
+            <div className="hidden md:flex md:flex-wrap md:items-center md:gap-1.5 lg:gap-2">
+              <Select
+                aria-label="Chọn kỳ dữ liệu"
+                value={periodEndDate ?? ""}
+                onChange={(e) => setPeriodEndDate(e.target.value || null)}
+                className="h-8 text-xs"
+              >
+                {availableDates.length === 0 ? (
+                  <option value="">Kỳ mới nhất</option>
+                ) : (
+                  availableDates.map((d) => (
+                    <option key={d} value={d}>
+                      {formatPeriodLabel(d, periodType)} ({formatDateVi(d)})
+                    </option>
+                  ))
+                )}
+              </Select>
+
+              <Select
+                aria-label="Chọn loại kỳ"
+                value={periodType}
+                onChange={(e) => setPeriodType(e.target.value as PeriodType)}
+                className="h-8 text-xs"
+              >
+                {Object.entries(PERIOD_TYPE_LABELS).map(([k, lbl]) => (
+                  <option key={k} value={k}>
+                    {lbl}
                   </option>
-                ))
-              )}
-            </Select>
+                ))}
+              </Select>
 
-            <Select
-              aria-label="Chọn loại kỳ"
-              value={periodType}
-              onChange={(e) => setPeriodType(e.target.value as PeriodType)}
-              className="h-8 text-xs"
-            >
-              {Object.entries(PERIOD_TYPE_LABELS).map(([k, lbl]) => (
-                <option key={k} value={k}>
-                  {lbl}
-                </option>
-              ))}
-            </Select>
-
-            <Select
-              aria-label="Chọn phạm vi báo cáo"
-              value={statementScope}
-              onChange={(e) => setStatementScope(e.target.value as StatementScope)}
-              className="h-8 text-xs"
-            >
-              {Object.entries(STATEMENT_SCOPE_LABELS).map(([k, lbl]) => (
-                <option key={k} value={k}>
-                  {lbl}
-                </option>
-              ))}
-            </Select>
+              <Select
+                aria-label="Chọn phạm vi báo cáo"
+                value={statementScope}
+                onChange={(e) => setStatementScope(e.target.value as StatementScope)}
+                className="h-8 text-xs"
+              >
+                {Object.entries(STATEMENT_SCOPE_LABELS).map(([k, lbl]) => {
+                  const disabledSeparate = k === "SEPARATE" && !hasSeparateData;
+                  return (
+                    <option key={k} value={k} disabled={disabledSeparate}>
+                      {disabledSeparate ? `${lbl} (Chưa có dữ liệu kỳ này)` : lbl}
+                    </option>
+                  );
+                })}
+              </Select>
+            </div>
 
             <div
               role="group"
               aria-label="Chế độ hiển thị"
-              className="inline-flex h-8 items-center rounded-md border border-border bg-surface-muted p-0.5"
+              className="inline-flex h-8 shrink-0 items-center rounded-md border border-border bg-surface-muted p-0.5"
             >
               {THEME_OPTIONS.map(({ id, label, ariaLabel, Icon }) => {
                 const active = mounted ? themePreference === id : id === "light";
@@ -346,7 +485,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     title={ariaLabel}
                     onClick={() => setThemePreference(id)}
                     className={cn(
-                      "inline-flex h-7 items-center gap-1 rounded-sm px-2 text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "inline-flex h-7 w-7 items-center justify-center rounded-sm text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring xl:w-auto xl:gap-1 xl:px-2",
                       active
                         ? "bg-primary text-primary-foreground shadow-xs"
                         : "text-ink-muted hover:text-ink",
@@ -402,10 +541,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        {/* Row 3: Responsive 3-Tier Freshness Bar (visible < 2xl, incl. 1440x900, 720x450 200% zoom, 320x800) */}
+        {/* Row 3: Responsive 3-Tier Freshness Bar (visible md..xl, hidden on < md mobile & 2xl+) */}
         <div
           aria-label="Độ tươi dữ liệu ba tầng"
-          className="border-t border-border/70 bg-canvas/50 2xl:hidden"
+          className="hidden border-t border-border/70 bg-canvas/50 md:block 2xl:hidden"
         >
           <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-1 text-[11px] text-ink-muted sm:px-6">
             {freshnessItems.map((item) => (

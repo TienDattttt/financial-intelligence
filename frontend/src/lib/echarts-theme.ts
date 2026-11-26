@@ -114,7 +114,7 @@ export const LIGHT_CHART_PALETTE: ChartPalette = {
     other: "#5B6B82",
     final: "#163A5F",
   },
-  series: ["#163A5F", "#166534", "#92400E", "#991B1B", "#475569"],
+  series: ["#163A5F", "#166534", "#92400E", "#991B1B", "#C2410C"],
 };
 
 export const DARK_CHART_PALETTE: ChartPalette = {
@@ -154,7 +154,7 @@ export const DARK_CHART_PALETTE: ChartPalette = {
     other: "#8B9BB2",
     final: "#60A5FA",
   },
-  series: ["#60A5FA", "#34D399", "#FBBF24", "#F87171", "#94A3B8"],
+  series: ["#60A5FA", "#34D399", "#FBBF24", "#F87171", "#FB923C"],
 };
 
 function readCssToken(
@@ -215,7 +215,7 @@ export function getChartPalette(theme: ResolvedTheme): ChartPalette {
       other: inkSubtle,
       final: company,
     },
-    series: [company, riskLow, riskMid, riskHigh, inkMuted],
+    series: [company, riskLow, riskMid, riskHigh, base.series[4]],
   };
 }
 

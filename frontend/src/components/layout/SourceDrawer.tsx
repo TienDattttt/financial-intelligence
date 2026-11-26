@@ -23,7 +23,7 @@ import {
 import {
   formatDateVi,
   formatPeriodLabel,
-  formatRatioValue,
+  formatRatioByType,
   formatVndBillions,
   formatVndPerShare,
 } from "@/lib/format";
@@ -111,13 +111,13 @@ function ComponentList({
                   <span>Nguồn: {providerLabel}</span>
                   {basisLabel ? <span>Căn cứ ngày: {basisLabel}</span> : null}
                 </div>
-                <div className="mt-1 flex items-center justify-between text-[11px] text-ink-subtle">
-                  <span className="truncate font-mono">
+                <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[11px] text-ink-subtle">
+                  <span className="min-w-0 truncate font-mono">
                     Hồ sơ: {formatFilingReference(comp.filing_id)}
                   </span>
                   {comp.canonical_content_sha256 ? (
                     <span
-                      className="font-mono"
+                      className="shrink-0 font-mono"
                       title={comp.canonical_content_sha256}
                     >
                       SHA: {comp.canonical_content_sha256.slice(0, 8)}
@@ -134,9 +134,10 @@ function ComponentList({
 }
 
 export function SourceDrawer() {
-  const { sourceTarget, closeSourceDrawer, snapshotId } = useAppState();
-  const lineageQuery = useRatioLineage(sourceTarget, snapshotId);
-  const dictQuery = useMetaDictionary(snapshotId);
+  const { sourceTarget, closeSourceDrawer, snapshotId, cacheSnapshotKey } = useAppState();
+  const effectiveCacheKey = cacheSnapshotKey ?? snapshotId;
+  const lineageQuery = useRatioLineage(sourceTarget, effectiveCacheKey);
+  const dictQuery = useMetaDictionary(effectiveCacheKey);
 
   const card = lineageQuery.data;
   const ratioDictItem = sourceTarget
@@ -146,7 +147,7 @@ export function SourceDrawer() {
     : undefined;
   const statusMeta = getRatioStatusFlagMeta(card?.status_flag);
   const formattedRatioValue = card
-    ? formatRatioValue(card.ratio_value, ratioDictItem?.format_type ?? "NUMBER")
+    ? formatRatioByType(card.ratio_value, ratioDictItem?.format_type ?? "NUMBER")
     : "N/A";
 
   return (

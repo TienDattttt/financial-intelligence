@@ -24,6 +24,7 @@ import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateB
 import { useAppState } from "@/components/providers/app-providers";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { Input } from "@/components/ui/primitives";
 import { useAllIssuers } from "@/hooks/use-finintel-queries";
 import { apiClient } from "@/lib/api-client";
@@ -58,6 +59,20 @@ import {
 } from "@/lib/watchlist-store";
 import type { StressScenarioRequest, StressTestResponse } from "@/types/api";
 
+const PRIORITY_CORPORATE_TICKERS = [
+  "HPG",
+  "FPT",
+  "VNM",
+  "MWG",
+  "GAS",
+  "MSN",
+  "VIC",
+  "VHM",
+] as const;
+
+const ICR_TOOLTIP_TEXT =
+  "ICR (Interest Coverage Ratio = EBIT / Chi phí lãi vay): số lần lợi nhuận hoạt động bù đắp chi phí lãi vay. Doanh nghiệp có ICR < 1,0x đối mặt nguy cơ thiếu hụt dòng tiền trả lãi.";
+
 function DualShockControl({
   id,
   label,
@@ -66,6 +81,7 @@ function DualShockControl({
   max,
   step,
   value,
+  tooltip,
   onChange,
 }: {
   id: string;
@@ -75,6 +91,7 @@ function DualShockControl({
   max: number;
   step: number;
   value: number;
+  tooltip?: { text: string; label?: string };
   onChange: (next: number) => void;
 }) {
   const span = max - min;
@@ -84,10 +101,15 @@ function DualShockControl({
   return (
     <div className="space-y-1.5 border-b border-border/60 pb-2.5 last:border-b-0 last:pb-0">
       <div className="flex items-center justify-between gap-2 text-xs">
-        <label htmlFor={id} className="font-medium text-ink">
-          {label}
-        </label>
-        <div className="flex items-center gap-1">
+        <div className="flex min-w-0 items-center gap-1">
+          <label htmlFor={id} className="truncate font-medium text-ink">
+            {label}
+          </label>
+          {tooltip ? (
+            <InfoTooltip text={tooltip.text} label={tooltip.label} />
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
           <Input
             id={id}
             type="number"
@@ -98,7 +120,7 @@ function DualShockControl({
             onChange={(e) => onChange(clampShockValue(e.target.value, min, max, 0))}
             className="num h-7 w-20 px-1.5 text-right text-xs"
           />
-          <span className="w-8 text-[11px] text-ink-muted">{unit}</span>
+          <span className="w-16 shrink-0 text-[11px] text-ink-muted">{unit}</span>
         </div>
       </div>
       <div className="relative pt-0.5">
@@ -158,7 +180,7 @@ function StressTestContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { statementScope, periodType, periodEndDate, snapshotId } = useAppState();
+  const { statementScope, periodType, periodEndDate, cacheSnapshotKey } = useAppState();
 
   const localWatchlist = React.useSyncExternalStore(
     subscribePreferences,
@@ -203,7 +225,7 @@ function StressTestContent() {
   const [mobileControlsOpen, setMobileControlsOpen] = React.useState(false);
   const [copiedLink, setCopiedLink] = React.useState(false);
 
-  const issuersQuery = useAllIssuers(snapshotId);
+  const issuersQuery = useAllIssuers(cacheSnapshotKey);
 
   const effectiveWatchlistTickers = React.useMemo(
     () => sharedWatchlistTickers ?? localWatchlist,
@@ -259,6 +281,7 @@ function StressTestContent() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mobileControlsOpen]);
 
+  const referenceIcrs = pinnedA?.issuer_icrs;
   const payload = React.useMemo<
     StressScenarioRequest & { tickers?: string[] | null }
   >(() => {
@@ -277,8 +300,19 @@ function StressTestContent() {
     if (scope !== "MARKET" && activeTickers && activeTickers.length > 0) {
       base.tickers = activeTickers;
     }
+    if (referenceIcrs) {
+      base.reference_icrs = referenceIcrs;
+    }
     return base;
-  }, [activeTickers, periodEndDate, periodType, scope, shocks, statementScope]);
+  }, [
+    activeTickers,
+    periodEndDate,
+    periodType,
+    referenceIcrs,
+    scope,
+    shocks,
+    statementScope,
+  ]);
 
   React.useEffect(() => {
     if (!canRunSimulation) {
@@ -319,6 +353,22 @@ function StressTestContent() {
   const activeErrorMsg = canRunSimulation ? errorMsg : null;
   const activeIsCalculating = canRunSimulation ? isCalculating : false;
 
+  const autoTabKeyRef = React.useRef<string>("");
+  React.useEffect(() => {
+    if (
+      scope === "WATCHLIST" &&
+      activeResult &&
+      activeResult.newly_distressed_issuers.length === 0 &&
+      activeResult.top_stressed_issuers.length > 0
+    ) {
+      const nextKey = `${scope}:${activeResult.scenario_name}:${activeResult.newly_distressed_issuers.length}:${activeResult.top_stressed_issuers.length}`;
+      if (autoTabKeyRef.current !== nextKey) {
+        autoTabKeyRef.current = nextKey;
+        setActiveTab("TOP");
+      }
+    }
+  }, [activeResult, scope]);
+
   const isExtreme =
     shocks.revPct <= -40 || shocks.rateBps >= 600 || shocks.dsoDays >= 90;
 
@@ -332,12 +382,43 @@ function StressTestContent() {
   const companyMatches = React.useMemo(() => {
     const list = issuersQuery.data ?? [];
     const q = normalizeSearchText(companyQuery);
-    if (!q) return list.slice(0, 8);
+    if (!q) {
+      const byTicker = new Map(list.map((it) => [it.ticker.toUpperCase(), it]));
+      const prioritized: typeof list = [];
+      const seen = new Set<string>();
+      for (const t of PRIORITY_CORPORATE_TICKERS) {
+        const match = byTicker.get(t);
+        if (match && !seen.has(match.issuer_id)) {
+          prioritized.push(match);
+          seen.add(match.issuer_id);
+        }
+      }
+      for (const item of list) {
+        if (prioritized.length >= 8) break;
+        if (!seen.has(item.issuer_id)) {
+          prioritized.push(item);
+          seen.add(item.issuer_id);
+        }
+      }
+      return prioritized;
+    }
+    const rankOf = (iss: (typeof list)[number]): number => {
+      const tickerNorm = normalizeSearchText(iss.ticker);
+      if (tickerNorm === q) return 0;
+      if (tickerNorm.startsWith(q)) return 1;
+      if (tickerNorm.includes(q)) return 2;
+      return 3;
+    };
     return list
       .filter((iss) => {
         const tickerNorm = normalizeSearchText(iss.ticker);
         const nameNorm = normalizeSearchText(iss.company_name_vn ?? "");
         return tickerNorm.includes(q) || nameNorm.includes(q);
+      })
+      .sort((a, b) => {
+        const diff = rankOf(a) - rankOf(b);
+        if (diff !== 0) return diff;
+        return a.ticker.localeCompare(b.ticker);
       })
       .slice(0, 8);
   }, [companyQuery, issuersQuery.data]);
@@ -410,7 +491,7 @@ function StressTestContent() {
       "Ngành (ICB cấp 2)",
       "Nợ rủi ro Kịch bản A (%)",
       "Nợ rủi ro Kịch bản B (%)",
-      "Chênh lệch B-A (đ%)",
+      "Chênh lệch B-A (điểm %)",
       "Nợ rủi ro A (tỷ)",
       "Nợ rủi ro B (tỷ)",
       "Chênh lệch nợ rủi ro B-A (tỷ)",
@@ -734,7 +815,7 @@ function StressTestContent() {
         </CardContent>
       </Card>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 lg:hidden">
+      <div className="sticky top-[52px] z-20 -mx-3.5 flex flex-wrap items-center justify-between gap-2 border-b border-border bg-canvas px-3.5 py-2 lg:static lg:mx-0 lg:hidden lg:border-0 lg:bg-transparent lg:p-0">
         <Button
           type="button"
           variant="outline"
@@ -826,11 +907,15 @@ function StressTestContent() {
               <DualShockControl
                 id="shock-gm"
                 label="Biến động biên gộp"
-                unit="đ%"
+                unit="điểm %"
                 min={SHOCK_BOUNDS.gmPp.min}
                 max={SHOCK_BOUNDS.gmPp.max}
                 step={SHOCK_BOUNDS.gmPp.step}
                 value={shocks.gmPp}
+                tooltip={{
+                  label: "Giải thích đơn vị điểm %",
+                  text: "Điểm phần trăm (điểm %): thay đổi tuyệt đối của biên lợi nhuận gộp. Ví dụ biên gộp từ 20% giảm −2 điểm % còn 18%.",
+                }}
                 onChange={(v) =>
                   setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", gmPp: v }))
                 }
@@ -843,6 +928,10 @@ function StressTestContent() {
                 max={SHOCK_BOUNDS.rateBps.max}
                 step={SHOCK_BOUNDS.rateBps.step}
                 value={shocks.rateBps}
+                tooltip={{
+                  label: "Giải thích đơn vị bps",
+                  text: "100 bps (điểm cơ bản) = 1,0 điểm % lãi suất vay. Ví dụ +200 bps tương đương lãi suất vay tăng thêm 2,0 điểm %.",
+                }}
                 onChange={(v) =>
                   setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", rateBps: v }))
                 }
@@ -855,6 +944,10 @@ function StressTestContent() {
                 max={SHOCK_BOUNDS.dsoDays.max}
                 step={SHOCK_BOUNDS.dsoDays.step}
                 value={shocks.dsoDays}
+                tooltip={{
+                  label: "Giải thích chỉ số DSO",
+                  text: "DSO (Days Sales Outstanding): số ngày thu tiền bình quân từ khách hàng. DSO tăng làm tăng vốn lưu động bị chiếm dụng và giảm dòng tiền CFO.",
+                }}
                 onChange={(v) =>
                   setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", dsoDays: v }))
                 }
@@ -867,6 +960,10 @@ function StressTestContent() {
                 max={SHOCK_BOUNDS.dioDays.max}
                 step={SHOCK_BOUNDS.dioDays.step}
                 value={shocks.dioDays}
+                tooltip={{
+                  label: "Giải thích chỉ số DIO",
+                  text: "DIO (Days Inventory Outstanding): số ngày lưu kho bình quân. DIO tăng làm ứ đọng vốn ở hàng tồn kho và gây áp lực lên dòng tiền CFO.",
+                }}
                 onChange={(v) =>
                   setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", dioDays: v }))
                 }
@@ -894,7 +991,7 @@ function StressTestContent() {
                     variant="outline"
                     size="sm"
                     className="flex-1"
-                    disabled={!activeResult}
+                    disabled={!activeResult || activeIsCalculating}
                     onClick={() => activeResult && setPinnedA(activeResult)}
                   >
                     <Pin className="size-3.5" />
@@ -983,14 +1080,16 @@ function StressTestContent() {
               {scope === "WATCHLIST" && portfolioMetrics ? (
                 <div className="grid grid-cols-1 divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface sm:grid-cols-3 sm:divide-x sm:divide-y-0">
                   <div className="p-3.5">
-                    <p className="text-xs font-medium text-ink-muted">
-                      Tổng nợ chịu rủi ro danh mục (ICR &lt; 1)
+                    <p className="flex items-center gap-1 text-xs font-medium text-ink-muted">
+                      <span>Tổng nợ chịu rủi ro danh mục (ICR &lt; 1)</span>
+                      <InfoTooltip label="Giải thích chỉ số ICR" text={ICR_TOOLTIP_TEXT} />
                     </p>
                     <p className="num mt-1 text-2xl font-semibold text-risk-high">
                       {formatVndBillions(portfolioMetrics.stressedDebtAtRiskVnd, {
                         decimals: 1,
+                        zeroAsZero: true,
                       })}{" "}
-                      tỷ
+                      tỷ đồng
                     </p>
                     <p className="num mt-1 text-[11px] text-ink-muted">
                       Tỷ trọng: {formatPercent(portfolioMetrics.stressedDebtAtRiskPct)} (cơ sở{" "}
@@ -1032,8 +1131,9 @@ function StressTestContent() {
               ) : (
                 <div className="grid grid-cols-1 divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface sm:grid-cols-3 sm:divide-x sm:divide-y-0">
                   <div className="p-3.5">
-                    <p className="text-xs font-medium text-ink-muted">
-                      Tỷ trọng nợ rủi ro (ICR &lt; 1)
+                    <p className="flex items-center gap-1 text-xs font-medium text-ink-muted">
+                      <span>Tỷ trọng nợ rủi ro (ICR &lt; 1)</span>
+                      <InfoTooltip label="Giải thích chỉ số ICR" text={ICR_TOOLTIP_TEXT} />
                     </p>
                     <p className="num mt-1 text-2xl font-semibold text-risk-high">
                       {formatPercent(activeResult.stressed_debt_at_risk_pct)}
@@ -1069,7 +1169,7 @@ function StressTestContent() {
                       Nợ rủi ro sau sốc:{" "}
                       {formatVndBillions(
                         activeResult.total_debt_sum * activeResult.stressed_debt_at_risk_pct,
-                        { decimals: 0 },
+                        { decimals: 0, zeroAsZero: true },
                       )}{" "}
                       tỷ đồng
                     </p>
@@ -1117,7 +1217,10 @@ function StressTestContent() {
                   </CardHeader>
                   <CardContent className="grid grid-cols-2 gap-3 p-3.5 sm:grid-cols-4">
                     <div className="rounded border border-border bg-canvas/60 p-2.5">
-                      <p className="text-[11px] text-ink-muted">ICR (Cơ sở → Sốc)</p>
+                      <p className="flex items-center gap-1 text-[11px] text-ink-muted">
+                        <span>ICR (Cơ sở → Sốc)</span>
+                        <InfoTooltip label="Giải thích chỉ số ICR" text={ICR_TOOLTIP_TEXT} />
+                      </p>
                       <p className="num mt-1 text-sm font-semibold text-ink">
                         {formatMultiple(singleCompanyRow.interest_coverage)} →{" "}
                         <span
@@ -1185,6 +1288,7 @@ function StressTestContent() {
                         type="button"
                         variant="outline"
                         size="xs"
+                        disabled={!activeResult || activeIsCalculating}
                         onClick={() => setPinnedA(activeResult)}
                       >
                         <Pin className="size-3" />
@@ -1211,6 +1315,7 @@ function StressTestContent() {
                           type="button"
                           variant="outline"
                           size="xs"
+                          disabled={!activeResult || activeIsCalculating}
                           onClick={() => setPinnedA(activeResult)}
                         >
                           Đồng bộ A theo phạm vi mới
@@ -1230,6 +1335,7 @@ function StressTestContent() {
                           Quy mô:{" "}
                           {formatVndBillions(comparison.debtAtRiskVndA, {
                             decimals: 1,
+                            zeroAsZero: true,
                           })}{" "}
                           tỷ · {formatNumber(comparison.newlyDistressedCountA, 0)}{" "}
                           DN mới khó
@@ -1247,6 +1353,7 @@ function StressTestContent() {
                           Quy mô:{" "}
                           {formatVndBillions(comparison.debtAtRiskVndB, {
                             decimals: 1,
+                            zeroAsZero: true,
                           })}{" "}
                           tỷ · {formatNumber(comparison.newlyDistressedCountB, 0)}{" "}
                           DN mới khó
@@ -1533,7 +1640,15 @@ function StressTestContent() {
                           : "text-ink-muted hover:text-ink",
                       )}
                     >
-                      DN mới gặp khó ({activeResult.newly_distressed_issuers.length})
+                      {(() => {
+                        const totalNewly =
+                          activeResult.total_newly_distressed ??
+                          activeResult.newly_distressed_count;
+                        const shownNewly = activeResult.newly_distressed_issuers.length;
+                        return totalNewly > shownNewly
+                          ? `DN mới gặp khó (Top ${shownNewly} / ${totalNewly})`
+                          : `DN mới gặp khó (${totalNewly})`;
+                      })()}
                     </button>
                     <button
                       type="button"

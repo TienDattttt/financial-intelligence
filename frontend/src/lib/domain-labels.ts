@@ -122,10 +122,13 @@ export function formatCreditTrio(input: {
   const topPercent = validPct
     ? Math.max(0.1, 100 - Math.min(100, Math.max(0, pct)))
     : null;
+  const safePercent = topPercent !== null ? Math.min(99.9, topPercent) : null;
   const topPercentLabel =
-    topPercent !== null
-      ? `Top ${formatNumber(topPercent, topPercent < 10 ? 1 : 0)}% rủi ro nhất`
-      : "Chưa có vị thế kỳ";
+    topPercent === null || safePercent === null
+      ? "Chưa có vị thế kỳ"
+      : topPercent > 50
+        ? `An toàn hơn ${formatNumber(safePercent, safePercent > 90 ? 1 : 0)}% DN`
+        : `Top ${formatNumber(topPercent, topPercent < 10 ? 1 : 0)}% rủi ro nhất`;
   const pdLabel = formatPercent(input.calibrated_distress_prob);
   const lift = input.relative_risk_lift;
   const liftLabel =
@@ -292,6 +295,7 @@ export const AUDIT_STATUS_LABELS: Record<string, string> = {
 export const AUDIT_OPINION_LABELS: Record<string, string> = {
   UNMODIFIED: "Chấp nhận toàn phần",
   UNQUALIFIED: "Chấp nhận toàn phần",
+  REVIEWED_NO_OPINION: "Đã soát xét (không nêu ý kiến)",
   EXCEPT_FOR: "Ngoại trừ",
   QUALIFIED: "Ngoại trừ",
   ADVERSE: "Trái ngược",
@@ -299,6 +303,68 @@ export const AUDIT_OPINION_LABELS: Record<string, string> = {
   NOT_APPLICABLE: "Chưa kiểm toán",
   UNKNOWN: "Chưa rõ",
 };
+
+export const PIOTROSKI_NA_REASON_LABELS: Record<string, string> = {
+  TT200_TT99_TAXONOMY_GUARD: "Không tính do giao chuẩn TT200 → TT99",
+  MISSING_DILUTION_DATA: "Thiếu dữ liệu pha loãng cổ phiếu",
+  MISSING_PRIOR_YEAR_BASE: "Thiếu dữ liệu kỳ gốc năm trước",
+  INSUFFICIENT_COMPONENTS: "Chưa đủ 9 tiêu chí thành phần",
+};
+
+export const PIOTROSKI_CRITERIA_LABELS: Record<string, string> = {
+  F1_ROA: "ROA dương",
+  F2_CFO: "Dòng tiền HĐKD (CFO) dương",
+  F3_DELTA_ROA: "Cải thiện ROA so với năm trước",
+  F4_ACCRUAL: "Chất lượng tiền mặt (CFO > LNST)",
+  F4_ACCRUALS: "Chất lượng tiền mặt (CFO > LNST)",
+  F5_DELTA_LEVERAGE: "Tỷ lệ nợ dài hạn giảm hoặc ổn định",
+  F6_DELTA_LIQUIDITY: "Thanh toán hiện hành cải thiện",
+  F7_NO_DILUTION: "Không phát hành pha loãng cổ phiếu",
+  F8_DELTA_MARGIN: "Biên lợi nhuận gộp cải thiện",
+  F9_DELTA_TURNOVER: "Vòng quay tổng tài sản cải thiện",
+};
+
+export interface PiotroskiNaDetail {
+  summary: string;
+  detailLine: string | null;
+  tooltip: string;
+}
+
+export function formatPiotroskiNaDetail(
+  reason?: string | null,
+  missingCriteria?: readonly string[] | null,
+): PiotroskiNaDetail {
+  const summary =
+    (reason && PIOTROSKI_NA_REASON_LABELS[reason]) ||
+    "Chưa đủ tiêu chí thành phần";
+  const mappedCriteria = Array.from(
+    new Set(
+      (missingCriteria ?? [])
+        .map((code) => PIOTROSKI_CRITERIA_LABELS[code])
+        .filter((label): label is string => Boolean(label)),
+    ),
+  );
+  if (mappedCriteria.length === 0) {
+    return {
+      summary,
+      detailLine: null,
+      tooltip: summary,
+    };
+  }
+  const detailLine =
+    mappedCriteria.length <= 2
+      ? `Thiếu tiêu chí: ${mappedCriteria.join(", ")}`
+      : `Thiếu ${mappedCriteria.length}/9 tiêu chí thành phần`;
+  const tooltip = `${summary} · Thiếu: ${mappedCriteria.join(", ")}`;
+  return {
+    summary:
+      reason && PIOTROSKI_NA_REASON_LABELS[reason]
+        ? summary
+        : `Thiếu ${mappedCriteria.length} tiêu chí`,
+    detailLine,
+    tooltip,
+  };
+}
 
 export const REVISION_REASON_LABELS: Record<string, string> = {
   ORIGINAL: "Bản gốc",
@@ -561,6 +627,8 @@ export const PEER_STANDARDIZATION_LABELS: Record<string, string> = {
     "Chuẩn hóa toàn thị trường phi tài chính (do trước 2026 chưa có lịch sử phân ngành theo năm)",
   SECTOR_Z_SCORE: "Chuẩn hóa Z-Score theo phân ngành ICB cùng kỳ",
   HYBRID: "Chuẩn hóa kết hợp theo ngành ICB và toàn thị trường",
+  PIT_REGIME_SYMMETRIC: "So sánh cùng kỳ theo chuẩn mực kế toán (đối xứng)",
+  PIT_ICB: "So sánh cùng kỳ theo ngành ICB",
 };
 
 export function formatPeerStandardizationMode(mode: string | null | undefined): string {
@@ -627,6 +695,11 @@ export function sanitizeModelLimitationText(raw: string): string {
       PEER_STANDARDIZATION_LABELS.MARKET_ONLY_BEFORE_2026,
     )
     .replace(/\bSECTOR_Z_SCORE\b/g, PEER_STANDARDIZATION_LABELS.SECTOR_Z_SCORE)
+    .replace(
+      /\bPIT_REGIME_SYMMETRIC\b/g,
+      PEER_STANDARDIZATION_LABELS.PIT_REGIME_SYMMETRIC,
+    )
+    .replace(/\bPIT_ICB\b/g, PEER_STANDARDIZATION_LABELS.PIT_ICB)
     .replace(/\brevision_no\s*=\s*1\b/gi, "phiên bản đơn kỳ ban đầu")
     .replace(/\bVAS_TT200_2014\b/g, "TT200/2014")
     .replace(/\bVAS_TT99_2025\b/g, "TT99/2025")
@@ -721,6 +794,7 @@ const FORMULA_TERM_REPLACEMENTS: Record<string, string> = {
   NOPAT_TTM: "LN hoạt động sau thuế (NOPAT)",
   EBITDA_TTM: "EBITDA TTM",
   EBIT_TTM: "EBIT TTM",
+  EBIT: "Lợi nhuận trước lãi vay và thuế (EBIT)",
   inventory_turnover: "Vòng quay hàng tồn kho",
   receivables_turnover: "Vòng quay phải thu",
   payables_turnover: "Vòng quay phải trả",

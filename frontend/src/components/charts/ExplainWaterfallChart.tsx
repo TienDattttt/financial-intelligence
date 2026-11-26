@@ -5,9 +5,18 @@ import { RotateCcw } from "lucide-react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
 import { Button } from "@/components/ui/button";
 import { formatChartNumber, useChartTheme } from "@/lib/echarts-theme";
-import { formatNumber, formatPercent, MINUS_SIGN } from "@/lib/format";
+import {
+  formatNumber,
+  formatPercent,
+  formatRatioByType,
+  MINUS_SIGN,
+} from "@/lib/format";
 import { buildShapNarrativeVi } from "@/lib/narrative";
-import type { ShapExplanationItem } from "@/types/api";
+import type {
+  RatioDictionaryItem,
+  RatioName,
+  ShapExplanationItem,
+} from "@/types/api";
 
 export function resolveCrossFilteredMlScore<T extends { period_end_date: string }>(
   scores: readonly T[],
@@ -57,16 +66,85 @@ export function resolveCrossFilteredMlScore<T extends { period_end_date: string 
   return { active, defaultLatest, prev, isCustomSelected };
 }
 
-interface WaterfallStep {
+export function resolveMlFeatureFormatType(
+  feature: string,
+  ratioDictMap?: ReadonlyMap<RatioName, RatioDictionaryItem>,
+): string {
+  const dictEntry = ratioDictMap?.get(feature as RatioName);
+  if (dictEntry?.format_type) {
+    return dictEntry.format_type;
+  }
+  const lowered = feature.toLowerCase();
+  if (lowered.startsWith("sector_z_")) return "ZSCORE";
+  if (lowered === "merton_dtd") return "SIGMA";
+  if (lowered === "piotroski_f_score") return "SCORE_9";
+  if (
+    lowered === "overdue_or_late_count_4q" ||
+    lowered === "consecutive_loss_quarters"
+  ) {
+    return "QUARTERS";
+  }
+  if (lowered === "cross_sectional_asset_size_pct" || lowered.endsWith("_pct")) {
+    return "PERCENTILE";
+  }
+  if (
+    lowered === "delta_roa_4q" ||
+    lowered === "delta_liabilities_to_assets_4q"
+  ) {
+    return "PERCENT_POINTS";
+  }
+  if (lowered === "delta_current_ratio_4q") {
+    return "NUMBER";
+  }
+  if (
+    lowered.includes("margin") ||
+    lowered.includes("roa") ||
+    lowered.includes("roe") ||
+    lowered.includes("roic") ||
+    lowered.includes("to_assets") ||
+    lowered.includes("growth") ||
+    lowered.includes("fcf_to_revenue") ||
+    lowered.includes("distortion") ||
+    lowered.includes("core_to_ebt") ||
+    lowered === "equity_volatility_1y" ||
+    lowered === "naive_edf"
+  ) {
+    return "PERCENT";
+  }
+  if (
+    lowered.includes("dso") ||
+    lowered.includes("dio") ||
+    lowered.includes("dpo") ||
+    lowered.includes("cycle")
+  ) {
+    return "DAYS";
+  }
+  if (
+    lowered.includes("turnover") ||
+    lowered.includes("coverage") ||
+    lowered.includes("to_equity") ||
+    lowered.includes("to_ebitda") ||
+    lowered.includes("current_ratio") ||
+    lowered.includes("quick_ratio") ||
+    lowered.includes("cash_ratio") ||
+    lowered.includes("ocf_to_")
+  ) {
+    return "MULTIPLE";
+  }
+  if (lowered === "eps_ttm_estimated") {
+    return "CURRENCY_PER_SHARE";
+  }
+  return "NUMBER";
+}
+
+interface ShapBarStep {
   label: string;
-  shortLabel: string;
-  start: number;
-  end: number;
   delta: number;
-  kind: "base" | "increase" | "decrease" | "other" | "final";
+  kind: "increase" | "decrease" | "other";
   value: number | null;
   peerMedian: number | null;
   feature: string;
+  formatType: string;
 }
 
 function formatSignedLogOdds(val: number): string {
@@ -81,118 +159,75 @@ export function ExplainWaterfallChart({
   periodLabel,
   isCustomPeriod = false,
   onResetToLatest,
+  ratioDictMap,
 }: {
   shap: ShapExplanationItem | null | undefined;
   distressProb?: number | null;
   periodLabel?: string | null;
   isCustomPeriod?: boolean;
   onResetToLatest?: () => void;
+  ratioDictMap?: ReadonlyMap<RatioName, RatioDictionaryItem>;
 }) {
   const { palette } = useChartTheme();
 
-  const steps = React.useMemo<WaterfallStep[]>(() => {
+  const steps = React.useMemo<ShapBarStep[]>(() => {
     if (!shap) return [];
-    const result: WaterfallStep[] = [];
-    let running = shap.base_value;
-
-    result.push({
-      label: "Điểm cơ sở thị trường",
-      shortLabel: "Cơ sở",
-      start: 0,
-      end: shap.base_value,
-      delta: shap.base_value,
-      kind: "base",
-      value: null,
-      peerMedian: null,
-      feature: "base_value",
-    });
+    const result: ShapBarStep[] = [];
 
     const riskUp = [...shap.top_risk_increasing]
+      .filter((drv) => Number.isFinite(drv.shap_delta) && Math.abs(drv.shap_delta) >= 0.005)
       .sort((a, b) => b.shap_delta - a.shap_delta)
       .slice(0, 5);
     for (const drv of riskUp) {
-      const start = running;
-      const end = start + drv.shap_delta;
-      running = end;
       result.push({
         label: drv.display_name_vn,
-        shortLabel:
-          drv.display_name_vn.length > 20
-            ? `${drv.display_name_vn.slice(0, 18)}…`
-            : drv.display_name_vn,
-        start,
-        end,
         delta: drv.shap_delta,
         kind: "increase",
         value: drv.value ?? null,
         peerMedian: drv.peer_median ?? null,
         feature: drv.feature,
+        formatType: resolveMlFeatureFormatType(drv.feature, ratioDictMap),
       });
     }
 
     const riskDown = [...shap.top_risk_decreasing]
+      .filter((drv) => Number.isFinite(drv.shap_delta) && Math.abs(drv.shap_delta) >= 0.005)
       .sort((a, b) => a.shap_delta - b.shap_delta)
       .slice(0, 5);
     for (const drv of riskDown) {
-      const start = running;
-      const end = start + drv.shap_delta;
-      running = end;
       result.push({
         label: drv.display_name_vn,
-        shortLabel:
-          drv.display_name_vn.length > 20
-            ? `${drv.display_name_vn.slice(0, 18)}…`
-            : drv.display_name_vn,
-        start,
-        end,
         delta: drv.shap_delta,
         kind: "decrease",
         value: drv.value ?? null,
         peerMedian: drv.peer_median ?? null,
         feature: drv.feature,
+        formatType: resolveMlFeatureFormatType(drv.feature, ratioDictMap),
       });
     }
 
     if (Math.abs(shap.other_features_delta) >= 0.005) {
-      const start = running;
-      const end = start + shap.other_features_delta;
-      running = end;
       result.push({
         label: "Các biến số còn lại",
-        shortLabel: "Biến khác",
-        start,
-        end,
         delta: shap.other_features_delta,
         kind: "other",
         value: null,
         peerMedian: null,
         feature: "other_features",
+        formatType: "NUMBER",
       });
     }
 
-    result.push({
-      label: "Điểm dự báo (log-odds)",
-      shortLabel: "Dự báo",
-      start: 0,
-      end: shap.prediction_score,
-      delta: shap.prediction_score,
-      kind: "final",
-      value: null,
-      peerMedian: null,
-      feature: "prediction_score",
-    });
-
     return result;
-  }, [shap]);
+  }, [ratioDictMap, shap]);
 
   const narratives = React.useMemo(() => buildShapNarrativeVi(shap), [shap]);
 
   const option = React.useMemo<EChartsOption>(() => {
-    const categories = steps.map((s) => s.shortLabel);
-    const dataRows = steps.map((s, idx) => [idx, s.start, s.end, s.delta]);
+    const categories = steps.map((s) => s.label);
 
     return {
-      grid: { left: 58, right: 20, top: 28, bottom: 88 },
+      grid: { left: 12, right: 24, top: 14, bottom: 38, containLabel: true },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
@@ -207,84 +242,77 @@ export function ExplainWaterfallChart({
             `<div>Đóng góp: <b>${formatSignedLogOdds(step.delta)} log-odds</b></div>`,
           ];
           if (step.value !== null) {
-            lines.push(`<div>Giá trị DN: <b>${formatNumber(step.value, 3)}</b></div>`);
+            lines.push(
+              `<div>Giá trị DN: <b>${formatRatioByType(step.value, step.formatType)}</b></div>`,
+            );
           }
           if (step.peerMedian !== null) {
             lines.push(
-              `<div>Trung vị ngành: <b>${formatNumber(step.peerMedian, 3)}</b></div>`,
+              `<div>Trung vị ngành: <b>${formatRatioByType(step.peerMedian, step.formatType)}</b></div>`,
             );
           }
           return lines.join("");
         },
       },
       xAxis: {
-        type: "category",
-        data: categories,
+        type: "value",
+        name: "Đóng góp (log-odds)",
+        nameLocation: "middle",
+        nameGap: 24,
         axisLabel: {
-          rotate: 22,
-          interval: 0,
-          width: 110,
-          overflow: "truncate",
+          formatter: (val: number) => formatChartNumber(val, 2, { trimTrailingZeros: true }),
         },
       },
       yAxis: {
-        type: "value",
-        name: "log-odds",
+        type: "category",
+        inverse: true,
+        data: categories,
         axisLabel: {
-          formatter: (val: number) => formatChartNumber(val, 1, { trimTrailingZeros: true }),
+          width: 165,
+          overflow: "truncate",
+          ellipsis: "…",
         },
       },
       series: [
         {
           name: "TreeSHAP log-odds",
-          type: "custom",
-          encode: { x: 0, y: [1, 2] },
-          data: dataRows,
-          renderItem: (_params, api) => {
-            const idx = Number(api.value(0));
-            const startVal = Number(api.value(1));
-            const endVal = Number(api.value(2));
-            const step = steps[idx];
-            if (!step) return null;
-
-            const pStart = api.coord([idx, startVal]);
-            const pEnd = api.coord([idx, endVal]);
-            const band = api.size ? (api.size([1, 0]) as number[]) : [40, 0];
-            const barWidth = Math.min(36, Math.max(12, band[0] * 0.56));
-            const topY = Math.min(pStart[1], pEnd[1]);
-            const rawHeight = Math.abs(pEnd[1] - pStart[1]);
-            const height = Math.max(2, rawHeight);
-
-            return {
-              type: "rect",
-              shape: {
-                x: pStart[0] - barWidth / 2,
-                y: topY,
-                width: barWidth,
-                height,
-                r: 2,
-              },
-              style: {
-                fill: palette.waterfall[step.kind],
-              },
-            };
+          type: "bar",
+          barMaxWidth: 18,
+          data: steps.map((step) => ({
+            value: step.delta,
+            itemStyle: {
+              color:
+                step.kind === "other"
+                  ? palette.waterfall.other
+                  : step.delta >= 0
+                    ? palette.riskHigh
+                    : palette.riskLow,
+              borderRadius: step.delta >= 0 ? [0, 3, 3, 0] : [3, 0, 0, 3],
+            },
+          })),
+          markLine: {
+            silent: true,
+            symbol: "none",
+            lineStyle: { color: palette.borderStrong, type: "solid", width: 1.5 },
+            label: { show: false },
+            data: [{ xAxis: 0 }],
           },
         },
       ],
     };
-  }, [palette.waterfall, steps]);
+  }, [palette.borderStrong, palette.riskHigh, palette.riskLow, palette.waterfall.other, steps]);
 
   const tableHeaders = ["Yếu tố (TreeSHAP)", "Giá trị DN", "Trung vị ngành", "Đóng góp (log-odds)"];
   const tableRows = steps.map((s) => [
     s.label,
-    s.value !== null ? formatNumber(s.value, 3) : "—",
-    s.peerMedian !== null ? formatNumber(s.peerMedian, 3) : "—",
+    s.value !== null ? formatRatioByType(s.value, s.formatType) : "—",
+    s.peerMedian !== null ? formatRatioByType(s.peerMedian, s.formatType) : "—",
     formatSignedLogOdds(s.delta),
   ]);
 
   const probSubtitle =
     distressProb !== null && distressProb !== undefined
-      ? `Xác suất kiệt quệ đã hiệu chỉnh: ${formatPercent(distressProb)} · Đơn vị thanh: log-odds trước hàm liên kết`
+      ? `Xác suất kiệt quệ đã hiệu chỉnh: ${formatPercent(distressProb)} · Cơ sở ${shap ? formatSignedLogOdds(shap.base_value) : "N/A"} → Dự báo ${shap ? formatSignedLogOdds(shap.prediction_score) : "N/A"} log-odds`
       : "Đóng góp từng yếu tố theo thang log-odds của mô hình TreeSHAP";
 
   return (

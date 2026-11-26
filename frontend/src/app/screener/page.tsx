@@ -64,6 +64,7 @@ import {
   getVisibleColumnsServerSnapshot,
   getVisibleColumnsSnapshot,
   parseContentDispositionFilename,
+  parseScreenerFilters,
   renameSavedScreen,
   resetVisibleColumns,
   saveScreenerView,
@@ -74,10 +75,11 @@ import {
   subscribeSavedScreens,
   toggleVisibleColumn,
   toggleVisibleColumnGroup,
+  VALID_EXCHANGES,
   VALID_RISK_TIERS,
-  VALID_SORT_FIELDS,
   type ScreenerFilterState,
   type ScreenerOptionalColumnId,
+  type ScreenerRiskTier,
 } from "@/lib/saved-screens-store";
 import {
   getDensityServerSnapshot,
@@ -90,6 +92,7 @@ import {
 } from "@/lib/watchlist-store";
 import { cn } from "@/lib/utils";
 import type {
+  ExchangeCode,
   ScreenerItem,
   ScreenerQueryParams,
   ScreenerSortField,
@@ -97,8 +100,9 @@ import type {
 } from "@/types/api";
 
 const PAGE_SIZE = 50;
-const VALID_SORT_SET = new Set<ScreenerSortField>(VALID_SORT_FIELDS);
-const VALID_RISK_TIER_SET = new Set<string>(VALID_RISK_TIERS);
+const RISK_TIER_ORDER = new Map<ScreenerRiskTier, number>(
+  VALID_RISK_TIERS.map((tier, idx) => [tier, idx]),
+);
 
 interface ScreenerColumnMeta {
   align?: "left" | "right";
@@ -145,7 +149,7 @@ function ScreenerContent() {
     periodType,
     periodEndDate,
     sectorsLevel2,
-    snapshotId,
+    cacheSnapshotKey,
   } = useAppState();
 
   const density = React.useSyncExternalStore(
@@ -184,9 +188,11 @@ function ScreenerContent() {
   const [isExporting, setIsExporting] = React.useState(false);
   const [exportError, setExportError] = React.useState<string | null>(null);
 
-  // Column customizer popover state
+  // Column customizer & risk-tier multi-select popover states
   const [columnsMenuOpen, setColumnsMenuOpen] = React.useState(false);
   const columnsMenuRef = React.useRef<HTMLDivElement | null>(null);
+  const [riskTierMenuOpen, setRiskTierMenuOpen] = React.useState(false);
+  const riskTierMenuRef = React.useRef<HTMLDivElement | null>(null);
 
   // Saved screens UI state
   const [saveFormOpen, setSaveFormOpen] = React.useState(false);
@@ -225,25 +231,48 @@ function ScreenerContent() {
     };
   }, [columnsMenuOpen]);
 
-  // Parse URL params safely
-  const qParam = searchParams.get("q") ?? "";
-  const sectorParam = searchParams.get("icb_code_level2") ?? "";
-  const altmanParam = searchParams.get("altman_zone") ?? "";
-  const rawRiskTier = searchParams.get("risk_tier") ?? "";
-  const riskTierParam = VALID_RISK_TIER_SET.has(rawRiskTier) ? rawRiskTier : "";
-  const beneishParam = searchParams.get("beneish_flag") ?? "";
-  const minFParam = searchParams.get("min_f_score") ?? "";
-  const minProbParam = searchParams.get("min_distress_prob") ?? "";
-  const maxProbParam = searchParams.get("max_distress_prob") ?? "";
-  const minRfParam = searchParams.get("min_red_flags") ?? "";
-  const maxRfParam = searchParams.get("max_red_flags") ?? "";
-  const rawSortBy = searchParams.get("sort_by") as ScreenerSortField | null;
-  const sortBy: ScreenerSortField =
-    rawSortBy && VALID_SORT_SET.has(rawSortBy)
-      ? rawSortBy
-      : "calibrated_distress_prob";
-  const sortDir: SortDirection =
-    searchParams.get("sort_dir") === "asc" ? "asc" : "desc";
+  React.useEffect(() => {
+    if (!riskTierMenuOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setRiskTierMenuOpen(false);
+    };
+    const onMouseDown = (e: MouseEvent) => {
+      if (
+        riskTierMenuRef.current &&
+        !riskTierMenuRef.current.contains(e.target as Node)
+      ) {
+        setRiskTierMenuOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mousedown", onMouseDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("mousedown", onMouseDown);
+    };
+  }, [riskTierMenuOpen]);
+
+  // Parse URL params safely via shared store parser (F7, L9)
+  const parsedFilters = React.useMemo(
+    () => parseScreenerFilters(searchParams),
+    [searchParams],
+  );
+  const qParam = parsedFilters.q;
+  const exchangeParam = (parsedFilters.exchange ?? "") as ExchangeCode | "";
+  const sectorParam = parsedFilters.icb_code_level2;
+  const altmanParam = parsedFilters.altman_zone;
+  const riskTiersParam = React.useMemo(
+    () => parsedFilters.risk_tiers ?? [],
+    [parsedFilters.risk_tiers],
+  );
+  const beneishParam = parsedFilters.beneish_flag;
+  const minFParam = parsedFilters.min_f_score;
+  const minProbParam = parsedFilters.min_distress_prob;
+  const maxProbParam = parsedFilters.max_distress_prob;
+  const minRfParam = parsedFilters.min_red_flags;
+  const maxRfParam = parsedFilters.max_red_flags;
+  const sortBy = parsedFilters.sort_by;
+  const sortDir = parsedFilters.sort_dir;
   const page = Math.max(1, Number(searchParams.get("page") ?? "1") || 1);
 
   const [qDraft, setQDraft] = React.useState(qParam);
@@ -254,10 +283,12 @@ function ScreenerContent() {
   const currentFilterState = React.useMemo<ScreenerFilterState>(
     () => ({
       q: qParam,
+      exchange: exchangeParam,
       icb_code_level2: sectorParam,
-      altman_zone: (altmanParam || "") as ScreenerFilterState["altman_zone"],
-      risk_tier: (riskTierParam || "") as ScreenerFilterState["risk_tier"],
-      beneish_flag: (beneishParam || "") as ScreenerFilterState["beneish_flag"],
+      altman_zone: altmanParam,
+      risk_tier: riskTiersParam.length === 1 ? riskTiersParam[0] : "",
+      risk_tiers: riskTiersParam,
+      beneish_flag: beneishParam,
       min_f_score: minFParam,
       min_distress_prob: minProbParam,
       max_distress_prob: maxProbParam,
@@ -269,13 +300,14 @@ function ScreenerContent() {
     [
       altmanParam,
       beneishParam,
+      exchangeParam,
       maxProbParam,
       maxRfParam,
       minFParam,
       minProbParam,
       minRfParam,
       qParam,
-      riskTierParam,
+      riskTiersParam,
       sectorParam,
       sortBy,
       sortDir,
@@ -308,6 +340,31 @@ function ScreenerContent() {
     return () => clearTimeout(id);
   }, [qDraft, qParam, updateParams]);
 
+  const handleSubmitKeyword = React.useCallback(
+    (e?: React.FormEvent) => {
+      e?.preventDefault();
+      const trimmed = qDraft.trim();
+      updateParams({ q: trimmed || null }, true);
+    },
+    [qDraft, updateParams],
+  );
+
+  const applyRiskTiers = React.useCallback(
+    (nextTiers: readonly ScreenerRiskTier[]) => {
+      const sorted = Array.from(new Set(nextTiers)).sort(
+        (a, b) => (RISK_TIER_ORDER.get(a) ?? 9) - (RISK_TIER_ORDER.get(b) ?? 9),
+      );
+      if (sorted.length === 0) {
+        updateParams({ risk_tier: null, risk_tiers: null }, true);
+      } else if (sorted.length === 1) {
+        updateParams({ risk_tier: sorted[0], risk_tiers: null }, true);
+      } else {
+        updateParams({ risk_tier: null, risk_tiers: sorted.join(",") }, true);
+      }
+    },
+    [updateParams],
+  );
+
   const queryParams = React.useMemo<ScreenerQueryParams>(() => {
     const numOrNull = (raw: string) => {
       if (!raw) return null;
@@ -319,9 +376,13 @@ function ScreenerContent() {
       period_type: periodType,
       period_end_date: periodEndDate,
       q: qParam || null,
+      exchange: (exchangeParam || null) as ScreenerQueryParams["exchange"],
       icb_code_level2: sectorParam || null,
       altman_zone: (altmanParam || null) as ScreenerQueryParams["altman_zone"],
-      risk_tier: (riskTierParam || null) as ScreenerQueryParams["risk_tier"],
+      risk_tier: (riskTiersParam.length === 1
+        ? riskTiersParam[0]
+        : null) as ScreenerQueryParams["risk_tier"],
+      risk_tiers: riskTiersParam.length >= 2 ? riskTiersParam.join(",") : null,
       beneish_flag: (beneishParam || null) as ScreenerQueryParams["beneish_flag"],
       min_f_score: numOrNull(minFParam),
       min_distress_prob: numOrNull(minProbParam),
@@ -336,6 +397,7 @@ function ScreenerContent() {
   }, [
     altmanParam,
     beneishParam,
+    exchangeParam,
     maxProbParam,
     maxRfParam,
     minFParam,
@@ -345,14 +407,14 @@ function ScreenerContent() {
     periodEndDate,
     periodType,
     qParam,
-    riskTierParam,
+    riskTiersParam,
     sectorParam,
     sortBy,
     sortDir,
     statementScope,
   ]);
 
-  const screenerQuery = useScreener(queryParams, snapshotId);
+  const screenerQuery = useScreener(queryParams, cacheSnapshotKey);
 
   const handleSort = React.useCallback(
     (field: ScreenerSortField) => {
@@ -401,6 +463,19 @@ function ScreenerContent() {
           const topRisk = formatTopRiskPercentileLabel(item.risk_market_percentile);
           const lift = formatRelativeRiskLiftLabel(item.relative_risk_lift);
           const subMeta = [topRisk, lift].filter(Boolean).join(" · ");
+          if (density === "compact") {
+            return (
+              <div
+                className="flex items-center justify-end gap-1.5 whitespace-nowrap"
+                title={subMeta || undefined}
+              >
+                <span className="num font-semibold text-ink">
+                  {formatPercent(p)}
+                </span>
+                <RiskBadge tone={tierMeta.tone} label={tierMeta.shortLabel} />
+              </div>
+            );
+          }
           return (
             <div className="flex flex-col items-end gap-0.5 whitespace-nowrap">
               <div className="flex items-center gap-1.5">
@@ -488,6 +563,14 @@ function ScreenerContent() {
           const zone = row.original.altman_zone
             ? ALTMAN_ZONE_META[row.original.altman_zone]
             : null;
+          if (density === "compact") {
+            return (
+              <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                <span className="num font-medium">{formatNumber(z, 2)}</span>
+                {zone ? <RiskBadge tone={zone.tone} label={zone.shortLabel} /> : null}
+              </div>
+            );
+          }
           return (
             <div className="flex flex-col items-end gap-0.5 whitespace-nowrap">
               <span className="num font-medium">{formatNumber(z, 2)}</span>
@@ -546,6 +629,16 @@ function ScreenerContent() {
           const flag = row.original.beneish_flag
             ? BENEISH_FLAG_META[row.original.beneish_flag]
             : null;
+          if (density === "compact") {
+            return (
+              <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                <span className="num">{formatNumber(m, 2)}</span>
+                {flag && row.original.beneish_flag !== "VALID" ? (
+                  <RiskBadge tone={flag.tone} label={flag.shortLabel} />
+                ) : null}
+              </div>
+            );
+          }
           return (
             <div className="flex flex-col items-end gap-0.5 whitespace-nowrap">
               <span className="num">{formatNumber(m, 2)}</span>
@@ -722,9 +815,13 @@ function ScreenerContent() {
         id: "ebit_margin",
         meta: { align: "right" } satisfies ScreenerColumnMeta,
         header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            Biên EBIT
-          </span>
+          <SortableHeader
+            label="Biên EBIT"
+            field="ebit_margin"
+            activeField={sortBy}
+            activeDir={sortDir}
+            onSort={handleSort}
+          />
         ),
         cell: ({ row }) => (
           <span className="num">{formatPercent(row.original.ebit_margin)}</span>
@@ -752,9 +849,13 @@ function ScreenerContent() {
         id: "interest_coverage",
         meta: { align: "right" } satisfies ScreenerColumnMeta,
         header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            EBIT/Lãi vay
-          </span>
+          <SortableHeader
+            label="EBIT/Lãi vay"
+            field="interest_coverage"
+            activeField={sortBy}
+            activeDir={sortDir}
+            onSort={handleSort}
+          />
         ),
         cell: ({ row }) => (
           <span className="num">
@@ -832,20 +933,37 @@ function ScreenerContent() {
         accessorKey: "company_name_vn",
         meta: { align: "left" } satisfies ScreenerColumnMeta,
         header: "Doanh nghiệp / Ngành",
-        cell: ({ row }) => (
-          <div className="max-w-[160px]">
-            <div
-              className="truncate font-medium text-ink"
-              title={row.original.company_name_vn ?? ""}
-            >
-              {row.original.company_name_vn ?? "—"}
+        cell: ({ row }) => {
+          const name = row.original.company_name_vn ?? "—";
+          const sectorLabel = row.original.icb_name_level2 ?? "—";
+          const exchange = row.original.exchange;
+          if (density === "compact") {
+            return (
+              <div
+                className="flex max-w-[140px] items-center gap-1.5 sm:max-w-[170px]"
+                title={`${name} · ${sectorLabel}${exchange ? ` (${exchange})` : ""}`}
+              >
+                <span className="truncate font-medium text-ink">{name}</span>
+                {exchange ? (
+                  <span className="shrink-0 font-mono text-[10px] text-ink-subtle">
+                    {exchange}
+                  </span>
+                ) : null}
+              </div>
+            );
+          }
+          return (
+            <div className="max-w-[140px] sm:max-w-[165px]">
+              <div className="truncate font-medium text-ink" title={name}>
+                {name}
+              </div>
+              <div className="truncate text-[11px] text-ink-muted">
+                {sectorLabel}
+                {exchange ? ` · ${exchange}` : ""}
+              </div>
             </div>
-            <div className="truncate text-[11px] text-ink-muted">
-              {row.original.icb_name_level2 ?? "—"}
-              {row.original.exchange ? ` · ${row.original.exchange}` : ""}
-            </div>
-          </div>
-        ),
+          );
+        },
       },
     ];
 
@@ -855,6 +973,7 @@ function ScreenerContent() {
 
     return [...pinnedCols, ...selectedOptionalCols];
   }, [
+    density,
     handleSort,
     selectedTickers,
     sortBy,
@@ -949,21 +1068,63 @@ function ScreenerContent() {
     return Number.isFinite(n) ? String(Math.round(n * 1000) / 10) : "";
   };
 
+  const activeFilterCount = React.useMemo(
+    () =>
+      [
+        qParam,
+        exchangeParam,
+        sectorParam,
+        riskTiersParam.length > 0 ? riskTiersParam.join(",") : "",
+        altmanParam,
+        beneishParam,
+        minFParam,
+        minProbParam,
+        maxProbParam,
+        minRfParam,
+        maxRfParam,
+      ].filter(Boolean).length,
+    [
+      altmanParam,
+      beneishParam,
+      exchangeParam,
+      maxProbParam,
+      maxRfParam,
+      minFParam,
+      minProbParam,
+      minRfParam,
+      qParam,
+      riskTiersParam,
+      sectorParam,
+    ],
+  );
+
+  const exchangeOptions = React.useMemo<ComboboxOption[]>(
+    () => [
+      { value: "", label: "Tất cả sàn" },
+      ...VALID_EXCHANGES.map((ex) => ({ value: ex, label: ex })),
+    ],
+    [],
+  );
+
   const sectorOptions = React.useMemo<ComboboxOption[]>(
     () => [
-      { value: "", label: "Tất cả các ngành" },
+      { value: "", label: "Tất cả ngành" },
       ...sectorsLevel2.map((sec) => ({
         value: sec.icb_code_level2,
         label: sec.icb_name_level2,
-        hint: `(${sec.issuer_count})`,
+        hint:
+          activeFilterCount === 0 && statementScope === "CONSOLIDATED"
+            ? `(${sec.issuer_count})`
+            : undefined,
       })),
     ],
-    [sectorsLevel2],
+    [activeFilterCount, sectorsLevel2, statementScope],
   );
 
-  const riskTierOptions = React.useMemo<ComboboxOption[]>(
+  const riskTierOptions = React.useMemo<
+    readonly { value: ScreenerRiskTier; label: string }[]
+  >(
     () => [
-      { value: "", label: "Tất cả bậc R1–R5" },
       { value: "R5", label: "R5 — Rủi ro rất cao" },
       { value: "R4", label: "R4 — Rủi ro cao" },
       { value: "R3", label: "R3 — Cần theo dõi" },
@@ -972,6 +1133,17 @@ function ScreenerContent() {
     ],
     [],
   );
+
+  const riskTierTriggerLabel = React.useMemo(() => {
+    if (riskTiersParam.length === 0) return "Tất cả bậc R1–R5";
+    if (riskTiersParam.length === 1) {
+      return (
+        riskTierOptions.find((o) => o.value === riskTiersParam[0])?.label ??
+        riskTiersParam[0]
+      );
+    }
+    return riskTiersParam.join(", ");
+  }, [riskTierOptions, riskTiersParam]);
 
   const altmanOptions = React.useMemo<ComboboxOption[]>(
     () => [
@@ -1005,34 +1177,6 @@ function ScreenerContent() {
       })),
     ],
     [],
-  );
-
-  const activeFilterCount = React.useMemo(
-    () =>
-      [
-        qParam,
-        sectorParam,
-        riskTierParam,
-        altmanParam,
-        beneishParam,
-        minFParam,
-        minProbParam,
-        maxProbParam,
-        minRfParam,
-        maxRfParam,
-      ].filter(Boolean).length,
-    [
-      altmanParam,
-      beneishParam,
-      maxProbParam,
-      maxRfParam,
-      minFParam,
-      minProbParam,
-      minRfParam,
-      qParam,
-      riskTierParam,
-      sectorParam,
-    ],
   );
 
   return (
@@ -1270,20 +1414,59 @@ function ScreenerContent() {
             </div>
             <CardContent className="space-y-3 p-3 text-xs">
               {/* Primary Horizontal Filter Row on Desktop */}
-              <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-12 lg:items-end">
-                <div className="space-y-1 lg:col-span-3">
+              <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-[minmax(210px,1.4fr)_116px_minmax(170px,1.15fr)_minmax(160px,1fr)_minmax(150px,1fr)_auto] lg:items-end">
+                <div className="space-y-1">
                   <label htmlFor="scr-q" className="block text-[11px] font-semibold text-ink-muted">
                     Tìm mã / tên doanh nghiệp
                   </label>
-                  <Input
-                    id="scr-q"
-                    value={qDraft}
-                    onChange={(e) => setQDraft(e.target.value)}
-                    placeholder="VD: HPG, thép..."
+                  <form onSubmit={handleSubmitKeyword} className="flex items-center gap-1">
+                    <div className="relative flex-1">
+                      <Input
+                        id="scr-q"
+                        value={qDraft}
+                        onChange={(e) => setQDraft(e.target.value)}
+                        placeholder="VD: HPG, thép..."
+                        className={qDraft ? "pr-7" : undefined}
+                      />
+                      {qDraft ? (
+                        <button
+                          type="button"
+                          aria-label="Xóa từ khóa tìm kiếm"
+                          onClick={() => {
+                            setQDraft("");
+                            updateParams({ q: null }, true);
+                          }}
+                          className="absolute top-1/2 right-1.5 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded text-ink-muted hover:bg-surface-muted hover:text-ink"
+                        >
+                          <X className="size-3.5" aria-hidden="true" />
+                        </button>
+                      ) : null}
+                    </div>
+                    <Button type="submit" variant="outline" size="default" className="shrink-0">
+                      Tìm
+                    </Button>
+                  </form>
+                </div>
+
+                <div className="space-y-1">
+                  <label htmlFor="scr-exchange" className="block text-[11px] font-semibold text-ink-muted">
+                    Sàn GD
+                  </label>
+                  <Combobox
+                    id="scr-exchange"
+                    options={exchangeOptions}
+                    value={exchangeParam}
+                    onValueChange={(next) =>
+                      updateParams({ exchange: next || null })
+                    }
+                    placeholder="Tất cả sàn"
+                    ariaLabel="Sàn giao dịch"
+                    searchable={false}
+                    popupClassName="min-w-[140px]"
                   />
                 </div>
 
-                <div className="space-y-1 lg:col-span-3">
+                <div className="space-y-1">
                   <label htmlFor="scr-sector" className="block text-[11px] font-semibold text-ink-muted">
                     Ngành ICB cấp 2
                   </label>
@@ -1294,30 +1477,94 @@ function ScreenerContent() {
                     onValueChange={(next) =>
                       updateParams({ icb_code_level2: next || null })
                     }
-                    placeholder="Tất cả các ngành"
-                    searchPlaceholder="Tìm ngành (VD: thep, dien)..."
+                    placeholder="Tất cả ngành"
+                    searchPlaceholder="Tìm ngành (VD: thép, điện)..."
                     ariaLabel="Ngành ICB cấp 2"
                   />
                 </div>
 
-                <div className="space-y-1 lg:col-span-2">
+                <div className="space-y-1">
                   <label htmlFor="scr-risk-tier" className="block text-[11px] font-semibold text-ink-muted">
                     Bậc rủi ro (R1–R5)
                   </label>
-                  <Combobox
-                    id="scr-risk-tier"
-                    options={riskTierOptions}
-                    value={riskTierParam}
-                    onValueChange={(next) =>
-                      updateParams({ risk_tier: next || null })
-                    }
-                    placeholder="Tất cả bậc R1–R5"
-                    searchPlaceholder="Chọn bậc R1–R5..."
-                    ariaLabel="Bậc rủi ro (R1–R5)"
-                  />
+                  <div className="relative" ref={riskTierMenuRef}>
+                    <button
+                      id="scr-risk-tier"
+                      type="button"
+                      aria-haspopup="listbox"
+                      aria-expanded={riskTierMenuOpen}
+                      aria-label="Bậc rủi ro (R1–R5)"
+                      onClick={() => setRiskTierMenuOpen((v) => !v)}
+                      className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-border-strong bg-surface px-2.5 text-left text-[13px] text-ink shadow-xs transition-colors duration-150 hover:border-accent-ink/50 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+                    >
+                      <span
+                        className={cn(
+                          "truncate",
+                          riskTiersParam.length > 0 ? "text-ink" : "text-ink-subtle",
+                        )}
+                      >
+                        {riskTierTriggerLabel}
+                      </span>
+                      <span className="shrink-0 text-[10px] text-ink-muted" aria-hidden="true">
+                        ▾
+                      </span>
+                    </button>
+
+                    {riskTierMenuOpen ? (
+                      <div
+                        role="listbox"
+                        aria-multiselectable="true"
+                        aria-label="Chọn bậc rủi ro (R1–R5)"
+                        className="absolute left-0 z-30 mt-1 w-full min-w-[220px] rounded-lg border border-border-strong bg-surface p-1 text-xs text-ink shadow-popover"
+                      >
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={riskTiersParam.length === 0}
+                          onClick={() => {
+                            applyRiskTiers([]);
+                            setRiskTierMenuOpen(false);
+                          }}
+                          className="flex w-full items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent-soft hover:text-accent-ink"
+                        >
+                          <span className={riskTiersParam.length === 0 ? "font-semibold" : ""}>
+                            Tất cả bậc R1–R5
+                          </span>
+                          {riskTiersParam.length === 0 ? (
+                            <Check className="size-3.5 text-accent-ink" aria-hidden="true" />
+                          ) : null}
+                        </button>
+                        {riskTierOptions.map((opt) => {
+                          const selected = riskTiersParam.includes(opt.value);
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              role="option"
+                              aria-selected={selected}
+                              onClick={() => {
+                                const next = selected
+                                  ? riskTiersParam.filter((t) => t !== opt.value)
+                                  : [...riskTiersParam, opt.value];
+                                applyRiskTiers(next);
+                              }}
+                              className="flex w-full items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent-soft hover:text-accent-ink"
+                            >
+                              <span className={selected ? "font-semibold" : ""}>
+                                {opt.label}
+                              </span>
+                              {selected ? (
+                                <Check className="size-3.5 text-accent-ink" aria-hidden="true" />
+                              ) : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
 
-                <div className="space-y-1 lg:col-span-2">
+                <div className="space-y-1">
                   <label htmlFor="scr-altman" className="block text-[11px] font-semibold text-ink-muted">
                     Phân vùng Altman Z″
                   </label>
@@ -1334,12 +1581,12 @@ function ScreenerContent() {
                   />
                 </div>
 
-                <div className="hidden lg:col-span-2 lg:flex lg:justify-end">
+                <div className="hidden lg:flex lg:justify-end">
                   <Button
                     type="button"
                     variant={advancedFiltersOpen ? "secondary" : "outline"}
                     size="default"
-                    className="w-full"
+                    className="whitespace-nowrap"
                     aria-expanded={advancedFiltersOpen}
                     onClick={() => setAdvancedFiltersOpen((v) => !v)}
                   >
@@ -1480,11 +1727,23 @@ function ScreenerContent() {
                 </div>
               </div>
 
-              <div className="pt-1 lg:hidden">
+              <div className="flex items-center gap-2 pt-1 lg:hidden">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    applyFilterPreset({});
+                    setMobileFiltersOpen(false);
+                  }}
+                >
+                  <RotateCcw className="size-3" />
+                  <span>Đặt lại</span>
+                </Button>
                 <Button
                   type="button"
                   size="sm"
-                  className="w-full"
+                  className="flex-1"
                   onClick={() => setMobileFiltersOpen(false)}
                 >
                   Xem kết quả ({total})
@@ -1508,6 +1767,16 @@ function ScreenerContent() {
                 <X className="size-3 text-ink-muted" />
               </button>
             ) : null}
+            {exchangeParam ? (
+              <button
+                type="button"
+                onClick={() => updateParams({ exchange: null })}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
+              >
+                <span>Sàn: {exchangeParam}</span>
+                <X className="size-3 text-ink-muted" />
+              </button>
+            ) : null}
             {sectorParam ? (
               <button
                 type="button"
@@ -1522,16 +1791,19 @@ function ScreenerContent() {
                 <X className="size-3 text-ink-muted" />
               </button>
             ) : null}
-            {riskTierParam ? (
+            {riskTiersParam.map((tier) => (
               <button
+                key={tier}
                 type="button"
-                onClick={() => updateParams({ risk_tier: null })}
+                onClick={() =>
+                  applyRiskTiers(riskTiersParam.filter((t) => t !== tier))
+                }
                 className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
               >
-                <span>Bậc: {riskTierParam}</span>
+                <span>Bậc: {tier}</span>
                 <X className="size-3 text-ink-muted" />
               </button>
-            ) : null}
+            ))}
             {altmanParam ? (
               <button
                 type="button"
@@ -1635,110 +1907,125 @@ function ScreenerContent() {
                 </span>
               ) : null}
 
-              {/* Column Customizer Popover */}
-              <div className="relative" ref={columnsMenuRef}>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  aria-expanded={columnsMenuOpen}
-                  aria-haspopup="dialog"
-                  onClick={() => setColumnsMenuOpen((v) => !v)}
-                >
-                  <Columns3 className="size-3" />
-                  <span>
-                    Cột ({visibleColumns.length}/{SCREENER_OPTIONAL_COLUMNS.length})
-                  </span>
-                </Button>
-
-                {columnsMenuOpen ? (
-                  <div
-                    role="dialog"
-                    aria-label="Tùy chỉnh cột phân tích"
-                    className="absolute right-0 z-30 mt-1.5 w-80 max-w-[90vw] rounded-lg border border-border-strong bg-surface p-3 text-xs text-ink shadow-popover"
-                  >
-                    <div className="flex items-center justify-between border-b border-border pb-2">
-                      <span className="font-semibold text-ink">
-                        Tùy chỉnh cột bảng sàng lọc
+              {viewMode === "TABLE" ? (
+                <>
+                  {/* Column Customizer Popover */}
+                  <div className="relative" ref={columnsMenuRef}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      aria-expanded={columnsMenuOpen}
+                      aria-haspopup="dialog"
+                      onClick={() => setColumnsMenuOpen((v) => !v)}
+                    >
+                      <Columns3 className="size-3" />
+                      <span>
+                        Cột ({visibleColumns.length}/{SCREENER_OPTIONAL_COLUMNS.length})
                       </span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={showAllScreenerColumns}
-                          className="text-[11px] font-medium text-accent-ink hover:underline"
-                        >
-                          Hiện tất cả
-                        </button>
-                        <button
-                          type="button"
-                          onClick={resetVisibleColumns}
-                          className="text-[11px] text-ink-muted hover:text-ink hover:underline"
-                        >
-                          Mặc định
-                        </button>
-                      </div>
-                    </div>
+                    </Button>
 
-                    <div className="mt-2 max-h-80 space-y-3 overflow-y-auto pr-1">
-                      {SCREENER_COLUMN_GROUPS.map((group) => {
-                        const groupCols = SCREENER_OPTIONAL_COLUMNS.filter(
-                          (c) => c.group === group.id,
-                        );
-                        const allChecked = groupCols.every((c) =>
-                          visibleColumnSet.has(c.id),
-                        );
-                        return (
-                          <div key={group.id} className="space-y-1">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[11px] font-semibold text-ink-muted">
-                                {group.label}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => toggleVisibleColumnGroup(group.id)}
-                                className="text-[11px] text-accent-ink hover:underline"
-                              >
-                                {allChecked ? "Bỏ nhóm" : "Chọn nhóm"}
-                              </button>
-                            </div>
-                            <div className="space-y-1 pl-0.5">
-                              {groupCols.map((col) => {
-                                const checked = visibleColumnSet.has(col.id);
-                                return (
-                                  <label
-                                    key={col.id}
-                                    className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 hover:bg-surface-muted"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={checked}
-                                      onChange={() => toggleVisibleColumn(col.id)}
-                                      className="size-3.5 rounded border-border accent-accent-ink"
-                                    />
-                                    <span className="text-ink">{col.label}</span>
-                                  </label>
-                                );
-                              })}
-                            </div>
+                    {columnsMenuOpen ? (
+                      <div
+                        role="dialog"
+                        aria-label="Tùy chỉnh cột phân tích"
+                        className="absolute right-0 z-30 mt-1.5 w-80 max-w-[90vw] rounded-lg border border-border-strong bg-surface p-3 text-xs text-ink shadow-popover"
+                      >
+                        <div className="flex items-center justify-between border-b border-border pb-2">
+                          <span className="font-semibold text-ink">
+                            Tùy chỉnh cột bảng sàng lọc
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={showAllScreenerColumns}
+                              className="text-[11px] font-medium text-accent-ink hover:underline"
+                            >
+                              Hiện tất cả
+                            </button>
+                            <button
+                              type="button"
+                              onClick={resetVisibleColumns}
+                              className="text-[11px] text-ink-muted hover:text-ink hover:underline"
+                            >
+                              Mặc định
+                            </button>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
+                        </div>
 
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                onClick={() =>
-                  setTableDensity(density === "compact" ? "comfortable" : "compact")
-                }
-              >
-                <LayoutList className="size-3" />
-                {density === "compact" ? "Bảng gọn" : "Bảng thoáng"}
-              </Button>
+                        <div className="mt-2 max-h-80 space-y-3 overflow-y-auto pr-1">
+                          {SCREENER_COLUMN_GROUPS.map((group) => {
+                            const groupCols = SCREENER_OPTIONAL_COLUMNS.filter(
+                              (c) => c.group === group.id,
+                            );
+                            const allChecked = groupCols.every((c) =>
+                              visibleColumnSet.has(c.id),
+                            );
+                            return (
+                              <div key={group.id} className="space-y-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[11px] font-semibold text-ink-muted">
+                                    {group.label}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleVisibleColumnGroup(group.id)}
+                                    className="text-[11px] text-accent-ink hover:underline"
+                                  >
+                                    {allChecked ? "Bỏ nhóm" : "Chọn nhóm"}
+                                  </button>
+                                </div>
+                                <div className="space-y-1 pl-0.5">
+                                  {groupCols.map((col) => {
+                                    const checked = visibleColumnSet.has(col.id);
+                                    const showRedundantHint =
+                                      col.redundantWithDefault &&
+                                      visibleColumnSet.has("distress");
+                                    return (
+                                      <label
+                                        key={col.id}
+                                        className="flex cursor-pointer items-center justify-between gap-2 rounded px-1.5 py-1 hover:bg-surface-muted"
+                                      >
+                                        <span className="flex items-center gap-2">
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={() => toggleVisibleColumn(col.id)}
+                                            className="size-3.5 rounded border-border accent-accent-ink"
+                                          />
+                                          <span className="text-ink">{col.label}</span>
+                                        </span>
+                                        {showRedundantHint ? (
+                                          <span className="shrink-0 text-[10px] text-ink-subtle">
+                                            Đã gộp
+                                          </span>
+                                        ) : null}
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    aria-pressed={density === "compact"}
+                    onClick={() =>
+                      setTableDensity(density === "compact" ? "comfortable" : "compact")
+                    }
+                  >
+                    <LayoutList className="size-3" />
+                    {density === "compact" ? "Bảng gọn" : "Bảng thoáng"}
+                  </Button>
+                </>
+              ) : null}
 
               <div className="inline-flex rounded border border-border bg-canvas p-0.5 text-xs">
                 <button
@@ -1822,93 +2109,102 @@ function ScreenerContent() {
                 </Button>
               }
             />
-          ) : viewMode === "SCATTER" ? (
-            <ScreenerScatterChart
-              items={items}
-              onSelectTicker={(ticker) => router.push(`/companies/${ticker}`)}
-            />
           ) : (
-            <Card>
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-xs">
-                  <thead>
-                    {table.getHeaderGroups().map((headerGroup) => (
-                      <tr
-                        key={headerGroup.id}
-                        className="border-b border-border bg-surface-muted/70 text-ink-muted"
-                      >
-                        {headerGroup.headers.map((header, idx) => {
-                          const meta = header.column.columnDef.meta as
-                            | ScreenerColumnMeta
-                            | undefined;
-                          const align =
-                            meta?.align ?? (idx <= 1 ? "left" : "right");
-                          return (
-                            <th
-                              key={header.id}
-                              scope="col"
-                              className={cn(
-                                "px-1.5 py-2 font-semibold whitespace-nowrap first:pl-2.5 last:pr-2.5",
-                                idx === 0 &&
-                                  "sticky left-0 z-10 border-r border-border bg-surface-muted text-left",
-                                idx !== 0 &&
-                                  (align === "left"
-                                    ? "text-left"
-                                    : "text-right"),
-                              )}
-                            >
-                              {header.isPlaceholder
-                                ? null
-                                : flexRender(
-                                    header.column.columnDef.header,
-                                    header.getContext(),
+            <div className="space-y-3">
+              {viewMode === "SCATTER" ? (
+                <ScreenerScatterChart
+                  items={items}
+                  onSelectTicker={(ticker) => router.push(`/companies/${ticker}`)}
+                />
+              ) : (
+                <Card>
+                  <p className="border-b border-border/60 bg-surface-muted/40 px-3 py-1.5 text-[11px] text-ink-muted md:hidden">
+                    Cuộn ngang để xem đầy đủ bậc rủi ro và các chỉ số →
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-xs">
+                      <thead>
+                        {table.getHeaderGroups().map((headerGroup) => (
+                          <tr
+                            key={headerGroup.id}
+                            className="border-b border-border bg-surface-muted/70 text-ink-muted"
+                          >
+                            {headerGroup.headers.map((header, idx) => {
+                              const meta = header.column.columnDef.meta as
+                                | ScreenerColumnMeta
+                                | undefined;
+                              const align =
+                                meta?.align ?? (idx <= 1 ? "left" : "right");
+                              return (
+                                <th
+                                  key={header.id}
+                                  scope="col"
+                                  className={cn(
+                                    "px-1.5 py-2 font-semibold whitespace-nowrap first:pl-2.5 last:pr-2.5",
+                                    idx === 0 &&
+                                      "text-left md:sticky md:left-0 md:z-10 md:border-r md:border-border md:bg-surface-muted",
+                                    idx !== 0 &&
+                                      (align === "left"
+                                        ? "text-left"
+                                        : "text-right"),
                                   )}
-                            </th>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </thead>
-                  <tbody>
-                    {table.getRowModel().rows.map((row) => (
-                      <tr
-                        key={row.id}
-                        className="border-b border-border/60 hover:bg-surface-muted/40"
-                      >
-                        {row.getVisibleCells().map((cell, idx) => {
-                          const meta = cell.column.columnDef.meta as
-                            | ScreenerColumnMeta
-                            | undefined;
-                          const align =
-                            meta?.align ?? (idx <= 1 ? "left" : "right");
-                          return (
-                            <td
-                              key={cell.id}
-                              className={cn(
-                                "px-1.5 first:pl-2.5 last:pr-2.5",
-                                density === "compact" ? "py-1.5" : "py-2.5",
-                                idx === 0 &&
-                                  "sticky left-0 z-10 border-r border-border bg-surface text-left",
-                                idx !== 0 &&
-                                  (align === "left"
-                                    ? "text-left"
-                                    : "text-right"),
-                              )}
-                            >
-                              {flexRender(
-                                cell.column.columnDef.cell,
-                                cell.getContext(),
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                                >
+                                  {header.isPlaceholder
+                                    ? null
+                                    : flexRender(
+                                        header.column.columnDef.header,
+                                        header.getContext(),
+                                      )}
+                                </th>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </thead>
+                      <tbody>
+                        {table.getRowModel().rows.map((row) => (
+                          <tr
+                            key={row.id}
+                            className="border-b border-border/60 hover:bg-surface-muted/40"
+                          >
+                            {row.getVisibleCells().map((cell, idx) => {
+                              const meta = cell.column.columnDef.meta as
+                                | ScreenerColumnMeta
+                                | undefined;
+                              const align =
+                                meta?.align ?? (idx <= 1 ? "left" : "right");
+                              return (
+                                <td
+                                  key={cell.id}
+                                  className={cn(
+                                    "px-1.5 first:pl-2.5 last:pr-2.5",
+                                    density === "compact"
+                                      ? "py-1.5 whitespace-nowrap"
+                                      : "py-2.5",
+                                    idx === 0 &&
+                                      "text-left md:sticky md:left-0 md:z-10 md:border-r md:border-border md:bg-surface",
+                                    idx !== 0 &&
+                                      (align === "left"
+                                        ? "text-left"
+                                        : "text-right"),
+                                  )}
+                                >
+                                  {flexRender(
+                                    cell.column.columnDef.cell,
+                                    cell.getContext(),
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+              )}
 
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-2 text-xs text-ink-muted">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-ink-muted">
                 <span className="num">
                   Trang {page} / {totalPages} · Hiển thị {(page - 1) * PAGE_SIZE + 1}–
                   {Math.min(total, page * PAGE_SIZE)} trong {total} DN
@@ -1934,7 +2230,7 @@ function ScreenerContent() {
                   </Button>
                 </div>
               </div>
-            </Card>
+            </div>
           )}
         </div>
       </div>
