@@ -401,6 +401,56 @@ export function getValuationFlagMeta(flag: string | null | undefined): Valuation
   );
 }
 
+export const DTD_FLAG_META: Record<string, ValuationFlagDisplayMeta> = {
+  VALID: {
+    label: "Hợp lệ",
+    explanation: "Khoảng cách vỡ nợ cấu trúc thị trường tính từ vốn hóa và dư nợ vay công bố.",
+    isValid: true,
+  },
+  ZERO_FINANCIAL_DEBT: {
+    label: "Không nợ vay",
+    explanation: "Doanh nghiệp không có dư nợ vay tài chính trong kỳ báo cáo đã công bố.",
+    isValid: false,
+  },
+  MISSING_BCTC_DEBT: {
+    label: "Chưa có BCTC công bố",
+    explanation: "Chưa có báo cáo cân đối kế toán hợp lệ đã công bố tại ngày giao dịch.",
+    isValid: false,
+  },
+  STALE_BCTC_DEBT: {
+    label: "BCTC quá 180 ngày",
+    explanation: "Báo cáo tài chính gần nhất đã quá 180 ngày kể từ thời điểm công bố.",
+    isValid: false,
+  },
+  INSUFFICIENT_TRADING_SESSIONS: {
+    label: "Chưa đủ phiên giao dịch",
+    explanation: "Chưa đủ 60 phiên giao dịch liên tục hoặc cổ phiếu đang tạm ngừng giao dịch.",
+    isValid: false,
+  },
+  MISSING_SHARES: {
+    label: "Thiếu số cổ phiếu",
+    explanation: "Chưa có dữ liệu số cổ phiếu lưu hành hợp lệ tại ngày giao dịch.",
+    isValid: false,
+  },
+};
+
+export function getDtdFlagMeta(flag: string | null | undefined): ValuationFlagDisplayMeta {
+  if (!flag) {
+    return {
+      label: "Chưa có dữ liệu",
+      explanation: "Chưa đủ dữ liệu giá cổ phiếu và dư nợ vay để tính Merton DTD.",
+      isValid: false,
+    };
+  }
+  return (
+    DTD_FLAG_META[flag] ?? {
+      label: "Không áp dụng",
+      explanation: "Chưa đủ điều kiện tính khoảng cách vỡ nợ Merton tại phiên này.",
+      isValid: false,
+    }
+  );
+}
+
 export const SHARES_SOURCE_LABELS: Record<string, string> = {
   ESTIMATED_SHARES_OUTSTANDING: "Số CP ước tính từ vốn góp phổ thông trên BCTC",
   BS_ORDINARY_SHARES_EXPLICIT_ZERO_TREASURY: "Vốn góp cổ phiếu phổ thông (không có cổ phiếu quỹ)",
@@ -487,6 +537,7 @@ export const MODEL_COMPARISON_LABELS: Record<string, string> = {
   Baseline_1_AltmanZ: "Altman Z″ (Hiệu chỉnh)",
   Baseline_2_Logit: "Logit / Shumway",
   XGBoost: "XGBoost (Đơn điệu + Platt)",
+  XGBoost_Merton_Ablation: "XGBoost + Merton DTD (Đối chứng thị trường)",
 };
 
 export function formatModelDisplayName(modelKey: string | null | undefined): string {
@@ -557,6 +608,9 @@ export const ML_FEATURE_LABELS: Record<string, string> = {
   delta_roa_4q: "Biến động ROA 4 quý",
   delta_liabilities_to_assets_4q: "Biến động Nợ / Tổng tài sản 4 quý",
   delta_current_ratio_4q: "Biến động thanh toán hiện hành 4 quý",
+  merton_dtd: "Khoảng cách vỡ nợ cấu trúc thị trường (Merton DTD)",
+  equity_volatility_1y: "Độ biến động giá cổ phiếu 1 năm (σE)",
+  naive_edf: "Xác suất vỡ nợ ngụ ý cấu trúc (Merton EDF)",
 };
 
 export function getMlFeatureLabel(feature: string | null | undefined): string {
@@ -774,6 +828,7 @@ export const QUALITY_RULE_LABELS: Record<string, string> = {
   PARTIAL_STATEMENT: "Thiếu báo cáo lưu chuyển tiền hoặc khấu hao",
   DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX: "Q4 suy diễn từ BCTC năm trừ 9 tháng",
   DERIVED_Q4_INPUT: "Có thành phần Q4 suy diễn",
+  CROSS_PROVIDER_DISCREPANCY_WARN: "Chênh lệch số liệu giữa hai nguồn cung cấp cùng cấp kiểm toán",
 };
 
 export const MODEL_ROLE_LABELS: Record<string, string> = {
@@ -858,6 +913,10 @@ export const RED_FLAG_EVIDENCE_META: Record<
     label: "Tăng trưởng TSCĐ hữu hình",
     format: "PERCENT",
   },
+  ni_unaudited_4q_sum: { label: "Tổng LNST 4 quý tự lập", format: "VND_BILLIONS" },
+  ni_audited_annual: { label: "LNST năm sau kiểm toán", format: "VND_BILLIONS" },
+  audit_earnings_diff_vnd: { label: "Chênh lệch LNST hậu kiểm toán", format: "VND_BILLIONS" },
+  audit_adjustment_pct: { label: "Tỷ lệ điều chỉnh hậu kiểm toán", format: "PERCENT" },
 };
 
 export const RED_FLAG_CODE_LABELS: Record<string, string> = {
@@ -870,6 +929,7 @@ export const RED_FLAG_CODE_LABELS: Record<string, string> = {
   RF_07: "Quy tắc 07",
   RF_08: "Quy tắc 08",
   RF_09: "Quy tắc 09",
+  RF_10: "Quy tắc 10",
 };
 
 export function formatRedFlagCodeLabel(flagCode: string | null | undefined): string {

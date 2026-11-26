@@ -18,11 +18,12 @@ import type { CitationItem, DocumentFileItem } from "@/types/api";
 const WORKSPACE_FRONTEND_ROOT = path.resolve(__dirname, "../..");
 
 describe("UI-08b Split-View Audited PDF RAG Helpers, API Client & Anti-AI-Slop", () => {
-  it("exposes all 3 forensic red-flag presets (RF_03, RF_07, RF_09) and resolves full flag codes", () => {
+  it("exposes all 4 forensic red-flag presets (RF_03, RF_07, RF_09, RF_10) and resolves full flag codes", () => {
     expect(FORENSIC_PRESET_QUERIES.map((q) => q.flagCode)).toEqual([
       "RF_03",
       "RF_07",
       "RF_09",
+      "RF_10",
     ]);
     expect(getRedFlagPresetQuestion("RF_03_OTHER_RECEIVABLES_ANOMALY")).toBe(
       FORENSIC_PRESET_QUERIES[0].question,
@@ -32,6 +33,9 @@ describe("UI-08b Split-View Audited PDF RAG Helpers, API Client & Anti-AI-Slop",
     );
     expect(getRedFlagPresetQuestion("RF_09_FROZEN_CIP_CAPITALIZATION")).toBe(
       FORENSIC_PRESET_QUERIES[2].question,
+    );
+    expect(getRedFlagPresetQuestion("RF_10_POST_AUDIT_PROFIT_DOWNGRADE")).toBe(
+      FORENSIC_PRESET_QUERIES[3].question,
     );
     expect(getRedFlagPresetQuestion("RF_01_ACCRUAL_DIVERGENCE")).toBeNull();
   });

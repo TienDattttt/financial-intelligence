@@ -1,16 +1,21 @@
 "use client";
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import React, {
   createContext,
   useCallback,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
 import { useHealth, useMetaPeriods } from "@/hooks/use-finintel-queries";
+import {
+  subscribeObservedSnapshotId,
+  type DataFreshnessItem,
+} from "@/lib/api-client";
 import {
   resolveThemePreference,
   THEME_STORAGE_KEY,
@@ -37,6 +42,7 @@ interface AppContextValue {
   periodView: PeriodView;
   snapshotId: string | null;
   publishedAt: string | null;
+  freshness: DataFreshnessItem | null;
   availableDates: string[];
   sectorsLevel2: { icb_code_level2: string; icb_name_level2: string; issuer_count: number }[];
   sourceTarget: SourceLookupTarget | null;
@@ -160,8 +166,26 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
     persistThemePreference(next);
   }, []);
 
+  const queryClient = useQueryClient();
   const health = useHealth();
-  const snapshotId = health.data?.active_snapshot_id ?? null;
+  const [observedSnapshotId, setObservedSnapshotId] = useState<string | null>(null);
+  const snapshotId = observedSnapshotId ?? health.data?.active_snapshot_id ?? null;
+  const activeSnapshotRef = useRef<string | null>(snapshotId);
+  useEffect(() => {
+    activeSnapshotRef.current = snapshotId;
+  }, [snapshotId]);
+
+  useEffect(() => {
+    return subscribeObservedSnapshotId((nextSnapId) => {
+      if (nextSnapId && nextSnapId !== activeSnapshotRef.current) {
+        activeSnapshotRef.current = nextSnapId;
+        setObservedSnapshotId(nextSnapId);
+        void queryClient.invalidateQueries({ queryKey: ["health"] });
+        void queryClient.invalidateQueries({ queryKey: ["meta-periods"] });
+      }
+    }, 150);
+  }, [queryClient]);
+
   const metaPeriods = useMetaPeriods(snapshotId);
 
   const availableDates = useMemo(() => {
@@ -207,6 +231,7 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
       periodView,
       snapshotId,
       publishedAt: metaPeriods.data?.published_at ?? null,
+      freshness: metaPeriods.data?.freshness ?? null,
       availableDates,
       sectorsLevel2: metaPeriods.data?.sectors_level2 ?? [],
       sourceTarget,

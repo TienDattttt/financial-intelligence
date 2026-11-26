@@ -11,6 +11,14 @@ export type ValuationFlag =
   | "MISSING_EQUITY"
   | "MISSING_SHARES";
 
+export type DtdFlag =
+  | "VALID"
+  | "MISSING_BCTC_DEBT"
+  | "ZERO_FINANCIAL_DEBT"
+  | "STALE_BCTC_DEBT"
+  | "INSUFFICIENT_TRADING_SESSIONS"
+  | "MISSING_SHARES";
+
 export type DrawdownHorizonKey = "T+30d" | "T+90d" | "T+180d" | "T+365d";
 
 export interface DrawdownWindowMetrics {
@@ -88,6 +96,10 @@ export interface PriceOverlayPoint {
   pe_flag: string | null;
   pb_flag: string | null;
   shares_source: string | null;
+  merton_dtd?: number | null;
+  equity_volatility_1y?: number | null;
+  naive_edf?: number | null;
+  dtd_flag?: DtdFlag | string | null;
 }
 
 export interface WarningSummary {

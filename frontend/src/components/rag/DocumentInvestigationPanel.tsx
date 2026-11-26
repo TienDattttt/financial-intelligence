@@ -27,7 +27,7 @@ import type {
 } from "@/types/api";
 
 export interface ForensicPresetQuery {
-  flagCode: "RF_03" | "RF_07" | "RF_09";
+  flagCode: "RF_03" | "RF_07" | "RF_09" | "RF_10";
   shortLabel: string;
   question: string;
 }
@@ -50,6 +50,12 @@ export const FORENSIC_PRESET_QUERIES: readonly ForensicPresetQuery[] = [
     shortLabel: "Xây dựng cơ bản dở dang",
     question:
       "Chi phí xây dựng cơ bản dở dang dài hạn trên Bảng cân đối kế toán và thuyết minh",
+  },
+  {
+    flagCode: "RF_10",
+    shortLabel: "Điều chỉnh lợi nhuận hậu kiểm toán",
+    question:
+      "Thuyết minh chênh lệch lợi nhuận sau thuế trước và sau kiểm toán, điều chỉnh hồi tố và ý kiến kiểm toán viên",
   },
 ];
 

@@ -13,6 +13,7 @@ import {
   formatRegulatoryEventStage,
   formatRegulatoryEventType,
   formatSharesSourceLabel,
+  getDtdFlagMeta,
   getRiskTierMeta,
   getValuationFlagMeta,
 } from "@/lib/domain-labels";
@@ -20,6 +21,7 @@ import { type ChartPalette, useChartTheme } from "@/lib/echarts-theme";
 import {
   formatDateVi,
   formatMultiple,
+  formatNumber,
   formatPercent,
   formatVndBillions,
   formatVndPerShare,
@@ -44,6 +46,9 @@ export interface LatestValuationCardsData {
   pbLabel: string;
   pbSubtext: string;
   pbValid: boolean;
+  dtdLabel: string;
+  dtdSubtext: string;
+  dtdValid: boolean;
   sharesSourceLabel: string;
 }
 
@@ -72,6 +77,9 @@ export function formatLatestValuationCards(
       pbLabel: "N/A",
       pbSubtext: "Chưa có dữ liệu định giá P/B tại ngày giao dịch.",
       pbValid: false,
+      dtdLabel: "N/A",
+      dtdSubtext: "Chưa có dữ liệu khoảng cách vỡ nợ cấu trúc thị trường.",
+      dtdValid: false,
       sharesSourceLabel: "Chưa có dữ liệu cổ phiếu lưu hành",
     };
   }
@@ -79,6 +87,7 @@ export function formatLatestValuationCards(
   const sharesSourceLabel = formatSharesSourceLabel(latest.shares_source);
   const peFlagMeta = getValuationFlagMeta(latest.pe_flag);
   const pbFlagMeta = getValuationFlagMeta(latest.pb_flag);
+  const dtdFlagMeta = getDtdFlagMeta(latest.dtd_flag);
 
   const hasMarketCap =
     typeof latest.market_cap_vnd === "number" && Number.isFinite(latest.market_cap_vnd);
@@ -108,6 +117,29 @@ export function formatLatestValuationCards(
     ? "Vốn chủ sở hữu công ty mẹ công bố tại thời điểm giao dịch"
     : pbFlagMeta.explanation;
 
+  const hasDtd =
+    typeof latest.merton_dtd === "number" &&
+    Number.isFinite(latest.merton_dtd) &&
+    (latest.dtd_flag === undefined || latest.dtd_flag === null || latest.dtd_flag === "VALID");
+  const dtdLabel = hasDtd
+    ? `${formatNumber(latest.merton_dtd, 2)} σ`
+    : latest.dtd_flag === "ZERO_FINANCIAL_DEBT"
+      ? "Không nợ vay"
+      : "N/A";
+  const dtdParts: string[] = [];
+  if (typeof latest.naive_edf === "number" && Number.isFinite(latest.naive_edf)) {
+    dtdParts.push(`EDF ngụ ý ${formatPercent(latest.naive_edf, { decimals: 2 })}`);
+  }
+  if (
+    typeof latest.equity_volatility_1y === "number" &&
+    Number.isFinite(latest.equity_volatility_1y)
+  ) {
+    dtdParts.push(`Biến động 1Y ${formatPercent(latest.equity_volatility_1y, { decimals: 1 })}`);
+  }
+  const dtdSubtext = hasDtd
+    ? dtdParts.join(" · ") || dtdFlagMeta.explanation
+    : dtdFlagMeta.explanation;
+
   return {
     tradeDateLabel: formatDateVi(latest.trade_date),
     closeRawLabel: `${formatVndPerShare(latest.close_raw)} VND`,
@@ -119,6 +151,9 @@ export function formatLatestValuationCards(
     pbLabel,
     pbSubtext,
     pbValid: hasPb,
+    dtdLabel,
+    dtdSubtext,
+    dtdValid: hasDtd,
     sharesSourceLabel,
   };
 }
@@ -381,6 +416,19 @@ export function buildPriceOverlayOption(
         if (pt.pb_ratio !== null && (pt.pb_flag === null || pt.pb_flag === "VALID")) {
           lines.push(`<div>P/B: <b>${formatMultiple(pt.pb_ratio, 2)}</b></div>`);
         }
+        if (
+          typeof pt.merton_dtd === "number" &&
+          Number.isFinite(pt.merton_dtd) &&
+          (pt.dtd_flag === undefined || pt.dtd_flag === null || pt.dtd_flag === "VALID")
+        ) {
+          const edfText =
+            typeof pt.naive_edf === "number" && Number.isFinite(pt.naive_edf)
+              ? ` (EDF ${formatPercent(pt.naive_edf, { decimals: 2 })})`
+              : "";
+          lines.push(
+            `<div>Merton DTD: <b>${formatNumber(pt.merton_dtd, 2)} σ</b>${edfText}</div>`,
+          );
+        }
 
         const mms = modelMarkersByDate.get(tradeDate) ?? [];
         for (const mm of mms) {
@@ -501,6 +549,13 @@ export function buildPriceOverlayTableRows(
     pt.pb_ratio !== null && (pt.pb_flag === null || pt.pb_flag === "VALID")
       ? formatMultiple(pt.pb_ratio, 2)
       : "N/A",
+    typeof pt.merton_dtd === "number" &&
+    Number.isFinite(pt.merton_dtd) &&
+    (pt.dtd_flag === undefined || pt.dtd_flag === null || pt.dtd_flag === "VALID")
+      ? `${formatNumber(pt.merton_dtd, 2)} σ`
+      : pt.dtd_flag === "ZERO_FINANCIAL_DEBT"
+        ? "Không nợ vay"
+        : "N/A",
     formatPctFromPercentValue(pt.running_drawdown_pct),
   ]);
 }
@@ -516,10 +571,10 @@ export function PitValuationStrip({
     return (
       <section
         aria-label="Đang tải định giá Point-in-Time"
-        className="grid grid-cols-1 divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface sm:grid-cols-3 sm:divide-x sm:divide-y-0"
+        className="grid grid-cols-1 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2 lg:grid-cols-4"
       >
-        {[0, 1, 2].map((idx) => (
-          <div key={idx} className="p-3.5">
+        {[0, 1, 2, 3].map((idx) => (
+          <div key={idx} className="bg-surface p-3.5">
             <div className="h-3 w-28 animate-pulse rounded-md bg-surface-muted" />
             <div className="mt-2 h-7 w-24 animate-pulse rounded-md bg-surface-muted" />
             <div className="mt-2 h-3 w-full animate-pulse rounded-md bg-surface-muted" />
@@ -533,10 +588,10 @@ export function PitValuationStrip({
 
   return (
     <section
-      aria-label="Định giá Point-in-Time tại phiên gần nhất"
-      className="grid grid-cols-1 divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface sm:grid-cols-3 sm:divide-x sm:divide-y-0"
+      aria-label="Định giá Point-in-Time và khoảng cách vỡ nợ Merton tại phiên gần nhất"
+      className="grid grid-cols-1 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2 lg:grid-cols-4"
     >
-      <div className="p-3.5">
+      <div className="bg-surface p-3.5">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
             <span>Vốn hóa thị trường (PIT)</span>
@@ -555,7 +610,7 @@ export function PitValuationStrip({
         </p>
       </div>
 
-      <div className="p-3.5">
+      <div className="bg-surface p-3.5">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
             <span>P/E (TTM · PIT)</span>
@@ -574,7 +629,7 @@ export function PitValuationStrip({
         </p>
       </div>
 
-      <div className="p-3.5">
+      <div className="bg-surface p-3.5">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
             <span>P/B (PIT)</span>
@@ -592,12 +647,31 @@ export function PitValuationStrip({
           {cards.pbSubtext}
         </p>
       </div>
+
+      <div className="bg-surface p-3.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
+            <span>Merton DTD (Thị trường)</span>
+            <InfoTooltip
+              text="Khoảng cách vỡ nợ cấu trúc Bharath & Shumway (2008) tính từ vốn hóa thị trường, biến động giá 1 năm và điểm vỡ nợ (Nợ ngắn hạn + 0,5 × Nợ dài hạn công bố)."
+              label="Giải thích Khoảng cách vỡ nợ Merton"
+            />
+          </span>
+          <span className="num text-[11px] text-ink-subtle">{cards.tradeDateLabel}</span>
+        </div>
+        <p className="num mt-1 text-[20px] font-semibold leading-7 text-ink">
+          {cards.dtdLabel}
+        </p>
+        <p className="mt-1 text-[11px] leading-4 text-ink-muted">
+          {cards.dtdSubtext}
+        </p>
+      </div>
     </section>
   );
 }
 
 export const PRICE_OVERLAY_CHART_SUBTITLE =
-  "Đường giá điều chỉnh chia tách/cổ tức · Định giá P/E, P/B, Vốn hóa chuẩn thời điểm công bố (không nhìn trước)";
+  "Đường giá điều chỉnh chia tách/cổ tức · Định giá P/E, P/B, Vốn hóa & Merton DTD chuẩn thời điểm công bố (không nhìn trước)";
 
 export function PriceRiskOverlayChart({
   ticker,
@@ -660,7 +734,7 @@ export function PriceRiskOverlayChart({
         option={option}
         height={360}
         isEmpty={!hasSeries}
-        emptyMessage={`Chưa có dữ liệu giá giao dịch lịch sử (EOD) cho mã ${ticker} trong lát cắt hiện tại (thường gặp ở cổ phiếu UPCOM hoặc mã hạn chế dữ liệu thị trường). Hệ thống vẫn giữ nguyên đầy đủ BCTC, 38 tỷ số và 9 cờ đỏ VAS.`}
+        emptyMessage={`Chưa có dữ liệu giá giao dịch lịch sử (EOD) cho mã ${ticker} trong lát cắt hiện tại (thường gặp ở cổ phiếu UPCOM hoặc mã hạn chế dữ liệu thị trường). Hệ thống vẫn giữ nguyên đầy đủ BCTC, 38 tỷ số và 10 cờ đỏ VAS.`}
         tableHeaders={[
           "Ngày GD",
           "Giá ĐC (VND)",
@@ -668,6 +742,7 @@ export function PriceRiskOverlayChart({
           "Vốn hóa (tỷ)",
           "P/E (TTM)",
           "P/B",
+          "Merton DTD",
           "Drawdown từ đỉnh",
         ]}
         tableRows={tableRows}

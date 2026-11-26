@@ -30,6 +30,23 @@ import type {
   StressTestResponse,
 } from "@/types/api";
 
+export interface DataFreshnessItem {
+  bctc_snapshot_id?: string | null;
+  bctc_published_at?: string | null;
+  bctc_latest_period_end_date?: string | null;
+  market_prices_latest_trade_date?: string | null;
+  market_prices_updated_at?: string | null;
+  regulatory_latest_event_date?: string | null;
+  regulatory_updated_at?: string | null;
+  curated_pdfs_count?: number;
+  curated_pdfs_updated_at?: string | null;
+  extension_ports_digest: string;
+}
+
+export type MetaPeriodsWithFreshness = MetaPeriodsResponse & {
+  freshness?: DataFreshnessItem | null;
+};
+
 export class ApiError extends Error {
   status: number;
 
@@ -40,7 +57,73 @@ export class ApiError extends Error {
   }
 }
 
-const INTERNAL_LEAK_RE = /([A-Za-z]:\\|\/(?:src|data|Users)\/|\.parquet\b|\.sqlite\b|\.py\b|Traceback)/i;
+interface SnapshotSubscriberRecord {
+  callback: (snapshotId: string) => void;
+  debounceMs: number;
+  lastDelivered: string | null;
+  pending: string | null;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const snapshotSubscribers = new Set<SnapshotSubscriberRecord>();
+
+export function subscribeObservedSnapshotId(
+  callback: (snapshotId: string) => void,
+  debounceMs = 150,
+): () => void {
+  const record: SnapshotSubscriberRecord = {
+    callback,
+    debounceMs: Math.max(0, debounceMs),
+    lastDelivered: null,
+    pending: null,
+    timer: null,
+  };
+  snapshotSubscribers.add(record);
+  return () => {
+    if (record.timer !== null) {
+      clearTimeout(record.timer);
+      record.timer = null;
+    }
+    snapshotSubscribers.delete(record);
+  };
+}
+
+export function resetObservedSnapshotRegistryForTests(): void {
+  for (const record of snapshotSubscribers) {
+    if (record.timer !== null) {
+      clearTimeout(record.timer);
+      record.timer = null;
+    }
+  }
+  snapshotSubscribers.clear();
+}
+
+function observeResponseSnapshotHeader(res: Response): void {
+  const raw = res.headers.get("X-Snapshot-ID");
+  if (!raw) return;
+  const cleaned = raw.trim();
+  if (!cleaned) return;
+  for (const record of snapshotSubscribers) {
+    if (cleaned === record.lastDelivered && record.timer === null) {
+      continue;
+    }
+    record.pending = cleaned;
+    if (record.timer !== null) {
+      clearTimeout(record.timer);
+    }
+    record.timer = setTimeout(() => {
+      record.timer = null;
+      const next = record.pending;
+      if (next && next !== record.lastDelivered) {
+        record.lastDelivered = next;
+        record.callback(next);
+      }
+    }, record.debounceMs);
+  }
+}
+
+const INTERNAL_LEAK_RE =
+  /([A-Za-z]:\\|\/(?:src|data|Users)\/|\.(?:parquet|sqlite|ducklake|py)\b|Traceback|\b(?:postgres|postgresql|redis|valkey):\/\/|\b(?:REGIME_FALLBACK|audit_quarantine|quality_summary|issuer_id)\b|\b(?:BS|IS|CF)_[A-Z0-9_]+\b|\bRF_(?:0[1-9]|10)(?:_[A-Z0-9_]+)?\b|\bducklake_[A-Za-z0-9_]*\b|\bfinintel_[A-Za-z0-9_]*\b)/i;
 
 function sanitizeClientMessage(raw: string, status: number): string {
   const cleaned = raw.replace(/\s+/g, " ").trim();
@@ -89,6 +172,7 @@ async function requestJson<T>(
       ...init?.headers,
     },
   });
+  observeResponseSnapshotHeader(res);
 
   if (!res.ok) {
     let detail = "";
@@ -118,7 +202,7 @@ export const apiClient = {
     ),
 
   getMetaPeriods: () =>
-    requestJson<MetaPeriodsResponse>("/api/v2/meta/periods"),
+    requestJson<MetaPeriodsWithFreshness>("/api/v2/meta/periods"),
 
   getMetaDictionary: () =>
     requestJson<MetaDictionaryResponse>("/api/v2/meta/dictionary"),
@@ -251,6 +335,7 @@ export const apiClient = {
         signal,
       },
     );
+    observeResponseSnapshotHeader(res);
 
     if (!res.ok) {
       let detail = "";
@@ -345,12 +430,14 @@ export const apiClient = {
       });
 
     let res = await attempt();
+    observeResponseSnapshotHeader(res);
     if (res.status === 503 && !signal?.aborted) {
       const retryAfterSec = Number(res.headers.get("Retry-After") ?? "1");
       const delayMs = Math.min(2000, Math.max(300, (Number.isFinite(retryAfterSec) ? retryAfterSec : 1) * 1000));
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       if (!signal?.aborted) {
         res = await attempt();
+        observeResponseSnapshotHeader(res);
       }
     }
 
