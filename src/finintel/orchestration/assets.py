@@ -26,8 +26,16 @@ from dagster._core.types.dagster_type import resolve_dagster_type
 from finintel.domain.schemas import PeriodType, StatementScope
 from finintel.exceptions import (
     ContractViolationError,
+    CriticalDataQualityError,
     RateLimitOrCircuitOpenError,
     TransientSourceError,
+)
+from finintel.serving.observability import (
+    SPAN_INGEST_FETCH,
+    SPAN_STORAGE_PUBLISH,
+    SPAN_TRANSFORM_INCREMENTAL,
+    record_wap_publish,
+    trace_span,
 )
 from finintel.ingestion.archive import RawArchive
 from finintel.ingestion.disclosure_enricher import (
@@ -662,7 +670,8 @@ def raw_fhsc_filings(
             as_of_year=config.as_of_year,
         )
         try:
-            outcome = handler(step_ctx)
+            with trace_span(SPAN_INGEST_FETCH, {"finintel.ticker": ticker}):
+                outcome = handler(step_ctx)
         except RateLimitOrCircuitOpenError:
             if completed:
                 state_store.record_ticker_sweep_batch(completed)
@@ -1100,29 +1109,35 @@ def published_financial_marts(
                     previous_ml_scores = None
                     previous_model_card_meta = None
 
-            bundle = run_incremental_analytics_transform(
-                facts_df,
-                issuers_df,
-                as_of=as_of,
-                run_id=pipeline_run_id,
-                previous_ratios=previous_ratios,
-                previous_benchmarks=previous_benchmarks,
-                previous_red_flags=previous_red_flags,
-                previous_ml_scores=previous_ml_scores,
-                previous_model_card_meta=previous_model_card_meta,
-                previous_state=previous_state,
-                previous_snapshot_id=previous_snapshot_id,
-                state_path=transform_state_path,
-                ml_config=ml_cfg,
-                quality_config=quality_cfg,
-                market_prices=market_prices_df,
-                persist_state=False,
-            )
-
-            updated_quality_summary = run_blocking_publish_audits(
-                bundle,
-                run_id=pipeline_run_id,
-            )
+            with trace_span(
+                SPAN_TRANSFORM_INCREMENTAL,
+                {
+                    "finintel.run_id": pipeline_run_id,
+                    "finintel.as_of": as_of.isoformat(),
+                },
+            ):
+                bundle = run_incremental_analytics_transform(
+                    facts_df,
+                    issuers_df,
+                    as_of=as_of,
+                    run_id=pipeline_run_id,
+                    previous_ratios=previous_ratios,
+                    previous_benchmarks=previous_benchmarks,
+                    previous_red_flags=previous_red_flags,
+                    previous_ml_scores=previous_ml_scores,
+                    previous_model_card_meta=previous_model_card_meta,
+                    previous_state=previous_state,
+                    previous_snapshot_id=previous_snapshot_id,
+                    state_path=transform_state_path,
+                    ml_config=ml_cfg,
+                    quality_config=quality_cfg,
+                    market_prices=market_prices_df,
+                    persist_state=False,
+                )
+                updated_quality_summary = run_blocking_publish_audits(
+                    bundle,
+                    run_id=pipeline_run_id,
+                )
 
             # Build serving helpers from clean_facts in RAM (single read, zero extra disk I/O).
             latest_facts = build_latest_facts_table(
@@ -1152,20 +1167,28 @@ def published_financial_marts(
                     tables["unmapped_metrics.parquet"] = unmapped_candidate
 
             snapshot_id = _snapshot_id_for_run(pipeline_run_id)
-            pub_info = storage.publish_snapshot(
-                snapshot_id=snapshot_id,
-                tables=tables,
-                run_id=pipeline_run_id,
-                state_store=state_store,
-                paths=paths,
-                metadata={
-                    "run_id": pipeline_run_id,
-                    "dagster_run_id": context.run.run_id,
-                    "git_commit_sha": git_sha,
-                    "source": config.source,
-                    "as_of": as_of.isoformat(),
+            with trace_span(
+                SPAN_STORAGE_PUBLISH,
+                {
+                    "finintel.snapshot_id": snapshot_id,
+                    "finintel.run_id": pipeline_run_id,
                 },
-            )
+            ):
+                pub_info = storage.publish_snapshot(
+                    snapshot_id=snapshot_id,
+                    tables=tables,
+                    run_id=pipeline_run_id,
+                    state_store=state_store,
+                    paths=paths,
+                    metadata={
+                        "run_id": pipeline_run_id,
+                        "dagster_run_id": context.run.run_id,
+                        "git_commit_sha": git_sha,
+                        "source": config.source,
+                        "as_of": as_of.isoformat(),
+                    },
+                )
+            record_wap_publish("published")
             state_store.finish_run(pipeline_run_id, "SUCCEEDED", snapshot_id)
             write_transform_state(
                 transform_state_path,
@@ -1208,7 +1231,12 @@ def published_financial_marts(
                         ),
                         encoding="utf-8",
                     )
+        except CriticalDataQualityError:
+            record_wap_publish("quarantined")
+            state_store.finish_run(pipeline_run_id, "FAILED")
+            raise
         except BaseException:
+            record_wap_publish("error")
             state_store.finish_run(pipeline_run_id, "FAILED")
             raise
 

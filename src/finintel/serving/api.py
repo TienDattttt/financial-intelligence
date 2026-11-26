@@ -21,6 +21,7 @@ Verified Sources:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import csv
 import importlib
 import io
@@ -74,6 +75,14 @@ from finintel.serving.dictionary import (
     RATIO_DICTIONARY_META,
     RED_FLAG_DICTIONARY,
     StatementType,
+)
+from finintel.serving.freshness import (
+    build_composite_cache_token,
+    build_freshness_item,
+    format_composite_etag,
+    if_none_match_matches,
+    resolve_serving_data_root,
+    sanitize_error_detail,
 )
 from finintel.serving.queries import (
     RATIO_LINEAGE_CATALOG,
@@ -145,9 +154,8 @@ CACHE_CONTROL_HEADER = "private, max-age=0, must-revalidate"
 STRESS_CACHE_CONTROL_HEADER = "private, no-store"
 _TICKER_PATTERN = r"^[A-Z0-9]{1,10}$"
 _ICB_CODE_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
-_PATH_LEAK_RE = re.compile(
-    r"([A-Za-z]:\\|\\\\|/(?:[A-Za-z0-9_.-]+/)+|\.parquet\b|\.sqlite\b|\.json\b|\.py\b|Traceback)",
-    re.IGNORECASE,
+_REQUEST_DATA_ROOT: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "finintel_request_data_root", default=None
 )
 
 
@@ -156,48 +164,27 @@ class ResourceNotFoundError(LookupError):
 
 
 def _sanitize_error_detail(message: str, *, fallback: str) -> str:
-    """Strip any filesystem paths, extensions, or tracebacks from client error details."""
-    cleaned = " ".join(message.split()).strip()
-    if not cleaned or _PATH_LEAK_RE.search(cleaned):
-        return fallback
-    return cleaned[:200]
+    """Strip filesystem paths, DSNs, SQL, or internal tokens from client error details."""
+    return sanitize_error_detail(message, fallback=fallback)
 
 
 def _format_etag(snapshot_id: str) -> str:
-    """Format an RFC 9110 strong quoted entity-tag."""
-    safe = snapshot_id.replace('"', "")
-    return f'"{safe}"'
-
-
-def _if_none_match_matches(if_none_match: str | None, snapshot_id: str | None) -> bool:
-    """Evaluate RFC 9110 §13.1.2 ``If-None-Match`` using weak comparison."""
-    if not if_none_match or not snapshot_id:
-        return False
-    target = _format_etag(snapshot_id)
-    for raw_token in if_none_match.split(","):
-        token = raw_token.strip()
-        if not token:
-            continue
-        if token == "*":
-            return True
-        if token.startswith("W/"):
-            token = token[2:].strip()
-        if token == target:
-            return True
-    return False
+    """Format an RFC 9110 strong quoted composite entity-tag."""
+    return format_composite_etag(snapshot_id, _REQUEST_DATA_ROOT.get())
 
 
 def _conditional_not_modified(
     if_none_match: str | None, snapshot_id: str | None
 ) -> Response | None:
-    """Return HTTP 304 response when ``If-None-Match`` matches the pinned snapshot."""
+    """Return HTTP 304 response when ``If-None-Match`` matches the composite ETag."""
     if snapshot_id is None:
         return None
-    if _if_none_match_matches(if_none_match, snapshot_id):
+    quoted_etag = _format_etag(snapshot_id)
+    if if_none_match_matches(if_none_match, quoted_etag):
         return Response(
             status_code=304,
             headers={
-                "ETag": _format_etag(snapshot_id),
+                "ETag": quoted_etag,
                 "Cache-Control": CACHE_CONTROL_HEADER,
             },
         )
@@ -280,6 +267,8 @@ def _extract_storage_backend(meta: dict[str, object]) -> str:
 
 
 def _attach_lineage_state(request: Request, meta: Mapping[str, object]) -> None:
+    repo = getattr(request.app.state, "repository", None)
+    _REQUEST_DATA_ROOT.set(resolve_serving_data_root(getattr(repo, "_source", None)))
     snap_id = meta.get("snapshot_id")
     if isinstance(snap_id, str) and snap_id:
         request.state.snapshot_id = snap_id
@@ -301,7 +290,8 @@ def _cached_json_response(
 ) -> tuple[str | None, Response | None]:
     if not cache.enabled or snap_id is None:
         return None, None
-    key = build_snapshot_cache_key(snap_id, route, params)
+    composite_snap = build_composite_cache_token(snap_id, _REQUEST_DATA_ROOT.get())
+    key = build_snapshot_cache_key(composite_snap or snap_id, route, params)
     raw = cache.get_bytes(key)
     if raw is None:
         return key, None
@@ -1274,6 +1264,14 @@ def create_app(
                 connection=cursor,
             )
 
+        def _to_lineage_item(comp: Any) -> LineageComponentItem:
+            return LineageComponentItem(
+                **{
+                    **comp.__dict__,
+                    "value": _finite_scalar(comp.value),
+                }
+            )
+
         _apply_cache_headers(response, snap_id)
         body = RatioLineageResponse(
             snapshot_id=snap_id,
@@ -1294,46 +1292,10 @@ def create_app(
             anchor_filing_id=card.anchor_filing_id,
             source_filing_ids=list(card.source_filing_ids),
             numerator_components=[
-                LineageComponentItem(
-                    role=comp.role,
-                    metric_id=comp.metric_id,
-                    period_type=comp.period_type,
-                    fiscal_year=comp.fiscal_year,
-                    fiscal_quarter=comp.fiscal_quarter,
-                    period_end_date=comp.period_end_date,
-                    value=_finite_scalar(comp.value),
-                    filing_id=comp.filing_id,
-                    taxonomy_version=comp.taxonomy_version,
-                    derivation_method=comp.derivation_method,
-                    source_provider=comp.source_provider,
-                    connector_name=comp.connector_name,
-                    published_at=comp.published_at,
-                    published_at_basis=comp.published_at_basis,
-                    effective_available_at=comp.effective_available_at,
-                    canonical_content_sha256=comp.canonical_content_sha256,
-                )
-                for comp in card.numerator_components
+                _to_lineage_item(comp) for comp in card.numerator_components
             ],
             denominator_components=[
-                LineageComponentItem(
-                    role=comp.role,
-                    metric_id=comp.metric_id,
-                    period_type=comp.period_type,
-                    fiscal_year=comp.fiscal_year,
-                    fiscal_quarter=comp.fiscal_quarter,
-                    period_end_date=comp.period_end_date,
-                    value=_finite_scalar(comp.value),
-                    filing_id=comp.filing_id,
-                    taxonomy_version=comp.taxonomy_version,
-                    derivation_method=comp.derivation_method,
-                    source_provider=comp.source_provider,
-                    connector_name=comp.connector_name,
-                    published_at=comp.published_at,
-                    published_at_basis=comp.published_at_basis,
-                    effective_available_at=comp.effective_available_at,
-                    canonical_content_sha256=comp.canonical_content_sha256,
-                )
-                for comp in card.denominator_components
+                _to_lineage_item(comp) for comp in card.denominator_components
             ],
             orphan_filing_ids=list(card.orphan_filing_ids),
         )
@@ -1858,19 +1820,20 @@ def create_app(
                 pinned
             ).get_meta_periods_and_sectors(connection=cursor)
 
+        q_periods = available_periods.get("CONSOLIDATED", {}).get("QUARTER") or []
+        freshness = build_freshness_item(
+            snapshot_id=snap_id,
+            published_at=published_at,
+            data_root=_REQUEST_DATA_ROOT.get(),
+            bctc_latest_period_end_date=q_periods[0] if q_periods else None,
+        )
         _apply_cache_headers(response, snap_id)
         body = MetaPeriodsResponse(
             snapshot_id=snap_id,
             published_at=published_at,
             available_periods=available_periods,
-            sectors_level2=[
-                SectorOptionItem(
-                    icb_code_level2=s["icb_code_level2"],
-                    icb_name_level2=s["icb_name_level2"],
-                    issuer_count=s["issuer_count"],
-                )
-                for s in sectors
-            ],
+            sectors_level2=[SectorOptionItem(**s) for s in sectors],
+            freshness=freshness,
         )
         return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 

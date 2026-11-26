@@ -21,7 +21,7 @@
 | `TASK-07` | Behavior-Changing | `cap-03`: Cờ đỏ Hậu kiểm toán `RF_10_POST_AUDIT_PROFIT_DOWNGRADE` (`severity="HIGH"`, `restatements.py` + DBSP bump) | `5` tệp | Hoàn tất (Đợt 3) |
 | `TASK-08` | Behavior-Changing | `cap-03`: Chỉ báo cấu trúc thị trường `Merton DTD` (`merton_dtd.py` cho Overlay + Walk-Forward ML Ablation độc lập) | `5` tệp | Hoàn tất (Đợt 3) |
 | *Cổng 3* | **Verification Checkpoint #3** | Kiểm chứng định lượng Layer 4A/4B (`0%` look-ahead, `0` QG2 orphan, DuPont `<= 1e-9`) | — | Hoàn tất (Cuối Đợt 3) |
-| `TASK-09` | Behavior-Changing | `cap-04`: Con trỏ tiến SQLite/Postgres + Composite `ETag` + API Freshness/DTD + OTel spans + Sanitizer | `6` tệp | Đợt 4 |
+| `TASK-09` | Behavior-Changing | `cap-04`: Con trỏ tiến SQLite/Postgres + Composite `ETag` + API Freshness/DTD + OTel spans + Sanitizer | `6` tệp | Hoàn tất (Đợt 4) |
 | `TASK-10` | Behavior-Changing | `cap-05`: Frontend đồng bộ `X-Snapshot-ID`, tích hợp thẻ `Merton DTD` + bằng chứng `RF_10` & mã nhãn VN | `6` tệp | Đợt 4 |
 | `TASK-11` | Behavior-Changing | `cap-05`: Nâng cấp WAI-ARIA `frontend/src/components/ui/segmented-control.tsx`, thanh Freshness 3 mốc `200%` zoom & chuẩn hóa `SourceDrawer` | `6` tệp | Đợt 4 |
 | `TASK-12` | Behavior-Changing | `cap-05`: Tab/vùng cuộn `/methodology` A11y + Vitest JSDOM `.tsx` + Cổng `wcag22aa` & CWV + Sidecar `/automation` | `5` tệp | Đợt 4 |
@@ -81,6 +81,15 @@
 - **Loại commit:** `feat(analytics,ml)` (`Behavior-Changing`).
 - **Phạm vi (`5` tệp sản phẩm + test đơn vị):** `src/finintel/analytics/merton_dtd.py` *(mới, `<= 450` LOC)*, `src/finintel/analytics/market_valuation.py`, `src/finintel/serving/queries/stress_and_overlay.py`, `src/finintel/ml/supervised/train.py`, `src/finintel/ml/supervised/explain.py` (+ `tests/unit/test_ui09b_market_valuation.py`).
 - **Chi tiết:** Cài đặt `compute_merton_dtd_series()` và `attach_merton_dtd_to_periods()` theo phương trình Bharath & Shumway (2008): hợp nhất đủ 3 khoản mục nợ vay VAS (`BS_SHORT_TERM_BORROWINGS`, `BS_LONG_TERM_BORROWINGS`, `BS_CONVERTIBLE_BONDS` mã `338/339/340`) ở đơn vị `VND` gốc, phân biệt `VALID` / `MISSING_BCTC_DEBT` / `ZERO_FINANCIAL_DEBT` / `STALE_BCTC_DEBT` (`> 180d`) / `INSUFFICIENT_TRADING_SESSIONS` (`< 60` cặp phiên cách nhau `<= 14d` hoặc dừng giao dịch `volume == 0` quá `14d`) / `MISSING_SHARES`; căn chỉnh PIT 2 bước (`strategy="forward"` từ ngày công bố sang phiên giao dịch, sau đó `strategy="backward", tolerance="180d"`, không lùi kỳ `period_end_date`) đạt `0%` look-ahead cuối tuần và tiến `_period_available_at` sang `max(a_t, trade_date)` trước `build_distress_targets`; đăng ký ràng buộc đơn điệu XGBoost (`merton_dtd: -1`, `equity_volatility_1y: +1`, `naive_edf: +1`) cùng `MERTON_ABLATION_FEATURES` trong `train.py` và nhãn tiếng Việt trong `explain.py`.
+
+---
+
+## Chi Tiết Đợt 4 (`TASK-09` → Nghiệm Thu Cuối Hệ Thống)
+
+### `TASK-09` — Con Trỏ Tiến SQLite/Postgres, Composite `ETag`, API Freshness/DTD, OTel Spans & Sanitizer (`cap-04`)
+- **Loại commit:** `feat(serving,storage,observability)` (`Behavior-Changing`).
+- **Phạm vi (`6` tệp sản phẩm + test):** `src/finintel/serving/freshness.py` *(mới)*, `src/finintel/serving/observability.py`, `src/finintel/serving/schemas.py`, `src/finintel/serving/api.py`, `src/finintel/storage/ducklake_store.py`, `src/finintel/orchestration/assets.py` (+ `tests/unit/test_serving_latency_budget.py`, cập nhật khẳng định composite `ETag` ở `test_layer5_fastapi_serving.py` và `test_option_b_e2e_platform.py`).
+- **Chi tiết:** Bổ sung view `public.finintel_serving_pointer` và chốt chặn đơn điệu tiến `ducklake_version` trong `publish_snapshot()` / `reconcile_unpromoted_snapshots()`; xuất Composite `ETag` `"{snapshot_id}:{extension_ports_digest}"` và khóa Valkey L2 xoay tự động khi Port 1/2/3 cập nhật giữa hai kỳ BCTC; chặn tham số công khai `?snapshot_id=` (`HTTP 422`); mở rộng `PriceOverlayPointItem` với `merton_dtd` / `equity_volatility_1y` / `naive_edf` / `dtd_flag` và `MetaPeriodsResponse.freshness` (`DataFreshnessItem` 3 tầng); gắn đủ 4 span OTel chuẩn (`finintel.ingest.fetch`, `finintel.transform.incremental`, `finintel.storage.publish_snapshot`, `finintel.serving.query`), metrics `finintel_snapshot_freshness_age_seconds{port}` + `finintel_wap_publish_total{outcome}`, và bộ lọc `sanitize_error_detail` chống lộ đường dẫn/DSN/SQL/token nội bộ; kiểm chứng đạt ngân sách độ trễ `p95` (`Warm <= 50ms`, `DuckLake Cold <= 200ms`, `Stress-Test <= 300ms`).
 
 ---
 

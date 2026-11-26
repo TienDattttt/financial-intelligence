@@ -54,6 +54,10 @@ SPAN_VALKEY_CACHE = "valkey.cache"
 SPAN_DUCKDB_QUERY = "duckdb.query"
 SPAN_ANALYTICS_STRESS_TEST = "analytics.stress_test"
 SPAN_RAG_INVESTIGATE = "rag.investigate"
+SPAN_INGEST_FETCH = "finintel.ingest.fetch"
+SPAN_TRANSFORM_INCREMENTAL = "finintel.transform.incremental"
+SPAN_STORAGE_PUBLISH = "finintel.storage.publish_snapshot"
+SPAN_SERVING_QUERY = "finintel.serving.query"
 
 VALID_ENTRY_POINTS: frozenset[str] = frozenset(
     {"http_api", "dagster_sensor", "dagster_schedule", "cli"}
@@ -63,6 +67,12 @@ VALID_INGESTION_OUTCOMES: frozenset[str] = frozenset(
 )
 VALID_INGESTION_PROVIDERS: frozenset[str] = frozenset(
     {"fhsc", "vietcap_iq", "cafef", "ssc", "hsx", "hnx", "vndirect", "other"}
+)
+VALID_FRESHNESS_PORTS: frozenset[str] = frozenset(
+    {"bctc_snapshot", "market_prices", "regulatory_events", "curated_pdfs"}
+)
+VALID_WAP_OUTCOMES: frozenset[str] = frozenset(
+    {"published", "quarantined", "skipped_unchanged", "error"}
 )
 
 _TELEMETRY_CONTEXT: contextvars.ContextVar[dict[str, str | None]] = (
@@ -84,6 +94,18 @@ _INGESTION_DURATION_SECONDS = Histogram(
     "Upstream provider ingestion request duration in seconds.",
     labelnames=("provider",),
     buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0),
+    registry=_INGESTION_METRICS_REGISTRY,
+)
+_SNAPSHOT_FRESHNESS_AGE_SECONDS = Gauge(
+    "finintel_snapshot_freshness_age_seconds",
+    "Age in seconds of the active BCTC snapshot and Extension Port datasets.",
+    labelnames=("port",),
+    registry=_INGESTION_METRICS_REGISTRY,
+)
+_WAP_PUBLISH_TOTAL = Counter(
+    "finintel_wap_publish_total",
+    "Total Write-Audit-Publish snapshot publication outcomes.",
+    labelnames=("outcome",),
     registry=_INGESTION_METRICS_REGISTRY,
 )
 
@@ -145,6 +167,29 @@ def record_ingestion_request(
         provider=clean_provider, outcome=clean_outcome
     ).inc()
     _INGESTION_DURATION_SECONDS.labels(provider=clean_provider).observe(safe_dur)
+
+
+def record_snapshot_freshness_age(port: str, age_seconds: float) -> None:
+    """Record bounded-cardinality dataset freshness age in seconds for ``port``."""
+    clean_port = port.strip().lower()
+    if clean_port not in VALID_FRESHNESS_PORTS:
+        raise ValueError(
+            f"port must be one of {sorted(VALID_FRESHNESS_PORTS)}, got {port!r}."
+        )
+    if not isinstance(age_seconds, bool) and math.isfinite(age_seconds):
+        _SNAPSHOT_FRESHNESS_AGE_SECONDS.labels(port=clean_port).set(
+            max(0.0, float(age_seconds))
+        )
+
+
+def record_wap_publish(outcome: str) -> None:
+    """Increment bounded-cardinality Write-Audit-Publish counter for ``outcome``."""
+    clean_outcome = outcome.strip().lower()
+    if clean_outcome not in VALID_WAP_OUTCOMES:
+        raise ValueError(
+            f"outcome must be one of {sorted(VALID_WAP_OUTCOMES)}, got {outcome!r}."
+        )
+    _WAP_PUBLISH_TOTAL.labels(outcome=clean_outcome).inc()
 
 
 _STRUCTLOG_CONFIGURED = False
@@ -246,7 +291,19 @@ def trace_span(
         return
 
     tracer = trace.get_tracer(TRACER_NAME)
+    ctx_fields = _TELEMETRY_CONTEXT.get()
     with tracer.start_as_current_span(name) as span:
+        for ctx_key, attr_key in (
+            ("entry_point", "finintel.entry_point"),
+            ("run_id", "finintel.run_id"),
+            ("snapshot_id", "finintel.snapshot_id"),
+        ):
+            ctx_val = ctx_fields.get(ctx_key)
+            if ctx_val and (not attributes or attr_key not in attributes):
+                try:
+                    span.set_attribute(attr_key, ctx_val)
+                except Exception:
+                    pass
         if attributes:
             for key, raw_value in attributes.items():
                 coerced = _coerce_span_attribute(raw_value)
@@ -399,6 +456,18 @@ class RequestCorrelationMiddleware:
 
         path = str(scope.get("path", ""))
         method = str(scope.get("method", "GET"))
+        if path.startswith("/api/"):
+            from finintel.serving.freshness import has_forbidden_public_snapshot_query
+
+            if has_forbidden_public_snapshot_query(scope.get("query_string", b"")):
+                from fastapi.responses import JSONResponse
+
+                forbid_resp = JSONResponse(
+                    status_code=422,
+                    content={"detail": "Invalid query parameters."},
+                )
+                await forbid_resp(scope, receive, send)
+                return
         track_metrics = self._requests_total is not None and path not in (
             "/metrics",
             "/health/live",
@@ -444,7 +513,14 @@ class RequestCorrelationMiddleware:
             await send(message)
 
         try:
-            await self.app(scope, receive, send_wrapper)
+            if path.startswith("/api/"):
+                with trace_span(
+                    SPAN_SERVING_QUERY,
+                    {"http.method": method, "http.route": _normalize_metric_path(path)},
+                ):
+                    await self.app(scope, receive, send_wrapper)
+            else:
+                await self.app(scope, receive, send_wrapper)
         finally:
             elapsed_s = time.perf_counter() - start
             if track_metrics:
@@ -475,14 +551,25 @@ class RequestCorrelationMiddleware:
         if self._access_log_json:
             import structlog
 
+            outcome = (
+                "not_modified"
+                if status_code == 304
+                else (
+                    "ok"
+                    if status_code < 400
+                    else ("client_error" if status_code < 500 else "server_error")
+                )
+            )
             log = structlog.get_logger("finintel.serving.http")
             log.info(
                 "http_request_completed",
                 entry_point="http_api",
                 request_id=req_id,
+                run_id=state_dict.get("dagster_run_id"),
                 method=method,
                 path=path,
                 status_code=status_code,
+                outcome=outcome,
                 duration_ms=round(elapsed_s * 1000.0, 2),
                 snapshot_id=state_dict.get("snapshot_id"),
                 dagster_run_id=state_dict.get("dagster_run_id"),

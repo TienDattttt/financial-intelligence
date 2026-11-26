@@ -1133,6 +1133,8 @@ def test_suite1_happy_path_full_stack_all_10_routes_gc_and_rollback(
     updated_summary_1 = run_blocking_publish_audits(bundle_1, run_id="run_e2e_1")
 
     # 5. Atomic Snapshot Publish (snap_e2e_v1).
+    from finintel.serving.freshness import format_composite_etag
+
     snap_1 = _publish_bundle_snapshot(
         data_root=data_root,
         state=state,
@@ -1142,7 +1144,7 @@ def test_suite1_happy_path_full_stack_all_10_routes_gc_and_rollback(
         run_id="run_e2e_1",
         backend=backend,
     )
-    etag_1 = f'"{snap_1}"'
+    etag_1 = format_composite_etag(snap_1, data_root)
 
     # 6. FastAPI TestClient: test ALL 10 HTTP routes + RFC 9110 ETag/304 + 38/38 lineage.
     app = create_app(data_root=data_root)
@@ -1421,7 +1423,7 @@ def test_suite1_happy_path_full_stack_all_10_routes_gc_and_rollback(
         r_rb = rollback_client.get("/api/v1/health")
         assert r_rb.status_code == 200
         assert r_rb.json()["active_snapshot_id"] == snap_2
-        assert r_rb.headers["ETag"] == f'"{snap_2}"'
+        assert r_rb.headers["ETag"] == format_composite_etag(snap_2, data_root)
 
         _rollback_snapshot_for_backend(data_root, state, snap_3, backend=backend)
         assert ParquetRepository(data_root=data_root).snapshot_id == snap_3
@@ -1429,7 +1431,7 @@ def test_suite1_happy_path_full_stack_all_10_routes_gc_and_rollback(
         r_fw = rollback_client.get("/api/v1/health")
         assert r_fw.status_code == 200
         assert r_fw.json()["active_snapshot_id"] == snap_3
-        assert r_fw.headers["ETag"] == f'"{snap_3}"'
+        assert r_fw.headers["ETag"] == format_composite_etag(snap_3, data_root)
         r_prof_fw = rollback_client.get("/api/v1/companies/FPT/profile")
         assert r_prof_fw.status_code == 200
         assert r_prof_fw.json()["company_name_vn"] == "Công ty Cổ phần FPT v3"
@@ -1468,6 +1470,8 @@ def test_suite2_failing_qg1_circuit_breaker_preserves_live_fastapi_snapshot(
     healthy_summary = run_blocking_publish_audits(
         healthy_bundle, run_id="run_cb_healthy"
     )
+    from finintel.serving.freshness import format_composite_etag
+
     snap_healthy = _publish_bundle_snapshot(
         data_root=data_root,
         state=state,
@@ -1477,7 +1481,7 @@ def test_suite2_failing_qg1_circuit_breaker_preserves_live_fastapi_snapshot(
         run_id="run_cb_healthy",
         backend=backend,
     )
-    etag_healthy = f'"{snap_healthy}"'
+    etag_healthy = format_composite_etag(snap_healthy, data_root)
 
     with TestClient(create_app(data_root=data_root)) as client:
         r_before = client.get("/api/v1/snapshot/overview")
@@ -1847,7 +1851,9 @@ def test_suite4_concurrent_8_readers_and_live_publish_race(tmp_path: Path) -> No
         run_id="run_race_v1",
         backend=backend,
     )
-    etag_v1 = f'"{snap_v1}"'
+    from finintel.serving.freshness import format_composite_etag
+
+    etag_v1 = format_composite_etag(snap_v1, data_root)
 
     # Prepare v2 bundle upfront (updated issuer names AND scaled revenue facts to detect cross-table skew)
     issuers_v2 = _build_issuers_frame(name_suffix=" RaceV2")
@@ -1862,7 +1868,7 @@ def test_suite4_concurrent_8_readers_and_live_publish_race(tmp_path: Path) -> No
     )
     summary_v2 = run_blocking_publish_audits(bundle_v2, run_id="run_race_v2")
     snap_v2 = "snap_race_v2"
-    etag_v2 = f'"{snap_v2}"'
+    etag_v2 = format_composite_etag(snap_v2, data_root)
 
     routes = (
         "/api/v1/snapshot/overview",
@@ -1913,7 +1919,11 @@ def test_suite4_concurrent_8_readers_and_live_publish_race(tmp_path: Path) -> No
                     body = resp.json()
                     body_snap = body.get("snapshot_id")
                     hdr_etag = resp.headers.get("ETag")
-                    expected_etag = f'"{body_snap}"'
+                    expected_etag = (
+                        format_composite_etag(str(body_snap), data_root)
+                        if body_snap
+                        else None
+                    )
                     if body_snap not in {snap_v1, snap_v2}:
                         with lock:
                             errors.append(

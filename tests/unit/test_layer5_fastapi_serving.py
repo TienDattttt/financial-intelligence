@@ -585,8 +585,10 @@ def published_no_ml_root(
 def test_all_10_routes_etag_304_and_38_lineage_cards(
     published_parquet_root: tuple[Path, str],
 ) -> None:
+    from finintel.serving.freshness import format_composite_etag
+
     data_root, snapshot_id = published_parquet_root
-    expected_etag = f'"{snapshot_id}"'
+    expected_etag = format_composite_etag(snapshot_id, data_root)
     app = create_app(data_root=data_root)
 
     with TestClient(app) as client:
@@ -932,8 +934,10 @@ def test_20_threads_200_concurrent_requests_and_shutdown_close(
     published_parquet_root: tuple[Path, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from finintel.serving.freshness import format_composite_etag
+
     data_root, snapshot_id = published_parquet_root
-    expected_etag = f'"{snapshot_id}"'
+    expected_etag = format_composite_etag(snapshot_id, data_root)
 
     # Verify sync def cursor dependency and sync def DB-reading routes.
     assert not inspect.iscoroutinefunction(get_db_cursor)
@@ -1440,7 +1444,9 @@ class TestEmpiricalRealSnapshotServing:
             assert r_health.status_code == 200
             snap_id = r_health.json()["active_snapshot_id"]
             assert snap_id is not None
-            etag = f'"{snap_id}"'
+            from finintel.serving.freshness import format_composite_etag
+
+            etag = format_composite_etag(snap_id, snap_dir)
             assert r_health.headers["ETag"] == etag
 
             # 304 check on real snapshot

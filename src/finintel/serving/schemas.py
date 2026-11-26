@@ -29,6 +29,7 @@ from finintel.serving.dictionary import (
     RatioFormatType,
     StatementType,
 )
+from finintel.serving.freshness import DataFreshnessItem
 from finintel.serving.queries import (
     AltmanZone,
     BeneishFlag,
@@ -710,6 +711,7 @@ class MetaPeriodsResponse(BaseModel):
     published_at: str | None
     available_periods: dict[str, dict[str, list[date]]]
     sectors_level2: list[SectorOptionItem]
+    freshness: DataFreshnessItem | None = None
 
 
 class RatioDictionaryItem(BaseModel):
@@ -1188,6 +1190,10 @@ class PriceOverlayPointItem(BaseModel):
     pe_flag: str | None = None
     pb_flag: str | None = None
     shares_source: str | None = None
+    merton_dtd: float | None = None
+    equity_volatility_1y: float | None = None
+    naive_edf: float | None = None
+    dtd_flag: str | None = None
 
 
 class WarningSummaryItem(BaseModel):

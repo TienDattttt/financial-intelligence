@@ -12,20 +12,12 @@ Verified Sources:
 - Gate B0 Measured Evidence: docs/evidence/option_b_spike_report.json
 
 Runtime API Verification (Python 3.11.9, duckdb==1.4.2, DuckLake format 0.3):
-- ``duckdb.connect(":memory:", read_only=True)`` raises ``CatalogException``; read-only
-  sessions MUST connect to ``":memory:"`` and ``ATTACH ... (READ_ONLY)``.
-- DuckLake 0.3 raises ``NotImplementedException`` on ``PRIMARY KEY`` constraints;
-  ``_snapshot_audit`` uses ``NOT NULL`` columns with Python uniqueness enforcement under
-  ``pipeline.lock``.
-- DuckLake 0.3 raises ``BinderException`` on ``ALTER TABLE ... SET SORTED BY`` and
-  ``NotImplementedException`` on table-scoped ``set_option`` for transaction-local tables;
-  tables are physically sorted via SQL ``ORDER BY`` with catalog-scoped
-  ``set_option('parquet_row_group_size', ...)``, while ``SET SORTED BY`` is probed outside
-  the publish transaction so it activates automatically on DuckLake 0.4+.
-- On SQLite catalogs, 1-arg ``ducklake_cleanup_old_files(alias)`` raises ``BinderException``
-  and ``older_than`` compares local-offset VARCHAR timestamps against UTC; ``maintain()``
-  uses ``cleanup_all => true`` when ``min_snapshot_age_seconds == 0`` and explicit
-  ``older_than => now() - INTERVAL '<N> seconds'`` when ``min_snapshot_age_seconds > 0``.
+- Read-only sessions connect to ``":memory:"`` and ``ATTACH ... (READ_ONLY)``.
+- ``_snapshot_audit`` uses ``NOT NULL`` columns with Python uniqueness under ``pipeline.lock``.
+- Tables sort via SQL ``ORDER BY`` with catalog ``set_option('parquet_row_group_size', ...)``;
+  ``SET SORTED BY`` is probed outside the publish tx for forward-compatibility.
+- ``maintain()`` uses ``cleanup_all => true`` when ``min_snapshot_age_seconds == 0`` and
+  ``older_than => now() - INTERVAL '<N> seconds'`` otherwise.
 """
 
 from __future__ import annotations
@@ -75,6 +67,7 @@ logger = logging.getLogger("finintel.storage.ducklake")
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 SNAPSHOT_AUDIT_TABLE = "_snapshot_audit"
 POSTGRES_ACTIVE_SNAPSHOT_TABLE = "public.finintel_active_snapshot"
+POSTGRES_SERVING_POINTER_TABLE = "public.finintel_serving_pointer"
 DEFAULT_CATALOG_ALIAS = "finintel_lake"
 DEFAULT_POSTGRES_DSN_ENV = "FININTEL_DUCKLAKE_PG_DSN"
 DEFAULT_OVERRIDE_DATA_PATH_ENV = "FININTEL_DUCKLAKE_OVERRIDE_DATA_PATH"
@@ -608,6 +601,10 @@ def upsert_postgres_active_snapshot(
                     """,
                     (alias, snapshot_id, int(ducklake_version), run_id, published_at),
                 )
+                cur.execute(
+                    f"CREATE OR REPLACE VIEW {POSTGRES_SERVING_POINTER_TABLE} "
+                    f"AS SELECT * FROM {POSTGRES_ACTIVE_SNAPSHOT_TABLE}"
+                )
             pg_conn.commit()
     except ContractViolationError:
         raise
@@ -1109,17 +1106,22 @@ class DuckLakeStore:
                         pass
                 con.close()
 
-            # Phase 2: Promote active snapshot pointer in state.sqlite (and Postgres pointer if configured).
+            # Phase 2: Promote active snapshot pointer in state.sqlite (and forward-only Postgres pointer).
             self.state_store.publish_snapshot(run_id, snapshot_id)
             if self.catalog_driver == "postgres":
-                upsert_postgres_active_snapshot(
+                pg_cur = read_postgres_active_snapshot(
                     postgres_dsn_env=self.postgres_dsn_env,
                     catalog_alias=self.catalog_alias,
-                    snapshot_id=snapshot_id,
-                    ducklake_version=expected_version,
-                    run_id=run_id,
-                    published_at=published_at,
                 )
+                if pg_cur is None or expected_version >= int(pg_cur.ducklake_version):
+                    upsert_postgres_active_snapshot(
+                        postgres_dsn_env=self.postgres_dsn_env,
+                        catalog_alias=self.catalog_alias,
+                        snapshot_id=snapshot_id,
+                        ducklake_version=expected_version,
+                        run_id=run_id,
+                        published_at=published_at,
+                    )
             return expected_version
 
     publish = publish_snapshot
@@ -1209,8 +1211,11 @@ class DuckLakeStore:
                     )
                     if (
                         pg_pointer is None
-                        or pg_pointer.snapshot_id != active_sid
-                        or int(pg_pointer.ducklake_version) != active_ver
+                        or active_ver > int(pg_pointer.ducklake_version)
+                        or (
+                            int(pg_pointer.ducklake_version) == active_ver
+                            and pg_pointer.snapshot_id != active_sid
+                        )
                     ):
                         audit_run_id, audit_pub = audit_meta_by_snap_id[active_sid]
                         logger.warning(
