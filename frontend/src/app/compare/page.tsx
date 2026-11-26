@@ -6,114 +6,33 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Download, Plus, X } from "lucide-react";
 import { CompareFivePillarChart } from "@/components/charts/CompareFivePillarChart";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
-import { RiskTierBadge } from "@/components/financial/RiskBadge";
+import { CompareMatrixCard } from "@/components/compare/CompareMatrixCard";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/primitives";
 import { useAllIssuers, useCompareCompanies } from "@/hooks/use-finintel-queries";
 import {
-  formatCreditTrio,
-  getRiskTierMeta,
+  buildCompareCsv,
+  CHART_METRICS,
+  type CompareMetricKey,
+  formatCompareAxisLabel,
+  getComparePeriodKey,
+} from "@/lib/compare-helpers";
+import {
   PERIOD_TYPE_LABELS,
   selectMlScoreForPeriod,
   STATEMENT_SCOPE_LABELS,
 } from "@/lib/domain-labels";
 import { formatChartNumber, useChartTheme } from "@/lib/echarts-theme";
 import {
-  buildCsvContent,
   formatNumber,
-  formatPercent,
   formatPeriodLabel,
-  formatRatioValue,
   normalizeSearchText,
   type RatioDirection,
 } from "@/lib/format";
 import type { RatioName } from "@/types/api";
-
-type CompareMetricKey =
-  | "altman_z_double_prime"
-  | "calibrated_distress_prob"
-  | "roe_total"
-  | "ebit_margin"
-  | "debt_to_equity"
-  | "interest_coverage"
-  | "current_ratio"
-  | "ocf_to_net_income";
-
-const CHART_METRICS: {
-  key: CompareMetricKey;
-  label: string;
-  isMl: boolean;
-  isPct: boolean;
-  decimals: number;
-  unitSuffix?: string;
-}[] = [
-  { key: "altman_z_double_prime", label: "Altman Z″", isMl: true, isPct: false, decimals: 2 },
-  {
-    key: "calibrated_distress_prob",
-    label: "Xác suất kiệt quệ (%)",
-    isMl: true,
-    isPct: true,
-    decimals: 1,
-  },
-  { key: "roe_total", label: "ROE (%)", isMl: false, isPct: true, decimals: 1 },
-  { key: "ebit_margin", label: "Biên EBIT (%)", isMl: false, isPct: true, decimals: 1 },
-  {
-    key: "debt_to_equity",
-    label: "Nợ vay / VCSH (lần)",
-    isMl: false,
-    isPct: false,
-    decimals: 2,
-    unitSuffix: "x",
-  },
-  {
-    key: "interest_coverage",
-    label: "Khả năng trả lãi EBIT/Lãi vay (lần)",
-    isMl: false,
-    isPct: false,
-    decimals: 2,
-    unitSuffix: "x",
-  },
-  {
-    key: "current_ratio",
-    label: "Thanh toán hiện hành (lần)",
-    isMl: false,
-    isPct: false,
-    decimals: 2,
-    unitSuffix: "x",
-  },
-  {
-    key: "ocf_to_net_income",
-    label: "CFO / Lợi nhuận sau thuế (lần)",
-    isMl: false,
-    isPct: false,
-    decimals: 2,
-    unitSuffix: "x",
-  },
-];
-
-function getComparePeriodKey(
-  periodEndDate: string,
-  periodType: string,
-  fiscalYear?: unknown,
-): string {
-  if (periodType === "ANNUAL") {
-    if (typeof fiscalYear === "number" && Number.isFinite(fiscalYear)) {
-      return String(Math.trunc(fiscalYear));
-    }
-    return periodEndDate.slice(0, 4);
-  }
-  return periodEndDate;
-}
-
-function formatCompareAxisLabel(periodKey: string, periodType: string): string {
-  if (periodType === "ANNUAL") {
-    return `Năm ${periodKey}`;
-  }
-  return formatPeriodLabel(periodKey, periodType);
-}
 
 function CompareContent() {
   const router = useRouter();
@@ -444,79 +363,7 @@ function CompareContent() {
   }, [activeEntries, periodEndDate]);
 
   const handleExportCsv = () => {
-    const headers = ["Chỉ tiêu", ...activeTickers];
-    const rows: unknown[][] = [];
-    rows.push([
-      "Altman Z″",
-      ...matrixData.latestMl.map((m) =>
-        m?.altman_z_double_prime !== null && m?.altman_z_double_prime !== undefined
-          ? formatNumber(m.altman_z_double_prime, 2)
-          : "N/A",
-      ),
-    ]);
-    rows.push([
-      "Piotroski F-Score",
-      ...matrixData.latestMl.map((m) =>
-        m?.piotroski_f_score !== null && m?.piotroski_f_score !== undefined
-          ? `${m.piotroski_f_score}/9`
-          : "N/A",
-      ),
-    ]);
-    rows.push([
-      "Beneish M-Score",
-      ...matrixData.latestMl.map((m) =>
-        m?.beneish_m8_score !== null && m?.beneish_m8_score !== undefined
-          ? formatNumber(m.beneish_m8_score, 2)
-          : "N/A",
-      ),
-    ]);
-    rows.push([
-      "Bậc rủi ro (R1–R5)",
-      ...matrixData.latestMl.map((m) => getRiskTierMeta(m?.risk_tier).shortLabel),
-    ]);
-    rows.push([
-      "Vị thế rủi ro cùng kỳ",
-      ...matrixData.latestMl.map(
-        (m) =>
-          formatCreditTrio({
-            risk_tier: m?.risk_tier,
-            risk_market_percentile: m?.risk_market_percentile,
-            calibrated_distress_prob: m?.calibrated_distress_prob,
-            relative_risk_lift: m?.relative_risk_lift,
-            market_base_rate: m?.market_base_rate,
-          }).topPercentLabel,
-      ),
-    ]);
-    rows.push([
-      "Xác suất kiệt quệ 1 năm",
-      ...matrixData.latestMl.map((m) => formatPercent(m?.calibrated_distress_prob)),
-    ]);
-    rows.push([
-      "Hệ số rủi ro so nền thị trường",
-      ...matrixData.latestMl.map(
-        (m) =>
-          formatCreditTrio({
-            relative_risk_lift: m?.relative_risk_lift,
-          }).liftLabel ?? "N/A",
-      ),
-    ]);
-
-    for (const [metricName, meta] of matrixData.ratioList.entries()) {
-      rows.push([
-        meta.name,
-        ...activeEntries.map(({ summaryQuery }) => {
-          const item = summaryQuery?.data?.items.find((x) => x.metric_name === metricName);
-          if (!item) return "N/A";
-          return matrixMode === "PERCENTILE"
-            ? item.percentile_rank !== null && item.percentile_rank !== undefined
-              ? `${formatNumber(item.percentile_rank, 0)}%`
-              : "N/A"
-            : formatRatioValue(item.company_value, item.format_type);
-        }),
-      ]);
-    }
-
-    const csv = buildCsvContent(headers, rows);
+    const csv = buildCompareCsv(activeTickers, activeEntries, matrixData, matrixMode);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -751,265 +598,15 @@ function CompareContent() {
             isLoading={summaries.some((s) => s.isLoading)}
           />
 
-          <Card className="rounded-lg shadow-xs">
-            <CardHeader className="py-2.5">
-              <CardTitle className="text-[14px]">
-                Ma trận chỉ số sức khỏe tài chính &amp; định lượng
-                {periodEndDate
-                  ? ` (${formatPeriodLabel(periodEndDate, periodType)})`
-                  : " kỳ mới nhất"}
-              </CardTitle>
-              <div className="inline-flex rounded-lg border border-border bg-canvas p-0.5 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setMatrixMode("VALUE")}
-                  className={
-                    matrixMode === "VALUE"
-                      ? "rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground shadow-xs"
-                      : "rounded-md px-2.5 py-1 text-ink-muted transition-colors duration-150 hover:text-ink"
-                  }
-                >
-                  Giá trị tuyệt đối
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMatrixMode("PERCENTILE")}
-                  className={
-                    matrixMode === "PERCENTILE"
-                      ? "rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground shadow-xs"
-                      : "rounded-md px-2.5 py-1 text-ink-muted transition-colors duration-150 hover:text-ink"
-                  }
-                >
-                  Phân vị ngành (%)
-                </button>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-xs">
-                  <thead>
-                    <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
-                      <th
-                        scope="col"
-                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface-muted px-3 py-2 text-left font-semibold md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
-                      >
-                        Chỉ tiêu
-                      </th>
-                      {activeTickers.map((t) => (
-                        <th key={t} scope="col" className="min-w-[120px] px-3 py-2 text-right">
-                          <Link
-                            href={`/companies/${t}`}
-                            className="font-mono text-sm font-semibold text-accent-ink hover:underline"
-                          >
-                            {t}
-                          </Link>
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr className="border-b border-border/60 bg-surface-muted/30">
-                      <th
-                        scope="row"
-                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface-muted/60 px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
-                      >
-                        Altman Z″
-                      </th>
-                      {matrixData.latestMl.map((m, i) => (
-                        <td key={activeTickers[i]} className="num px-3 py-2 text-right font-medium">
-                          {formatNumber(m?.altman_z_double_prime, 2)}
-                        </td>
-                      ))}
-                    </tr>
-                    <tr className="border-b border-border/60">
-                      <th
-                        scope="row"
-                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
-                      >
-                        Piotroski F-Score
-                      </th>
-                      {matrixData.latestMl.map((m, i) => (
-                        <td key={activeTickers[i]} className="num px-3 py-2 text-right">
-                          {m?.piotroski_f_score !== null && m?.piotroski_f_score !== undefined
-                            ? `${m.piotroski_f_score}/9`
-                            : "N/A"}
-                        </td>
-                      ))}
-                    </tr>
-                    <tr className="border-b border-border/60">
-                      <th
-                        scope="row"
-                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
-                      >
-                        Beneish M-Score
-                      </th>
-                      {matrixData.latestMl.map((m, i) => (
-                        <td key={activeTickers[i]} className="num px-3 py-2 text-right">
-                          {formatNumber(m?.beneish_m8_score, 2)}
-                        </td>
-                      ))}
-                    </tr>
-                    <tr className="border-b border-border/60">
-                      <th
-                        scope="row"
-                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
-                      >
-                        Bậc rủi ro (R1–R5)
-                      </th>
-                      {matrixData.latestMl.map((m, i) => (
-                        <td key={activeTickers[i]} className="px-3 py-2 text-right">
-                          <div className="flex justify-end">
-                            <RiskTierBadge riskTier={m?.risk_tier} />
-                          </div>
-                        </td>
-                      ))}
-                    </tr>
-                    <tr className="border-b border-border/60">
-                      <th
-                        scope="row"
-                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
-                      >
-                        Vị thế rủi ro cùng kỳ
-                      </th>
-                      {matrixData.latestMl.map((m, i) => {
-                        const trio = formatCreditTrio({
-                          risk_tier: m?.risk_tier,
-                          risk_market_percentile: m?.risk_market_percentile,
-                          calibrated_distress_prob: m?.calibrated_distress_prob,
-                          relative_risk_lift: m?.relative_risk_lift,
-                          market_base_rate: m?.market_base_rate,
-                        });
-                        return (
-                          <td key={activeTickers[i]} className="num px-3 py-2 text-right text-ink-muted">
-                            {trio.topPercentLabel}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                    <tr className="border-b border-border/60">
-                      <th
-                        scope="row"
-                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
-                      >
-                        Xác suất kiệt quệ 1 năm (so với TB)
-                      </th>
-                      {matrixData.latestMl.map((m, i) => {
-                        const trio = formatCreditTrio({
-                          risk_tier: m?.risk_tier,
-                          risk_market_percentile: m?.risk_market_percentile,
-                          calibrated_distress_prob: m?.calibrated_distress_prob,
-                          relative_risk_lift: m?.relative_risk_lift,
-                          market_base_rate: m?.market_base_rate,
-                        });
-                        return (
-                          <td key={activeTickers[i]} className="num px-3 py-2 text-right font-medium">
-                            <span>{trio.pdLabel}</span>
-                            {trio.liftLabel ? (
-                              <span className="ml-1.5 text-[11px] font-normal text-ink-muted">
-                                ({trio.liftLabel})
-                              </span>
-                            ) : null}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                    <tr className="border-b border-border bg-surface-muted/30">
-                      <th
-                        scope="row"
-                        className="min-w-[140px] max-w-[165px] border-r border-border bg-surface-muted/60 px-3 py-2 text-left font-semibold text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
-                      >
-                        Số cờ đỏ đang kích hoạt
-                      </th>
-                      {matrixData.latestFlagsCount.map((cnt, i) => (
-                        <td
-                          key={activeTickers[i]}
-                          className={`num px-3 py-2 text-right font-medium ${cnt >= 2 ? "text-risk-high" : "text-ink"}`}
-                        >
-                          {cnt}
-                        </td>
-                      ))}
-                    </tr>
-
-                    {Array.from(matrixData.ratioList.entries()).map(([metricName, meta]) => {
-                      const rowItems = activeEntries.map(({ summaryQuery }) =>
-                        summaryQuery?.data?.items.find((x) => x.metric_name === metricName),
-                      );
-                      const numericVals = rowItems.map((item) =>
-                        !item
-                          ? null
-                          : matrixMode === "PERCENTILE"
-                            ? typeof item.percentile_rank === "number" &&
-                              Number.isFinite(item.percentile_rank)
-                              ? item.percentile_rank
-                              : null
-                            : typeof item.company_value === "number" &&
-                                Number.isFinite(item.company_value)
-                              ? item.company_value
-                              : null,
-                      );
-                      const validNums = numericVals.filter((v): v is number => v !== null);
-                      const canHighlight = validNums.length >= 2;
-                      const maxVal = canHighlight ? Math.max(...validNums) : null;
-                      const minVal = canHighlight ? Math.min(...validNums) : null;
-                      const hasSpread = maxVal !== null && minVal !== null && maxVal !== minVal;
-
-                      return (
-                        <tr
-                          key={metricName}
-                          className="border-b border-border/60 hover:bg-surface-hover/40"
-                        >
-                          <th
-                            scope="row"
-                            className="min-w-[140px] max-w-[165px] border-r border-border bg-surface px-3 py-2 text-left font-normal text-ink md:sticky md:left-0 md:z-10 md:min-w-[230px] md:max-w-none"
-                          >
-                            {meta.name}
-                          </th>
-                          {activeTickers.map((t, idx) => {
-                            const item = rowItems[idx];
-                            const val = numericVals[idx];
-                            const display = !item
-                              ? "N/A"
-                              : matrixMode === "PERCENTILE"
-                                ? item.percentile_rank !== null &&
-                                  item.percentile_rank !== undefined
-                                  ? `${formatNumber(item.percentile_rank, 0)}%`
-                                  : "N/A"
-                                : formatRatioValue(item.company_value, item.format_type);
-
-                            const isBest =
-                              hasSpread &&
-                              val !== null &&
-                              ((meta.direction === "HIGHER_IS_BETTER" && val === maxVal) ||
-                                (meta.direction === "LOWER_IS_BETTER" && val === minVal));
-                            const isWorst =
-                              hasSpread &&
-                              val !== null &&
-                              ((meta.direction === "HIGHER_IS_BETTER" && val === minVal) ||
-                                (meta.direction === "LOWER_IS_BETTER" && val === maxVal));
-
-                            return (
-                              <td
-                                key={t}
-                                className={`num px-3 py-2 text-right ${
-                                  isBest
-                                    ? "bg-risk-low-soft/35 font-semibold text-risk-low"
-                                    : isWorst
-                                      ? "bg-risk-high-soft/25 text-risk-high"
-                                      : "text-ink"
-                                }`}
-                              >
-                                {display}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
+          <CompareMatrixCard
+            activeTickers={activeTickers}
+            activeEntries={activeEntries}
+            matrixData={matrixData}
+            matrixMode={matrixMode}
+            onMatrixModeChange={setMatrixMode}
+            periodEndDate={periodEndDate}
+            periodType={periodType}
+          />
         </>
       )}
     </div>

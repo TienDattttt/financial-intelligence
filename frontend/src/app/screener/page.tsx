@@ -1,41 +1,35 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   flexRender,
   getCoreRowModel,
   useReactTable,
-  type ColumnDef,
 } from "@tanstack/react-table";
 import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
-  Bookmark,
-  BookmarkPlus,
-  Check,
   Columns3,
   Download,
   GitCompare,
   LayoutList,
-  Pencil,
   RotateCcw,
   ScatterChart as ScatterIcon,
   SlidersHorizontal,
   Table2,
-  Trash2,
   X,
 } from "lucide-react";
 import { ScreenerScatterChart } from "@/components/charts/ScreenerScatterChart";
-import { RiskBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
+import { ScreenerFilterDrawer } from "@/components/screener/ScreenerFilterDrawer";
+import { ScreenerSavedBar } from "@/components/screener/ScreenerSavedBar";
+import {
+  buildScreenerColumns,
+  type ScreenerColumnMeta,
+} from "@/components/screener/screener-table-columns";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
-import { Input } from "@/components/ui/primitives";
+import { Card } from "@/components/ui/card";
+import { type ComboboxOption } from "@/components/ui/combobox";
 import { useScreener } from "@/hooks/use-finintel-queries";
 import { observeResponseSnapshotHeader } from "@/lib/api-client";
 import {
@@ -45,22 +39,12 @@ import {
   STATEMENT_SCOPE_LABELS,
 } from "@/lib/domain-labels";
 import {
-  formatMultiple,
-  formatNumber,
-  formatPercent,
-} from "@/lib/format";
-import {
   BUILTIN_SCREENER_PRESETS,
   buildScreenerExportUrl,
-  deleteSavedScreen,
   filtersToUrlPatch,
-  formatAnomalyFlagMeta,
-  formatRelativeRiskLiftLabel,
   formatScreenerExportError,
-  formatTopRiskPercentileLabel,
   getSavedScreensServerSnapshot,
   getSavedScreensSnapshot,
-  getScreenerRiskTierMeta,
   getVisibleColumnsServerSnapshot,
   getVisibleColumnsSnapshot,
   parseContentDispositionFilename,
@@ -88,58 +72,18 @@ import {
   getWatchlistSnapshot,
   setTableDensity,
   subscribePreferences,
-  toggleWatchlistTicker,
 } from "@/lib/watchlist-store";
 import { cn } from "@/lib/utils";
 import type {
   ExchangeCode,
-  ScreenerItem,
   ScreenerQueryParams,
   ScreenerSortField,
-  SortDirection,
 } from "@/types/api";
 
 const PAGE_SIZE = 50;
 const RISK_TIER_ORDER = new Map<ScreenerRiskTier, number>(
   VALID_RISK_TIERS.map((tier, idx) => [tier, idx]),
 );
-
-interface ScreenerColumnMeta {
-  align?: "left" | "right";
-}
-
-function SortableHeader({
-  label,
-  field,
-  activeField,
-  activeDir,
-  onSort,
-  align = "right",
-}: {
-  label: string;
-  field: ScreenerSortField;
-  activeField: ScreenerSortField;
-  activeDir: SortDirection;
-  onSort: (field: ScreenerSortField) => void;
-  align?: "left" | "right";
-}) {
-  const isActive = activeField === field;
-  const Icon = !isActive ? ArrowUpDown : activeDir === "asc" ? ArrowUp : ArrowDown;
-  return (
-    <button
-      type="button"
-      onClick={() => onSort(field)}
-      className={cn(
-        "inline-flex w-full items-center gap-0.5 font-semibold hover:text-ink",
-        align === "right" ? "justify-end" : "justify-start",
-        isActive ? "text-accent-ink" : "text-ink-muted",
-      )}
-    >
-      <span>{label}</span>
-      <Icon className="size-3 shrink-0" aria-hidden="true" />
-    </button>
-  );
-}
 
 function ScreenerContent() {
   const router = useRouter();
@@ -442,546 +386,29 @@ function ScreenerContent() {
   const total = screenerQuery.data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
-  const allColumns = React.useMemo<ColumnDef<ScreenerItem>[]>(() => {
-    const optionalCols: Record<ScreenerOptionalColumnId, ColumnDef<ScreenerItem>> = {
-      distress: {
-        id: "distress",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <SortableHeader
-            label="Bậc rủi ro & XS 1 năm"
-            field="calibrated_distress_prob"
-            activeField={sortBy}
-            activeDir={sortDir}
-            onSort={handleSort}
-          />
-        ),
-        cell: ({ row }) => {
-          const item = row.original;
-          const p = item.calibrated_distress_prob;
-          const tierMeta = getScreenerRiskTierMeta(item.risk_tier);
-          const topRisk = formatTopRiskPercentileLabel(item.risk_market_percentile);
-          const lift = formatRelativeRiskLiftLabel(item.relative_risk_lift);
-          const subMeta = [topRisk, lift].filter(Boolean).join(" · ");
-          if (density === "compact") {
-            return (
-              <div
-                className="flex items-center justify-end gap-1.5 whitespace-nowrap"
-                title={subMeta || undefined}
-              >
-                <span className="num font-semibold text-ink">
-                  {formatPercent(p)}
-                </span>
-                <RiskBadge tone={tierMeta.tone} label={tierMeta.shortLabel} />
-              </div>
-            );
-          }
-          return (
-            <div className="flex flex-col items-end gap-0.5 whitespace-nowrap">
-              <div className="flex items-center gap-1.5">
-                <span className="num font-semibold text-ink">
-                  {formatPercent(p)}
-                </span>
-                <RiskBadge tone={tierMeta.tone} label={tierMeta.shortLabel} />
-              </div>
-              {subMeta ? (
-                <span className="num text-[11px] text-ink-muted">{subMeta}</span>
-              ) : null}
-            </div>
-          );
-        },
-      },
-      risk_tier: {
-        id: "risk_tier",
-        meta: { align: "left" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-left font-semibold text-ink-muted">
-            Bậc rủi ro
-          </span>
-        ),
-        cell: ({ row }) => {
-          const tierMeta = getScreenerRiskTierMeta(row.original.risk_tier);
-          return <RiskBadge tone={tierMeta.tone} label={tierMeta.shortLabel} />;
-        },
-      },
-      risk_market_percentile: {
-        id: "risk_market_percentile",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            Vị thế rủi ro
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span className="num whitespace-nowrap text-ink">
-            {formatTopRiskPercentileLabel(row.original.risk_market_percentile) ??
-              "N/A"}
-          </span>
-        ),
-      },
-      relative_risk_lift: {
-        id: "relative_risk_lift",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            So nền TT
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span className="num whitespace-nowrap">
-            {formatRelativeRiskLiftLabel(row.original.relative_risk_lift) ??
-              "N/A"}
-          </span>
-        ),
-      },
-      market_base_rate: {
-        id: "market_base_rate",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            Tỷ lệ nền
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span className="num">{formatPercent(row.original.market_base_rate)}</span>
-        ),
-      },
-      altman: {
-        id: "altman",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <SortableHeader
-            label="Altman Z″"
-            field="altman_z_double_prime"
-            activeField={sortBy}
-            activeDir={sortDir}
-            onSort={handleSort}
-          />
-        ),
-        cell: ({ row }) => {
-          const z = row.original.altman_z_double_prime;
-          const zone = row.original.altman_zone
-            ? ALTMAN_ZONE_META[row.original.altman_zone]
-            : null;
-          if (density === "compact") {
-            return (
-              <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
-                <span className="num font-medium">{formatNumber(z, 2)}</span>
-                {zone ? <RiskBadge tone={zone.tone} label={zone.shortLabel} /> : null}
-              </div>
-            );
-          }
-          return (
-            <div className="flex flex-col items-end gap-0.5 whitespace-nowrap">
-              <span className="num font-medium">{formatNumber(z, 2)}</span>
-              {zone ? <RiskBadge tone={zone.tone} label={zone.shortLabel} /> : null}
-            </div>
-          );
-        },
-      },
-      altman_em_score: {
-        id: "altman_em_score",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            Altman EM
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span className="num">{formatNumber(row.original.altman_em_score, 2)}</span>
-        ),
-      },
-      f_score: {
-        id: "f_score",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <SortableHeader
-            label="F-Score"
-            field="piotroski_f_score"
-            activeField={sortBy}
-            activeDir={sortDir}
-            onSort={handleSort}
-          />
-        ),
-        cell: ({ row }) => (
-          <span className="num">
-            {row.original.piotroski_f_score !== null &&
-            row.original.piotroski_f_score !== undefined
-              ? `${row.original.piotroski_f_score}/9`
-              : "N/A"}
-          </span>
-        ),
-      },
-      beneish: {
-        id: "beneish",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <SortableHeader
-            label="Beneish M"
-            field="beneish_m8_score"
-            activeField={sortBy}
-            activeDir={sortDir}
-            onSort={handleSort}
-          />
-        ),
-        cell: ({ row }) => {
-          const m = row.original.beneish_m8_score;
-          const flag = row.original.beneish_flag
-            ? BENEISH_FLAG_META[row.original.beneish_flag]
-            : null;
-          if (density === "compact") {
-            return (
-              <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
-                <span className="num">{formatNumber(m, 2)}</span>
-                {flag && row.original.beneish_flag !== "VALID" ? (
-                  <RiskBadge tone={flag.tone} label={flag.shortLabel} />
-                ) : null}
-              </div>
-            );
-          }
-          return (
-            <div className="flex flex-col items-end gap-0.5 whitespace-nowrap">
-              <span className="num">{formatNumber(m, 2)}</span>
-              {flag && row.original.beneish_flag !== "VALID" ? (
-                <RiskBadge tone={flag.tone} label={flag.shortLabel} />
-              ) : null}
-            </div>
-          );
-        },
-      },
-      cluster_archetype_name: {
-        id: "cluster_archetype_name",
-        meta: { align: "left" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-left font-semibold text-ink-muted">
-            Nhóm đặc trưng
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span
-            className="block max-w-[200px] truncate text-left text-ink-muted"
-            title={row.original.cluster_archetype_name ?? ""}
-          >
-            {row.original.cluster_archetype_name ?? "—"}
-          </span>
-        ),
-      },
-      anomaly_flag: {
-        id: "anomaly_flag",
-        meta: { align: "left" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-left font-semibold text-ink-muted">
-            Ngoại lai
-          </span>
-        ),
-        cell: ({ row }) => {
-          const meta = formatAnomalyFlagMeta(row.original.anomaly_flag);
-          return <RiskBadge tone={meta.tone} label={meta.label} />;
-        },
-      },
-      red_flags: {
-        id: "red_flags",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <SortableHeader
-            label="Cờ đỏ"
-            field="red_flag_count"
-            activeField={sortBy}
-            activeDir={sortDir}
-            onSort={handleSort}
-          />
-        ),
-        cell: ({ row }) => (
-          <span
-            className={cn(
-              "num font-medium",
-              row.original.red_flag_count >= 2
-                ? "text-risk-high"
-                : row.original.red_flag_count === 1
-                  ? "text-risk-mid"
-                  : "text-ink-muted",
-            )}
-          >
-            {row.original.red_flag_count}
-          </span>
-        ),
-      },
-      critical_red_flag_count: {
-        id: "critical_red_flag_count",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            Cờ nghiêm trọng
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span
-            className={cn(
-              "num font-medium",
-              row.original.critical_red_flag_count >= 1
-                ? "text-risk-high"
-                : "text-ink-muted",
-            )}
-          >
-            {row.original.critical_red_flag_count}
-          </span>
-        ),
-      },
-      accruals_to_assets: {
-        id: "accruals_to_assets",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            Dồn tích/TS
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span className="num">
-            {formatPercent(row.original.accruals_to_assets)}
-          </span>
-        ),
-      },
-      core_operating_margin: {
-        id: "core_operating_margin",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            Biên LN lõi
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span className="num">
-            {formatPercent(row.original.core_operating_margin)}
-          </span>
-        ),
-      },
-      non_core_distortion_to_assets: {
-        id: "non_core_distortion_to_assets",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            Biến dạng phi lõi
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span className="num">
-            {formatPercent(row.original.non_core_distortion_to_assets)}
-          </span>
-        ),
-      },
-      core_to_ebt_ratio: {
-        id: "core_to_ebt_ratio",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            LN lõi/EBT
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span className="num">
-            {formatPercent(row.original.core_to_ebt_ratio)}
-          </span>
-        ),
-      },
-      roe_total: {
-        id: "roe_total",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <SortableHeader
-            label="ROE"
-            field="roe_total"
-            activeField={sortBy}
-            activeDir={sortDir}
-            onSort={handleSort}
-          />
-        ),
-        cell: ({ row }) => (
-          <span className="num">{formatPercent(row.original.roe_total)}</span>
-        ),
-      },
-      roa: {
-        id: "roa",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <span className="block text-right font-semibold text-ink-muted">
-            ROA
-          </span>
-        ),
-        cell: ({ row }) => (
-          <span className="num">{formatPercent(row.original.roa)}</span>
-        ),
-      },
-      ebit_margin: {
-        id: "ebit_margin",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <SortableHeader
-            label="Biên EBIT"
-            field="ebit_margin"
-            activeField={sortBy}
-            activeDir={sortDir}
-            onSort={handleSort}
-          />
-        ),
-        cell: ({ row }) => (
-          <span className="num">{formatPercent(row.original.ebit_margin)}</span>
-        ),
-      },
-      debt_to_equity: {
-        id: "debt_to_equity",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <SortableHeader
-            label="Nợ/VCSH"
-            field="debt_to_equity"
-            activeField={sortBy}
-            activeDir={sortDir}
-            onSort={handleSort}
-          />
-        ),
-        cell: ({ row }) => (
-          <span className="num">
-            {formatMultiple(row.original.debt_to_equity)}
-          </span>
-        ),
-      },
-      interest_coverage: {
-        id: "interest_coverage",
-        meta: { align: "right" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <SortableHeader
-            label="EBIT/Lãi vay"
-            field="interest_coverage"
-            activeField={sortBy}
-            activeDir={sortDir}
-            onSort={handleSort}
-          />
-        ),
-        cell: ({ row }) => (
-          <span className="num">
-            {formatMultiple(row.original.interest_coverage)}
-          </span>
-        ),
-      },
-    };
-
-    const pinnedCols: ColumnDef<ScreenerItem>[] = [
-      {
-        id: "ticker",
-        meta: { align: "left" } satisfies ScreenerColumnMeta,
-        header: () => (
-          <SortableHeader
-            label="Mã"
-            field="ticker"
-            activeField={sortBy}
-            activeDir={sortDir}
-            onSort={handleSort}
-            align="left"
-          />
-        ),
-        cell: ({ row }) => {
-          const item = row.original;
-          const checked = selectedTickers.includes(item.ticker);
-          const watched = watchlistSet.has(item.ticker);
-          return (
-            <div className="flex items-center gap-1">
-              <span className="relative inline-flex size-6 shrink-0 items-center justify-center">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={!checked && selectedTickers.length >= 5}
-                  onChange={() => toggleTickerCompare(item.ticker)}
-                  aria-label={`Chọn ${item.ticker} để so sánh`}
-                  className="peer absolute inset-0 size-6 cursor-pointer opacity-0 disabled:cursor-not-allowed"
-                />
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none inline-flex size-4 items-center justify-center rounded border border-border-strong bg-surface text-[10px] font-bold leading-none peer-checked:border-primary peer-checked:bg-primary peer-checked:text-primary-foreground peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-disabled:opacity-45"
-                >
-                  {checked ? "✓" : null}
-                </span>
-              </span>
-              <button
-                type="button"
-                aria-label={
-                  watched
-                    ? `Bỏ theo dõi ${item.ticker}`
-                    : `Theo dõi ${item.ticker}`
-                }
-                onClick={() => toggleWatchlistTicker(item.ticker)}
-                className={cn(
-                  "inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-surface-muted",
-                  watched ? "text-accent-ink" : "text-ink-subtle",
-                )}
-              >
-                <Bookmark
-                  className={cn("size-3.5", watched && "fill-current")}
-                />
-              </button>
-              <Link
-                href={`/companies/${item.ticker}`}
-                className="inline-flex min-h-6 min-w-6 items-center px-0.5 font-mono font-semibold text-accent-ink hover:underline"
-              >
-                {item.ticker}
-              </Link>
-            </div>
-          );
-        },
-      },
-      {
-        id: "company_name_vn",
-        accessorKey: "company_name_vn",
-        meta: { align: "left" } satisfies ScreenerColumnMeta,
-        header: "Doanh nghiệp / Ngành",
-        cell: ({ row }) => {
-          const name = row.original.company_name_vn ?? "—";
-          const sectorLabel = row.original.icb_name_level2 ?? "—";
-          const exchange = row.original.exchange;
-          if (density === "compact") {
-            return (
-              <div
-                className="flex max-w-[140px] items-center gap-1.5 sm:max-w-[170px]"
-                title={`${name} · ${sectorLabel}${exchange ? ` (${exchange})` : ""}`}
-              >
-                <span className="truncate font-medium text-ink">{name}</span>
-                {exchange ? (
-                  <span className="shrink-0 font-mono text-[10px] text-ink-subtle">
-                    {exchange}
-                  </span>
-                ) : null}
-              </div>
-            );
-          }
-          return (
-            <div className="max-w-[140px] sm:max-w-[165px]">
-              <div className="truncate font-medium text-ink" title={name}>
-                {name}
-              </div>
-              <div className="truncate text-[11px] text-ink-muted">
-                {sectorLabel}
-                {exchange ? ` · ${exchange}` : ""}
-              </div>
-            </div>
-          );
-        },
-      },
-    ];
-
-    const selectedOptionalCols = SCREENER_OPTIONAL_COLUMNS.filter((opt) =>
-      visibleColumnSet.has(opt.id),
-    ).map((opt) => optionalCols[opt.id]);
-
-    return [...pinnedCols, ...selectedOptionalCols];
-  }, [
-    density,
-    handleSort,
-    selectedTickers,
-    sortBy,
-    sortDir,
-    toggleTickerCompare,
-    visibleColumnSet,
-    watchlistSet,
-  ]);
+  const allColumns = React.useMemo(
+    () =>
+      buildScreenerColumns({
+        density,
+        sortBy,
+        sortDir,
+        onSort: handleSort,
+        selectedTickers,
+        onToggleTickerCompare: toggleTickerCompare,
+        watchlistSet,
+        visibleColumnSet,
+      }),
+    [
+      density,
+      handleSort,
+      selectedTickers,
+      sortBy,
+      sortDir,
+      toggleTickerCompare,
+      visibleColumnSet,
+      watchlistSet,
+    ],
+  );
 
   const table = useReactTable({
     data: items,
@@ -1219,143 +646,22 @@ function ScreenerContent() {
       </div>
 
       {/* Saved Screens Bar */}
-      <div className="rounded-lg border border-border bg-surface px-3 py-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="font-semibold text-ink-muted">
-              Bộ lọc đã lưu:
-            </span>
-            {savedScreens.length === 0 ? (
-              <span className="text-ink-subtle">
-                Chưa có bộ lọc cá nhân. Nhấn &ldquo;Lưu bộ lọc&rdquo; để tái sử dụng nhanh.
-              </span>
-            ) : (
-              savedScreens.map((scr) =>
-                editingScreenId === scr.id ? (
-                  <form
-                    key={scr.id}
-                    onSubmit={(e) => handleRenameSubmit(e, scr.id)}
-                    className="inline-flex items-center gap-1 rounded border border-border-strong bg-canvas px-1.5 py-0.5"
-                  >
-                    <input
-                      type="text"
-                      value={editingNameDraft}
-                      onChange={(e) => setEditingNameDraft(e.target.value)}
-                      maxLength={60}
-                      aria-label="Tên mới cho bộ lọc"
-                      className="h-5 w-36 bg-transparent text-xs text-ink focus:outline-none"
-                      autoFocus
-                    />
-                    <button
-                      type="submit"
-                      aria-label="Xác nhận đổi tên"
-                      className="inline-flex size-6 items-center justify-center rounded text-risk-low hover:bg-surface-muted"
-                    >
-                      <Check className="size-3" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Hủy đổi tên"
-                      onClick={() => {
-                        setEditingScreenId(null);
-                        setSaveFeedback(null);
-                      }}
-                      className="inline-flex size-6 items-center justify-center rounded text-ink-muted hover:bg-surface-muted"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </form>
-                ) : (
-                  <div
-                    key={scr.id}
-                    className="inline-flex items-center gap-0.5 rounded border border-border bg-canvas px-1.5 text-xs text-ink"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => applyFilterPreset(scr.filters)}
-                      className="inline-flex min-h-6 items-center px-1 font-medium hover:text-accent-ink hover:underline"
-                    >
-                      {scr.name}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Đổi tên bộ lọc ${scr.name}`}
-                      onClick={() => {
-                        setEditingScreenId(scr.id);
-                        setEditingNameDraft(scr.name);
-                        setSaveFeedback(null);
-                      }}
-                      className="inline-flex size-6 items-center justify-center rounded text-ink-subtle hover:bg-surface-muted hover:text-ink"
-                    >
-                      <Pencil className="size-3" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Xóa bộ lọc ${scr.name}`}
-                      onClick={() => deleteSavedScreen(scr.id)}
-                      className="inline-flex size-6 items-center justify-center rounded text-ink-subtle hover:bg-risk-high-soft hover:text-risk-high"
-                    >
-                      <Trash2 className="size-3" />
-                    </button>
-                  </div>
-                ),
-              )
-            )}
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            {saveFormOpen ? (
-              <form
-                onSubmit={handleSaveCurrentScreen}
-                className="flex flex-wrap items-center gap-1.5"
-              >
-                <Input
-                  type="text"
-                  value={saveNameDraft}
-                  onChange={(e) => setSaveNameDraft(e.target.value)}
-                  placeholder="Tên bộ lọc (VD: Thép đòn bẩy cao)..."
-                  aria-label="Tên bộ lọc muốn lưu"
-                  maxLength={60}
-                  className="h-7 w-52 text-xs"
-                  autoFocus
-                />
-                <Button type="submit" size="xs">
-                  Lưu
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => {
-                    setSaveFormOpen(false);
-                    setSaveFeedback(null);
-                  }}
-                >
-                  Hủy
-                </Button>
-              </form>
-            ) : (
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                onClick={() => {
-                  setSaveFormOpen(true);
-                  setSaveFeedback(null);
-                }}
-              >
-                <BookmarkPlus className="size-3" />
-                Lưu bộ lọc
-              </Button>
-            )}
-          </div>
-        </div>
-        {saveFeedback ? (
-          <p role="alert" className="mt-1.5 text-xs text-risk-high">
-            {saveFeedback}
-          </p>
-        ) : null}
-      </div>
+      <ScreenerSavedBar
+        savedScreens={savedScreens}
+        editingScreenId={editingScreenId}
+        setEditingScreenId={setEditingScreenId}
+        editingNameDraft={editingNameDraft}
+        setEditingNameDraft={setEditingNameDraft}
+        saveFormOpen={saveFormOpen}
+        setSaveFormOpen={setSaveFormOpen}
+        saveNameDraft={saveNameDraft}
+        setSaveNameDraft={setSaveNameDraft}
+        saveFeedback={saveFeedback}
+        setSaveFeedback={setSaveFeedback}
+        onApplyPreset={applyFilterPreset}
+        onSaveCurrentScreen={handleSaveCurrentScreen}
+        onRenameSubmit={handleRenameSubmit}
+      />
 
       <div className="flex flex-wrap items-center justify-between gap-2 lg:hidden">
         <Button
@@ -1381,377 +687,40 @@ function ScreenerContent() {
 
       <div className="space-y-3">
         {/* Horizontal Filter Toolbar (Desktop >= lg) / Collapsible Drawer (Mobile < lg) */}
-        <div
-          id="screener-filter-drawer"
-          role={mobileFiltersOpen ? "dialog" : undefined}
-          aria-modal={mobileFiltersOpen ? true : undefined}
-          aria-label={mobileFiltersOpen ? "Bộ lọc doanh nghiệp" : undefined}
-          className={cn(
-            "lg:block",
-            mobileFiltersOpen
-              ? "fixed inset-0 z-40 flex bg-ink/30 lg:static lg:inset-auto lg:z-auto lg:bg-transparent"
-              : "hidden",
-          )}
-          onClick={() => setMobileFiltersOpen(false)}
-        >
-          <Card
-            className="flex h-full w-80 max-w-[85vw] flex-col overflow-y-auto rounded-none border-r border-border lg:h-auto lg:w-full lg:max-w-none lg:overflow-visible lg:rounded-lg lg:border"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-border px-3.5 py-2.5 lg:hidden">
-              <span className="text-sm font-semibold text-ink">
-                Bộ lọc doanh nghiệp
-              </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Đóng bộ lọc"
-                onClick={() => setMobileFiltersOpen(false)}
-              >
-                <X className="size-4" />
-              </Button>
-            </div>
-            <CardContent className="space-y-3 p-3 text-xs">
-              {/* Primary Horizontal Filter Row on Desktop */}
-              <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-[minmax(210px,1.4fr)_116px_minmax(170px,1.15fr)_minmax(160px,1fr)_minmax(150px,1fr)_auto] lg:items-end">
-                <div className="space-y-1">
-                  <label htmlFor="scr-q" className="block text-[11px] font-semibold text-ink-muted">
-                    Tìm mã / tên doanh nghiệp
-                  </label>
-                  <form onSubmit={handleSubmitKeyword} className="flex items-center gap-1">
-                    <div className="relative flex-1">
-                      <Input
-                        id="scr-q"
-                        value={qDraft}
-                        onChange={(e) => setQDraft(e.target.value)}
-                        placeholder="VD: HPG, thép..."
-                        className={qDraft ? "pr-7" : undefined}
-                      />
-                      {qDraft ? (
-                        <button
-                          type="button"
-                          aria-label="Xóa từ khóa tìm kiếm"
-                          onClick={() => {
-                            setQDraft("");
-                            updateParams({ q: null }, true);
-                          }}
-                          className="absolute top-1/2 right-1.5 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded text-ink-muted hover:bg-surface-muted hover:text-ink"
-                        >
-                          <X className="size-3.5" aria-hidden="true" />
-                        </button>
-                      ) : null}
-                    </div>
-                    <Button type="submit" variant="outline" size="default" className="shrink-0">
-                      Tìm
-                    </Button>
-                  </form>
-                </div>
-
-                <div className="space-y-1">
-                  <label htmlFor="scr-exchange" className="block text-[11px] font-semibold text-ink-muted">
-                    Sàn GD
-                  </label>
-                  <Combobox
-                    id="scr-exchange"
-                    options={exchangeOptions}
-                    value={exchangeParam}
-                    onValueChange={(next) =>
-                      updateParams({ exchange: next || null })
-                    }
-                    placeholder="Tất cả sàn"
-                    ariaLabel="Sàn giao dịch"
-                    searchable={false}
-                    popupClassName="min-w-[140px]"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label htmlFor="scr-sector" className="block text-[11px] font-semibold text-ink-muted">
-                    Ngành ICB cấp 2
-                  </label>
-                  <Combobox
-                    id="scr-sector"
-                    options={sectorOptions}
-                    value={sectorParam}
-                    onValueChange={(next) =>
-                      updateParams({ icb_code_level2: next || null })
-                    }
-                    placeholder="Tất cả ngành"
-                    searchPlaceholder="Tìm ngành (VD: thép, điện)..."
-                    ariaLabel="Ngành ICB cấp 2"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label htmlFor="scr-risk-tier" className="block text-[11px] font-semibold text-ink-muted">
-                    Bậc rủi ro (R1–R5)
-                  </label>
-                  <div className="relative" ref={riskTierMenuRef}>
-                    <button
-                      id="scr-risk-tier"
-                      type="button"
-                      aria-haspopup="listbox"
-                      aria-expanded={riskTierMenuOpen}
-                      aria-label="Bậc rủi ro (R1–R5)"
-                      onClick={() => setRiskTierMenuOpen((v) => !v)}
-                      className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-border-strong bg-surface px-2.5 text-left text-[13px] text-ink shadow-xs transition-colors duration-150 hover:border-accent-ink/50 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
-                    >
-                      <span
-                        className={cn(
-                          "truncate",
-                          riskTiersParam.length > 0 ? "text-ink" : "text-ink-subtle",
-                        )}
-                      >
-                        {riskTierTriggerLabel}
-                      </span>
-                      <span className="shrink-0 text-[10px] text-ink-muted" aria-hidden="true">
-                        ▾
-                      </span>
-                    </button>
-
-                    {riskTierMenuOpen ? (
-                      <div
-                        role="listbox"
-                        aria-multiselectable="true"
-                        aria-label="Chọn bậc rủi ro (R1–R5)"
-                        className="absolute left-0 z-30 mt-1 w-full min-w-[220px] rounded-lg border border-border-strong bg-surface p-1 text-xs text-ink shadow-popover"
-                      >
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={riskTiersParam.length === 0}
-                          onClick={() => {
-                            applyRiskTiers([]);
-                            setRiskTierMenuOpen(false);
-                          }}
-                          className="flex w-full items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent-soft hover:text-accent-ink"
-                        >
-                          <span className={riskTiersParam.length === 0 ? "font-semibold" : ""}>
-                            Tất cả bậc R1–R5
-                          </span>
-                          {riskTiersParam.length === 0 ? (
-                            <Check className="size-3.5 text-accent-ink" aria-hidden="true" />
-                          ) : null}
-                        </button>
-                        {riskTierOptions.map((opt) => {
-                          const selected = riskTiersParam.includes(opt.value);
-                          return (
-                            <button
-                              key={opt.value}
-                              type="button"
-                              role="option"
-                              aria-selected={selected}
-                              onClick={() => {
-                                const next = selected
-                                  ? riskTiersParam.filter((t) => t !== opt.value)
-                                  : [...riskTiersParam, opt.value];
-                                applyRiskTiers(next);
-                              }}
-                              className="flex w-full items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent-soft hover:text-accent-ink"
-                            >
-                              <span className={selected ? "font-semibold" : ""}>
-                                {opt.label}
-                              </span>
-                              {selected ? (
-                                <Check className="size-3.5 text-accent-ink" aria-hidden="true" />
-                              ) : null}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label htmlFor="scr-altman" className="block text-[11px] font-semibold text-ink-muted">
-                    Phân vùng Altman Z″
-                  </label>
-                  <Combobox
-                    id="scr-altman"
-                    options={altmanOptions}
-                    value={altmanParam}
-                    onValueChange={(next) =>
-                      updateParams({ altman_zone: next || null })
-                    }
-                    placeholder="Tất cả"
-                    searchPlaceholder="Tìm phân vùng Altman..."
-                    ariaLabel="Phân vùng Altman Z″"
-                  />
-                </div>
-
-                <div className="hidden lg:flex lg:justify-end">
-                  <Button
-                    type="button"
-                    variant={advancedFiltersOpen ? "secondary" : "outline"}
-                    size="default"
-                    className="whitespace-nowrap"
-                    aria-expanded={advancedFiltersOpen}
-                    onClick={() => setAdvancedFiltersOpen((v) => !v)}
-                  >
-                    <SlidersHorizontal className="size-3.5" />
-                    <span>Bộ lọc nâng cao</span>
-                    {[beneishParam, minFParam, minProbParam, maxProbParam, minRfParam, maxRfParam].filter(Boolean).length > 0 ? (
-                      <span className="num rounded-sm bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold text-accent-ink">
-                        {[beneishParam, minFParam, minProbParam, maxProbParam, minRfParam, maxRfParam].filter(Boolean).length}
-                      </span>
-                    ) : null}
-                  </Button>
-                </div>
-              </div>
-
-              {/* Advanced Filters Row (always visible inside mobile drawer; toggleable on desktop) */}
-              <div
-                className={cn(
-                  "grid grid-cols-1 gap-2.5 border-t border-border/70 pt-2.5 lg:grid-cols-12 lg:items-end",
-                  !advancedFiltersOpen && "lg:hidden",
-                )}
-              >
-                <div className="space-y-1 lg:col-span-3">
-                  <label htmlFor="scr-beneish" className="block text-[11px] font-semibold text-ink-muted">
-                    Beneish M-Score
-                  </label>
-                  <Combobox
-                    id="scr-beneish"
-                    options={beneishOptions}
-                    value={beneishParam}
-                    onValueChange={(next) =>
-                      updateParams({ beneish_flag: next || null })
-                    }
-                    placeholder="Tất cả"
-                    searchPlaceholder="Tìm trạng thái Beneish..."
-                    ariaLabel="Beneish M-Score"
-                  />
-                </div>
-
-                <div className="space-y-1 lg:col-span-3">
-                  <label htmlFor="scr-fscore" className="block text-[11px] font-semibold text-ink-muted">
-                    Piotroski F-Score tối thiểu
-                  </label>
-                  <Combobox
-                    id="scr-fscore"
-                    options={fScoreOptions}
-                    value={minFParam}
-                    onValueChange={(next) =>
-                      updateParams({ min_f_score: next || null })
-                    }
-                    placeholder="Không giới hạn"
-                    searchPlaceholder="Chọn ngưỡng F-Score..."
-                    ariaLabel="Piotroski F-Score tối thiểu"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 lg:col-span-3">
-                  <div className="space-y-1">
-                    <label htmlFor="scr-prob-min" className="block text-[11px] font-semibold text-ink-muted">
-                      XS rủi ro 1 năm từ (%)
-                    </label>
-                    <Input
-                      id="scr-prob-min"
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={toPctDisplay(minProbParam)}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        if (!v) return updateParams({ min_distress_prob: null });
-                        const n = Number(v);
-                        if (Number.isFinite(n)) {
-                          const dec = Math.max(0, Math.min(1, n / 100));
-                          updateParams({ min_distress_prob: dec.toFixed(3) });
-                        }
-                      }}
-                      placeholder="0"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label htmlFor="scr-prob-max" className="block text-[11px] font-semibold text-ink-muted">
-                      Đến (%)
-                    </label>
-                    <Input
-                      id="scr-prob-max"
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={toPctDisplay(maxProbParam)}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        if (!v) return updateParams({ max_distress_prob: null });
-                        const n = Number(v);
-                        if (Number.isFinite(n)) {
-                          const dec = Math.max(0, Math.min(1, n / 100));
-                          updateParams({ max_distress_prob: dec.toFixed(3) });
-                        }
-                      }}
-                      placeholder="100"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 lg:col-span-3">
-                  <div className="space-y-1">
-                    <label htmlFor="scr-rf-min" className="block text-[11px] font-semibold text-ink-muted">
-                      Cờ đỏ từ
-                    </label>
-                    <Input
-                      id="scr-rf-min"
-                      type="number"
-                      min={0}
-                      max={10}
-                      value={minRfParam}
-                      onChange={(e) =>
-                        updateParams({ min_red_flags: e.target.value || null })
-                      }
-                      placeholder="0"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label htmlFor="scr-rf-max" className="block text-[11px] font-semibold text-ink-muted">
-                      Đến
-                    </label>
-                    <Input
-                      id="scr-rf-max"
-                      type="number"
-                      min={0}
-                      max={10}
-                      value={maxRfParam}
-                      onChange={(e) =>
-                        updateParams({ max_red_flags: e.target.value || null })
-                      }
-                      placeholder="10"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 pt-1 lg:hidden">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    applyFilterPreset({});
-                    setMobileFiltersOpen(false);
-                  }}
-                >
-                  <RotateCcw className="size-3" />
-                  <span>Đặt lại</span>
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => setMobileFiltersOpen(false)}
-                >
-                  Xem kết quả ({total})
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <ScreenerFilterDrawer
+          mobileFiltersOpen={mobileFiltersOpen}
+          setMobileFiltersOpen={setMobileFiltersOpen}
+          qDraft={qDraft}
+          setQDraft={setQDraft}
+          onSubmitKeyword={handleSubmitKeyword}
+          updateParams={updateParams}
+          exchangeOptions={exchangeOptions}
+          exchangeParam={exchangeParam}
+          sectorOptions={sectorOptions}
+          sectorParam={sectorParam}
+          riskTierMenuRef={riskTierMenuRef}
+          riskTierMenuOpen={riskTierMenuOpen}
+          setRiskTierMenuOpen={setRiskTierMenuOpen}
+          riskTierTriggerLabel={riskTierTriggerLabel}
+          riskTiersParam={riskTiersParam}
+          riskTierOptions={riskTierOptions}
+          applyRiskTiers={applyRiskTiers}
+          altmanOptions={altmanOptions}
+          altmanParam={altmanParam}
+          advancedFiltersOpen={advancedFiltersOpen}
+          setAdvancedFiltersOpen={setAdvancedFiltersOpen}
+          beneishOptions={beneishOptions}
+          beneishParam={beneishParam}
+          fScoreOptions={fScoreOptions}
+          minFParam={minFParam}
+          minProbParam={minProbParam}
+          maxProbParam={maxProbParam}
+          minRfParam={minRfParam}
+          maxRfParam={maxRfParam}
+          toPctDisplay={toPctDisplay}
+          applyFilterPreset={applyFilterPreset}
+          total={total}
+        />
 
         {/* Active Filter Chips */}
         {activeFilterCount > 0 ? (

@@ -4,16 +4,11 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
-  AlertTriangle,
   Briefcase,
   Building2,
   Check,
-  Download,
   Globe2,
   Link2,
-  Pin,
-  PinOff,
-  RotateCcw,
   Search,
   SlidersHorizontal,
   X,
@@ -22,6 +17,13 @@ import { StressSectorBarChart } from "@/components/charts/StressSectorBarChart";
 import { RiskBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
+import {
+  formatSignedBillionsDelta,
+  StressComparisonDeltaCard,
+  StressComparisonSummaryCard,
+} from "@/components/stress-test/StressComparisonSection";
+import { StressControlsDrawer } from "@/components/stress-test/StressControlsDrawer";
+import { StressIssuerDetailTable } from "@/components/stress-test/StressIssuerDetailTable";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
@@ -36,17 +38,13 @@ import {
   formatPercent,
   formatPercentPoints,
   formatVndBillions,
-  MINUS_SIGN,
   normalizeSearchText,
 } from "@/lib/format";
 import {
-  clampShockValue,
   computePortfolioStressMetrics,
   computeScenarioComparison,
-  DEFAULT_SHOCKS,
   parseStressUrlParams,
   serializeStressUrlParams,
-  SHOCK_BOUNDS,
   STRESS_PRESETS,
   type ShockUiState,
   type StressScope,
@@ -72,109 +70,6 @@ const PRIORITY_CORPORATE_TICKERS = [
 
 const ICR_TOOLTIP_TEXT =
   "ICR (Interest Coverage Ratio = EBIT / Chi phí lãi vay): số lần lợi nhuận hoạt động bù đắp chi phí lãi vay. Doanh nghiệp có ICR < 1,0x đối mặt nguy cơ thiếu hụt dòng tiền trả lãi.";
-
-function DualShockControl({
-  id,
-  label,
-  unit,
-  min,
-  max,
-  step,
-  value,
-  tooltip,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  unit: string;
-  min: number;
-  max: number;
-  step: number;
-  value: number;
-  tooltip?: { text: string; label?: string };
-  onChange: (next: number) => void;
-}) {
-  const span = max - min;
-  const hasZeroInside = min < 0 && max > 0 && span > 0;
-  const zeroPct = hasZeroInside ? ((0 - min) / span) * 100 : null;
-
-  return (
-    <div className="space-y-1.5 border-b border-border/60 pb-2.5 last:border-b-0 last:pb-0">
-      <div className="flex items-center justify-between gap-2 text-xs">
-        <div className="flex min-w-0 items-center gap-1">
-          <label htmlFor={id} className="truncate font-medium text-ink">
-            {label}
-          </label>
-          {tooltip ? (
-            <InfoTooltip text={tooltip.text} label={tooltip.label} />
-          ) : null}
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <Input
-            id={id}
-            type="number"
-            min={min}
-            max={max}
-            step={step}
-            value={value}
-            onChange={(e) => onChange(clampShockValue(e.target.value, min, max, 0))}
-            className="num h-7 w-20 px-1.5 text-right text-xs"
-          />
-          <span className="w-16 shrink-0 text-[11px] text-ink-muted">{unit}</span>
-        </div>
-      </div>
-      <div className="relative pt-0.5">
-        {zeroPct !== null ? (
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute top-0 h-2.5 w-px bg-border-strong"
-            style={{ left: `${zeroPct}%` }}
-          />
-        ) : null}
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={value}
-          aria-label={`${label} thanh trượt`}
-          onChange={(e) => onChange(clampShockValue(e.target.value, min, max, 0))}
-          className="relative z-10 w-full accent-accent-ink"
-        />
-      </div>
-      <div className="num relative h-3.5 text-[10px] text-ink-subtle">
-        <span className="absolute left-0 top-0">{min}</span>
-        {zeroPct !== null ? (
-          <span
-            className="absolute top-0 -translate-x-1/2 font-medium text-ink-muted"
-            style={{ left: `${zeroPct}%` }}
-          >
-            0
-          </span>
-        ) : null}
-        <span className="absolute right-0 top-0">
-          {max > 0 ? `+${max}` : max}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function formatSignedInteger(delta: number): string {
-  if (delta === 0) return "0";
-  const absFormatted = formatNumber(Math.abs(delta), 0);
-  return delta < 0 ? `${MINUS_SIGN}${absFormatted}` : `+${absFormatted}`;
-}
-
-function formatSignedBillionsDelta(deltaVnd: number): string {
-  if (!Number.isFinite(deltaVnd)) return "N/A";
-  const billions = deltaVnd / 1_000_000_000;
-  if (Math.abs(billions) < 0.05) return "0,0 tỷ";
-  const absFormatted = formatNumber(Math.abs(billions), 1);
-  return billions < 0
-    ? `${MINUS_SIGN}${absFormatted} tỷ`
-    : `+${absFormatted} tỷ`;
-}
 
 function StressTestContent() {
   const router = useRouter();
@@ -831,199 +726,17 @@ function StressTestContent() {
 
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
         {/* Left Shock Controls (Desktop) / Collapsible Drawer (Mobile < lg) */}
-        <div
-          id="stress-controls-drawer"
-          role={mobileControlsOpen ? "dialog" : undefined}
-          aria-modal={mobileControlsOpen ? true : undefined}
-          aria-label={mobileControlsOpen ? "Tham số cú sốc vĩ mô" : undefined}
-          className={cn(
-            "lg:block lg:w-72 lg:shrink-0",
-            mobileControlsOpen
-              ? "fixed inset-0 z-40 flex bg-ink/30 lg:static lg:inset-auto lg:z-auto lg:bg-transparent"
-              : "hidden",
-          )}
-          onClick={() => setMobileControlsOpen(false)}
-        >
-          <Card
-            className="flex h-full w-80 max-w-[85vw] flex-col overflow-y-auto rounded-none border-r border-border lg:h-auto lg:w-full lg:max-w-none lg:overflow-visible lg:rounded-lg lg:border"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <CardHeader className="py-2.5">
-              <CardTitle className="text-[14px]">Tham số cú sốc vĩ mô</CardTitle>
-              <div className="flex items-center gap-1">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => setShocks(DEFAULT_SHOCKS)}
-                >
-                  <RotateCcw className="size-3" />
-                  Về 0
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="lg:hidden"
-                  aria-label="Đóng bảng tham số sốc"
-                  onClick={() => setMobileControlsOpen(false)}
-                >
-                  <X className="size-4" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3 p-3.5">
-              <div className="space-y-1">
-                <label
-                  htmlFor="scenario-name-input"
-                  className="text-[11px] font-medium text-ink-muted"
-                >
-                  Tên kịch bản hiện tại (Kịch bản B)
-                </label>
-                <Input
-                  id="scenario-name-input"
-                  value={shocks.scenarioName}
-                  maxLength={60}
-                  onChange={(e) =>
-                    setShocks((s) => ({ ...s, scenarioName: e.target.value }))
-                  }
-                  placeholder="Nhập tên kịch bản..."
-                  className="h-7 text-xs"
-                />
-              </div>
-
-              <DualShockControl
-                id="shock-rev"
-                label="Biến động doanh thu"
-                unit="%"
-                min={SHOCK_BOUNDS.revPct.min}
-                max={SHOCK_BOUNDS.revPct.max}
-                step={SHOCK_BOUNDS.revPct.step}
-                value={shocks.revPct}
-                onChange={(v) =>
-                  setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", revPct: v }))
-                }
-              />
-              <DualShockControl
-                id="shock-gm"
-                label="Biến động biên gộp"
-                unit="điểm %"
-                min={SHOCK_BOUNDS.gmPp.min}
-                max={SHOCK_BOUNDS.gmPp.max}
-                step={SHOCK_BOUNDS.gmPp.step}
-                value={shocks.gmPp}
-                tooltip={{
-                  label: "Giải thích đơn vị điểm %",
-                  text: "Điểm phần trăm (điểm %): thay đổi tuyệt đối của biên lợi nhuận gộp. Ví dụ biên gộp từ 20% giảm −2 điểm % còn 18%.",
-                }}
-                onChange={(v) =>
-                  setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", gmPp: v }))
-                }
-              />
-              <DualShockControl
-                id="shock-rate"
-                label="Cú sốc lãi suất vay"
-                unit="bps"
-                min={SHOCK_BOUNDS.rateBps.min}
-                max={SHOCK_BOUNDS.rateBps.max}
-                step={SHOCK_BOUNDS.rateBps.step}
-                value={shocks.rateBps}
-                tooltip={{
-                  label: "Giải thích đơn vị bps",
-                  text: "100 bps (điểm cơ bản) = 1,0 điểm % lãi suất vay. Ví dụ +200 bps tương đương lãi suất vay tăng thêm 2,0 điểm %.",
-                }}
-                onChange={(v) =>
-                  setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", rateBps: v }))
-                }
-              />
-              <DualShockControl
-                id="shock-dso"
-                label="Tăng số ngày thu tiền (DSO)"
-                unit="ngày"
-                min={SHOCK_BOUNDS.dsoDays.min}
-                max={SHOCK_BOUNDS.dsoDays.max}
-                step={SHOCK_BOUNDS.dsoDays.step}
-                value={shocks.dsoDays}
-                tooltip={{
-                  label: "Giải thích chỉ số DSO",
-                  text: "DSO (Days Sales Outstanding): số ngày thu tiền bình quân từ khách hàng. DSO tăng làm tăng vốn lưu động bị chiếm dụng và giảm dòng tiền CFO.",
-                }}
-                onChange={(v) =>
-                  setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", dsoDays: v }))
-                }
-              />
-              <DualShockControl
-                id="shock-dio"
-                label="Tăng số ngày tồn kho (DIO)"
-                unit="ngày"
-                min={SHOCK_BOUNDS.dioDays.min}
-                max={SHOCK_BOUNDS.dioDays.max}
-                step={SHOCK_BOUNDS.dioDays.step}
-                value={shocks.dioDays}
-                tooltip={{
-                  label: "Giải thích chỉ số DIO",
-                  text: "DIO (Days Inventory Outstanding): số ngày lưu kho bình quân. DIO tăng làm ứ đọng vốn ở hàng tồn kho và gây áp lực lên dòng tiền CFO.",
-                }}
-                onChange={(v) =>
-                  setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", dioDays: v }))
-                }
-              />
-
-              {isExtreme ? (
-                <div className="flex items-start gap-1.5 rounded border border-risk-mid/35 bg-risk-mid-soft p-2 text-[11px] text-risk-mid">
-                  <AlertTriangle
-                    className="mt-0.5 size-3.5 shrink-0"
-                    aria-hidden="true"
-                  />
-                  <span>
-                    Mức sốc cực đoan so với lịch sử doanh nghiệp niêm yết Việt Nam; kết quả phản ánh kịch bản căng thẳng hệ thống.
-                  </span>
-                </div>
-              ) : null}
-
-              <div className="space-y-1.5 border-t border-border/60 pt-2">
-                <p className="text-[11px] font-medium text-ink-muted">
-                  Đối chiếu song song A vs B
-                </p>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="flex-1"
-                    disabled={!activeResult || activeIsCalculating}
-                    onClick={() => activeResult && setPinnedA(activeResult)}
-                  >
-                    <Pin className="size-3.5" />
-                    {pinnedA ? "Cập nhật kịch bản A" : "So sánh A vs B (Ghim A)"}
-                  </Button>
-                  {pinnedA ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      aria-label="Thoát chế độ so sánh A vs B"
-                      onClick={() => setPinnedA(null)}
-                    >
-                      <PinOff className="size-3.5" />
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="pt-1 lg:hidden">
-                <Button
-                  type="button"
-                  size="sm"
-                  className="w-full"
-                  onClick={() => setMobileControlsOpen(false)}
-                >
-                  Xem kết quả mô phỏng
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <StressControlsDrawer
+          mobileControlsOpen={mobileControlsOpen}
+          setMobileControlsOpen={setMobileControlsOpen}
+          shocks={shocks}
+          setShocks={setShocks}
+          isExtreme={isExtreme}
+          activeResult={activeResult}
+          activeIsCalculating={activeIsCalculating}
+          pinnedA={pinnedA}
+          setPinnedA={setPinnedA}
+        />
 
         {/* Results Panel */}
         <div className="min-w-0 flex-1 space-y-4">
@@ -1273,119 +986,13 @@ function StressTestContent() {
 
               {/* Side-by-Side Scenario A vs Scenario B Comparison Panel */}
               {comparison && pinnedA ? (
-                <Card className="border-accent-ink/40">
-                  <CardHeader className="flex-wrap gap-2 py-2.5">
-                    <div>
-                      <CardTitle className="text-[14px]">
-                        So sánh song song: Kịch bản A vs Kịch bản B
-                      </CardTitle>
-                      <p className="mt-0.5 text-xs text-ink-muted">
-                        Chênh lệch được tính theo chiều (Kịch bản B − Kịch bản A)
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="xs"
-                        disabled={!activeResult || activeIsCalculating}
-                        onClick={() => setPinnedA(activeResult)}
-                      >
-                        <Pin className="size-3" />
-                        Cập nhật A
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="xs"
-                        onClick={() => setPinnedA(null)}
-                      >
-                        <PinOff className="size-3" />
-                        Bỏ ghim A
-                      </Button>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-3 p-3.5">
-                    {comparison.scopeMismatch ? (
-                      <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-risk-mid/35 bg-risk-mid-soft px-3 py-2 text-xs text-risk-mid">
-                        <span>
-                          Lưu ý: Kịch bản A được ghim ở phạm vi hoặc tập DN khác với Kịch bản B hiện tại. Nên cập nhật A để so sánh trên cùng tập mẫu.
-                        </span>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="xs"
-                          disabled={!activeResult || activeIsCalculating}
-                          onClick={() => setPinnedA(activeResult)}
-                        >
-                          Đồng bộ A theo phạm vi mới
-                        </Button>
-                      </div>
-                    ) : null}
-
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                      <div className="rounded-lg border border-border bg-canvas/60 p-3">
-                        <p className="text-[11px] font-semibold text-accent-ink">
-                          Kịch bản A (Đã ghim): {comparison.scenarioAName}
-                        </p>
-                        <p className="num mt-1.5 text-lg font-semibold text-ink">
-                          {formatPercent(comparison.debtAtRiskPctA)} nợ rủi ro
-                        </p>
-                        <p className="num mt-0.5 text-xs text-ink-muted">
-                          Quy mô:{" "}
-                          {formatVndBillions(comparison.debtAtRiskVndA, {
-                            decimals: 1,
-                            zeroAsZero: true,
-                          })}{" "}
-                          tỷ · {formatNumber(comparison.newlyDistressedCountA, 0)}{" "}
-                          DN mới khó
-                        </p>
-                      </div>
-
-                      <div className="rounded-lg border border-border bg-canvas/60 p-3">
-                        <p className="text-[11px] font-semibold text-risk-high">
-                          Kịch bản B (Hiện tại): {comparison.scenarioBName}
-                        </p>
-                        <p className="num mt-1.5 text-lg font-semibold text-ink">
-                          {formatPercent(comparison.debtAtRiskPctB)} nợ rủi ro
-                        </p>
-                        <p className="num mt-0.5 text-xs text-ink-muted">
-                          Quy mô:{" "}
-                          {formatVndBillions(comparison.debtAtRiskVndB, {
-                            decimals: 1,
-                            zeroAsZero: true,
-                          })}{" "}
-                          tỷ · {formatNumber(comparison.newlyDistressedCountB, 0)}{" "}
-                          DN mới khó
-                        </p>
-                      </div>
-
-                      <div className="rounded-lg border border-border bg-surface-muted/60 p-3">
-                        <p className="text-[11px] font-semibold text-ink">
-                          Chênh lệch (B − A)
-                        </p>
-                        <p
-                          className={cn(
-                            "num mt-1.5 text-lg font-semibold",
-                            comparison.debtAtRiskPctDelta > 0.0005
-                              ? "text-risk-high"
-                              : comparison.debtAtRiskPctDelta < -0.0005
-                                ? "text-risk-low"
-                                : "text-ink",
-                          )}
-                        >
-                          {formatPercentPoints(comparison.debtAtRiskPctDelta, 1)}
-                        </p>
-                        <p className="num mt-0.5 text-xs text-ink-muted">
-                          Nợ rủi ro:{" "}
-                          {formatSignedBillionsDelta(comparison.debtAtRiskVndDelta)}{" "}
-                          · DN mới:{" "}
-                          {formatSignedInteger(comparison.newlyDistressedCountDelta)}
-                        </p>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
+                <StressComparisonSummaryCard
+                  comparison={comparison}
+                  activeResult={activeResult}
+                  activeIsCalculating={activeIsCalculating}
+                  onPinA={setPinnedA}
+                  onUnpinA={() => setPinnedA(null)}
+                />
               ) : null}
 
               <StressSectorBarChart
@@ -1400,398 +1007,28 @@ function StressTestContent() {
 
               {/* Delta Table when A vs B Comparison Active */}
               {comparison ? (
-                <Card>
-                  <CardHeader className="flex-wrap gap-2 py-2.5">
-                    <div className="inline-flex rounded border border-border bg-canvas p-0.5 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => setCompareTab("ISSUERS")}
-                        className={cn(
-                          "rounded px-2.5 py-1 font-medium",
-                          compareTab === "ISSUERS"
-                            ? "bg-primary text-primary-foreground"
-                            : "text-ink-muted hover:text-ink",
-                        )}
-                      >
-                        Chênh lệch DN suy thoái mới ({comparison.addedDistressedCount}{" "}
-                        thêm ở B · {comparison.resolvedDistressedCount} giảm ở B)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCompareTab("SECTORS")}
-                        className={cn(
-                          "rounded px-2.5 py-1 font-medium",
-                          compareTab === "SECTORS"
-                            ? "bg-primary text-primary-foreground"
-                            : "text-ink-muted hover:text-ink",
-                        )}
-                      >
-                        Chênh lệch theo ngành ({filteredCompareSectors.length})
-                      </button>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {selectedSectorName ? (
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="xs"
-                          onClick={() => setSelectedSectorCode(null)}
-                        >
-                          Đang lọc: {selectedSectorName} ×
-                        </Button>
-                      ) : null}
-                      {compareTab === "SECTORS" ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="xs"
-                          disabled={filteredCompareSectors.length === 0}
-                          onClick={handleExportCompareSectorsCsv}
-                        >
-                          <Download className="size-3" />
-                          Xuất CSV ngành A vs B
-                        </Button>
-                      ) : null}
-                    </div>
-                  </CardHeader>
-
-                  <CardContent className="p-0">
-                    {compareTab === "ISSUERS" ? (
-                      filteredCompareIssuers.length === 0 ? (
-                        <div className="p-6">
-                          <EmptyState
-                            title="Không có khác biệt DN suy thoái mới giữa Kịch bản A và B"
-                            description="Cả hai kịch bản ghi nhận cùng tập doanh nghiệp mới chuyển sang ICR < 1 (hoặc chưa có DN nào chuyển sang trạng thái suy thoái mới)."
-                          />
-                        </div>
-                      ) : (
-                        <div className="overflow-x-auto">
-                          <table className="w-full border-collapse text-xs">
-                            <thead>
-                              <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
-                                <th scope="col" className="px-3 py-2 text-left font-semibold">
-                                  Mã
-                                </th>
-                                <th scope="col" className="px-3 py-2 text-left font-semibold">
-                                  Ngành
-                                </th>
-                                <th scope="col" className="px-3 py-2 text-left font-semibold">
-                                  Biến động trạng thái (A → B)
-                                </th>
-                                <th scope="col" className="px-3 py-2 text-right font-semibold">
-                                  Tổng nợ (tỷ)
-                                </th>
-                                <th scope="col" className="px-3 py-2 text-right font-semibold">
-                                  ICR Cơ sở
-                                </th>
-                                <th scope="col" className="px-3 py-2 text-right font-semibold">
-                                  ICR Kịch bản A
-                                </th>
-                                <th scope="col" className="px-3 py-2 text-right font-semibold">
-                                  ICR Kịch bản B
-                                </th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {filteredCompareIssuers.map((it) => (
-                                <tr
-                                  key={it.ticker}
-                                  className="border-b border-border/60 hover:bg-surface-muted/40"
-                                >
-                                  <td className="px-3 py-2">
-                                    <Link
-                                      href={`/companies/${it.ticker}`}
-                                      className="font-mono font-semibold text-accent-ink hover:underline"
-                                    >
-                                      {it.ticker}
-                                    </Link>
-                                    <div className="max-w-[180px] truncate text-[11px] text-ink-muted">
-                                      {it.companyNameVn}
-                                    </div>
-                                  </td>
-                                  <td className="max-w-[150px] truncate px-3 py-2 text-ink-muted">
-                                    {it.icbNameLevel2}
-                                  </td>
-                                  <td className="px-3 py-2">
-                                    <RiskBadge
-                                      tone={
-                                        it.status === "ADDED_IN_B"
-                                          ? "high"
-                                          : it.status === "REMOVED_IN_B"
-                                            ? "low"
-                                            : "neutral"
-                                      }
-                                      label={
-                                        it.status === "ADDED_IN_B"
-                                          ? "Mới phát sinh ở B"
-                                          : it.status === "REMOVED_IN_B"
-                                            ? "Thoát suy thoái ở B"
-                                            : "Cả A và B"
-                                      }
-                                    />
-                                  </td>
-                                  <td className="num px-3 py-2 text-right">
-                                    {formatVndBillions(it.totalDebt, { decimals: 0 })}
-                                  </td>
-                                  <td className="num px-3 py-2 text-right text-ink-muted">
-                                    {formatMultiple(it.icrBaseline)}
-                                  </td>
-                                  <td className="num px-3 py-2 text-right">
-                                    {formatMultiple(it.icrA)}
-                                  </td>
-                                  <td className="num px-3 py-2 text-right font-semibold">
-                                    <span
-                                      className={
-                                        (it.icrB ?? 0) < 1
-                                          ? "text-risk-high"
-                                          : "text-ink"
-                                      }
-                                    >
-                                      {formatMultiple(it.icrB)}
-                                    </span>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )
-                    ) : (
-                      <div className="overflow-x-auto">
-                        <table className="w-full border-collapse text-xs">
-                          <thead>
-                            <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
-                              <th scope="col" className="px-3 py-2 text-left font-semibold">
-                                Ngành (ICB cấp 2)
-                              </th>
-                              <th scope="col" className="px-3 py-2 text-right font-semibold">
-                                Kịch bản A (%)
-                              </th>
-                              <th scope="col" className="px-3 py-2 text-right font-semibold">
-                                Kịch bản B (%)
-                              </th>
-                              <th scope="col" className="px-3 py-2 text-right font-semibold">
-                                Chênh lệch (B−A)
-                              </th>
-                              <th scope="col" className="px-3 py-2 text-right font-semibold">
-                                Nợ rủi ro B−A (tỷ)
-                              </th>
-                              <th scope="col" className="px-3 py-2 text-right font-semibold">
-                                DN mới khó (A → B)
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {filteredCompareSectors.map((s) => (
-                              <tr
-                                key={s.icbCodeLevel2}
-                                className="border-b border-border/60 hover:bg-surface-muted/40"
-                              >
-                                <td className="px-3 py-2 font-medium text-ink">
-                                  {s.icbNameLevel2}
-                                </td>
-                                <td className="num px-3 py-2 text-right">
-                                  {formatPercent(s.debtAtRiskPctA)}
-                                </td>
-                                <td className="num px-3 py-2 text-right font-semibold text-ink">
-                                  {formatPercent(s.debtAtRiskPctB)}
-                                </td>
-                                <td
-                                  className={cn(
-                                    "num px-3 py-2 text-right font-medium",
-                                    s.debtAtRiskPctDelta > 0.0005
-                                      ? "text-risk-high"
-                                      : s.debtAtRiskPctDelta < -0.0005
-                                        ? "text-risk-low"
-                                        : "text-ink-muted",
-                                  )}
-                                >
-                                  {formatPercentPoints(s.debtAtRiskPctDelta, 1)}
-                                </td>
-                                <td className="num px-3 py-2 text-right">
-                                  {formatSignedBillionsDelta(s.debtAtRiskVndDelta)}
-                                </td>
-                                <td className="num px-3 py-2 text-right">
-                                  {s.newlyDistressedA} → {s.newlyDistressedB} (
-                                  {formatSignedInteger(s.newlyDistressedDelta)})
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+                <StressComparisonDeltaCard
+                  comparison={comparison}
+                  compareTab={compareTab}
+                  setCompareTab={setCompareTab}
+                  filteredCompareIssuers={filteredCompareIssuers}
+                  filteredCompareSectors={filteredCompareSectors}
+                  selectedSectorName={selectedSectorName}
+                  onClearSector={() => setSelectedSectorCode(null)}
+                  onExportCompareSectorsCsv={handleExportCompareSectorsCsv}
+                />
               ) : null}
 
               {/* Standard Scenario Issuer Detail Table */}
-              <Card>
-                <CardHeader className="flex-wrap gap-2 py-2.5">
-                  <div className="inline-flex rounded border border-border bg-canvas p-0.5 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("NEWLY")}
-                      className={cn(
-                        "rounded px-2.5 py-1 font-medium",
-                        activeTab === "NEWLY"
-                          ? "bg-primary text-primary-foreground"
-                          : "text-ink-muted hover:text-ink",
-                      )}
-                    >
-                      {(() => {
-                        const totalNewly =
-                          activeResult.total_newly_distressed ??
-                          activeResult.newly_distressed_count;
-                        const shownNewly = activeResult.newly_distressed_issuers.length;
-                        return totalNewly > shownNewly
-                          ? `DN mới gặp khó (Top ${shownNewly} / ${totalNewly})`
-                          : `DN mới gặp khó (${totalNewly})`;
-                      })()}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("TOP")}
-                      className={cn(
-                        "rounded px-2.5 py-1 font-medium",
-                        activeTab === "TOP"
-                          ? "bg-primary text-primary-foreground"
-                          : "text-ink-muted hover:text-ink",
-                      )}
-                    >
-                      Nợ rủi ro lớn nhất ({activeResult.top_stressed_issuers.length})
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {selectedSectorName ? (
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="xs"
-                        onClick={() => setSelectedSectorCode(null)}
-                      >
-                        Đang lọc: {selectedSectorName} ×
-                      </Button>
-                    ) : null}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="xs"
-                      disabled={issuerList.length === 0}
-                      onClick={handleExportIssuersCsv}
-                    >
-                      <Download className="size-3" />
-                      Xuất CSV
-                    </Button>
-                  </div>
-                </CardHeader>
-
-                <CardContent className="p-0">
-                  {issuerList.length === 0 ? (
-                    <div className="p-6">
-                      <EmptyState
-                        title="Không có doanh nghiệp trong nhóm này"
-                        description="Thử tăng mức cú sốc vĩ mô hoặc bỏ bộ lọc ngành để xem danh sách."
-                      />
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full border-collapse text-xs">
-                        <thead>
-                          <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
-                            <th scope="col" className="px-3 py-2 text-left font-semibold">
-                              Mã
-                            </th>
-                            <th scope="col" className="px-3 py-2 text-left font-semibold">
-                              Ngành
-                            </th>
-                            <th scope="col" className="px-3 py-2 text-right font-semibold">
-                              Tổng nợ (tỷ)
-                            </th>
-                            <th scope="col" className="px-3 py-2 text-right font-semibold">
-                              ICR (Cơ sở → Sốc)
-                            </th>
-                            <th scope="col" className="px-3 py-2 text-right font-semibold">
-                              EBIT TTM (tỷ)
-                            </th>
-                            <th scope="col" className="px-3 py-2 text-right font-semibold">
-                              CFO TTM (tỷ)
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {issuerList.map((it) => (
-                            <tr
-                              key={it.issuer_id}
-                              className="border-b border-border/60 hover:bg-surface-muted/40"
-                            >
-                              <td className="px-3 py-2">
-                                <Link
-                                  href={`/companies/${it.ticker}`}
-                                  className="font-mono font-semibold text-accent-ink hover:underline"
-                                >
-                                  {it.ticker}
-                                </Link>
-                                <div className="max-w-[180px] truncate text-[11px] text-ink-muted">
-                                  {it.company_name_vn ?? ""}
-                                </div>
-                              </td>
-                              <td className="max-w-[150px] truncate px-3 py-2 text-ink-muted">
-                                {it.icb_name_level2 ?? "—"}
-                              </td>
-                              <td className="num px-3 py-2 text-right">
-                                {formatVndBillions(it.total_debt, { decimals: 0 })}
-                              </td>
-                              <td className="num px-3 py-2 text-right">
-                                <span className="text-ink-muted">
-                                  {formatMultiple(it.interest_coverage)} →{" "}
-                                </span>
-                                <strong
-                                  className={
-                                    (it.stressed_interest_coverage ?? 0) < 1
-                                      ? "text-risk-high"
-                                      : "text-ink"
-                                  }
-                                >
-                                  {formatMultiple(it.stressed_interest_coverage)}
-                                </strong>
-                              </td>
-                              <td className="num px-3 py-2 text-right">
-                                <span className="text-ink-muted">
-                                  {formatVndBillions(it.ebit_ttm, {
-                                    accountingNegative: true,
-                                  })}{" "}
-                                  →{" "}
-                                </span>
-                                <span>
-                                  {formatVndBillions(it.stressed_ebit_ttm, {
-                                    accountingNegative: true,
-                                  })}
-                                </span>
-                              </td>
-                              <td className="num px-3 py-2 text-right">
-                                <span className="text-ink-muted">
-                                  {formatVndBillions(it.cfo_ttm, {
-                                    accountingNegative: true,
-                                  })}{" "}
-                                  →{" "}
-                                </span>
-                                <span>
-                                  {formatVndBillions(it.stressed_cfo_ttm, {
-                                    accountingNegative: true,
-                                  })}
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+              <StressIssuerDetailTable
+                activeResult={activeResult}
+                activeTab={activeTab}
+                setActiveTab={setActiveTab}
+                issuerList={issuerList}
+                selectedSectorName={selectedSectorName}
+                onClearSector={() => setSelectedSectorCode(null)}
+                onExportIssuersCsv={handleExportIssuersCsv}
+              />
             </div>
           )}
         </div>
