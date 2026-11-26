@@ -89,7 +89,7 @@ fnm exec --using=default -- npm.cmd --prefix frontend run test:unit
 - **Backend (`pytest`):**
   - Test `QoQ` trên quý chuyển giao Q4/2025 (`TT200`) → Q1/2026 (`TT99`): bắt buộc trả `NULL` (`MIXED_TAXONOMY`).
   - Test `suggested-peers`: ngành có 20 DN chọn đúng 4 DN quy mô gần nhất; ngành L3 chỉ có 2 DN tự fallback L2 và gắn cờ `peer_basis = "ICB_LEVEL_2"`.
-  - Test `ops_router`: user `PRO_ANALYST` gọi `/api/v3/ops/qa-queue` nhận `403 Forbidden`; `INTERNAL_OPS` duyệt revision sinh `revision_no = 2` mà vẫn giữ nguyên `revision_no = 1`.
+  - Test `ops_router`: user `USER` / `RESEARCHER` gọi `/api/v3/ops/qa-queue` nhận `403 Forbidden`; `INTERNAL_OPS` duyệt revision sinh `revision_no = 2` mà vẫn giữ nguyên `revision_no = 1`.
 - **Frontend (`vitest`):** Test click từng nút trên `DuPontTreeChart` kích hoạt callback `onSelectMetric` mở đúng `SourceDrawer`; test nút gợi ý đối thủ nạp đúng 4 ticker vào `/compare`.
 
 ---

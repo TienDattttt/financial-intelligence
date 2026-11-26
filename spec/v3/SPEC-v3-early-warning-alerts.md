@@ -146,4 +146,4 @@ git worktree add ../finintel-v3-early-warning-alerts -b feat/v3-early-warning-al
 
 ## 12. Open Questions
 
-- Xác nhận giới hạn số kênh/rule cảnh báo cho gói `FREE` (đề xuất: chỉ In-App tối đa 5 mã) vs `PRO_ANALYST` (Email + Telegram + 50 mã) vs `ENTERPRISE_TEAM` (Webhook không giới hạn).
+- Xác nhận kênh gửi cảnh báo mặc định cho dự án phi thương mại: ưu tiên **In-App + Telegram Bot (miễn phí không giới hạn)** làm kênh instant chính, và dùng **Resend Free (`100` email/ngày)** cho **Daily Digest** gộp 1 email/ngày để không vượt hạn mức free.

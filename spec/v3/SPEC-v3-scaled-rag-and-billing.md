@@ -1,30 +1,34 @@
-# Spec: `v3-scaled-rag-and-billing` — Cost-Controlled Scaled PDF RAG & Billing/Quota — V3.0
+# Spec: `v3-scaled-rag-and-billing` — Cost-Controlled Scaled PDF RAG & Fair-Use Free Quota — V3.0
 
-> **Module ID:** `v3-scaled-rag-and-billing`  
+> **Module ID:** `v3-scaled-rag-and-billing` *(giữ nguyên ID ổn định theo Capability Map)*  
 > **Wave / Build Order:** Phase 2 — **Wave 2** (chạy song song với `v3-early-warning-alerts`, `v3-analyst-depth-and-ops-qa`)  
 > **Depends On:** `v3-identity-and-workspace`, `v3-infra-ha-storage`  
-> **Consumers:** `v3-b2b-commercial-api`, SaaS Monetization  
-> **MoSCoW / Audit Refs:** `#61` mở rộng quy mô từ `99 PDF / 88 DN` lên toàn nhóm trọng yếu kèm kiểm soát Unit Economics/COGS + Billing/Quota/Usage Metering.
+> **Consumers:** `v3-b2b-commercial-api`, Người dùng cuối  
+> **Quyết định đã khóa:** Dự án **phi thương mại (`$0/tháng`)** — **loại bỏ hoàn toàn cổng thanh toán trả phí (VNPay/PayOS/Stripe)**, chuyển trọng tâm sang **Fair-Use Free Quota & Free-Tier Budget Guard** để bảo vệ hạn mức miễn phí của Google AI Studio (Gemini Free Tier) và Cloudflare R2 (`10 GB`).
 
 ---
 
 ## 1. Objective
 
-Biến lợi thế cạnh tranh lớn nhất của FinIntel (**Grounded PDF Footnote RAG** hiện có 99 PDF / 88 DN trong `data/curated_pdfs/curated_pdfs_manifest.parquet`) thành tính năng thương mại sinh lời mà không vỡ chi phí Vision OCR / LLM:
-1. **Batch PDF RAG Pipeline kiểm soát COGS (`src/finintel/rag/batch_pipeline.py`):**
-   - Tự động ưu tiên thu thập & lập chỉ mục PDF Thuyết minh BCTC kiểm toán/soát xét cho **100% DN nhóm `R4/R5` + 100% DN có cờ đỏ `RF_01..RF_10` + Top 300–500 vốn hóa**.
-   - **Định tuyến tiết kiệm chi phí (Text-First Routing):** Mọi trang PDF đi qua `PyMuPDF` trước; chỉ chuyển sang Vision OCR khi mật độ ký tự thấp (trang scan/đóng dấu đỏ), lỗi font VNI/TCVN3 hoặc bảng bị vỡ — đi kèm **trần ngân sách ngày (`daily_vision_page_cap`)** và cache theo `content_sha256` để không bao giờ OCR lại cùng 1 PDF 2 lần.
-   - Bắt buộc kiểm tra `ConsentPurpose.CROSS_BORDER_LLM_RAG` (Luật 91/2025/QH15) trước khi gửi truy vấn người dùng tới API LLM nước ngoài (và tự động ẩn danh `user_id`/`email` khỏi prompt).
-2. **Billing, Plan Tiers & Usage Metering (`src/finintel/billing/`):**
-   - Quản lý 3 gói thương mại (`FREE`, `PRO_ANALYST`, `ENTERPRISE_TEAM`), bảng hạn mức hàng tháng (`rag_queries_per_month`, `xlsx_exports_per_month`, `max_watchlists`, `max_watchlist_tickers`, `alert_channels`), đếm usage nguyên tử (Valkey + PostgreSQL ledger) và webhook thanh toán chuẩn (abstraction `PaymentProvider` hỗ trợ VNPay/PayOS/Stripe + idempotency key).
+Mở rộng lợi thế lớn nhất của FinIntel (**Grounded PDF Footnote RAG** — hiện có 99 PDF / 88 DN trong `data/curated_pdfs/curated_pdfs_manifest.parquet`) lên quy mô toàn nhóm doanh nghiệp rủi ro & vốn hóa lớn mà **vẫn vận hành 100% ở mức chi phí `$0/tháng`**:
+1. **Batch PDF RAG Pipeline tối ưu Free-Tier (`src/finintel/rag/batch_pipeline.py`):**
+   - Ưu tiên tự động lập chỉ mục PDF Thuyết minh BCTC cho **100% DN nhóm `R4/R5` + 100% DN có cờ đỏ `RF_01..RF_10` + Top 300 vốn hóa**.
+   - **Định tuyến Text-First (`PyMuPDF` = `$0`):** Mọi trang text sạch trích xuất 100% cục bộ không tốn 1 token nào; chỉ gửi trang scan/bảng vỡ sang **Gemini Free Tier** với trần cứng **`daily_vision_page_cap` (mặc định `150` trang/ngày)** và dedup tuyệt đối theo `content_sha256` để không bao giờ OCR lại cùng 1 PDF 2 lần.
+   - Ẩn danh PII khỏi prompt và kiểm tra `ConsentPurpose.CROSS_BORDER_LLM_RAG` (Luật 91/2025/QH15) trước khi gọi API Gemini.
+2. **Fair-Use Free Quota & Resource Guard (`src/finintel/quota/`):**
+   - Thay thế billing thương mại bằng cơ chế **giới hạn sử dụng công bằng (Fair-Use Quota)** chống spam & chống cạn free tier:
+     - `USER` (đã đăng nhập miễn phí): `15` lượt điều tra RAG/ngày, `10` lượt xuất `.xlsx`/ngày, `5` Watchlists × `50` mã.
+     - `RESEARCHER` (tài khoản nghiên cứu được Ops duyệt miễn phí): `50` lượt RAG/ngày, `30` lượt xuất `.xlsx`/ngày, `20` Watchlists × `100` mã, được cấp Research API Key.
+     - `INTERNAL_OPS`: không giới hạn (vẫn tuân thủ `global_daily_gemini_cap`).
+   - Đếm quota nguyên tử qua Valkey/Upstash + bảng `usage_counters` trong `finintel_app`, kết hợp **Global Circuit Breaker** khi chạm `85%` hạn mức Gemini Free Tier trong ngày.
 
 ---
 
 ## 2. Tech Stack
 
-- **Backend (`Python 3.11`):** Kế thừa `pymupdf==2.1`, `pgvector==0.5.1`, `psycopg[binary]==3.3.9`, `redis==8.1.0`, `dagster==1.13.30`, `fastapi==0.165.0`, `httpx==0.28.1` (lazy-import trong core).
-- **Database:** Bảng billing/metering trong `finintel_app`; chunk/embedding giữ nguyên trong `finintel_rag` (`pgvector:pg16`, HNSW + `unaccent` FTS).
-- **Frontend (`Node 24+`):** `next==16.4.6`, `react==19.2.4`, hiển thị thanh mức dùng (Quota meter) ngay trên `DocumentInvestigationPanel` và trang `/billing`.
+- **Backend (`Python 3.11`):** `pymupdf==2.1`, `pgvector==0.5.1`, `psycopg[binary]==3.3.9`, `redis==8.1.0`, `dagster==1.13.30`, `fastapi==0.165.0` (lazy-import trong core). Không thêm thư viện thanh toán nào.
+- **Database:** Bảng `usage_counters`, `rag_cost_ledger` trong `finintel_app`; vector embeddings giữ trong `finintel_rag` (`pgvector:pg16`, tối ưu kích thước chỉ mục để nằm gọn dưới `1 GB` nếu chạy Neon Free hoặc `2 GB` trên OCI).
+- **Frontend (`Node 24+`):** `next==16.4.6`, `react==19.2.4` — hiển thị badge lượt dùng miễn phí còn lại trong ngày trên `DocumentInvestigationPanel` & `/profile`.
 
 ---
 
@@ -35,8 +39,8 @@ Biến lợi thế cạnh tranh lớn nhất của FinIntel (**Grounded PDF Foot
 .\.venv\Scripts\python.exe scripts/check_constraints.py
 .\.venv\Scripts\python.exe -m ruff format --check src scripts tests
 .\.venv\Scripts\python.exe -m ruff check src scripts tests
-.\.venv\Scripts\python.exe -m mypy --strict src/finintel/billing src/finintel/rag/batch_pipeline.py tests/unit/test_v3_scaled_rag_billing.py
-.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_scaled_rag_billing.py tests/unit/test_rag*.py -q
+.\.venv\Scripts\python.exe -m mypy --strict src/finintel/quota src/finintel/rag/batch_pipeline.py tests/unit/test_v3_scaled_rag_quota.py
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_scaled_rag_quota.py tests/unit/test_rag*.py -q
 
 # Frontend
 fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types
@@ -50,28 +54,19 @@ fnm exec --using=default -- npm.cmd --prefix frontend run test:unit
 
 | Path | Action | Responsibility |
 |---|---|---|
-| `config/migrations/app_v3_003_billing_quota.sql` | Create | DDL cho `plans`, `subscriptions`, `usage_counters`, `billing_transactions`, `rag_cost_ledger` |
-| `src/finintel/billing/` (`plans.py`, `quota.py`, `webhooks.py`, `router.py`, `schemas.py`) | Create (mỗi file `< 350` LOC) | Định nghĩa gói, kiểm tra & trừ quota nguyên tử (`enforce_quota`), xử lý webhook thanh toán idempotent |
-| `src/finintel/rag/batch_pipeline.py` | Create (`<= 450` LOC) | Bộ lập lịch & ưu tiên 300–500 DN, Text-first router, `content_sha256` dedup, `daily_vision_page_cap`, ghi `rag_cost_ledger` |
-| `src/finintel/rag/router.py` | Modify (minimal) | Gắn dependency `enforce_quota("rag_query")` + kiểm tra `ConsentPurpose.CROSS_BORDER_LLM_RAG` |
-| `src/finintel/serving/api.py` | Modify (`<= 2` dòng) | Mount `billing_router` |
-| `frontend/src/app/billing/page.tsx` & `frontend/src/components/billing/QuotaBadge.tsx` | Create | Bảng giá minh bạch, trạng thái gói hiện tại, lịch sử sử dụng & thanh toán, nút nâng cấp |
-| `tests/unit/test_v3_scaled_rag_billing.py` | Create | Test Text-first vs Vision routing, `daily_vision_page_cap` dừng an toàn, quota concurrency race, webhook signature & idempotency |
+| `config/migrations/app_v3_003_fair_use_quota.sql` | Create | DDL `quota_policies`, `usage_counters`, `rag_usage_ledger` |
+| `src/finintel/quota/` (`policies.py`, `guard.py`, `router.py`, `schemas.py`) | Create (mỗi file `< 300` LOC) | Chính sách Fair-Use theo role (`USER/RESEARCHER/INTERNAL_OPS`), kiểm tra & trừ quota nguyên tử + Global Gemini Circuit Breaker |
+| `src/finintel/rag/batch_pipeline.py` | Create (`<= 450` LOC) | Hàng đợi ưu tiên PDF (`R4/R5` + cờ đỏ + Top 300), Text-first `PyMuPDF`, `content_sha256` dedup, `daily_vision_page_cap` |
+| `src/finintel/rag/router.py` | Modify (minimal) | Gắn `enforce_quota("rag_query")` + `ConsentPurpose.CROSS_BORDER_LLM_RAG` |
+| `src/finintel/serving/api.py` | Modify (`<= 2` dòng) | Mount `quota_router` |
+| `frontend/src/components/quota/QuotaBadge.tsx` | Create (`<= 180` LOC) | Hiển thị lượt RAG / Export còn lại trong ngày, tự ẩn nút mượt khi đạt trần kèm thời điểm reset 00:00 UTC+7 |
+| `tests/unit/test_v3_scaled_rag_quota.py` | Create | Test Text-first vs Vision routing, `daily_vision_page_cap`, atomic quota concurrency race, global circuit breaker |
 
 ---
 
 ## 5. Boundary Interfaces & Contracts
 
-### 5.1. Plan Entitlements Matrix (Cấp cho toàn bộ module SaaS & `v3-b2b-commercial-api`)
-| Capability | `FREE` | `PRO_ANALYST` | `ENTERPRISE_TEAM` |
-|---|---:|---:|---:|
-| Lượt điều tra PDF RAG / tháng | `10` | `200` | `2.000` (hoặc custom) |
-| Lượt xuất `.xlsx` / tháng | `5` | `Không giới hạn` | `Không giới hạn` |
-| Số Watchlist / Mã mỗi Watchlist | `1 / 10` | `10 / 50` | `50 / 200` |
-| Kênh cảnh báo sớm | `In-App` | `In-App + Email + Telegram` | `+ Webhook` |
-| API Access (`v3-b2b-commercial-api`) | `Không` | `Không` | `Có (theo hợp đồng License)` |
-
-### 5.2. Shared Quota Guard (`src/finintel/billing/quota.py`)
+### 5.1. Fair-Use Quota Guard (`src/finintel/quota/guard.py`)
 ```python
 def enforce_and_consume_quota(
     *,
@@ -79,48 +74,44 @@ def enforce_and_consume_quota(
     meter: Literal["rag_query", "xlsx_export", "api_call"],
     units: int = 1,
 ) -> QuotaReceipt:
-    """Atomically check plan limit and increment monthly counter; raises HTTP 429 with reset_at on exhaustion."""
+    """Atomically check daily fair-use limit & global free-tier circuit breaker; raises HTTP 429 with reset_at."""
 ```
 
-### 5.3. Billing HTTP Endpoints (`/api/v3/billing/*`)
-- `GET /api/v3/billing/plans` (public catalog)
-- `GET /api/v3/billing/subscription` (current plan + monthly quota usage)
-- `POST /api/v3/billing/checkout` (tạo phiên thanh toán qua `PaymentProvider`)
-- `POST /api/v3/billing/webhooks/{provider}` (xác thực chữ ký + idempotency key, tự cập nhật `users.role` & ghi `user_audit_logs`).
+### 5.2. Quota Endpoints (`/api/v3/quota/*`)
+- `GET /api/v3/quota/me` → trả lượt đã dùng / tối đa theo ngày cho `rag_query`, `xlsx_export`, `api_call` và thời điểm reset (`00:00 Asia/Ho_Chi_Minh`).
+- `GET /api/v3/ops/quota/system-budget` (`INTERNAL_OPS`) → xem mức tiêu thụ `daily_vision_page_cap` và `global_daily_gemini_cap`.
 
 ---
 
 ## 6. Code Style & Architectural Invariants
 
-- **Bảo toàn 100% luật Grounded RAG của FinIntel:** Mọi câu trả lời RAG bắt buộc trích dẫn `[Tài liệu, Trang X]` + nguyên văn excerpt và từ chối trung thực khi thiếu căn cứ; giữ `asyncio.Semaphore` bulkhead & Valkey response cache; không bao giờ để LLM tự tính tỷ số tài chính.
-- **Bảo vệ COGS cứng:** Nếu đạt `daily_vision_page_cap`, pipeline dừng các trang scan ở trạng thái `DEFERRED_VISION_CAP` (vẫn index sạch các trang text), ghi metric Prometheus `finintel_rag_vision_pages_total` và không gây crash job Dagster.
-- **Cấm gửi PII người dùng sang LLM:** Chỉ gửi câu hỏi tài chính + mã CK + ngữ cảnh đoạn trích PDF tới `src/finintel/rag/_gemini.py`.
+- **Bảo toàn 100% luật Grounded RAG:** Bắt buộc trích dẫn `[Tài liệu, Trang X]` + nguyên văn excerpt và từ chối trung thực khi thiếu căn cứ; giữ `asyncio.Semaphore` bulkhead & Valkey cache (cache HIT **không trừ quota** người dùng!).
+- **Cắt sạch code thanh toán:** Không tích hợp Stripe/VNPay/PayOS hay bảng giá thu tiền.
+- **Bảo vệ ổ đĩa & Free Tier:** Lưu file PDF gốc nén trên Cloudflare R2 (không phình ổ đĩa DB); theo dõi dung lượng `finintel_rag` để luôn nằm dưới ngưỡng an toàn.
 
 ---
 
 ## 7. Testing Strategy
 
 - **Unit & Concurrency (`pytest`):**
-  - Test `batch_pipeline.py` trên fixture PDF text sạch vs PDF scan giả lập: xác nhận `0` lời gọi Vision cho trang text sạch, cache hit 100% khi lặp `content_sha256`, dừng đúng tại `daily_vision_page_cap`.
-  - Test `enforce_and_consume_quota`: gửi 15 request đồng thời với limit 10 → đúng 10 thành công, 5 trả `429 Too Many Requests` kèm header `X-RateLimit-Remaining: 0`.
-  - Test Webhook thanh toán: chữ ký sai → `401`; gửi trùng `event_id` 2 lần → chỉ cộng gói 1 lần (idempotent).
-- **Frontend (`vitest`):** Hiển thị quota còn lại chính xác, cảnh báo lịch sự (không popup spam) khi hết lượt gói `FREE`.
+  - Test `batch_pipeline.py`: trang text sạch dùng `PyMuPDF` (`0` lần gọi Vision), PDF trùng `content_sha256` bỏ qua 100%, chạm `daily_vision_page_cap` dừng lịch sự ở trạng thái `DEFERRED_VISION_CAP`.
+  - Test `enforce_and_consume_quota`: 20 request đồng thời với limit `15` → đúng 15 thành công, 5 trả `429`; cache HIT trả về kết quả không trừ thêm quota.
+  - Test Global Circuit Breaker: khi tổng hệ thống chạm `85%` free-tier cap, trả `503` thân thiện kèm thời điểm mở lại.
 
 ---
 
 ## 8. Boundaries
 
-- **Always:** Lưu rõ đơn vị tiền tệ (`VND`) và lịch sử giao dịch bất biến (`billing_transactions` append-only).
-- **Ask first:** Trước khi chốt giá niêm yết VND cụ thể cho gói Pro/Enterprise và chọn cổng thanh toán thực (VNPay vs PayOS vs Stripe).
-- **Never:** Không lưu số thẻ tín dụng/CVV trên DB FinIntel (chỉ dùng hosted checkout của cổng thanh toán đạt PCI-DSS); không bỏ qua kiểm tra `CROSS_BORDER_LLM_RAG` consent.
+- **Always:** Không trừ quota khi kết quả RAG trả về từ Valkey response cache hoặc khi hệ thống gặp lỗi `5xx`.
+- **Ask first:** Trước khi thay đổi mô hình embedding (làm tăng kích thước vector trong `pgvector` và cần re-index toàn bộ `finintel_rag`).
+- **Never:** Không thêm luồng thu tiền/checkout trong dự án phi thương mại; không gửi email/user_id sang API LLM.
 
 ---
 
 ## 9. Success Criteria
 
-- [ ] `batch_pipeline.py` lập chỉ mục tự động được nhóm ưu tiên (`R4/R5` + cờ đỏ + Top vốn hóa) với tỷ lệ trang cần gọi Vision `< 25%` và có bảng theo dõi chi phí `rag_cost_ledger`.
-- [ ] `enforce_and_consume_quota` chặn chính xác vượt hạn mức ở mức nguyên tử (`0` race condition) và tích hợp vào `/api/v2/documents/{ticker}/investigate` & `/api/v3/exports/*`.
-- [ ] Luồng checkout + webhook nâng cấp gói `FREE → PRO_ANALYST` hoạt động idempotent và ghi đầy đủ `user_audit_logs`.
+- [ ] `batch_pipeline.py` tự động mở rộng chỉ mục PDF Thuyết minh cho nhóm `R4/R5` + cờ đỏ + Top 300 trong giới hạn `$0/tháng` (tỷ lệ trang cần Vision `< 25%`).
+- [ ] `enforce_and_consume_quota` chống spam nguyên tử (`0` race condition) và bảo vệ hạn mức miễn phí của Gemini/R2.
 - [ ] `0` lỗi `ruff`, `mypy --strict`, `check_constraints.py`, `pytest`, `npm run check`.
 
 ---
@@ -131,18 +122,17 @@ def enforce_and_consume_quota(
 git worktree add ../finintel-v3-scaled-rag-and-billing -b feat/v3-scaled-rag-and-billing main
 ```
 - Tách atomic commits:
-  1. `feat(billing): add plan matrix, atomic quota metering, and idempotent payment webhooks`
-  2. `feat(rag): add text-first COGS-capped batch PDF RAG pipeline and cost ledger`
-  3. `feat(rag,billing): wire quota and PDPL cross-border consent guards into investigate endpoint`
-  4. `feat(frontend): add billing page and quota usage indicators`
+  1. `feat(quota): add non-commercial fair-use quota guard and free-tier circuit breaker`
+  2. `feat(rag): add text-first PyMuPDF batch pipeline with daily Vision cap and SHA-256 dedup`
+  3. `feat(rag,frontend): wire quota guard, PDPL consent check, and QuotaBadge UI`
 
 ---
 
 ## 11. Out of Scope (Deferred)
 
-- Hóa đơn điện tử tự động (tích hợp MISA/VNPT e-Invoice — bổ sung khi có pháp nhân thương mại chính thức).
-- Tự vận hành mô hình LLM open-weights on-premise (đánh giá ở V3.2 khi sản lượng truy vấn > 500.000 lượt/tháng).
+- Thanh toán thương mại, hóa đơn điện tử, gói trả phí (Not Applicable — dự án phi thương mại).
+- GPU self-hosted LLM cluster.
 
 ## 12. Open Questions
 
-- Xác nhận cổng thanh toán ưu tiên tại Việt Nam (`PayOS` VietQR cho chuyển khoản nhanh nội địa + `VNPay` hay `Stripe` cho thẻ quốc tế) và mức trần `daily_vision_page_cap` mong muốn (đề xuất ban đầu: `1.500` trang/ngày).
+- Xác nhận mức trần mặc định `daily_vision_page_cap` (`150` trang/ngày) và `rag_queries_per_day` (`15` lượt/ngày cho `USER`) có phù hợp với tốc độ sử dụng thử nghiệm của bạn không.

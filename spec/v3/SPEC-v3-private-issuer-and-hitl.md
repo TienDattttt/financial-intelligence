@@ -16,7 +16,7 @@ Giải quyết bài toán giá trị cao cho phân khúc **Thẩm định Tín d
    - Chạy qua đúng bộ kiểm định kế toán **Layer 6 QG1** (cân bằng CĐKT, tiểu tổng, đơn vị tiền tệ) rồi đưa vào **luồng chấm điểm cô lập (`PrivateCreditScoringService`)**: tính 38 chỉ số tài chính, DuPont 5 nhân tố, 10 Cờ đỏ VAS, Altman Z'', Piotroski F-Score, Beneish M-Score, Stress Test IMF WP/15/216 và chấm điểm bằng mô hình `xgboost-layer4b-v2` (chế độ **Accounting-Only**, xử lý `NULL` tường minh cho các biến thị trường/TT96 không tồn tại ở DN tư nhân kèm cảnh báo giới hạn độ phủ rõ ràng).
    - **Cách ly dữ liệu tuyệt đối:** Dữ liệu BCTC DN chưa niêm yết lưu riêng trong `finintel_app` theo `user_id` (tự xóa theo chính sách retention / mã hóa khi lưu), **tuyệt đối không trộn vào DuckLake công khai hay tập huấn luyện ML**.
 2. **Hàng đợi Phản hồi Chuyên gia — HITL False Positive Triage (`#55` — `src/finintel/hitl/`):**
-   - Cho phép chuyên viên phân tích (`PRO_ANALYST`, `ENTERPRISE_TEAM`, `INTERNAL_OPS`) đánh dấu một cảnh báo Cờ đỏ (`RF_01..RF_10`) hoặc Ngoại lai đa biến là `CONFIRMED_RISK` hay `BENIGN_DOMAIN_EXCEPTION` kèm lý do chuẩn hóa (vd: *Xây lắp hạch toán theo tiến độ*, *Mô hình Holding nhận cổ tức công ty liên kết*) và trích dẫn trang thuyết minh.
+   - Cho phép người dùng phân tích (`USER`, `RESEARCHER`, `INTERNAL_OPS`) đánh dấu một cảnh báo Cờ đỏ (`RF_01..RF_10`) hoặc Ngoại lai đa biến là `CONFIRMED_RISK` hay `BENIGN_DOMAIN_EXCEPTION` kèm lý do chuẩn hóa (vd: *Xây lắp hạch toán theo tiến độ*, *Mô hình Holding nhận cổ tức công ty liên kết*) và trích dẫn trang thuyết minh.
    - **Kỷ luật MRM (SR 11-7):** Phản hồi HITL **tuyệt đối KHÔNG tự động ghi đè nhãn huấn luyện ML**; chỉ lưu vào bảng triage để đội lượng hóa đánh giá định kỳ (tinh chỉnh ngoại lệ quy tắc cờ đỏ & từ điển ngành).
 
 ---
@@ -54,7 +54,7 @@ fnm exec --using=default -- npm.cmd --prefix frontend run test:unit
 | `src/finintel/private_credit/` (`vas_excel_parser.py`, `scorer.py`, `router.py`, `schemas.py`) | Create (mỗi file `< 450` LOC) | Tải mẫu Excel VAS chuẩn TT200/TT99, parse đa kỳ + chống ZIP-bomb, chạy QG1 + Analytics + ML scoring cô lập |
 | `src/finintel/hitl/` (`service.py`, `router.py`, `schemas.py`) | Create (mỗi file `< 300` LOC) | Ghi nhận, tổng hợp thống kê tỷ lệ False Positive theo từng mã cờ đỏ `RF_01..RF_10` và từng ngành ICB |
 | `src/finintel/serving/api.py` | Modify (`<= 2` dòng) | Mount `private_credit_router` và `hitl_router` |
-| `frontend/src/app/private-scoring/page.tsx` | Create (`<= 450` LOC) | Upload Excel/PDF → Xem trước bảng bóc tách & lỗi cân bằng QG1 → Xem hồ sơ rủi ro tức thì (`ENTERPRISE_TEAM`) |
+| `frontend/src/app/private-scoring/page.tsx` | Create (`<= 450` LOC) | Upload Excel/PDF → Xem trước bảng bóc tách & lỗi cân bằng QG1 → Xem hồ sơ rủi ro tức thì (`RESEARCHER` / `INTERNAL_OPS`) |
 | `frontend/src/components/financial/RedFlagChecklist.tsx` | Modify (small) | Nút *"Phản hồi chuyên gia"* nhỏ gọn trên từng cờ đỏ mở dialog gửi HITL feedback |
 | `tests/unit/test_v3_private_hitl.py` | Create | Test parse Excel VAS 3 bảng, ZIP-bomb rejection, QG1 imbalance block, private-scoring isolation (0 ghi vào DuckLake), HITL RBAC & aggregation |
 
@@ -62,7 +62,7 @@ fnm exec --using=default -- npm.cmd --prefix frontend run test:unit
 
 ## 5. Boundary Interfaces & Contracts
 
-### 5.1. Private Issuer Scoring Endpoints (`/api/v3/private-credit/*` — `ENTERPRISE_TEAM` / `INTERNAL_OPS`)
+### 5.1. Private Issuer Scoring Endpoints (`/api/v3/private-credit/*` — `RESEARCHER` / `INTERNAL_OPS`)
 - `GET /api/v3/private-credit/template.xlsx?taxonomy=VAS_TT99_2025` — Tải file mẫu Excel chuẩn VAS có mã dòng `100..440` khóa sẵn.
 - `POST /api/v3/private-credit/parse` (multipart `<= 15 MB`) → trả JSON preview 3 bảng + báo cáo cân bằng QG1 (`PASS | FAIL` kèm dòng lệch).
 - `POST /api/v3/private-credit/dossiers/{id}/score` → chạy tính toán cô lập và trả bộ kết quả chuẩn hóa (tỷ số, DuPont, cờ đỏ, Altman/F-Score/Beneish, PD có gắn cờ `ACCOUNTING_ONLY_MODE`, Stress Test).

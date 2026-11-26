@@ -12,7 +12,7 @@
 
 Bổ sung lớp định danh, phân quyền và không gian làm việc cá nhân hóa lưu tại **PostgreSQL nội địa Việt Nam (`finintel_app`)**, biến FinIntel từ công cụ đọc-chỉ lưu `localStorage` thành nền tảng SaaS thương mại an toàn và tuân thủ Luật Bảo vệ dữ liệu cá nhân `91/2025/QH15`:
 1. **Auth & Session an toàn (`#1`, `#2`, `#3`, `#4`):** Đăng ký (email verification + consent tường minh), đăng nhập, phiên HttpOnly Secure SameSite Cookie + Refresh Token Rotation (lưu hash token trong DB, hỗ trợ thu hồi phiên), quên/đổi mật khẩu (OTP/token hết hạn 15 phút), hồ sơ cá nhân & quyền xóa tài khoản/dữ liệu cá nhân (Right to Erasure).
-2. **RBAC phân tầng SaaS (`#5`):** 4 vai trò rõ ràng: `FREE`, `PRO_ANALYST`, `ENTERPRISE_TEAM`, `INTERNAL_OPS` (vẫn giữ trải nghiệm xem công khai không cần đăng nhập cho trang cơ bản, nhưng yêu cầu đăng nhập cho Multi-Watchlist server, Ghi chú, Alerts, RAG quota cao và Export Pro).
+2. **RBAC gọn nhẹ cho dự án phi thương mại (`#5`):** 3 vai trò rõ ràng: `USER` (đăng ký tự do miễn phí), `RESEARCHER` (nhà nghiên cứu/giảng viên được duyệt miễn phí để dùng quota cao hơn & Research API Key), `INTERNAL_OPS` (vận hành QA & dữ liệu). Vẫn giữ trải nghiệm xem công khai không cần đăng nhập cho trang cơ bản.
 3. **Server-Side Workspace (`#40`):** Chuyển `Watchlist` (hỗ trợ tối đa 10 danh mục với gói Pro, 1 danh mục với gói Free) + **Ghi chú phân tích có mốc thời gian (`ticker_notes`)** + **`Saved Screens`** sang PostgreSQL `finintel_app`, kèm luồng **tự động import từ `localStorage`** lần đầu đăng nhập để không mất dữ liệu người dùng cũ.
 4. **User & Admin Activity Audit Logs (`#56`):** Ghi nhật ký bất biến (`append-only`) mọi sự kiện bảo mật và thao tác nhạy cảm (đăng nhập/thất bại, đổi mật khẩu, thay đổi quyền, xuất file, xóa tài khoản, thao tác Ops).
 
@@ -79,9 +79,8 @@ fnm exec --using=default -- npm.cmd --prefix frontend run test:unit
 ### 5.3. Shared FastAPI Dependencies (Cấp cho các module downstream)
 ```python
 class UserRole(StrEnum):
-    FREE = "FREE"
-    PRO_ANALYST = "PRO_ANALYST"
-    ENTERPRISE_TEAM = "ENTERPRISE_TEAM"
+    USER = "USER"
+    RESEARCHER = "RESEARCHER"
     INTERNAL_OPS = "INTERNAL_OPS"
 
 @dataclass(frozen=True)
@@ -109,7 +108,7 @@ def require_role(*roles: UserRole) -> Callable[..., AuthenticatedUser]: ...
 ## 7. Testing Strategy
 
 - **Security & Auth tests (`pytest`):** Password strength, Argon2id verify, constant-time login response chống email enumeration, rate-limit lockout, session revocation, cross-user IDOR attempt trả `404`/`403`, audit log ghi đủ `actor_id`, `action`, `ip_hash`, `created_at`.
-- **Workspace migration tests:** Import danh sách `localStorage` trùng lặp ticker không tạo duplicate, tôn trọng giới hạn gói `FREE` vs `PRO_ANALYST`.
+- **Workspace migration tests:** Import danh sách `localStorage` trùng lặp ticker không tạo duplicate, tôn trọng giới hạn Fair-Use theo vai trò `USER` vs `RESEARCHER`.
 - **Frontend tests (`vitest` + Playwright a11y):** Form đăng nhập/đăng ký đạt WCAG 2.2 AA (`aria-describedby` lỗi trường nhập, quản lý focus bàn phím).
 
 ---
@@ -126,7 +125,7 @@ def require_role(*roles: UserRole) -> Callable[..., AuthenticatedUser]: ...
 
 - [ ] Luồng đầy đủ Đăng ký → Xác thực → Đăng nhập → Đổi/Quên mật khẩu → Xóa tài khoản chạy xanh với `0` lỗ hổng OWASP cơ bản (enumeration, IDOR, brute-force, XSS token leak).
 - [ ] Người dùng đã đăng nhập tạo được nhiều Watchlist, ghi chú phân tích theo mã/kỳ, đồng bộ trên nhiều trình duyệt và tự import danh sách cũ từ `localStorage`.
-- [ ] `require_role(...)` chặn đúng quyền giữa `FREE`, `PRO_ANALYST`, `ENTERPRISE_TEAM`, `INTERNAL_OPS`.
+- [ ] `require_role(...)` chặn đúng quyền giữa `USER`, `RESEARCHER`, `INTERNAL_OPS`.
 - [ ] `user_audit_logs` ghi vết 100% sự kiện auth & mutating actions; CI `mvp-checks` vẫn xanh không cần Postgres.
 
 ---
@@ -151,4 +150,4 @@ git worktree add ../finintel-v3-identity-and-workspace -b feat/v3-identity-and-w
 
 ## 12. Open Questions
 
-- Xác nhận nhà cung cấp SMTP/Email transactional tại Việt Nam hoặc AWS SES cho luồng xác thực email & đặt lại mật khẩu.
+- Xác nhận email gửi xác thực/đặt lại mật khẩu dùng **Resend Free (`3.000` email/tháng, `100`/ngày)** kèm 1 custom domain đã cấu hình SPF/DKIM trên Cloudflare Free.

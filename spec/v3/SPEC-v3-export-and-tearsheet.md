@@ -121,4 +121,4 @@ git worktree add ../finintel-v3-export-and-tearsheet -b feat/v3-export-and-tears
 
 ## 12. Open Questions
 
-- Xác nhận giới hạn xuất `.xlsx` cho gói `FREE` (ví dụ: giới hạn 3 năm gần nhất hoặc chỉ cho phép gói `PRO_ANALYST`, sẽ nối với quota ở `v3-scaled-rag-and-billing` Wave 2).
+- Xác nhận hạn mức xuất `.xlsx` theo ngày để bảo vệ RAM/CPU cloud free (đề xuất: `10` lượt/ngày cho `USER`, `30` lượt/ngày cho `RESEARCHER`, nối với `v3-scaled-rag-and-billing` Wave 2).
