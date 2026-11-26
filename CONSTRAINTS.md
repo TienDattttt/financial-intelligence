@@ -20,14 +20,13 @@
 | Kiểm thử đơn vị Frontend | `100%` PASS (`0` failed) | `npm --prefix frontend run test:unit` | `VERIFY` (`< 15s`) |
 | Ràng buộc kích thước Module & Floor Guard | Module mới `<= 1.000` dòng (`serving/queries/*` `< 1.000` dòng); file legacy `> 1.000` dòng không tăng ròng quá `+10` dòng | `uv run --no-sync python scripts/check_constraints.py` | `BUILD` (`< 3s`) |
 | Tốc độ gọi mạng FHSC OAPI | `<= 0.6 req/s` (`min_interval >= 1.75s` liên tiến trình) | `uv run --no-sync python -m pytest tests/unit/test_fhsc_pacing_lease.py -q` *(bật từ `TASK-03`)* | `VERIFY` |
+| Độ trễ API đọc (`p95`) | L1/Valkey ấm `<= 50 ms`; DuckLake lạnh `<= 200 ms`; Stress-Test `<= 300 ms` | `uv run --no-sync python -m pytest tests/unit/test_serving_latency_budget.py -q` *(nâng từ Staged ở `TASK-09`)* | `VERIFY` (`< 15s`) |
+| WCAG 2.2 AA (`axe-core`) | `0` `critical` VÀ `0` `serious` (Light & Dark; `1440x900`, `720x450` 200% zoom, `320x800` không tràn ngang) | `npm --prefix frontend run test:e2e` *(nâng từ Staged ở `TASK-12`)* | `E2E` |
+| Web Performance (CWV cục bộ) | `LCP <= 2500 ms`, `INP <= 200 ms`, `CLS <= 0.10` | `npm --prefix frontend run test:e2e -- --grep "CWV"` *(nâng từ Staged ở `TASK-12`)* | `E2E` (`< 15s`) |
 
-## Staged Gates (Đo Lường Từ TASK-00 -> Nâng Lên Cưỡng Chế Ở TASK-09 & TASK-12)
+## Staged Gates (Đã Nâng Đủ 3 Cổng Lên Enforced Ở TASK-09 & TASK-12)
 
-| Chiều kiểm soát | Ngưỡng mục tiêu | Lệnh nâng lên Enforced khi hoàn tất Task đích | Task kích hoạt |
-|---|---|---|---|
-| Độ trễ API đọc (`p95`) | L1/Valkey ấm `<= 50 ms`; DuckLake lạnh `<= 200 ms`; Stress-Test `<= 300 ms` | `uv run --no-sync python -m pytest tests/unit/test_serving_latency_budget.py -q` | `TASK-09` |
-| WCAG 2.2 AA (`axe-core`) | `0` `critical` VÀ `0` `serious` (Light & Dark; `1440x900`, `720x450` 200% zoom, `320x800` không tràn ngang) | `npm --prefix frontend run test:e2e` | `TASK-12` |
-| Web Performance (CWV cục bộ) | `LCP <= 2500 ms`, `INP <= 200 ms`, `CLS <= 0.10` | `npm --prefix frontend run test:e2e -- --grep "CWV"` | `TASK-12` |
+> Toàn bộ 3 cổng phân kỳ (`Độ trễ API đọc p95`, `WCAG 2.2 AA axe-core`, `Web Performance CWV cục bộ`) đã vượt ngưỡng đo thực nghiệm và chuyển sang bảng **Enforced With Numbers** phía trên.
 
 ## Ratchets (Chốt Chặn Không Lùi)
 - **Kích thước file (`code-simplification`):** Sau `TASK-01`, toàn bộ các tệp trong `src/finintel/serving/queries/` bắt buộc `< 1.000` dòng/file. Mọi logic mới thuộc `cap-01..cap-04` phải tách thành module chuyên biệt (`ssrf_guard.py`, `restatements.py`, `merton_dtd.py`, `freshness.py`) thay vì phình to `intermediates.py`, `incremental.py` hay `api.py`.
