@@ -656,3 +656,460 @@ def test_market_shares_pit_14d_tolerance_and_strict_treasury_guard() -> None:
     assert rows[2]["shares_source"] == "SHARES_OUTSTANDING_MARKET"
     assert rows[2]["eps_ttm_estimated"] == pytest.approx(5_000.0)
     assert rows[2]["eps_estimate_basis"] == "SHARES_OUTSTANDING_MARKET"
+
+
+def test_task08_merton_dtd_convertible_bonds_boundary_flags_and_2step_weekend_pit(
+    tmp_path: Path,
+) -> None:
+    """TASK-08: Merton DTD includes BS_CONVERTIBLE_BONDS, enforces 2-step weekend PIT, halt >14d filter, and all 4 edge flags."""
+    import math
+    import statistics
+
+    from finintel.analytics.merton_dtd import compute_merton_dtd_series
+    from finintel.pipeline.state_store import StateStore
+    from finintel.serving.queries import DashboardQueryService
+    from finintel.storage.repository import ParquetRepository
+    from finintel.storage.schemas import (
+        BENCHMARKS_TABLE,
+        FILINGS_MANIFEST_SCHEMA,
+        FILINGS_MANIFEST_TABLE,
+        ML_SCORES_SCHEMA,
+        ML_SCORES_TABLE,
+        RATIOS_TABLE,
+        RED_FLAGS_TABLE,
+    )
+    from finintel.storage.snapshot_publisher import SnapshotPublisher
+
+    # Build trading calendar across Jan 2025 .. Nov 2025 with a 30-day halt in Feb 2025 (> 14d gap)
+    sessions: list[tuple[date, float, float, float | None]] = []
+    cur = date(2024, 10, 1)
+    idx = 0
+    while cur <= date(2025, 11, 10):
+        if cur.weekday() < 5 and not (date(2025, 1, 15) <= cur <= date(2025, 2, 20)):
+            # Smooth deterministic oscillation; jump by -40% across the >14d halt so halt filter is tested!
+            regime_mult = 0.60 if cur > date(2025, 2, 20) else 1.0
+            adj = (
+                20_000.0
+                * regime_mult
+                * math.exp(0.01 * math.sin(idx * 0.7) + 0.0005 * idx)
+            )
+            # 2:1 split on 2025-05-05: pre-split close_raw = 2 * adj with 50M shares; post-split close_raw = adj with 100M shares
+            if cur < date(2025, 5, 5):
+                raw = adj * 2.0
+                shares = 50_000_000.0
+            else:
+                raw = adj
+                shares = 100_000_000.0
+            sessions.append((cur, raw, adj, shares))
+            idx += 1
+        cur += timedelta(days=1)
+
+    prices = _prices_frame(sessions, issuer_id="HBC", ticker="HBC")
+
+    # Disclose Q1 2025 on SATURDAY 2025-04-26 -> Friday 2025-04-25 must NOT see it (MISSING_BCTC_DEBT)!
+    # Monday 2025-04-28 activates ST=100B, LT=200B, Convertible Bonds=400B -> F = 100B + 0.5*(200B+400B) = 400B!
+    facts_debt = _facts_rows(
+        [
+            (
+                2025,
+                1,
+                date(2025, 4, 26),  # Saturday!
+                {
+                    "BS_TOTAL_ASSETS": 2_000_000_000_000.0,
+                    "BS_TOTAL_LIABILITIES": 900_000_000_000.0,
+                    "BS_TOTAL_EQUITY": 1_100_000_000_000.0,
+                    "BS_SHORT_TERM_BORROWINGS": 100_000_000_000.0,
+                    "BS_LONG_TERM_BORROWINGS": 200_000_000_000.0,
+                    "BS_CONVERTIBLE_BONDS": 400_000_000_000.0,
+                    "BS_ORDINARY_SHARES_CAPITAL": 500_000_000_000.0,
+                    "BS_TREASURY_SHARES": 0.0,
+                    "IS_NET_INCOME_PARENT": 40_000_000_000.0,
+                },
+            )
+        ],
+        issuer_id="HBC",
+        ticker="HBC",
+    )
+
+    dtd_df = compute_merton_dtd_series(prices, facts_debt, ticker="HBC")
+    by_date = {r["trade_date"]: r for r in dtd_df.to_dicts()}
+
+    # 1. Early session (< 60 valid return pairs) -> INSUFFICIENT_TRADING_SESSIONS
+    first_dt = sessions[10][0]
+    assert by_date[first_dt]["dtd_flag"] == "INSUFFICIENT_TRADING_SESSIONS"
+    assert by_date[first_dt]["merton_dtd"] is None
+
+    # 2. Friday 2025-04-25 (>= 60 sessions, BEFORE Saturday 2025-04-26 disclosure) -> MISSING_BCTC_DEBT (0% weekend look-ahead!)
+    fri_row = by_date[date(2025, 4, 25)]
+    assert fri_row["dtd_flag"] == "MISSING_BCTC_DEBT"
+    assert fri_row["merton_dtd"] is None
+
+    # 3. Monday 2025-04-28 (first session >= Sat 2025-04-26) -> VALID with exact Bharath & Shumway (2008) math + Convertible Bonds!
+    mon_dt = date(2025, 4, 28)
+    mon_row = by_date[mon_dt]
+    assert mon_row["dtd_flag"] == "VALID"
+    assert mon_row["merton_dtd"] is not None
+    assert mon_row["naive_edf"] is not None
+
+    # Manually compute exact Bharath-Shumway DTD on Monday 2025-04-28 to verify BS_CONVERTIBLE_BONDS & >14d halt exclusion:
+    win = [s for s in sessions if (mon_dt - timedelta(days=380)) <= s[0] <= mon_dt][
+        -252:
+    ]
+    valid_rets = [
+        math.log(win[i][2] / win[i - 1][2])
+        for i in range(1, len(win))
+        if (win[i][0] - win[i - 1][0]).days <= 14
+    ]
+    expected_sigma_e = max(0.05, math.sqrt(252.0) * statistics.stdev(valid_rets))
+    s0 = next(s for s in win if (mon_dt - s[0]).days >= 90)
+    expected_mu = max(
+        -1.0,
+        min(1.0, math.log(win[-1][2] / s0[2]) * (365.25 / (win[-1][0] - s0[0]).days)),
+    )
+    e_val = win[-1][1] * 50_000_000.0  # close_raw * pit_shares
+    f_val = 100e9 + 0.5 * (200e9 + 400e9)  # 400B VND including BS_CONVERTIBLE_BONDS!
+    expected_sigma_v = (e_val / (e_val + f_val)) * expected_sigma_e + (
+        f_val / (e_val + f_val)
+    ) * (0.05 + 0.25 * expected_sigma_e)
+    expected_dtd = (
+        math.log((e_val + f_val) / f_val) + (expected_mu - 0.5 * expected_sigma_v**2)
+    ) / expected_sigma_v
+    expected_edf = 0.5 * math.erfc(expected_dtd / math.sqrt(2.0))
+
+    assert mon_row["equity_volatility_1y"] == pytest.approx(expected_sigma_e, rel=1e-9)
+    assert mon_row["merton_dtd"] == pytest.approx(expected_dtd, rel=1e-9)
+    assert mon_row["naive_edf"] == pytest.approx(expected_edf, rel=1e-9)
+
+    # 4. > 180 days after effective_trade_date 2025-04-28 (2025-11-05 is +191 days) -> STALE_BCTC_DEBT!
+    stale_row = by_date[date(2025, 11, 5)]
+    assert stale_row["dtd_flag"] == "STALE_BCTC_DEBT"
+    assert stale_row["merton_dtd"] is None
+
+    # 5. Debt-free corporate (Assets > 0, Liabilities > 0, ST=LT=Bonds=0) -> ZERO_FINANCIAL_DEBT!
+    debt_free_facts = _facts_rows(
+        [
+            (
+                2025,
+                1,
+                date(2025, 4, 28),
+                {
+                    "BS_TOTAL_ASSETS": 1_000_000_000_000.0,
+                    "BS_TOTAL_LIABILITIES": 200_000_000_000.0,
+                    "BS_TOTAL_EQUITY": 800_000_000_000.0,
+                    "BS_SHORT_TERM_BORROWINGS": 0.0,
+                    "BS_LONG_TERM_BORROWINGS": 0.0,
+                    "BS_CONVERTIBLE_BONDS": 0.0,
+                    "BS_ORDINARY_SHARES_CAPITAL": 500_000_000_000.0,
+                    "BS_TREASURY_SHARES": 0.0,
+                },
+            )
+        ],
+        issuer_id="HBC",
+        ticker="HBC",
+    )
+    zero_df = compute_merton_dtd_series(prices, debt_free_facts, ticker="HBC")
+    zero_mon = {r["trade_date"]: r for r in zero_df.to_dicts()}[mon_dt]
+    assert zero_mon["dtd_flag"] == "ZERO_FINANCIAL_DEBT"
+    assert zero_mon["merton_dtd"] is None
+    assert zero_mon["equity_volatility_1y"] == pytest.approx(expected_sigma_e, rel=1e-9)
+
+    # 5b. Missing shares (no market shares and no BCTC shares) -> MISSING_SHARES!
+    no_sh_prices = prices.with_columns(
+        pl.lit(None, dtype=pl.Float64).alias("shares_outstanding_market")
+    )
+    no_sh_facts = facts_debt.filter(
+        ~pl.col("metric_id").is_in(["BS_ORDINARY_SHARES_CAPITAL", "BS_TREASURY_SHARES"])
+    )
+    no_sh_df = compute_merton_dtd_series(no_sh_prices, no_sh_facts, ticker="HBC")
+    no_sh_mon = {r["trade_date"]: r for r in no_sh_df.to_dicts()}[mon_dt]
+    assert no_sh_mon["dtd_flag"] == "MISSING_SHARES"
+    assert no_sh_mon["merton_dtd"] is None
+
+    # 6. Verify build_price_risk_overlay & DashboardQueryService.get_company_market_overlay expose Merton DTD fields!
+    iss = _issuer("HBC", "HBC")
+    overlay = build_price_risk_overlay(
+        prices.filter(pl.col("trade_date") <= date(2025, 5, 10)),
+        ticker="HBC",
+        financial_periods=prepare_periods(
+            facts_debt, iss, as_of=date(2025, 5, 10), market_prices=prices
+        ),
+        as_of=date(2025, 5, 10),
+    )
+    mon_pt = next(p for p in overlay["price_series"] if p["trade_date"] == mon_dt)
+    assert mon_pt["dtd_flag"] == "VALID"
+    assert mon_pt["merton_dtd"] == pytest.approx(expected_dtd, rel=1e-9)
+
+    data_root = tmp_path / "data"
+    (data_root / "market_prices").mkdir(parents=True, exist_ok=True)
+    prices.filter(pl.col("trade_date") <= date(2025, 5, 10)).write_parquet(
+        data_root / "market_prices" / "market_prices.parquet"
+    )
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    state.start_run("r_dtd", "MANUAL", {}, None)
+    from finintel.analytics.tables import build_analytics_tables
+
+    tables = build_analytics_tables(
+        facts_debt, iss, as_of=date(2025, 5, 10), market_prices=prices
+    )
+    pub = SnapshotPublisher(data_root / "published" / "snapshots", state_store=state)
+    pub.publish(
+        "snap_dtd_01",
+        {
+            "issuers.parquet": iss,
+            "financial_facts.parquet": facts_debt,
+            RATIOS_TABLE: tables[RATIOS_TABLE],
+            BENCHMARKS_TABLE: tables[BENCHMARKS_TABLE],
+            RED_FLAGS_TABLE: tables[RED_FLAGS_TABLE],
+            ML_SCORES_TABLE: pl.DataFrame(schema=ML_SCORES_SCHEMA),
+            FILINGS_MANIFEST_TABLE: pl.DataFrame(schema=FILINGS_MANIFEST_SCHEMA),
+        },
+        run_id="r_dtd",
+    )
+    state.finish_run("r_dtd", "SUCCEEDED", "snap_dtd_01")
+    svc = DashboardQueryService(ParquetRepository(data_root=data_root))
+    srv_overlay = svc.get_company_market_overlay("HBC", as_of=date(2025, 5, 10))
+    assert srv_overlay["latest_valuation"] is not None
+    assert srv_overlay["latest_valuation"]["dtd_flag"] == "VALID"
+    assert srv_overlay["latest_valuation"]["merton_dtd"] is not None
+
+    # 7. P1-2, P2-1, P3-1: Post-split share-count check (2025-05-06), multi-revision Q2 (Jul vs Aug)
+    #    without retroactive erasure, non-regressing period_end_date, >14d zero-volume halt,
+    #    and no post-as_of debt restatement leak in get_company_market_overlay!
+    post_split_pt = next(
+        p for p in overlay["price_series"] if p["trade_date"] == date(2025, 5, 6)
+    )
+    assert post_split_pt["dtd_flag"] == "VALID"
+    assert post_split_pt["market_cap_vnd"] == pytest.approx(
+        by_date[date(2025, 5, 6)]["market_cap_vnd"], rel=1e-9
+    )
+
+    # Zero-volume >14d halt after 2025-05-06 must mark INSUFFICIENT_TRADING_SESSIONS (P2-1)
+    halted_prices = prices.with_columns(
+        pl.when(pl.col("trade_date") >= date(2025, 5, 1))
+        .then(pl.lit(0.0))
+        .otherwise(pl.col("volume"))
+        .alias("volume")
+    )
+    halted_dtd = compute_merton_dtd_series(halted_prices, facts_debt, ticker="HBC")
+    halted_may20 = {r["trade_date"]: r for r in halted_dtd.to_dicts()}[
+        date(2025, 5, 20)
+    ]
+    assert halted_may20["dtd_flag"] == "INSUFFICIENT_TRADING_SESSIONS"
+
+    # Multi-revision Q1 (Apr 28 low debt 400B -> May 20 restated high debt 900B) + late 2024-Q3 filing on May 2
+    q1_restated = facts_debt.filter(
+        pl.col("period_end_date") == date(2025, 3, 31)
+    ).with_columns(
+        pl.lit(date(2025, 5, 20)).alias("published_at"),
+        pl.lit(date(2025, 5, 20)).alias("effective_available_at"),
+        pl.lit(2, dtype=facts_debt.schema["revision_no"]).alias("revision_no"),
+        pl.lit("CORRECTION").alias("revision_reason"),
+        pl.lit("HBC-2025-Q1-rev2").alias("filing_id"),
+        pl.when(pl.col("metric_id") == "BS_SHORT_TERM_BORROWINGS")
+        .then(pl.lit(600_000_000_000.0))
+        .otherwise(pl.col("value"))
+        .alias("value"),
+    )
+    late_old_period = _facts_rows(
+        [
+            (
+                2024,
+                3,
+                date(2025, 5, 2),
+                {
+                    "BS_TOTAL_ASSETS": 2_000_000_000_000.0,
+                    "BS_TOTAL_LIABILITIES": 1_500_000_000_000.0,
+                    "BS_TOTAL_EQUITY": 500_000_000_000.0,
+                    "BS_SHORT_TERM_BORROWINGS": 1_200_000_000_000.0,
+                    "BS_LONG_TERM_BORROWINGS": 0.0,
+                    "BS_CONVERTIBLE_BONDS": 0.0,
+                    "BS_ORDINARY_SHARES_CAPITAL": 500_000_000_000.0,
+                    "BS_TREASURY_SHARES": 0.0,
+                },
+            )
+        ],
+        issuer_id="HBC",
+        ticker="HBC",
+    )
+    multi_rev_facts = pl.concat(
+        [facts_debt, q1_restated, late_old_period], how="vertical"
+    )
+    multi_dtd = {
+        r["trade_date"]: r
+        for r in compute_merton_dtd_series(
+            prices, multi_rev_facts, ticker="HBC"
+        ).to_dicts()
+    }
+    # May 6 must preserve original Apr 28 Q1 debt (400B), NOT May 20 restatement (900B) and NOT regressed 2024-Q3 (1200B)!
+    assert multi_dtd[date(2025, 5, 6)]["default_point_vnd"] == pytest.approx(400e9)
+    assert multi_dtd[date(2025, 5, 21)]["default_point_vnd"] == pytest.approx(900e9)
+
+    # Serving overlay with as_of=2025-05-10 on snapshot containing May 20 restatement must NOT leak 900B debt!
+    state.start_run("r_dtd_2", "MANUAL", {}, None)
+    pub.publish(
+        "snap_dtd_02",
+        {
+            "issuers.parquet": iss,
+            "financial_facts.parquet": multi_rev_facts,
+            RATIOS_TABLE: tables[RATIOS_TABLE],
+            BENCHMARKS_TABLE: tables[BENCHMARKS_TABLE],
+            RED_FLAGS_TABLE: tables[RED_FLAGS_TABLE],
+            ML_SCORES_TABLE: pl.DataFrame(schema=ML_SCORES_SCHEMA),
+            FILINGS_MANIFEST_TABLE: pl.DataFrame(schema=FILINGS_MANIFEST_SCHEMA),
+        },
+        run_id="r_dtd_2",
+    )
+    state.finish_run("r_dtd_2", "SUCCEEDED", "snap_dtd_02")
+    prices.filter(pl.col("trade_date") <= date(2025, 5, 25)).write_parquet(
+        data_root / "market_prices" / "market_prices.parquet"
+    )
+    srv_cut = DashboardQueryService(
+        ParquetRepository(data_root=data_root)
+    ).get_company_market_overlay("HBC", as_of=date(2025, 5, 10))
+    srv_mon_cut = next(p for p in srv_cut["price_series"] if p["trade_date"] == mon_dt)
+    assert srv_mon_cut["merton_dtd"] == pytest.approx(expected_dtd, rel=1e-9)
+
+
+def test_task08_merton_dtd_walk_forward_ablation_pit_monotonicity_and_shap_vn() -> None:
+    """TASK-08: Walk-forward ML ablation aligns _period_available_at forward (14d), enforces monotonicity, and labels SHAP in VN."""
+    import math
+
+    import numpy as np
+
+    from finintel.analytics.merton_dtd import attach_merton_dtd_to_periods
+    from finintel.ml.supervised.explain import (
+        explain_distress,
+        get_feature_display_names,
+    )
+    from finintel.ml.supervised.train import (
+        BASE_FEATURES,
+        MERTON_ABLATION_FEATURES,
+        _constraints,
+        score_distress_model,
+        train_distress_model,
+    )
+
+    # 1. Verify constraints & Vietnamese display names
+    ablation_feats = (*BASE_FEATURES, "merton_dtd", "equity_volatility_1y", "naive_edf")
+    cmap = dict(zip(ablation_feats, _constraints(ablation_feats), strict=True))
+    assert cmap["merton_dtd"] == -1
+    assert cmap["equity_volatility_1y"] == 1
+    assert cmap["naive_edf"] == 1
+    assert "merton_dtd" in MERTON_ABLATION_FEATURES
+    vn_names = get_feature_display_names("PIT_REGIME_SYMMETRIC")
+    assert "Merton" in vn_names["merton_dtd"]
+    assert "Biến động" in vn_names["equity_volatility_1y"]
+    assert "EDF" in vn_names["naive_edf"]
+
+    # 2. Verify Saturday _period_available_at aligns strictly FORWARD onto Monday (never Friday!)
+    sessions: list[tuple[date, float, float, float | None]] = []
+    cur = date(2024, 11, 1)
+    while cur <= date(2025, 5, 5):
+        if cur.weekday() < 5:
+            # Crash -50% on Monday 2025-04-28 so Friday vs Monday DTD differ sharply!
+            px = 10_000.0 if cur >= date(2025, 4, 28) else 20_000.0
+            sessions.append((cur, px, px, 100_000_000.0))
+        cur += timedelta(days=1)
+    prices = _prices_frame(sessions, issuer_id="FPT", ticker="FPT")
+    periods_sat = pl.DataFrame(
+        {
+            "issuer_id": ["FPT", "FPT"],
+            "statement_scope": ["CONSOLIDATED", "CONSOLIDATED"],
+            "period_type": ["QUARTER", "QUARTER"],
+            "fiscal_year": [2024, 2025],
+            "fiscal_quarter": [4, 1],
+            "period_end_date": [date(2024, 12, 31), date(2025, 3, 31)],
+            "_period_available_at": [
+                date(2025, 1, 24),
+                date(2025, 4, 26),
+            ],  # Q1 disclosed Sat 2025-04-26!
+            "BS_TOTAL_ASSETS": [2_000e9, 2_000e9],
+            "BS_TOTAL_LIABILITIES": [800e9, 800e9],
+            "BS_SHORT_TERM_BORROWINGS": [200e9, 200e9],
+            "BS_LONG_TERM_BORROWINGS": [200e9, 200e9],
+            "BS_CONVERTIBLE_BONDS": [0.0, 0.0],
+            "estimated_shares_outstanding": [100_000_000.0, 100_000_000.0],
+        }
+    )
+    # If as_of = Sunday 2025-04-27 (before Monday 2025-04-28 session exists!), Q1 must NOT look back to Friday 2025-04-25!
+    attached_sun = attach_merton_dtd_to_periods(
+        periods_sat, prices, as_of=date(2025, 4, 27)
+    )
+    q1_sun = attached_sun.filter(pl.col("fiscal_year") == 2025).row(0, named=True)
+    assert q1_sun["merton_dtd"] is None
+
+    # Once as_of = Monday 2025-04-28, Q1 aligns forward to Monday's post-crash DTD AND advances _period_available_at to Monday (P1-3)!
+    from finintel.exceptions import ContractViolationError
+
+    attached_mon = attach_merton_dtd_to_periods(
+        periods_sat, prices, as_of=date(2025, 4, 28)
+    )
+    q1_mon = attached_mon.filter(pl.col("fiscal_year") == 2025).row(0, named=True)
+    assert q1_mon["merton_dtd"] is not None
+    assert q1_mon["dtd_flag"] == "VALID"
+    assert q1_mon["_period_available_at"] == date(2025, 4, 28)
+
+    with pytest.raises(ContractViolationError):
+        attach_merton_dtd_to_periods(
+            periods_sat.with_columns(pl.lit(0).alias("distress_target")),
+            prices,
+            as_of=date(2025, 4, 28),
+        )
+
+    # 3. Walk-Forward Ablation fit + monotone decreasing risk in merton_dtd + TreeSHAP additivity
+    def _fold(seed: int, n_rows: int, yr: int) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        dtd_vals = rng.uniform(-1.5, 6.0, size=n_rows)
+        vol_vals = rng.uniform(0.15, 0.85, size=n_rows)
+        edf_vals = 0.5 * np.vectorize(math.erfc)(dtd_vals / math.sqrt(2.0))
+        roa_vals = rng.uniform(-0.12, 0.18, size=n_rows)
+        logits = (
+            -0.9 * dtd_vals
+            + 1.5 * vol_vals
+            - 4.0 * roa_vals
+            + rng.normal(0.0, 0.4, size=n_rows)
+            - 0.3
+        )
+        y = (logits > 0.0).astype(int).tolist()
+        cols: dict[str, list[float]] = {}
+        for idx_f, fname in enumerate(BASE_FEATURES):
+            cols[fname] = (
+                roa_vals.tolist()
+                if fname == "roa"
+                else rng.normal(0.2 + 0.01 * idx_f, 0.2, size=n_rows).tolist()
+            )
+        cols["merton_dtd"] = dtd_vals.tolist()
+        cols["equity_volatility_1y"] = vol_vals.tolist()
+        cols["naive_edf"] = edf_vals.tolist()
+        return pl.DataFrame(
+            {
+                **cols,
+                "issuer_id": [f"ABL_{i:03d}" for i in range(n_rows)],
+                "accounting_regime": ["CORPORATE"] * n_rows,
+                "statement_scope": ["CONSOLIDATED"] * n_rows,
+                "period_type": ["QUARTER"] * n_rows,
+                "fiscal_year": [yr] * n_rows,
+                "fiscal_quarter": [(i % 4) + 1 for i in range(n_rows)],
+                "period_end_date": [date(yr, 12, 31)] * n_rows,
+                "filing_id": [f"F_{seed}_{i:03d}" for i in range(n_rows)],
+                "taxonomy_version": ["VAS_TT200_2014"] * n_rows,
+                "_period_available_at": [date(yr + 1, 1, 25)] * n_rows,
+                "distress_target": y,
+            }
+        )
+
+    tr_df = _fold(11, 200, 2021)
+    va_df = _fold(22, 100, 2023)
+    trained = train_distress_model(tr_df, va_df, features=ablation_feats)
+    probe_row = _fold(33, 1, 2024)
+    dtd_grid = [-1.5, -0.5, 0.5, 1.5, 3.0, 5.0]
+    probes = pl.concat(
+        [probe_row.with_columns(pl.lit(v).alias("merton_dtd")) for v in dtd_grid]
+    )
+    scores = score_distress_model(trained, probes)["distress_risk_score"].to_numpy()
+    assert np.all(np.diff(scores) <= 1e-12)
+    assert scores[-1] < scores[0]
+
+    explained = explain_distress(trained, va_df.head(5))
+    assert explained.height == 5

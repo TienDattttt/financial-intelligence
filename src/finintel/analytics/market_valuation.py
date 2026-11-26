@@ -28,6 +28,7 @@ from typing import Literal, TypedDict, cast
 import polars as pl
 
 from finintel.analytics.intermediates import SHARES, TREASURY_SHARES
+from finintel.analytics.merton_dtd import compute_merton_dtd_series
 from finintel.exceptions import ContractViolationError
 from finintel.ports.market_prices import (
     align_events_to_market_prices_pit,
@@ -134,6 +135,10 @@ class PriceOverlayPoint(TypedDict):
     pe_flag: str | None
     pb_flag: str | None
     shares_source: str | None
+    merton_dtd: float | None
+    equity_volatility_1y: float | None
+    naive_edf: float | None
+    dtd_flag: str | None
 
 
 class WarningSummary(TypedDict):
@@ -898,6 +903,7 @@ def build_price_risk_overlay(
     ml_scores: pl.DataFrame | None = None,
     regulatory_events: pl.DataFrame | None = None,
     financial_periods: pl.DataFrame | None = None,
+    dtd_financial_data: pl.DataFrame | None = None,
     valuation_series: pl.DataFrame | None = None,
     statement_scope: str = "CONSOLIDATED",
     as_of: date | None = None,
@@ -1176,23 +1182,27 @@ def build_price_risk_overlay(
             pl.lit(None, dtype=pl.String).alias("shares_source"),
         )
 
+    dtd_src = (
+        dtd_financial_data if dtd_financial_data is not None else financial_periods
+    )
+    dtd_cols = (
+        "trade_date",
+        "merton_dtd",
+        "equity_volatility_1y",
+        "naive_edf",
+        "dtd_flag",
+    )
+    dtd_df = compute_merton_dtd_series(
+        prices_sorted,
+        dtd_src,
+        issuer_id=target_issuer_id,
+        statement_scope=statement_scope,
+        as_of=as_of,
+    ).select(*dtd_cols)
+    series_df = series_df.join(dtd_df, on="trade_date", how="left")
     price_series = cast(
         list[PriceOverlayPoint],
-        series_df.select(
-            "trade_date",
-            "close_adj",
-            "close_raw",
-            "volume",
-            "shares_outstanding_market",
-            "running_drawdown_pct",
-            "drawdown_from_first_warning_pct",
-            "market_cap_vnd",
-            "pe_ttm",
-            "pb_ratio",
-            "pe_flag",
-            "pb_flag",
-            "shares_source",
-        )
+        series_df.select(*PriceOverlayPoint.__annotations__)
         .sort("trade_date")
         .to_dicts(),
     )

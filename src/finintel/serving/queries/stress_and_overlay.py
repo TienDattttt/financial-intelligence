@@ -440,32 +440,13 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
         facts = pl.DataFrame()
         if avail_fact_cols:
             fact_desired = (
-                "issuer_id",
-                "statement_scope",
-                "period_type",
-                "fiscal_year_start_date",
-                "period_start_date",
-                "period_end_date",
-                "fiscal_year",
-                "fiscal_quarter",
-                "metric_id",
-                "taxonomy_version",
-                "revision_no",
-                "revision_reason",
-                "filing_id",
-                "published_at",
-                "published_at_basis",
-                "effective_available_at",
-                "derivation_method",
-                "audit_status",
-                "audit_opinion",
-                "value",
-                "ttm_value",
-                "comparable_across_taxonomy",
-                "is_filed_late",
-                "source_provider",
-                "source_filing_ids",
-            )
+                "issuer_id statement_scope period_type fiscal_year_start_date "
+                "period_start_date period_end_date fiscal_year fiscal_quarter metric_id "
+                "taxonomy_version revision_no revision_reason filing_id published_at "
+                "published_at_basis effective_available_at derivation_method audit_status "
+                "audit_opinion value ttm_value comparable_across_taxonomy is_filed_late "
+                "source_provider source_filing_ids"
+            ).split()
             fact_cols = _select_existing_columns(fact_desired, avail_fact_cols)
             facts = pinned.read_table(
                 facts_table,
@@ -479,21 +460,85 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
             )
 
         ni_ttm_df = pl.DataFrame()
+        bs_debt_df = pl.DataFrame()
         period_dates_df = pl.DataFrame()
         pp_df: pl.DataFrame | None = None
 
+        if not facts.is_empty() and "revision_reason" in facts.columns:
+            facts = facts.filter(pl.col("revision_reason") != "RESTATED_REGIME_CHANGE")
+
         if not facts.is_empty():
+            f_cols_set = set(facts.columns)
+            d_cands = [
+                pl.col(c).cast(pl.Date)
+                for c in ("published_at", "effective_available_at")
+                if c in f_cols_set
+            ]
+            pit_avail = (
+                pl.when(pl.col("published_at_basis") == "EXACT_FILING")
+                .then(pl.col("published_at").cast(pl.Date))
+                .otherwise(pl.col("effective_available_at").cast(pl.Date))
+                if {"published_at_basis", "published_at", "effective_available_at"}
+                <= f_cols_set
+                else (pl.coalesce(*d_cands) if d_cands else pl.lit(None, dtype=pl.Date))
+            )
+            prov_rk = (
+                pl.col("source_provider").replace_strict(
+                    {"fhsc": 5, "issuer": 4, "vietcap_iq": 3, "cafef_pdf": 2}, default=1
+                )
+                if "source_provider" in f_cols_set
+                else pl.lit(1)
+            )
+            val_ok = (
+                pl.col("value").is_not_null()
+                & pl.col("value").cast(pl.Float64).is_finite()
+                if "value" in f_cols_set
+                else pl.lit(True)
+            )
+            facts = facts.with_columns(
+                pit_avail.alias("_pit_avail"),
+                val_ok.alias("_val_ok"),
+                prov_rk.alias("_prov_rk"),
+            )
             sort_fact = [
-                col
-                for col in (
+                c
+                for c in (
                     "period_end_date",
-                    "effective_available_at",
+                    "_pit_avail",
+                    "_val_ok",
+                    "_prov_rk",
                     "revision_no",
                     "filing_id",
                 )
-                if col in facts.columns
+                if c in facts.columns
             ]
             sorted_facts = facts.sort(sort_fact) if sort_fact else facts
+            pit_facts = (
+                sorted_facts.filter(
+                    pl.col("_pit_avail").is_not_null() & (pl.col("_pit_avail") <= as_of)
+                )
+                if as_of is not None and d_cands
+                else sorted_facts
+            )
+            bs_debt_metrics = (
+                "BS_TOTAL_ASSETS BS_TOTAL_LIABILITIES BS_SHORT_TERM_BORROWINGS "
+                "BS_LONG_TERM_BORROWINGS BS_CONVERTIBLE_BONDS"
+            ).split()
+            bs_sub = pit_facts.filter(pl.col("metric_id").is_in(bs_debt_metrics))
+            if not bs_sub.is_empty() and "value" in bs_sub.columns:
+                bs_dedup = bs_sub.unique(
+                    subset=["issuer_id", "period_end_date", "metric_id"], keep="last"
+                )
+                bs_debt_df = bs_dedup.group_by(["issuer_id", "period_end_date"]).agg(
+                    *(
+                        pl.col("value")
+                        .cast(pl.Float64)
+                        .filter(pl.col("metric_id") == m)
+                        .last()
+                        .alias(m)
+                        for m in bs_debt_metrics
+                    )
+                )
 
             date_cols = [
                 col
@@ -512,7 +557,7 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                     subset=["issuer_id", "period_end_date"], keep="last"
                 )
 
-            ni_rows = sorted_facts.filter(pl.col("metric_id") == "IS_NET_INCOME_PARENT")
+            ni_rows = pit_facts.filter(pl.col("metric_id") == "IS_NET_INCOME_PARENT")
             if not ni_rows.is_empty():
                 ni_dedup = ni_rows.unique(
                     subset=["issuer_id", "period_end_date"], keep="last"
@@ -742,6 +787,17 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
         if date_casts:
             combined = combined.with_columns(date_casts)
 
+        if not bs_debt_df.is_empty():
+            missing_bs = [
+                col for col in bs_debt_df.columns if col not in combined.columns
+            ]
+            if missing_bs:
+                combined = combined.join(
+                    bs_debt_df.select("issuer_id", "period_end_date", *missing_bs),
+                    on=["issuer_id", "period_end_date"],
+                    how="left",
+                )
+
         has_any_disclosure_col = any(
             col in combined.columns
             for col in (
@@ -853,18 +909,44 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                     )
                     if not ml_raw.is_empty():
                         sort_ml = [
-                            col
-                            for col in ("period_type", "period_end_date", "filing_id")
-                            if col in ml_raw.columns
+                            c
+                            for c in ("period_type", "period_end_date", "filing_id")
+                            if c in ml_raw.columns
                         ]
                         dedup_ml = [
-                            col
-                            for col in ("issuer_id", "period_type", "period_end_date")
-                            if col in ml_raw.columns
+                            c
+                            for c in ("issuer_id", "period_type", "period_end_date")
+                            if c in ml_raw.columns
                         ]
                         ml_scores = ml_raw.sort(sort_ml).unique(
                             subset=dedup_ml, keep="last"
                         )
+
+            dtd_facts: pl.DataFrame | None = None
+            dtd_want = (
+                "issuer_id statement_scope period_type period_end_date metric_id value "
+                "published_at published_at_basis effective_available_at revision_no "
+                "revision_reason filing_id source_provider"
+            ).split()
+            for ft_name in ("financial_facts.parquet", "latest_facts.parquet"):
+                ft_avail = _available_table_columns(
+                    pinned, ft_name, connection=connection
+                )
+                if ft_avail and {"metric_id", "value"} <= set(ft_avail):
+                    cand_ft = pinned.read_table(
+                        ft_name,
+                        columns=_select_existing_columns(dtd_want, ft_avail),
+                        filters={
+                            "issuer_id": issuer_id,
+                            "statement_scope": statement_scope,
+                        },
+                        connection=connection,
+                    )
+                    if not cand_ft.filter(
+                        pl.col("metric_id") == "BS_TOTAL_ASSETS"
+                    ).is_empty():
+                        dtd_facts = cand_ft
+                        break
 
             financial_periods = self._build_overlay_financial_periods(
                 pinned,
@@ -894,6 +976,7 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                 ml_scores=ml_scores,
                 regulatory_events=reg_events,
                 financial_periods=financial_periods,
+                dtd_financial_data=dtd_facts,
                 valuation_series=valuation_series,
                 statement_scope=statement_scope,
                 as_of=as_of,

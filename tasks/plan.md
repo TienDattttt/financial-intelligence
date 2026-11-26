@@ -18,9 +18,9 @@
 | `TASK-05` | Behavior-Changing | `cap-02`: Port 3 EOD an toàn chia tách + Port 1 replay pháp lý + Đối soát chéo `FHSC ↔ Vietcap IQ` | `6` tệp | Hoàn tất (Đợt 2) |
 | `TASK-06` | Behavior-Changing | `cap-02`: Port 2 PDF CAS (`<= 400` trang) + Dagster Port 1/2/3 schedules + Docker `dagster-daemon` (`--read-only` UI) | `6` tệp | Hoàn tất (Đợt 2) |
 | *Cổng 2* | **Verification Checkpoint #2** | Chạy toàn bộ `CONSTRAINTS.md` + kiểm chứng Dagster definitions sau `TASK-04..06` | — | Hoàn tất (Cuối Đợt 2) |
-| `TASK-07` | Behavior-Changing | `cap-03`: Cờ đỏ Hậu kiểm toán `RF_10_POST_AUDIT_PROFIT_DOWNGRADE` (`severity="HIGH"`, `restatements.py` + DBSP bump) | `6` tệp | Đợt 3 |
-| `TASK-08` | Behavior-Changing | `cap-03`: Chỉ báo cấu trúc thị trường `Merton DTD` (`merton_dtd.py` cho Overlay + Walk-Forward ML Ablation độc lập) | `6` tệp | Đợt 3 |
-| *Cổng 3* | **Verification Checkpoint #3** | Kiểm chứng định lượng Layer 4A/4B (`0%` look-ahead, `0` QG2 orphan, DuPont `<= 1e-9`) | — | Đợt 3 |
+| `TASK-07` | Behavior-Changing | `cap-03`: Cờ đỏ Hậu kiểm toán `RF_10_POST_AUDIT_PROFIT_DOWNGRADE` (`severity="HIGH"`, `restatements.py` + DBSP bump) | `5` tệp | Hoàn tất (Đợt 3) |
+| `TASK-08` | Behavior-Changing | `cap-03`: Chỉ báo cấu trúc thị trường `Merton DTD` (`merton_dtd.py` cho Overlay + Walk-Forward ML Ablation độc lập) | `5` tệp | Hoàn tất (Đợt 3) |
+| *Cổng 3* | **Verification Checkpoint #3** | Kiểm chứng định lượng Layer 4A/4B (`0%` look-ahead, `0` QG2 orphan, DuPont `<= 1e-9`) | — | Hoàn tất (Cuối Đợt 3) |
 | `TASK-09` | Behavior-Changing | `cap-04`: Con trỏ tiến SQLite/Postgres + Composite `ETag` + API Freshness/DTD + OTel spans + Sanitizer | `6` tệp | Đợt 4 |
 | `TASK-10` | Behavior-Changing | `cap-05`: Frontend đồng bộ `X-Snapshot-ID`, tích hợp thẻ `Merton DTD` + bằng chứng `RF_10` & mã nhãn VN | `6` tệp | Đợt 4 |
 | `TASK-11` | Behavior-Changing | `cap-05`: Nâng cấp WAI-ARIA `frontend/src/components/ui/segmented-control.tsx`, thanh Freshness 3 mốc `200%` zoom & chuẩn hóa `SourceDrawer` | `6` tệp | Đợt 4 |
@@ -67,6 +67,20 @@
 - **Loại commit:** `feat(ingestion,orchestration,docker)` (`Behavior-Changing`).
 - **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `src/finintel/ingestion/curated_pdf_service.py` *(mới)*, `src/finintel/rag/parser.py`, `src/finintel/orchestration/assets.py`, `src/finintel/orchestration/definitions.py`, `docker-compose.yml`, `Dockerfile`.
 - **Chi tiết:** Trích xuất liên kết `.pdf`/`.zip` trực tiếp từ kho CAS `RawArchive` (lazy-import `pymupdf`/`pgvector`, pacing `0.6s`/host và chỉ khóa `pipeline.lock` lúc ghi manifest), chặn cứng `<= 400` trang và `<= 4096px`; đăng ký 3 asset & lịch chạy UTC `RUNNING` (`market_prices_eod_schedule`, `regulatory_events_ledger_schedule`, `curated_pdf_rag_schedule`); đồng bộ `uv:0.9.30` + `DAGSTER_HOME=/app/dagster_home` (`dagster.postgres.yaml`), bootstrap tự động pools/partitions trên `dagster-daemon` và tách `dagster-webserver --read-only` trên `127.0.0.1:3002`.
+
+---
+
+## Chi Tiết Đợt 3 (`TASK-07` → `Verification Checkpoint #3`)
+
+### `TASK-07` — Tín Hiệu Điều Tra Hậu Kiểm Toán `RF_10_POST_AUDIT_PROFIT_DOWNGRADE` (`cap-03`)
+- **Loại commit:** `feat(analytics)` (`Behavior-Changing`).
+- **Phạm vi (`5` tệp sản phẩm + test đơn vị):** `src/finintel/analytics/restatements.py` *(mới)*, `src/finintel/analytics/intermediates.py`, `src/finintel/analytics/red_flags.py`, `src/finintel/transform/incremental.py`, `src/finintel/serving/dictionary.py`.
+- **Chi tiết:** So sánh tổng 4 quý tự lập `UNAUDITED` rời rạc trước kiểm toán (loại trừ `DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX` và các bản sửa đổi sau kiểm toán, hỗ trợ niên độ lệch lịch `fiscal_year_start_date`, tổng ngày `[350, 380]`) với BCTC `ANNUAL` `AUDITED`; kích hoạt `RF_10_POST_AUDIT_PROFIT_DOWNGRADE` (`severity="HIGH"`) khi đảo chiều lãi-thành-lỗ (`<= -1 tỷ VND`) hoặc bốc hơi lợi nhuận trọng yếu (`<= -15%` và `<= -5 tỷ VND`), khóa PIT cấp dòng (`_period_available_at >= annual_audited_available_at`, mang theo trên `QUARTER` trong `(0, 275]` ngày), tăng `TRANSFORM_STATE_SCHEMA_VERSION = 2` và đạt `0` orphan `filing_id` ở `QG2`.
+
+### `TASK-08` — Khoảng Cách Vỡ Nợ Cấu Trúc Thị Trường `Merton DTD` & Kiểm Chứng Walk-Forward (`cap-03`)
+- **Loại commit:** `feat(analytics,ml)` (`Behavior-Changing`).
+- **Phạm vi (`5` tệp sản phẩm + test đơn vị):** `src/finintel/analytics/merton_dtd.py` *(mới, `<= 450` LOC)*, `src/finintel/analytics/market_valuation.py`, `src/finintel/serving/queries/stress_and_overlay.py`, `src/finintel/ml/supervised/train.py`, `src/finintel/ml/supervised/explain.py` (+ `tests/unit/test_ui09b_market_valuation.py`).
+- **Chi tiết:** Cài đặt `compute_merton_dtd_series()` và `attach_merton_dtd_to_periods()` theo phương trình Bharath & Shumway (2008): hợp nhất đủ 3 khoản mục nợ vay VAS (`BS_SHORT_TERM_BORROWINGS`, `BS_LONG_TERM_BORROWINGS`, `BS_CONVERTIBLE_BONDS` mã `338/339/340`) ở đơn vị `VND` gốc, phân biệt `VALID` / `MISSING_BCTC_DEBT` / `ZERO_FINANCIAL_DEBT` / `STALE_BCTC_DEBT` (`> 180d`) / `INSUFFICIENT_TRADING_SESSIONS` (`< 60` cặp phiên cách nhau `<= 14d` hoặc dừng giao dịch `volume == 0` quá `14d`) / `MISSING_SHARES`; căn chỉnh PIT 2 bước (`strategy="forward"` từ ngày công bố sang phiên giao dịch, sau đó `strategy="backward", tolerance="180d"`, không lùi kỳ `period_end_date`) đạt `0%` look-ahead cuối tuần và tiến `_period_available_at` sang `max(a_t, trade_date)` trước `build_distress_targets`; đăng ký ràng buộc đơn điệu XGBoost (`merton_dtd: -1`, `equity_volatility_1y: +1`, `naive_edf: +1`) cùng `MERTON_ABLATION_FEATURES` trong `train.py` và nhãn tiếng Việt trong `explain.py`.
 
 ---
 

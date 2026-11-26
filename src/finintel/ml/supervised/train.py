@@ -71,6 +71,9 @@ ABLATION_CANDIDATE_MONOTONE_CONSTRAINTS: dict[str, int] = {
     "delta_roa_4q": -1,
     "delta_liabilities_to_assets_4q": 1,
     "delta_current_ratio_4q": 0,
+    "merton_dtd": -1,
+    "equity_volatility_1y": 1,
+    "naive_edf": 1,
 }
 BASE_FEATURES: tuple[str, ...] = tuple(
     sorted((NEGATIVE | POSITIVE | UNCONSTRAINED) - set(SECTOR_RAW_TO_Z.values()))
@@ -80,6 +83,12 @@ SECTOR_ADJUSTED_FEATURES: tuple[str, ...] = tuple(
         (set(BASE_FEATURES) - set(SECTOR_RAW_TO_Z.keys()))
         | set(SECTOR_RAW_TO_Z.values())
     )
+)
+MERTON_ABLATION_FEATURES: tuple[str, ...] = (
+    *SECTOR_ADJUSTED_FEATURES,
+    "merton_dtd",
+    "equity_volatility_1y",
+    "naive_edf",
 )
 MODEL_VERSION = "xgboost-layer4b-v2"
 ALTMAN_DISTRESS_CUTOFF = 1.10
