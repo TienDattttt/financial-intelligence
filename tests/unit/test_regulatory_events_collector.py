@@ -419,3 +419,409 @@ def test_board_transfer_upgrade_is_not_forced_delisting_and_hnx_format_detected(
     assert pvv["event_type"] == "FORCED_DELISTING"
     assert pvv["exchange_delisted_from"] == "HNX"
     assert pvv["effective_from"] == date(2019, 5, 24)
+
+
+def test_task05_uncapped_post_2026_dates_and_incremental_receipt_replay(
+    tmp_path: Path,
+) -> None:
+    """TASK-05: Port 1 removes 2026 date caps and replays cached receipts + fresh p0..p1 chronologically."""
+    raw_dir = tmp_path / "raw_reg"
+    # Cached historical receipt p2 from 2024 (entry into CONTROL)
+    p2_payload = json.dumps(
+        {
+            "successful": True,
+            "data": {
+                "totalPages": 3,
+                "content": [
+                    {
+                        "newsTitle": "HBC: Quyết định đưa cổ phiếu vào diện kiểm soát",
+                        "publicDate": "2024-04-10T09:00:00",
+                    }
+                ],
+            },
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    write_raw_receipt(raw_dir, "vietcap_iq/HBC_news_p2.json", p2_payload)
+    write_raw_receipt(raw_dir, "cafef_events/HBC_events_p1.html", b"<div></div>")
+
+    def _transport(
+        url: str,
+        timeout_seconds: float,
+        max_bytes: int,
+        headers: Mapping[str, str],
+    ) -> tuple[int, Mapping[str, str], bytes]:
+        _ = (timeout_seconds, max_bytes, headers)
+        if "vietcap.com.vn" in url and "page=0" in url:
+            body = {
+                "successful": True,
+                "data": {
+                    "totalPages": 3,
+                    "content": [
+                        {
+                            "newsTitle": "HBC: Quyết định đưa cổ phiếu ra khỏi diện kiểm soát",
+                            "publicDate": "2027-03-15T14:00:00",
+                        }
+                    ],
+                },
+            }
+            return 200, {}, json.dumps(body, ensure_ascii=False).encode("utf-8")
+        if "vietcap.com.vn" in url and "page=1" in url:
+            body = {"successful": True, "data": {"totalPages": 3, "content": []}}
+            return 200, {}, json.dumps(body).encode("utf-8")
+        if "cafef.vn" in url:
+            return 200, {}, b"<div></div>"
+        raise AssertionError(f"Unexpected URL (p2 should hit cache!): {url}")
+
+    client = PoliteHostHttpClient(
+        min_interval_seconds=0.0,
+        transport=_transport,
+        sleeper=lambda _s: None,
+    )
+    cands, outcome = collect_ticker_raw_candidates(
+        ticker="HBC",
+        issuer_id="VN_HBC",
+        current_exchange="UPCOM",
+        raw_dir=raw_dir,
+        client=client,
+        to_date=date(2027, 4, 1),
+        use_cache=True,
+        refresh_head_pages=2,
+    )
+    assert outcome.errors == ()
+    reg_df = build_regulatory_events_table(
+        cands, exchange_by_issuer={"VN_HBC": "UPCOM"}
+    )
+    assert reg_df.height == 1
+    row = reg_df.row(0, named=True)
+    assert row["event_type"] == "CONTROL"
+    assert row["effective_from"] == date(2024, 4, 10)
+    assert row["resolution_date"] == date(2027, 3, 15)
+
+
+def test_task05_cross_provider_reconciliation_emits_info_code_and_metric() -> None:
+    """TASK-05: reconcile_cross_provider_facts flags >0.5% anchor discrepancy in info_codes without deleting facts."""
+    from finintel.normalization.reconciliation import (
+        CROSS_PROVIDER_DISCREPANCY_CODE,
+        get_reconciliation_metrics_registry,
+        reconcile_cross_provider_facts,
+    )
+    from finintel.quality.gate import evaluate_quality_gate
+    from finintel.storage.schemas import canonicalize_financial_facts
+
+    def _fact_row(
+        metric_id: str,
+        val: float,
+        provider: str,
+        filing_id: str,
+        stmt: str = "BALANCE_SHEET",
+        vtype: str = "STOCK",
+    ) -> dict[str, object]:
+        return {
+            "issuer_id": "VN_FPT",
+            "filing_id": filing_id,
+            "statement_type": stmt,
+            "statement_scope": "CONSOLIDATED",
+            "period_type": "ANNUAL",
+            "fiscal_year": 2025,
+            "fiscal_quarter": None,
+            "fiscal_year_start_date": date(2025, 1, 1),
+            "period_start_date": date(2025, 1, 1),
+            "period_end_date": date(2025, 12, 31),
+            "period_days": 365,
+            "published_at": date(2026, 3, 20),
+            "published_at_basis": "EXACT_FILING",
+            "effective_available_at": date(2026, 3, 20),
+            "is_exact_filing_date": True,
+            "metric_id": metric_id,
+            "value": val,
+            "value_type": vtype,
+            "currency": "VND",
+            "unit_scale": 1,
+            "audit_status": "AUDITED",
+            "audit_opinion": "UNMODIFIED",
+            "taxonomy_version": "VAS_TT200_2014",
+            "derivation_method": "REPORTED_DIRECTLY",
+            "revision_no": 1,
+            "revision_reason": "ORIGINAL",
+            "source_filing_ids": [filing_id],
+            "source_provider": provider,
+        }
+
+    facts = canonicalize_financial_facts(
+        pl.DataFrame(
+            [
+                _fact_row("BS_TOTAL_ASSETS", 100_000_000_000.0, "fhsc", "f_fhsc_bs"),
+                _fact_row(
+                    "BS_TOTAL_LIABILITIES", 40_000_000_000.0, "fhsc", "f_fhsc_bs"
+                ),
+                _fact_row("BS_TOTAL_EQUITY", 60_000_000_000.0, "fhsc", "f_fhsc_bs"),
+                _fact_row(
+                    "IS_NET_REVENUE",
+                    80_000_000_000.0,
+                    "fhsc",
+                    "f_fhsc_is",
+                    "INCOME_STATEMENT",
+                    "FLOW",
+                ),
+                _fact_row(
+                    "IS_NET_INCOME",
+                    12_000_000_000.0,
+                    "fhsc",
+                    "f_fhsc_is",
+                    "INCOME_STATEMENT",
+                    "FLOW",
+                ),
+                _fact_row(
+                    "IS_NET_INCOME_PARENT",
+                    100_000_000.0,
+                    "fhsc",
+                    "f_fhsc_is",
+                    "INCOME_STATEMENT",
+                    "FLOW",
+                ),
+                _fact_row(
+                    "CF_OPERATING_CASH_FLOW",
+                    15_000_000_000.0,
+                    "fhsc",
+                    "f_fhsc_cf",
+                    "CASH_FLOW",
+                    "FLOW",
+                ),
+                _fact_row(
+                    "CF_DEPRECIATION_AMORTIZATION",
+                    5_000_000_000.0,
+                    "fhsc",
+                    "f_fhsc_cf",
+                    "CASH_FLOW",
+                    "FLOW",
+                ),
+                # Vietcap IQ: BS_TOTAL_ASSETS matches within 0.1% (no warn), IS_NET_REVENUE differs by 1.0% (> 0.5% -> WARN!),
+                # IS_NET_INCOME_PARENT differs by 2M on small 100M base (< 0.5% of 1e9 materiality floor -> no warn!)
+                _fact_row(
+                    "BS_TOTAL_ASSETS", 100_050_000_000.0, "vietcap_iq", "f_vci_bs"
+                ),
+                _fact_row(
+                    "IS_NET_REVENUE",
+                    80_800_000_000.0,
+                    "vietcap_iq",
+                    "f_vci_is",
+                    "INCOME_STATEMENT",
+                    "FLOW",
+                ),
+                _fact_row(
+                    "IS_NET_INCOME_PARENT",
+                    102_000_000.0,
+                    "vietcap_iq",
+                    "f_vci_is",
+                    "INCOME_STATEMENT",
+                    "FLOW",
+                ),
+            ]
+        )
+    )
+    reg = get_reconciliation_metrics_registry()
+    before = (
+        reg.get_sample_value(
+            "finintel_provider_discrepancy_total", {"metric_id": "IS_NET_REVENUE"}
+        )
+        or 0.0
+    )
+
+    rec_res = reconcile_cross_provider_facts(facts)
+    assert rec_res.discrepancies.height == 1
+    assert rec_res.discrepancies["metric_id"].to_list() == ["IS_NET_REVENUE"]
+
+    after = (
+        reg.get_sample_value(
+            "finintel_provider_discrepancy_total", {"metric_id": "IS_NET_REVENUE"}
+        )
+        or 0.0
+    )
+    assert after == before + 1.0
+
+    qg_res = evaluate_quality_gate(
+        rec_res.coalesced_facts,
+        extra_info_signals=rec_res.info_signals,
+    )
+    assert qg_res.audit_quarantine.is_empty()
+    assert qg_res.clean_facts.height == 8
+    summary_row = qg_res.quality_summary.row(0, named=True)
+    assert summary_row["quality_status"] == "PASS"
+    assert CROSS_PROVIDER_DISCREPANCY_CODE in summary_row["info_codes"]
+    assert CROSS_PROVIDER_DISCREPANCY_CODE not in summary_row["warning_codes"]
+
+    # Direct evaluate_quality_gate(facts) on uncoalesced multi-provider facts preserves ALL rows (no premature deletion)
+    # while emitting CROSS_PROVIDER_DISCREPANCY_WARN into quality_summary.info_codes!
+    qg_auto = evaluate_quality_gate(facts)
+    assert qg_auto.clean_facts.height == 11
+    assert set(qg_auto.clean_facts["source_provider"].to_list()) == {
+        "fhsc",
+        "vietcap_iq",
+    }
+    assert (
+        CROSS_PROVIDER_DISCREPANCY_CODE
+        in qg_auto.quality_summary.row(0, named=True)["info_codes"]
+    )
+
+
+def test_task05_quality_gate_catches_intra_provider_dup_and_audit_tier_reconcile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TASK-05 regression: intra-provider dup PK caught, audit-tier mismatch ignored, /metrics exposed, offline=0 HTTP."""
+    from prometheus_client import CollectorRegistry
+
+    from finintel.normalization.reconciliation import (
+        CROSS_PROVIDER_DISCREPANCY_CODE,
+        reconcile_cross_provider_facts,
+    )
+    from finintel.quality.gate import evaluate_quality_gate
+    from finintel.quality.rules import QualityGateConfig
+    from finintel.serving.observability import generate_metrics_payload
+    from finintel.storage.schemas import canonicalize_financial_facts
+
+    def _row(
+        metric_id: str,
+        value: float,
+        provider: str,
+        filing_id: str,
+        statement_type: str = "BALANCE_SHEET",
+        value_type: str = "STOCK",
+        audit_status: str = "UNAUDITED",
+        revision_no: int = 1,
+        published_at: date = date(2026, 4, 20),
+    ) -> dict[str, object]:
+        return {
+            "issuer_id": "VN_FPT",
+            "filing_id": filing_id,
+            "statement_type": statement_type,
+            "statement_scope": "CONSOLIDATED",
+            "period_type": "QUARTER",
+            "fiscal_year": 2026,
+            "fiscal_quarter": 1,
+            "fiscal_year_start_date": date(2026, 1, 1),
+            "period_start_date": date(2026, 1, 1),
+            "period_end_date": date(2026, 3, 31),
+            "period_days": 90,
+            "published_at": published_at,
+            "published_at_basis": "EXACT_FILING",
+            "effective_available_at": published_at,
+            "is_exact_filing_date": True,
+            "metric_id": metric_id,
+            "value": value,
+            "value_type": value_type,
+            "currency": "VND",
+            "unit_scale": 1,
+            "audit_status": audit_status,
+            "audit_opinion": "NOT_APPLICABLE",
+            "taxonomy_version": "VAS_TT200_2014",
+            "derivation_method": "REPORTED_DIRECTLY",
+            "revision_no": revision_no,
+            "revision_reason": "ORIGINAL" if revision_no == 1 else "RESTATED",
+            "source_filing_ids": [filing_id],
+            "source_provider": provider,
+        }
+
+    # 1. AUDITED fhsc vs UNAUDITED vietcap_iq must NOT emit false discrepancy warning.
+    audit_mix = canonicalize_financial_facts(
+        pl.DataFrame(
+            [
+                _row(
+                    "BS_TOTAL_ASSETS",
+                    115_000_000_000.0,
+                    "fhsc",
+                    "f_aud",
+                    audit_status="AUDITED",
+                ),
+                _row(
+                    "BS_TOTAL_ASSETS",
+                    100_000_000_000.0,
+                    "vietcap_iq",
+                    "f_un",
+                    audit_status="UNAUDITED",
+                ),
+            ]
+        )
+    )
+    mix_res = reconcile_cross_provider_facts(audit_mix, record_metrics=False)
+    assert mix_res.discrepancies.is_empty()
+    assert mix_res.info_signals.is_empty()
+
+    # 2. Same audit_status discrepancy exposes finintel_provider_discrepancy_total via generate_metrics_payload.
+    monkeypatch.delenv("PROMETHEUS_MULTIPROC_DIR", raising=False)
+    same_tier = canonicalize_financial_facts(
+        pl.DataFrame(
+            [
+                _row(
+                    "BS_TOTAL_ASSETS",
+                    105_000_000_000.0,
+                    "fhsc",
+                    "f_a1",
+                    audit_status="AUDITED",
+                ),
+                _row(
+                    "BS_TOTAL_ASSETS",
+                    100_000_000_000.0,
+                    "vietcap_iq",
+                    "f_a2",
+                    audit_status="AUDITED",
+                ),
+            ]
+        )
+    )
+    same_res = reconcile_cross_provider_facts(same_tier, record_metrics=True)
+    assert same_res.discrepancies.height == 1
+    assert CROSS_PROVIDER_DISCREPANCY_CODE in same_res.info_signals["code"].to_list()
+    prom_text = generate_metrics_payload(CollectorRegistry()).decode("utf-8")
+    assert (
+        'finintel_provider_discrepancy_total{metric_id="BS_TOTAL_ASSETS"}' in prom_text
+    )
+
+    # 3. Duplicate primary key inside fhsc is still caught even when vietcap_iq is also present!
+    dup_facts = pl.concat(
+        [
+            canonicalize_financial_facts(
+                pl.DataFrame(
+                    [_row("BS_TOTAL_ASSETS", 100_000_000_000.0, "fhsc", "f_dup_1")]
+                )
+            ),
+            canonicalize_financial_facts(
+                pl.DataFrame(
+                    [
+                        _row("BS_TOTAL_ASSETS", 101_000_000_000.0, "fhsc", "f_dup_1"),
+                        _row(
+                            "BS_TOTAL_ASSETS",
+                            100_000_000_000.0,
+                            "vietcap_iq",
+                            "f_vci_1",
+                        ),
+                    ]
+                )
+            ),
+        ]
+    )
+    qg_dup = evaluate_quality_gate(
+        dup_facts, config=QualityGateConfig(max_critical_issuer_ratio=1.0)
+    )
+    assert "DUPLICATE_PRIMARY_KEY" in qg_dup.audit_quarantine["rule_code"].to_list()
+
+    # 4. Offline mode (fetch_online=False) makes ZERO HTTP requests on cache miss.
+    def _forbid_http(
+        url: str, timeout_seconds: float, max_bytes: int, headers: Mapping[str, str]
+    ) -> tuple[int, Mapping[str, str], bytes]:
+        raise AssertionError(f"Offline Port 1 must not hit network: {url}")
+
+    offline_client = PoliteHostHttpClient(
+        min_interval_seconds=0.0, transport=_forbid_http, sleeper=lambda _s: None
+    )
+    cands, out = collect_ticker_raw_candidates(
+        ticker="HPG",
+        issuer_id="VN_HPG",
+        current_exchange="HOSE",
+        raw_dir=tmp_path / "partial_raw",
+        client=offline_client,
+        use_cache=True,
+        fetch_online=False,
+    )
+    assert cands == []
+    assert out.errors == ()

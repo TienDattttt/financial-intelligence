@@ -10,8 +10,10 @@ from datetime import UTC, datetime
 import polars as pl
 
 from finintel.exceptions import ContractViolationError, CriticalDataQualityError
+from finintel.normalization.reconciliation import reconcile_cross_provider_facts
 from finintel.quality.rules import (
     PERIOD_KEY,
+    PERIOD_SIGNAL_SCHEMA,
     QualityGateConfig,
     QualityStatus,
     build_period_wide,
@@ -79,6 +81,7 @@ def evaluate_quality_gate(
     checked_at: datetime | None = None,
     on_quarantine: Callable[[pl.DataFrame], None] | None = None,
     run_id: str | None = None,
+    extra_info_signals: pl.DataFrame | None = None,
 ) -> QualityGateResult:
     """Execute the 3-tier severity quality gate on normalized financial facts.
 
@@ -110,8 +113,27 @@ def evaluate_quality_gate(
             clean_ratios=ratios,
         )
 
+    auto_reconcile = (
+        reconcile_cross_provider_facts(facts)
+        if (
+            "source_provider" in facts.columns
+            and facts["source_provider"].n_unique() > 1
+        )
+        else None
+    )
+    period_facts = (
+        auto_reconcile.coalesced_facts if auto_reconcile is not None else facts
+    )
+    merged_extra_info = extra_info_signals
+    if auto_reconcile is not None and not auto_reconcile.info_signals.is_empty():
+        merged_extra_info = (
+            pl.concat([merged_extra_info, auto_reconcile.info_signals]).unique()
+            if merged_extra_info is not None and not merged_extra_info.is_empty()
+            else auto_reconcile.info_signals
+        )
+
     dup_events = check_duplicate_primary_keys(facts)
-    period_wide = build_period_wide(facts, issuers)
+    period_wide = build_period_wide(period_facts, issuers)
 
     critical_frames = [
         dup_events,
@@ -198,6 +220,7 @@ def evaluate_quality_gate(
         clean_ratios,
         config=cfg,
         timestamp=timestamp,
+        extra_info_signals=merged_extra_info,
     )
 
     log_method = logger.warning if not audit_quarantine.is_empty() else logger.info
@@ -239,6 +262,7 @@ def _build_quality_summary(
     *,
     config: QualityGateConfig,
     timestamp: str,
+    extra_info_signals: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     if clean_wide.is_empty():
         return _empty_quality_summary()
@@ -269,6 +293,16 @@ def _build_quality_summary(
         )
 
     info_signals = check_info_signals(clean_wide, clean_ratios)
+    if extra_info_signals is not None and not extra_info_signals.is_empty():
+        valid_extra = extra_info_signals.select(PERIOD_SIGNAL_SCHEMA.names()).join(
+            clean_wide.select(list(PERIOD_KEY)), on=list(PERIOD_KEY), how="semi"
+        )
+        if not valid_extra.is_empty():
+            info_signals = (
+                pl.concat([info_signals, valid_extra]).unique()
+                if not info_signals.is_empty()
+                else valid_extra.unique()
+            )
     if not info_signals.is_empty():
         info_agg = info_signals.group_by(list(PERIOD_KEY)).agg(
             pl.col("code").sort().alias("info_codes")

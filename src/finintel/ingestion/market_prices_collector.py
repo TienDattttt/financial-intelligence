@@ -1,20 +1,9 @@
-"""Real EOD market prices collector & Port 3 provider (UI-09a / B-06).
+"""Real EOD market prices collector & Port 3 provider (UI-09a / B-06 / TASK-05).
 
 Verified Sources:
-    - ``src/finintel/ports/market_prices.py`` (``MarketPriceProvider``,
-      ``validate_market_prices``, ``align_events_to_market_prices_pit``) and
-      ``src/finintel/storage/schemas.py`` (``MARKET_PRICES_SCHEMA``, ``MARKET_PRICES_KEY``).
-    - ``docs/refactor/03_FRONTEND_UX_AND_DIFFERENTIATION_PLAN.md`` (``ADR-UI-03`` / ``B-06``):
-      Separates unadjusted ``close_raw`` (for PIT Market Cap / P/E / P/B without
-      retroactive split distortion) from retroactively adjusted ``close_adj`` (for
-      continuous price trajectories and post-alert drawdown).
-    - Public structured HTTPS endpoints:
-      - VNDirect Finfo Stock Prices API:
-        ``https://api-finfo.vndirect.com.vn/v4/stock_prices``
-      - VNDirect Finfo Ratios API (PIT daily ``MARKETCAP``):
-        ``https://api-finfo.vndirect.com.vn/v4/ratios``
-      - CafeF Price History AJAX (fallback & cross-verification):
-        ``https://cafef.vn/du-lieu/Ajax/PageNew/DataHistory/PriceHistory.ashx``
+    - ``src/finintel/ports/market_prices.py`` & ``src/finintel/storage/schemas.py``.
+    - ``spec/SPEC-v2-autonomous-institutional-finintel.md`` §3.B.3 (split-safe 5-session overlap).
+    - VNDirect Finfo HTTPS APIs & CafeF PriceHistory AJAX fallback.
 """
 
 from __future__ import annotations
@@ -28,7 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http.client import HTTPMessage
@@ -229,10 +218,11 @@ def parse_retry_after(
         parsed_dt = parsedate_to_datetime(stripped)
     except (TypeError, ValueError, IndexError):
         return None
-    if parsed_dt.tzinfo is None:
-        parsed_dt = parsed_dt.replace(tzinfo=UTC)
-    else:
-        parsed_dt = parsed_dt.astimezone(UTC)
+    parsed_dt = (
+        parsed_dt.replace(tzinfo=UTC)
+        if parsed_dt.tzinfo is None
+        else parsed_dt.astimezone(UTC)
+    )
     ref_now = (
         (now.astimezone(UTC) if now.tzinfo is not None else now.replace(tzinfo=UTC))
         if now is not None
@@ -321,12 +311,10 @@ class PoliteMarketPriceHttpClient:
 
         def _should_retry(exc: BaseException) -> bool:
             if isinstance(exc, _RetryableHttpError):
-                if (
-                    exc.retry_after_seconds is not None
-                    and exc.retry_after_seconds > self.backoff_max_seconds
-                ):
-                    return False
-                return True
+                return (
+                    exc.retry_after_seconds is None
+                    or exc.retry_after_seconds <= self.backoff_max_seconds
+                )
             return isinstance(
                 exc,
                 (urllib.error.URLError, TimeoutError, OSError, TransientSourceError),
@@ -431,10 +419,8 @@ def _to_finite_float(raw: object) -> float | None:
         return val if math.isfinite(val) else None
     if isinstance(raw, str):
         text = raw.strip().replace(",", "")
-        if not text:
-            return None
         try:
-            val = float(text)
+            val = float(text) if text else math.nan
         except ValueError:
             return None
         return val if math.isfinite(val) else None
@@ -442,13 +428,10 @@ def _to_finite_float(raw: object) -> float | None:
 
 
 def _parse_iso_date(raw: object) -> date | None:
-    if not isinstance(raw, str):
-        return None
-    text = raw.strip()
-    if len(text) < 10:
+    if not isinstance(raw, str) or len(raw.strip()) < 10:
         return None
     try:
-        return date.fromisoformat(text[:10])
+        return date.fromisoformat(raw.strip()[:10])
     except ValueError:
         return None
 
@@ -465,6 +448,26 @@ def _parse_dmy_date(raw: object) -> date | None:
         return None
 
 
+def _decode_json_dict(content: bytes, label: str) -> dict[str, Any]:
+    try:
+        decoded = json.loads(content)
+    except (ValueError, UnicodeError) as exc:
+        raise ContractViolationError(f"Malformed {label} JSON.") from exc
+    if not isinstance(decoded, dict):
+        raise ContractViolationError(f"{label} payload must be a JSON object.")
+    return decoded
+
+
+def _optional_int(raw: object) -> int | None:
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+
+
+def _in_bounds(dt: date | None, start: date | None, end: date | None) -> bool:
+    return (
+        dt is not None and (start is None or dt >= start) and (end is None or dt <= end)
+    )
+
+
 def parse_vndirect_stock_prices(
     ticker: str,
     content: bytes,
@@ -473,51 +476,27 @@ def parse_vndirect_stock_prices(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> tuple[list[MarketPriceBar], int | None, int]:
-    """Parse VNDirect Finfo ``/v4/stock_prices`` JSON into VND ``MarketPriceBar`` items.
-
-    VNDirect returns ``close`` (unadjusted) and ``adClose`` (retroactively adjusted)
-    in thousand-VND units (e.g., ``45.0`` = ``45,000.0`` VND). This parser scales both
-    by ``1000.0`` to align with FinIntel's VND accounting facts and Port 3 tests.
-    """
+    """Parse VNDirect Finfo ``/v4/stock_prices`` JSON into VND ``MarketPriceBar`` items."""
     clean_ticker = _validate_clean_ticker(ticker)
     target_issuer = (issuer_id or clean_ticker).strip()
     if not target_issuer:
         raise ContractViolationError("issuer_id cannot be empty.")
-
-    try:
-        decoded = json.loads(content)
-    except (ValueError, UnicodeError) as exc:
-        raise ContractViolationError("Malformed VNDirect stock_prices JSON.") from exc
-    if not isinstance(decoded, dict):
-        raise ContractViolationError(
-            "VNDirect stock_prices payload must be a JSON object."
-        )
-
+    decoded = _decode_json_dict(content, "VNDirect stock_prices")
     entries = decoded.get("data")
     if not isinstance(entries, list):
         return [], None, 0
-
-    raw_total_pages = decoded.get("totalPages")
-    total_pages = (
-        raw_total_pages
-        if isinstance(raw_total_pages, int) and not isinstance(raw_total_pages, bool)
-        else None
-    )
+    total_pages = _optional_int(decoded.get("totalPages"))
 
     bars: list[MarketPriceBar] = []
     dropped_non_positive = 0
     for item in entries:
-        if not isinstance(item, dict):
-            continue
-        item_code = str(item.get("code") or clean_ticker).strip().upper()
-        if item_code != clean_ticker:
+        if (
+            not isinstance(item, dict)
+            or str(item.get("code") or clean_ticker).strip().upper() != clean_ticker
+        ):
             continue
         trade_dt = _parse_iso_date(item.get("date"))
-        if trade_dt is None:
-            continue
-        if start_date is not None and trade_dt < start_date:
-            continue
-        if end_date is not None and trade_dt > end_date:
+        if trade_dt is None or not _in_bounds(trade_dt, start_date, end_date):
             continue
 
         raw_k = _to_finite_float(item.get("close"))
@@ -570,39 +549,22 @@ def parse_vndirect_marketcap_ratios(
 ) -> tuple[dict[date, float], int | None]:
     """Parse VNDirect Finfo ``/v4/ratios`` (``ratioCode=MARKETCAP``) into VND map."""
     clean_ticker = _validate_clean_ticker(ticker)
-    try:
-        decoded = json.loads(content)
-    except (ValueError, UnicodeError) as exc:
-        raise ContractViolationError("Malformed VNDirect ratios JSON.") from exc
-    if not isinstance(decoded, dict):
-        raise ContractViolationError("VNDirect ratios payload must be a JSON object.")
-
+    decoded = _decode_json_dict(content, "VNDirect ratios")
     entries = decoded.get("data")
     if not isinstance(entries, list):
         return {}, None
-
-    raw_total_pages = decoded.get("totalPages")
-    total_pages = (
-        raw_total_pages
-        if isinstance(raw_total_pages, int) and not isinstance(raw_total_pages, bool)
-        else None
-    )
+    total_pages = _optional_int(decoded.get("totalPages"))
 
     mcap_by_date: dict[date, float] = {}
     for item in entries:
-        if not isinstance(item, dict):
-            continue
-        item_code = str(item.get("code") or clean_ticker).strip().upper()
-        if item_code != clean_ticker:
-            continue
-        if str(item.get("ratioCode") or "").strip().upper() != "MARKETCAP":
+        if (
+            not isinstance(item, dict)
+            or str(item.get("code") or clean_ticker).strip().upper() != clean_ticker
+            or str(item.get("ratioCode") or "").strip().upper() != "MARKETCAP"
+        ):
             continue
         rep_dt = _parse_iso_date(item.get("reportDate"))
-        if rep_dt is None:
-            continue
-        if start_date is not None and rep_dt < start_date:
-            continue
-        if end_date is not None and rep_dt > end_date:
+        if rep_dt is None or not _in_bounds(rep_dt, start_date, end_date):
             continue
         val = _to_finite_float(item.get("value"))
         if val is not None and val > 0.0:
@@ -624,25 +586,11 @@ def parse_cafef_price_history(
     if not target_issuer:
         raise ContractViolationError("issuer_id cannot be empty.")
 
-    try:
-        decoded = json.loads(content)
-    except (ValueError, UnicodeError) as exc:
-        raise ContractViolationError("Malformed CafeF PriceHistory JSON.") from exc
-    if not isinstance(decoded, dict):
-        raise ContractViolationError(
-            "CafeF PriceHistory payload must be a JSON object."
-        )
-
+    decoded = _decode_json_dict(content, "CafeF PriceHistory")
     outer = decoded.get("Data")
     if not isinstance(outer, dict):
         return [], None, 0
-
-    raw_total_count = outer.get("TotalCount")
-    total_count = (
-        raw_total_count
-        if isinstance(raw_total_count, int) and not isinstance(raw_total_count, bool)
-        else None
-    )
+    total_count = _optional_int(outer.get("TotalCount"))
     entries = outer.get("Data")
     if not isinstance(entries, list):
         return [], total_count, 0
@@ -653,11 +601,7 @@ def parse_cafef_price_history(
         if not isinstance(item, dict):
             continue
         trade_dt = _parse_dmy_date(item.get("Ngay"))
-        if trade_dt is None:
-            continue
-        if start_date is not None and trade_dt < start_date:
-            continue
-        if end_date is not None and trade_dt > end_date:
+        if trade_dt is None or not _in_bounds(trade_dt, start_date, end_date):
             continue
 
         raw_k = _to_finite_float(item.get("GiaDongCua"))
@@ -695,23 +639,15 @@ def attach_shares_outstanding_market(
     enriched: list[MarketPriceBar] = []
     for bar in bars:
         mcap = marketcap_by_date.get(bar.trade_date)
-        custom_denom = bar.marketcap_price_denominator
-        if (
-            custom_denom is not None
-            and math.isfinite(custom_denom)
-            and custom_denom > 0.0
-        ):
-            use_custom = True
-            denom = custom_denom
-        else:
-            use_custom = False
-            denom = bar.close_raw
+        cd = bar.marketcap_price_denominator
+        use_custom = cd is not None and math.isfinite(cd) and cd > 0.0
+        denom = cd if (use_custom and cd is not None) else bar.close_raw
         if (
             mcap is not None
-            and math.isfinite(mcap)
             and mcap > 0.0
-            and math.isfinite(denom)
+            and math.isfinite(mcap)
             and denom > 0.0
+            and math.isfinite(denom)
         ):
             shares = float(round(mcap / denom)) if use_custom else (mcap / denom)
             if math.isfinite(shares) and shares > 0.0:
@@ -726,24 +662,13 @@ def build_market_prices_table(bars: Sequence[MarketPriceBar]) -> pl.DataFrame:
     if not bars:
         return validate_market_prices(pl.DataFrame(schema=MARKET_PRICES_SCHEMA))
 
-    rows = [
-        {
-            "issuer_id": b.issuer_id,
-            "ticker": b.ticker,
-            "trade_date": b.trade_date,
-            "close_raw": float(b.close_raw),
-            "close_adj": float(b.close_adj),
-            "volume": float(b.volume),
-            "shares_outstanding_market": (
-                float(b.shares_outstanding_market)
-                if b.shares_outstanding_market is not None
-                else None
-            ),
-            "source_provider": b.source_provider,
-        }
-        for b in bars
-    ]
-    frame = pl.DataFrame(rows, schema=MARKET_PRICES_SCHEMA)
+    frame = pl.DataFrame(
+        [asdict(b) for b in bars],
+        schema={
+            **dict(MARKET_PRICES_SCHEMA),
+            "marketcap_price_denominator": pl.Float64,
+        },
+    ).drop("marketcap_price_denominator")
     # Deduplicate on business key (issuer_id, trade_date), keeping entries with
     # shares_outstanding_market populated and primary provider first.
     frame = (
@@ -760,6 +685,30 @@ def build_market_prices_table(bars: Sequence[MarketPriceBar]) -> pl.DataFrame:
         .sort(["issuer_id", "trade_date"])
     )
     return validate_market_prices(frame)
+
+
+_FETCH_ERRORS = (
+    ContractViolationError,
+    RateLimitOrCircuitOpenError,
+    TransientSourceError,
+    RuntimeError,
+)
+
+
+def _load_or_fetch_receipt(
+    raw_dir: Path,
+    rel_path: str,
+    url: str,
+    client: PoliteMarketPriceHttpClient,
+    *,
+    use_cache: bool,
+) -> bytes:
+    cached = read_cached_raw_receipt(raw_dir, rel_path) if use_cache else None
+    if cached is not None:
+        return cached[0]
+    content = client.get_bytes(url)
+    write_raw_receipt(raw_dir, rel_path, content)
+    return content
 
 
 def collect_ticker_market_prices(
@@ -779,18 +728,12 @@ def collect_ticker_market_prices(
     """Fetch (or load cached) EOD raw & adjusted prices for one ticker."""
     clean_ticker = _validate_clean_ticker(ticker)
     effective_end = end_date if end_date is not None else datetime.now(VN_TZ).date()
-
     errors: list[str] = []
     bars: list[MarketPriceBar] = []
-    vnd_price_pages = 0
-    vnd_mcap_pages = 0
-    cafef_pages = 0
-    dropped_non_positive = 0
+    vnd_price_pages, vnd_mcap_pages, cafef_pages, dropped_non_positive = 0, 0, 0, 0
     primary_provider = "vndirect_finfo"
 
-    # 1. Primary: VNDirect Finfo /v4/stock_prices
-    page = 1
-    while page <= max_pages:
+    for page in range(1, max_pages + 1):
         url = DEFAULT_VNDIRECT_PRICES_URL_TEMPLATE.format(
             ticker=clean_ticker,
             start_date=start_date.isoformat(),
@@ -799,13 +742,10 @@ def collect_ticker_market_prices(
             page=page,
         )
         rel_path = f"vndirect/stock_prices/{clean_ticker}_p{page}.json"
-        cached = read_cached_raw_receipt(raw_dir, rel_path) if use_cache else None
         try:
-            if cached is not None:
-                content, _ = cached
-            else:
-                content = client.get_bytes(url)
-                write_raw_receipt(raw_dir, rel_path, content)
+            content = _load_or_fetch_receipt(
+                raw_dir, rel_path, url, client, use_cache=use_cache
+            )
             page_bars, total_pages, dropped = parse_vndirect_stock_prices(
                 clean_ticker,
                 content,
@@ -822,21 +762,13 @@ def collect_ticker_market_prices(
                 or (not page_bars and dropped == 0)
             ):
                 break
-            page += 1
-        except (
-            ContractViolationError,
-            RateLimitOrCircuitOpenError,
-            TransientSourceError,
-            RuntimeError,
-        ) as exc:
+        except _FETCH_ERRORS as exc:
             errors.append(f"vndirect_stock_prices p{page}: {exc}")
             break
 
-    # 2. Supplementary PIT Market Cap -> shares_outstanding_market
     mcap_by_date: dict[date, float] = {}
     if include_marketcap and bars:
-        mpage = 1
-        while mpage <= max_pages:
+        for mpage in range(1, max_pages + 1):
             url = DEFAULT_VNDIRECT_MARKETCAP_URL_TEMPLATE.format(
                 ticker=clean_ticker,
                 start_date=start_date.isoformat(),
@@ -845,40 +777,28 @@ def collect_ticker_market_prices(
                 page=mpage,
             )
             rel_path = f"vndirect/marketcap/{clean_ticker}_p{mpage}.json"
-            cached = read_cached_raw_receipt(raw_dir, rel_path) if use_cache else None
             try:
-                if cached is not None:
-                    content, _ = cached
-                else:
-                    content = client.get_bytes(url)
-                    write_raw_receipt(raw_dir, rel_path, content)
+                content = _load_or_fetch_receipt(
+                    raw_dir, rel_path, url, client, use_cache=use_cache
+                )
                 page_mcap, total_pages = parse_vndirect_marketcap_ratios(
-                    clean_ticker,
-                    content,
-                    start_date=start_date,
-                    end_date=effective_end,
+                    clean_ticker, content, start_date=start_date, end_date=effective_end
                 )
                 mcap_by_date.update(page_mcap)
                 vnd_mcap_pages += 1
                 if total_pages is None or mpage >= total_pages or not page_mcap:
                     break
-                mpage += 1
-            except (
-                ContractViolationError,
-                RateLimitOrCircuitOpenError,
-                TransientSourceError,
-                RuntimeError,
-            ) as exc:
+            except _FETCH_ERRORS as exc:
                 errors.append(f"vndirect_marketcap p{mpage}: {exc}")
                 break
 
-    # 3. Fallback: CafeF PriceHistory.ashx if primary returned no valid bars
     if not bars and allow_cafef_fallback:
         primary_provider = "cafef_eod"
-        cpage = 1
-        start_mdy = start_date.strftime("%m/%d/%Y")
-        end_mdy = effective_end.strftime("%m/%d/%Y")
-        while cpage <= max_pages:
+        start_mdy, end_mdy = (
+            start_date.strftime("%m/%d/%Y"),
+            effective_end.strftime("%m/%d/%Y"),
+        )
+        for cpage in range(1, max_pages + 1):
             url = DEFAULT_CAFEF_PRICE_HISTORY_URL_TEMPLATE.format(
                 ticker=clean_ticker,
                 start_date_mdy=start_mdy,
@@ -887,13 +807,10 @@ def collect_ticker_market_prices(
                 page_size=DEFAULT_CAFEF_PAGE_SIZE,
             )
             rel_path = f"cafef/price_history/{clean_ticker}_p{cpage}.json"
-            cached = read_cached_raw_receipt(raw_dir, rel_path) if use_cache else None
             try:
-                if cached is not None:
-                    content, _ = cached
-                else:
-                    content = client.get_bytes(url)
-                    write_raw_receipt(raw_dir, rel_path, content)
+                content = _load_or_fetch_receipt(
+                    raw_dir, rel_path, url, client, use_cache=use_cache
+                )
                 page_bars, total_count, dropped = parse_cafef_price_history(
                     clean_ticker,
                     content,
@@ -910,13 +827,7 @@ def collect_ticker_market_prices(
                     or cpage * DEFAULT_CAFEF_PAGE_SIZE >= total_count
                 ):
                     break
-                cpage += 1
-            except (
-                ContractViolationError,
-                RateLimitOrCircuitOpenError,
-                TransientSourceError,
-                RuntimeError,
-            ) as exc:
+            except _FETCH_ERRORS as exc:
                 errors.append(f"cafef_price_history p{cpage}: {exc}")
                 break
 
@@ -1035,30 +946,127 @@ class LiveMarketPricesCollector(MarketPriceProvider):
         return build_market_prices_table(all_bars)
 
 
-__all__ = [
-    "DEFAULT_CAFEF_PAGE_SIZE",
-    "DEFAULT_CAFEF_PRICE_HISTORY_URL_TEMPLATE",
-    "DEFAULT_MAX_PAGE_SIZE",
-    "DEFAULT_MIN_REQUEST_INTERVAL_SECONDS",
-    "DEFAULT_START_DATE",
-    "DEFAULT_VNDIRECT_MARKETCAP_URL_TEMPLATE",
-    "DEFAULT_VNDIRECT_PRICES_URL_TEMPLATE",
-    "MARKET_PRICE_ALLOWED_HOSTS",
-    "VND_PRICE_MULTIPLIER",
-    "CuratedMarketPricesCollector",
-    "LiveMarketPricesCollector",
-    "MarketPriceBar",
-    "PoliteMarketPriceHttpClient",
-    "TickerPriceCollectionOutcome",
-    "attach_shares_outstanding_market",
-    "build_market_prices_table",
-    "collect_ticker_market_prices",
-    "compute_payload_sha256",
-    "parse_cafef_price_history",
-    "parse_retry_after",
-    "parse_vndirect_marketcap_ratios",
-    "parse_vndirect_stock_prices",
-    "read_cached_raw_receipt",
-    "validate_market_price_url",
-    "write_raw_receipt",
-]
+SPLIT_CLOSE_ADJ_TOLERANCE = 1e-3
+DEFAULT_OVERLAP_SESSIONS = 5
+
+
+def sync_incremental_market_prices(
+    existing_prices: pl.DataFrame | None,
+    *,
+    tickers: Sequence[str],
+    issuer_map: Mapping[str, str],
+    exchange_map: Mapping[str, str] | None = None,
+    raw_dir: Path,
+    client: PoliteMarketPriceHttpClient,
+    end_date: date | None = None,
+    overlap_sessions: int = DEFAULT_OVERLAP_SESSIONS,
+    split_adj_tol: float = SPLIT_CLOSE_ADJ_TOLERANCE,
+    include_marketcap: bool = True,
+) -> tuple[pl.DataFrame, tuple[str, ...]]:
+    """Incrementally sync EOD prices with 5-session corporate-action split detection."""
+    effective_end = end_date if end_date is not None else datetime.now(VN_TZ).date()
+    base = (
+        validate_market_prices(existing_prices)
+        if existing_prices is not None and not existing_prices.is_empty()
+        else pl.DataFrame(schema=MARKET_PRICES_SCHEMA)
+    )
+    norm_issuers = {k.strip().upper(): v for k, v in issuer_map.items()}
+    norm_exchanges = {k.strip().upper(): v for k, v in (exchange_map or {}).items()}
+    processed_issuers: set[str] = set()
+    updated_frames: list[pl.DataFrame] = []
+    refetched: list[str] = []
+
+    def _collect(
+        tk: str, iid: str, ex: str, s_dt: date, r_dir: Path, *, allow_cf: bool = True
+    ) -> tuple[list[MarketPriceBar], TickerPriceCollectionOutcome]:
+        return collect_ticker_market_prices(
+            ticker=tk,
+            issuer_id=iid,
+            current_exchange=ex,
+            raw_dir=r_dir,
+            client=client,
+            start_date=s_dt,
+            end_date=effective_end,
+            use_cache=False,
+            include_marketcap=include_marketcap,
+            allow_cafef_fallback=allow_cf,
+        )
+
+    def _coalesce_old_shares(
+        new_df: pl.DataFrame, old_df: pl.DataFrame, *, keep_older_rows: bool
+    ) -> pl.DataFrame:
+        prior = old_df.select(
+            "issuer_id", "trade_date", pl.col("shares_outstanding_market").alias("_s")
+        )
+        combined = pl.concat([new_df, old_df]) if keep_older_rows else new_df
+        return (
+            combined.unique(
+                subset=list(MARKET_PRICES_KEY), keep="first", maintain_order=True
+            )
+            .join(prior, on=["issuer_id", "trade_date"], how="left")
+            .with_columns(
+                pl.coalesce(["shares_outstanding_market", "_s"]).alias(
+                    "shares_outstanding_market"
+                )
+            )
+            .drop("_s")
+            .sort(["issuer_id", "trade_date"])
+        )
+
+    for raw_tk in tickers:
+        tk = _validate_clean_ticker(raw_tk)
+        iid, ex = norm_issuers.get(tk, tk), norm_exchanges.get(tk, "UNKNOWN")
+        processed_issuers.add(iid)
+        existing_tk = base.filter(pl.col("issuer_id") == iid).sort("trade_date")
+        if existing_tk.is_empty():
+            full_bars, _ = _collect(tk, iid, ex, DEFAULT_START_DATE, raw_dir)
+            if full_bars:
+                updated_frames.append(build_market_prices_table(full_bars))
+            continue
+
+        has_vnd = "vndirect_finfo" in set(existing_tk["source_provider"].to_list())
+        tail = existing_tk.tail(max(1, overlap_sessions))
+        tail_dates = tail["trade_date"].to_list()
+        inc_bars, _ = _collect(
+            tk, iid, ex, min(tail_dates), raw_dir / "incremental", allow_cf=not has_vnd
+        )
+        tail_adj = dict(zip(tail_dates, tail["close_adj"].to_list(), strict=False))
+        if any(
+            b.trade_date in tail_adj
+            and abs(b.close_adj - float(tail_adj[b.trade_date])) > split_adj_tol
+            for b in inc_bars
+        ):
+            full_bars, full_out = _collect(
+                tk, iid, ex, DEFAULT_START_DATE, raw_dir, allow_cf=not has_vnd
+            )
+            if full_bars and not full_out.errors:
+                refetched.append(tk)
+                updated_frames.append(
+                    _coalesce_old_shares(
+                        build_market_prices_table(full_bars),
+                        existing_tk,
+                        keep_older_rows=False,
+                    )
+                )
+            else:
+                updated_frames.append(existing_tk)
+        elif inc_bars:
+            updated_frames.append(
+                _coalesce_old_shares(
+                    build_market_prices_table(inc_bars),
+                    existing_tk,
+                    keep_older_rows=True,
+                )
+            )
+        else:
+            updated_frames.append(existing_tk)
+
+    untouched = base.filter(~pl.col("issuer_id").is_in(list(processed_issuers)))
+    parts = [f for f in [untouched, *updated_frames] if not f.is_empty()]
+    if not parts:
+        return validate_market_prices(pl.DataFrame(schema=MARKET_PRICES_SCHEMA)), tuple(
+            sorted(refetched)
+        )
+    return validate_market_prices(
+        pl.concat(parts).sort(["issuer_id", "trade_date"])
+    ), tuple(sorted(refetched))

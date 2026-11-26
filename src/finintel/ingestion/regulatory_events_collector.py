@@ -1,15 +1,8 @@
 """Semi-automated ground-truth regulatory and audit events collector (ML-03a / Port 1).
 
 Verified Sources:
-    - Decree 155/2020/ND-CP (Article 120 - Mandatory Delisting) and VNX Decision 22/QD-HDTV
-      (18/04/2025 - Supervision, Control, Trading Restriction and Suspension Rules).
-    - ``src/finintel/ports/regulatory.py`` (``RegulatoryEventProvider``,
-      ``validate_regulatory_events``) and ``src/finintel/storage/schemas.py``
-      (``REGULATORY_EVENTS_SCHEMA``).
-    - Public structured HTTPS endpoints:
-      - Vietcap IQ News API (``https://iq.vietcap.com.vn/api/iq-insight-service/v1/news``)
-      - Vietcap IQ Company API (``https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/{ticker}``)
-      - CafeF Corporate Events AJAX (``https://cafef.vn/du-lieu/Ajax/Events_RelatedNews_New.aspx``)
+    - Decree 155/2020/ND-CP (Art. 120) & VNX Decision 22/QD-HDTV (18/04/2025).
+    - ``src/finintel/ports/regulatory.py`` & ``spec/SPEC-v2-autonomous-institutional-finintel.md`` §3.B.3.
 """
 
 from __future__ import annotations
@@ -786,15 +779,10 @@ def parse_cafef_events_candidates(
             continue
 
         resolved_url = source_url
-        if href.startswith("/"):
-            candidate_url = f"https://cafef.vn{href}"
+        if href.startswith(("/", "https://")):
+            cand_url = f"https://cafef.vn{href}" if href.startswith("/") else href
             try:
-                resolved_url = validate_regulatory_url(candidate_url)
-            except ContractViolationError:
-                resolved_url = source_url
-        elif href.startswith("https://"):
-            try:
-                resolved_url = validate_regulatory_url(href)
+                resolved_url = validate_regulatory_url(cand_url)
             except ContractViolationError:
                 resolved_url = source_url
 
@@ -1017,12 +1005,14 @@ def build_regulatory_events_table(
     *,
     exchange_by_issuer: Mapping[str, str] | None = None,
     min_date: date = date(2018, 1, 1),
-    max_date: date = date(2026, 12, 31),
+    max_date: date | None = None,
 ) -> pl.DataFrame:
     """Classify raw headline candidates into a validated Port 1 ``regulatory_events`` table."""
     by_issuer: dict[str, list[RawHeadlineCandidate]] = {}
     for cand in candidates:
-        if cand.event_date < min_date or cand.event_date > max_date:
+        if cand.event_date < min_date or (
+            max_date is not None and cand.event_date > max_date
+        ):
             continue
         by_issuer.setdefault(cand.issuer_id, []).append(cand)
 
@@ -1267,6 +1257,14 @@ def build_mandatory_delistings_table(
     return grouped
 
 
+_REG_FETCH_ERRORS = (
+    ContractViolationError,
+    RateLimitOrCircuitOpenError,
+    TransientSourceError,
+    RuntimeError,
+)
+
+
 def collect_ticker_raw_candidates(
     *,
     ticker: str,
@@ -1275,8 +1273,10 @@ def collect_ticker_raw_candidates(
     raw_dir: Path,
     client: PoliteHostHttpClient,
     from_date: date = date(2018, 1, 1),
-    to_date: date = date(2026, 11, 22),
+    to_date: date | None = None,
     use_cache: bool = True,
+    fetch_online: bool = True,
+    refresh_head_pages: int = 0,
     max_vietcap_pages: int = 5,
     max_cafef_pages: int = 2,
 ) -> tuple[list[RawHeadlineCandidate], TickerCollectionOutcome]:
@@ -1285,84 +1285,120 @@ def collect_ticker_raw_candidates(
     if not _TICKER_RE.fullmatch(clean_ticker):
         raise ContractViolationError(f"Invalid ticker: {ticker!r}.")
 
+    effective_to = to_date if to_date is not None else datetime.now(VN_TZ).date()
     candidates: list[RawHeadlineCandidate] = []
     errors: list[str] = []
-    vci_pages = 0
-    cafef_pages = 0
+    vci_pages, cafef_pages = 0, 0
+    seen_vci_pages: set[int] = set()
 
-    # 1. Vietcap IQ News API (1000 items/page covers ~2018-2026 in 1-2 requests)
-    page = 0
-    while page < max_vietcap_pages:
+    def _get_receipt(
+        rel_path: str, url: str, *, refresh: bool
+    ) -> tuple[bytes, str] | None:
+        cached = (
+            read_cached_raw_receipt(raw_dir, rel_path)
+            if (use_cache and not refresh)
+            else None
+        )
+        if cached is not None:
+            return cached
+        if not fetch_online:
+            return None
+        data = client.get_bytes(url)
+        return data, write_raw_receipt(raw_dir, rel_path, data)
+
+    for page in range(max_vietcap_pages):
         url = DEFAULT_VIETCAP_NEWS_URL_TEMPLATE.format(
             ticker=clean_ticker,
             from_date=from_date.isoformat(),
-            to_date=to_date.isoformat(),
+            to_date=effective_to.isoformat(),
             page=page,
             size=1000,
         )
-        rel_path = f"vietcap_iq/{clean_ticker}_news_p{page}.json"
-        cached = read_cached_raw_receipt(raw_dir, rel_path) if use_cache else None
+        refresh = fetch_online and refresh_head_pages > 0 and page < refresh_head_pages
         try:
-            if cached is not None:
-                content, sha = cached
-            else:
-                content = client.get_bytes(url)
-                sha = write_raw_receipt(raw_dir, rel_path, content)
+            got = _get_receipt(
+                f"vietcap_iq/{clean_ticker}_news_p{page}.json", url, refresh=refresh
+            )
+            if got is None:
+                break
             page_cands, total_pages = parse_vietcap_news_candidates(
                 clean_ticker,
-                content,
+                got[0],
                 issuer_id=issuer_id,
                 source_url=url,
-                payload_sha256=sha,
+                payload_sha256=got[1],
             )
             candidates.extend(page_cands)
+            seen_vci_pages.add(page)
             vci_pages += 1
-            page += 1
-            if total_pages is None or page >= total_pages or not page_cands:
+            if (
+                total_pages is None
+                or page + 1 >= total_pages
+                or (not page_cands and not refresh)
+            ):
                 break
-        except (
-            ContractViolationError,
-            RateLimitOrCircuitOpenError,
-            TransientSourceError,
-            RuntimeError,
-        ) as exc:
+        except _REG_FETCH_ERRORS as exc:
             errors.append(f"vietcap_iq p{page}: {exc}")
             break
 
-    # 2. CafeF Corporate Events AJAX (supplementary / cross-verification)
-    cpage = 1
-    while cpage <= max_cafef_pages:
+    if use_cache and (raw_dir / "vietcap_iq").is_dir():
+        for extra_file in sorted(
+            (raw_dir / "vietcap_iq").glob(f"{clean_ticker}_news_p*.json")
+        ):
+            m = re.search(r"_news_p(\d+)\.json$", extra_file.name)
+            if m is None or int(m[1]) in seen_vci_pages:
+                continue
+            cached_extra = read_cached_raw_receipt(
+                raw_dir, f"vietcap_iq/{extra_file.name}"
+            )
+            if cached_extra is None:
+                continue
+            extra_url = DEFAULT_VIETCAP_NEWS_URL_TEMPLATE.format(
+                ticker=clean_ticker,
+                from_date=from_date.isoformat(),
+                to_date=effective_to.isoformat(),
+                page=int(m[1]),
+                size=1000,
+            )
+            extra_cands, _ = parse_vietcap_news_candidates(
+                clean_ticker,
+                cached_extra[0],
+                issuer_id=issuer_id,
+                source_url=extra_url,
+                payload_sha256=cached_extra[1],
+            )
+            candidates.extend(extra_cands)
+            vci_pages += 1
+
+    for cpage in range(1, max_cafef_pages + 1):
         url = DEFAULT_CAFEF_EVENTS_URL_TEMPLATE.format(
-            ticker=clean_ticker,
-            page=cpage,
-            page_size=30,
+            ticker=clean_ticker, page=cpage, page_size=30
         )
-        rel_path = f"cafef_events/{clean_ticker}_events_p{cpage}.html"
-        cached = read_cached_raw_receipt(raw_dir, rel_path) if use_cache else None
+        refresh_cf = (
+            fetch_online
+            and refresh_head_pages > 0
+            and cpage <= min(refresh_head_pages, 1)
+        )
         try:
-            if cached is not None:
-                content, sha = cached
-            else:
-                content = client.get_bytes(url)
-                sha = write_raw_receipt(raw_dir, rel_path, content)
+            got_cf = _get_receipt(
+                f"cafef_events/{clean_ticker}_events_p{cpage}.html",
+                url,
+                refresh=refresh_cf,
+            )
+            if got_cf is None:
+                break
             page_cands = parse_cafef_events_candidates(
                 clean_ticker,
-                content,
+                got_cf[0],
                 issuer_id=issuer_id,
                 source_url=url,
-                payload_sha256=sha,
+                payload_sha256=got_cf[1],
             )
             candidates.extend(page_cands)
             cafef_pages += 1
             if len(page_cands) < 30:
                 break
-            cpage += 1
-        except (
-            ContractViolationError,
-            RateLimitOrCircuitOpenError,
-            TransientSourceError,
-            RuntimeError,
-        ) as exc:
+        except _REG_FETCH_ERRORS as exc:
             errors.append(f"cafef_events p{cpage}: {exc}")
             break
 
@@ -1401,30 +1437,3 @@ class CuratedRegulatoryEventsCollector(RegulatoryEventProvider):
         if as_of is not None:
             validated = validated.filter(pl.col("event_date") <= as_of)
         return validate_regulatory_events(validated)
-
-
-__all__ = [
-    "AuditOpinionRecord",
-    "ClassifiedHeadline",
-    "CuratedRegulatoryEventsCollector",
-    "DEFAULT_CAFEF_EVENTS_URL_TEMPLATE",
-    "DEFAULT_VIETCAP_COMPANY_URL_TEMPLATE",
-    "DEFAULT_VIETCAP_NEWS_URL_TEMPLATE",
-    "PoliteHostHttpClient",
-    "REGULATORY_ALLOWED_HOSTS",
-    "RawHeadlineCandidate",
-    "TickerCollectionOutcome",
-    "build_mandatory_delistings_table",
-    "build_regulatory_events_table",
-    "classify_regulatory_headline",
-    "collect_ticker_raw_candidates",
-    "compute_payload_sha256",
-    "extract_audit_opinion_records",
-    "extract_exchange_from_text",
-    "parse_cafef_events_candidates",
-    "parse_retry_after",
-    "parse_vietcap_news_candidates",
-    "read_cached_raw_receipt",
-    "validate_regulatory_url",
-    "write_raw_receipt",
-]

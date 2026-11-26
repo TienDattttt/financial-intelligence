@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
+    REGISTRY,
     CollectorRegistry,
     Counter,
     Gauge,
@@ -323,9 +324,21 @@ def generate_metrics_payload(registry: CollectorRegistry) -> bytes:
         if rendered:
             return rendered
     primary = bytes(generate_latest(registry))
-    if registry is _INGESTION_METRICS_REGISTRY:
-        return primary
-    return primary + bytes(generate_latest(_INGESTION_METRICS_REGISTRY))
+    extra = (
+        b""
+        if registry is _INGESTION_METRICS_REGISTRY
+        else bytes(generate_latest(_INGESTION_METRICS_REGISTRY))
+    )
+    reconcile_extra = (
+        b""
+        if registry is REGISTRY
+        else bytes(
+            generate_latest(
+                REGISTRY.restricted_registry(["finintel_provider_discrepancy_total"])
+            )
+        )
+    )
+    return primary + extra + reconcile_extra
 
 
 def mark_current_process_dead(live_gauges: Sequence[Any] = ()) -> None:

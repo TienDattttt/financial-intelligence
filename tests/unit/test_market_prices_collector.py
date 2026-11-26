@@ -440,3 +440,306 @@ def test_upcom_vwap_denominator_and_hose_close_raw_preservation() -> None:
     assert hose_enriched[0].shares_outstanding_market == pytest.approx(
         31_746_547_994_200.0 / 59_800.0
     )
+
+
+def test_task05_incremental_sync_detects_stock_split_and_refetches_full_history(
+    tmp_path: Path,
+) -> None:
+    """TASK-05: 5-session overlap detects |new_close_adj - old_close_adj| > 1e-3 and refetches 2018..today for that ticker only."""
+    from finintel.ingestion.market_prices_collector import (
+        sync_incremental_market_prices,
+    )
+
+    dates_6 = [
+        date(2026, 5, 8),
+        date(2026, 5, 11),
+        date(2026, 5, 12),
+        date(2026, 5, 13),
+        date(2026, 5, 14),
+        date(2026, 5, 15),
+    ]
+    existing_bars = [
+        *[
+            MarketPriceBar(
+                issuer_id="VN_FPT",
+                ticker="FPT",
+                trade_date=dt,
+                close_raw=100_000.0,
+                close_adj=100_000.0,
+                volume=1_000_000.0,
+                shares_outstanding_market=1_000_000_000.0,
+                source_provider="vndirect_finfo",
+            )
+            for dt in dates_6
+        ],
+        *[
+            MarketPriceBar(
+                issuer_id="VN_VNM",
+                ticker="VNM",
+                trade_date=dt,
+                close_raw=65_000.0,
+                close_adj=65_000.0,
+                volume=500_000.0,
+                shares_outstanding_market=2_000_000_000.0,
+                source_provider="vndirect_finfo",
+            )
+            for dt in dates_6
+        ],
+    ]
+    existing_df = build_market_prices_table(existing_bars)
+    requested_urls: list[str] = []
+
+    def _transport(
+        url: str,
+        timeout_seconds: float,
+        max_bytes: int,
+        headers: Mapping[str, str],
+    ) -> tuple[int, Mapping[str, str], bytes]:
+        _ = (timeout_seconds, max_bytes, headers)
+        requested_urls.append(url)
+        if "/v4/ratios" in url:
+            return (
+                200,
+                {},
+                json.dumps({"currentPage": 1, "totalPages": 1, "data": []}).encode(
+                    "utf-8"
+                ),
+            )
+        if "code:FPT" in url and "date:gte:2026-05-11" in url:
+            # 2:1 split occurred on 2026-05-18 -> historical adClose halved from 100.0 to 50.0!
+            rows = [
+                {
+                    "code": "FPT",
+                    "date": dt.isoformat(),
+                    "close": 100.0,
+                    "adClose": 50.0,
+                    "nmVolume": 1_000_000.0,
+                    "ptVolume": 0.0,
+                }
+                for dt in dates_6[1:]
+            ] + [
+                {
+                    "code": "FPT",
+                    "date": "2026-05-18",
+                    "close": 51.0,
+                    "adClose": 51.0,
+                    "nmVolume": 1_200_000.0,
+                    "ptVolume": 0.0,
+                }
+            ]
+            return (
+                200,
+                {},
+                json.dumps({"currentPage": 1, "totalPages": 1, "data": rows}).encode(
+                    "utf-8"
+                ),
+            )
+        if "code:FPT" in url and "date:gte:2018-01-01" in url:
+            full_rows = [
+                {
+                    "code": "FPT",
+                    "date": "2018-01-02",
+                    "close": 60.0,
+                    "adClose": 15.0,
+                    "nmVolume": 800_000.0,
+                    "ptVolume": 0.0,
+                },
+                *[
+                    {
+                        "code": "FPT",
+                        "date": dt.isoformat(),
+                        "close": 100.0,
+                        "adClose": 50.0,
+                        "nmVolume": 1_000_000.0,
+                        "ptVolume": 0.0,
+                    }
+                    for dt in dates_6
+                ],
+                {
+                    "code": "FPT",
+                    "date": "2026-05-18",
+                    "close": 51.0,
+                    "adClose": 51.0,
+                    "nmVolume": 1_200_000.0,
+                    "ptVolume": 0.0,
+                },
+            ]
+            return (
+                200,
+                {},
+                json.dumps(
+                    {"currentPage": 1, "totalPages": 1, "data": full_rows}
+                ).encode("utf-8"),
+            )
+        if "code:VNM" in url and "date:gte:2026-05-11" in url:
+            vnm_rows = [
+                {
+                    "code": "VNM",
+                    "date": dt.isoformat(),
+                    "close": 65.0,
+                    "adClose": 65.0,
+                    "nmVolume": 500_000.0,
+                    "ptVolume": 0.0,
+                }
+                for dt in dates_6[1:]
+            ] + [
+                {
+                    "code": "VNM",
+                    "date": "2026-05-18",
+                    "close": 66.0,
+                    "adClose": 66.0,
+                    "nmVolume": 600_000.0,
+                    "ptVolume": 0.0,
+                }
+            ]
+            return (
+                200,
+                {},
+                json.dumps(
+                    {"currentPage": 1, "totalPages": 1, "data": vnm_rows}
+                ).encode("utf-8"),
+            )
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    client = PoliteMarketPriceHttpClient(
+        min_interval_seconds=0.0,
+        transport=_transport,
+        sleeper=lambda _s: None,
+    )
+    merged, refetched = sync_incremental_market_prices(
+        existing_df,
+        tickers=["FPT", "VNM"],
+        issuer_map={"FPT": "VN_FPT", "VNM": "VN_VNM"},
+        exchange_map={"FPT": "HOSE", "VNM": "HOSE"},
+        raw_dir=tmp_path / "raw_mp",
+        client=client,
+        end_date=date(2026, 5, 18),
+    )
+    assert refetched == ("FPT",)
+    assert not any(
+        "code:VNM" in u and "date:gte:2018-01-01" in u for u in requested_urls
+    )
+    fpt_may08 = merged.filter(
+        (pl.col("issuer_id") == "VN_FPT") & (pl.col("trade_date") == date(2026, 5, 8))
+    ).row(0, named=True)
+    # Pre-overlap session 2026-05-08 also got updated to split-adjusted 50,000 VND (zero cliff!), while close_raw stayed 100,000 VND!
+    assert fpt_may08["close_adj"] == pytest.approx(50_000.0)
+    assert fpt_may08["close_raw"] == pytest.approx(100_000.0)
+    assert merged.filter(pl.col("issuer_id") == "VN_FPT").height == 8
+    assert merged.filter(pl.col("issuer_id") == "VN_VNM").height == 7
+
+
+def test_task05_incremental_sync_no_cafef_false_split_and_preserves_shares_on_split(
+    tmp_path: Path,
+) -> None:
+    """TASK-05 regression: transient VNDirect blip must NOT fall back to CafeF & false-split; split refetch keeps shares."""
+    from finintel.exceptions import TransientSourceError
+    from finintel.ingestion.market_prices_collector import (
+        sync_incremental_market_prices,
+    )
+    from finintel.ports.market_prices import MARKET_PRICES_SCHEMA
+
+    dates_6 = [
+        date(2026, 5, 8),
+        date(2026, 5, 11),
+        date(2026, 5, 12),
+        date(2026, 5, 13),
+        date(2026, 5, 14),
+        date(2026, 5, 15),
+    ]
+    existing_df = pl.DataFrame(
+        [
+            {
+                "issuer_id": "VN_FPT",
+                "ticker": "FPT",
+                "trade_date": dt,
+                "close_raw": 100_000.0,
+                "close_adj": 100_000.0,
+                "volume": 1_000_000.0,
+                "shares_outstanding_market": 1_200_000_000.0,
+                "source_provider": "vndirect_finfo",
+            }
+            for dt in dates_6
+        ],
+        schema=MARKET_PRICES_SCHEMA,
+    )
+
+    # Case A: VNDirect fails transiently; CafeF would return rounded close_adj=100,010.
+    # Overlap probe must NOT fall back to CafeF, must NOT refetch full history, and must keep existing shares!
+    def _blip_transport(
+        url: str, timeout_seconds: float, max_bytes: int, headers: Mapping[str, str]
+    ) -> tuple[int, Mapping[str, str], bytes]:
+        _ = (timeout_seconds, max_bytes, headers)
+        if "vndirect.com.vn" in url:
+            raise TransientSourceError("VNDirect 503")
+        raise AssertionError(f"Incremental overlap probe must not hit CafeF: {url}")
+
+    blip_client = PoliteMarketPriceHttpClient(
+        min_interval_seconds=0.0,
+        max_retries=0,
+        transport=_blip_transport,
+        sleeper=lambda _s: None,
+    )
+    kept_df, blip_refetched = sync_incremental_market_prices(
+        existing_df,
+        tickers=["FPT"],
+        issuer_map={"FPT": "VN_FPT"},
+        exchange_map={"FPT": "HOSE"},
+        raw_dir=tmp_path / "raw_blip",
+        client=blip_client,
+        end_date=date(2026, 5, 18),
+    )
+    assert blip_refetched == ()
+    assert kept_df.height == 6
+    assert kept_df["shares_outstanding_market"].null_count() == 0
+
+    # Case B: Genuine VNDirect 2:1 split where ratios endpoint returns empty -> historical shares_outstanding_market preserved!
+    def _split_no_mcap_transport(
+        url: str, timeout_seconds: float, max_bytes: int, headers: Mapping[str, str]
+    ) -> tuple[int, Mapping[str, str], bytes]:
+        _ = (timeout_seconds, max_bytes, headers)
+        if "ratios/latest" in url:
+            return (
+                200,
+                {},
+                json.dumps({"currentPage": 1, "totalPages": 1, "data": []}).encode(
+                    "utf-8"
+                ),
+            )
+        rows = [
+            {
+                "code": "FPT",
+                "date": dt.isoformat(),
+                "close": 100.0,
+                "adClose": 50.0,
+                "nmVolume": 1_000_000.0,
+                "ptVolume": 0.0,
+            }
+            for dt in dates_6
+        ]
+        return (
+            200,
+            {},
+            json.dumps({"currentPage": 1, "totalPages": 1, "data": rows}).encode(
+                "utf-8"
+            ),
+        )
+
+    split_client = PoliteMarketPriceHttpClient(
+        min_interval_seconds=0.0,
+        max_retries=0,
+        transport=_split_no_mcap_transport,
+        sleeper=lambda _s: None,
+    )
+    split_df, split_refetched = sync_incremental_market_prices(
+        existing_df,
+        tickers=["FPT"],
+        issuer_map={"FPT": "VN_FPT"},
+        exchange_map={"FPT": "HOSE"},
+        raw_dir=tmp_path / "raw_split",
+        client=split_client,
+        end_date=date(2026, 5, 18),
+    )
+    assert split_refetched == ("FPT",)
+    assert split_df["close_adj"].to_list() == [50_000.0] * 6
+    assert split_df["shares_outstanding_market"].to_list() == [1_200_000_000.0] * 6

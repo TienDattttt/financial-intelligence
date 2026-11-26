@@ -120,7 +120,11 @@ def render_dataset_audit_report(
     ev_with_year = reg_events.with_columns(
         pl.col("event_date").dt.year().alias("_year")
     )
-    for yr in range(2018, 2027):
+    max_yr = max(
+        [2026, *(int(y) for y in ev_with_year["_year"].drop_nulls().to_list())]
+    )
+    lines[16] = f"## 1. Breakdown by Year (`2018–{max_yr}`)"
+    for yr in range(2018, max_yr + 1):
         sub = ev_with_year.filter(pl.col("_year") == yr)
         n_ev = sub.height
         n_iss = sub["issuer_id"].n_unique() if n_ev > 0 else 0
@@ -288,6 +292,7 @@ def run_collection(
     audit_report_path: Path,
     min_interval_seconds: float = DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
     use_cache: bool = True,
+    refresh_head_pages: int = 0,
     max_tickers: int | None = None,
     progress_file: Path | None = None,
 ) -> int:
@@ -327,6 +332,7 @@ def run_collection(
             raw_dir=raw_dir,
             client=client,
             use_cache=use_cache,
+            refresh_head_pages=refresh_head_pages,
         )
         all_candidates.extend(cands)
         outcomes.append(outcome)
@@ -359,7 +365,6 @@ def run_collection(
         all_candidates,
         exchange_by_issuer=exchange_by_issuer,
         min_date=date(2018, 1, 1),
-        max_date=date(2026, 12, 31),
     )
     reg_events = validate_regulatory_events(reg_events)
 
@@ -434,6 +439,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Ignore cached raw receipts and re-fetch from remote endpoints.",
     )
     parser.add_argument(
+        "--refresh-head-pages",
+        type=int,
+        default=0,
+        help="Re-fetch first N head pages from Vietcap IQ / CafeF while keeping older cached pages.",
+    )
+    parser.add_argument(
         "--max-tickers",
         type=int,
         default=None,
@@ -456,6 +467,7 @@ def main(argv: list[str] | None = None) -> int:
         audit_report_path=args.audit_report,
         min_interval_seconds=args.min_interval_seconds,
         use_cache=not args.no_cache,
+        refresh_head_pages=args.refresh_head_pages,
         max_tickers=args.max_tickers,
         progress_file=args.progress_file,
     )
