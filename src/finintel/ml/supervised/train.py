@@ -1769,6 +1769,7 @@ def run_expanding_walk_forward_evaluation(
     strict_years: bool = True,
     tier_cutoffs: tuple[float, float, float, float] | None = None,
     statutory_delay_days: int = 0,
+    market_prices: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Execute 2-Way Purged Expanding Walk-Forward (2021..2025) with Cluster Bootstrap CI & Unseen Issuers."""
     requested_years = [int(y) for y in test_years]
@@ -1792,18 +1793,15 @@ def run_expanding_walk_forward_evaluation(
             regulatory_events=regulatory_events,
             precomputed_as_of_scored=precomputed_as_of_scored,
             statutory_delay_days=statutory_delay_days,
+            market_prices=market_prices,
         )
         if candidate_years
         else {}
     )
     model_names = ("Baseline_1_AltmanZ", "Baseline_2_Logit", "XGBoost")
-    metric_keys = (
-        "roc_auc",
-        "pr_auc",
-        "brier_score",
-        "brier_skill_score",
-        "recall_at_top_5_percent",
-        "recall_at_top_10_percent",
+    metric_keys = tuple(
+        "roc_auc pr_auc brier_score brier_skill_score "
+        "recall_at_top_5_percent recall_at_top_10_percent".split()
     )
 
     per_year: dict[str, Any] = {}

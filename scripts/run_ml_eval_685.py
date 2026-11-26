@@ -38,6 +38,7 @@ import shap  # type: ignore[import-untyped]
 from finintel.analytics.comparisons import benchmark_ratios
 from finintel.analytics.dupont import add_dupont
 from finintel.analytics.intermediates import prepare_periods
+from finintel.analytics.merton_dtd import attach_merton_dtd_to_periods
 from finintel.analytics.ratios import calculate_ratios
 from finintel.analytics.red_flags import detect_red_flags
 from finintel.domain.schemas import EMPIRICAL_STATUTORY_DELAY_P90_DAYS
@@ -53,6 +54,7 @@ from finintel.ml.supervised.temporal_split import (
     resolve_peer_standardization_mode,
 )
 from finintel.ml.supervised.train import (
+    MERTON_ABLATION_FEATURES,
     MODEL_VERSION,
     PLATT_MAX_SLOPE,
     PLATT_MIN_SLOPE,
@@ -77,11 +79,15 @@ from finintel.ml.tables import (
     score_and_explain_with_pit_roles,
 )
 from finintel.ml.unsupervised import FinancialArchetypes
+from finintel.normalization.supplement_merge import (
+    harmonize_stub_fiscal_year_start_dates,
+    merge_vietcap_supplement_facts,
+)
 from finintel.pipeline.state_store import StateStore
 from finintel.ports.market_prices import validate_market_prices
 from finintel.ports.regulatory import validate_regulatory_events
 from finintel.quality.gate import evaluate_quality_gate
-from finintel.quality.rules import PERIOD_KEY, QualityGateConfig
+from finintel.quality.rules import QualityGateConfig
 from finintel.storage.ducklake_store import (
     EXTENSION_PORT_CATALOG_TABLES,
     DuckLakeStore,
@@ -182,43 +188,6 @@ def assert_safe_write_root(target: Path, forbidden_roots: Sequence[Path]) -> Pat
                 f"Refusing to mutate protected directory: {resolved}"
             )
     return resolved
-
-
-def harmonize_stub_fiscal_year_start_dates(
-    facts: pl.DataFrame,
-) -> tuple[pl.DataFrame, int]:
-    """Align stub-year fiscal_year_start_date, period_start_date, and period_days across statements."""
-    slot_cols = [
-        "issuer_id",
-        "statement_scope",
-        "period_type",
-        "fiscal_year",
-        "period_end_date",
-    ]
-    flow_starts = facts.group_by(slot_cols).agg(
-        pl.col("fiscal_year_start_date").max().alias("_fysd")
-    )
-    fysd_expr = pl.coalesce("_fysd", "fiscal_year_start_date")
-    pstart_expr = pl.max_horizontal("period_start_date", fysd_expr)
-    harmonized = (
-        facts.join(flow_starts, on=slot_cols, how="left")
-        .with_columns(
-            fysd_expr.alias("fiscal_year_start_date"),
-            pstart_expr.alias("period_start_date"),
-            ((pl.col("period_end_date") - pstart_expr).dt.total_days() + 1)
-            .cast(pl.Int32)
-            .alias("period_days"),
-        )
-        .drop("_fysd")
-    )
-    changed_rows = int(
-        facts.select(
-            (pl.col("fiscal_year_start_date") != harmonized["fiscal_year_start_date"])
-            .cast(pl.Int64)
-            .sum()
-        ).item()
-    )
-    return harmonized, changed_rows
 
 
 def compute_shap_explanations_float32_safe(
@@ -2070,6 +2039,23 @@ def render_report_markdown(summary: Mapping[str, Any]) -> str:
             ]
         )
 
+    wf_merton = summary.get("walk_forward_merton_ablation")
+    if isinstance(wf_merton, dict):
+        lines.extend(
+            [
+                "",
+                "---",
+                "",
+                "## 8. Merton Distance-to-Default (`MERTON_ABLATION_FEATURES`) Hybrid Walk-Forward Ablation (`2021 → 2025`)",
+                "",
+                "Evaluates `SECTOR_ADJUSTED_FEATURES` (`23` accounting features) augmented with PIT-aligned `merton_dtd`, `equity_volatility_1y`, and `naive_edf` (Bharath & Shumway 2008; Duan, Sun & Wang 2012) under identical strict `EXACT_FILING` expanding Walk-Forward splits (`2021–2025`).",
+                "",
+                "| Evaluation Scope | Model | Yearly ROC-AUC (Mean ± Std) | Pooled ROC-AUC [95% CI] | Yearly PR-AUC (Mean ± Std) | Pooled PR-AUC [95% CI] | Pooled Brier | Pooled BSS (`train_prev_Y`) [95% CI] | Pooled R@5% | Pooled R@10% |",
+                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+                *_render_wf_summary_rows(wf_merton),
+            ]
+        )
+
     return "\n".join(lines) + "\n"
 
 
@@ -2132,22 +2118,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     issuers_path = universe_dir / "curated" / "issuers.parquet"
 
-    raw_facts = canonicalize_financial_facts(pl.read_parquet(facts_path))
-    supp_facts_path = universe_dir / "curated" / "vietcap_supplement_facts.parquet"
-    if supp_facts_path.is_file():
-        supp_facts = canonicalize_financial_facts(
-            pl.read_parquet(supp_facts_path)
-        ).join(
-            raw_facts.select(list(PERIOD_KEY)).unique(), on=list(PERIOD_KEY), how="semi"
-        )
-        if not supp_facts.is_empty():
-            logger.info(
-                "Merging %d supplementary Vietcap facts from %s",
-                supp_facts.height,
-                supp_facts_path,
-            )
-            raw_facts = pl.concat([raw_facts, supp_facts], how="vertical")
-    facts, stub_rows = harmonize_stub_fiscal_year_start_dates(raw_facts)
+    base_facts = canonicalize_financial_facts(pl.read_parquet(facts_path))
+    _, stub_rows = harmonize_stub_fiscal_year_start_dates(base_facts)
+    facts = merge_vietcap_supplement_facts(
+        base_facts,
+        curated_root=universe_dir / "curated",
+    )
+    raw_facts = facts
     issuers = pl.read_parquet(issuers_path).with_columns(
         pl.lit(CATALOG_COLLECTION_DATE).cast(pl.Date).alias("industry_snapshot_date")
     )
@@ -2248,6 +2225,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=42,
         precomputed_as_of_scored=scored_as_of,
         strict_years=True,
+    )
+
+    logger.info("Running Merton DTD Hybrid Ablation Walk-Forward 2021..2025...")
+    px_for_merton = validate_market_prices(pl.read_parquet(px_path))
+    scored_with_merton = attach_merton_dtd_to_periods(
+        scored_as_of,
+        px_for_merton,
+        financial_facts=qg1.clean_facts,
+        as_of=as_of,
+    )
+    wf_merton = run_expanding_walk_forward_evaluation(
+        qg1.clean_facts,
+        issuers,
+        as_of=as_of,
+        test_years=WALK_FORWARD_YEARS,
+        features=MERTON_ABLATION_FEATURES,
+        require_exact_filing=True,
+        statement_scope="CONSOLIDATED",
+        taxonomy_version="VAS_TT200_2014",
+        target_mode="REGULATORY_DISTRESS",
+        regulatory_events=reg_events,
+        min_unique_positive_issuers=3,
+        n_bootstrap=args.n_bootstrap,
+        seed=42,
+        precomputed_as_of_scored=scored_with_merton,
+        strict_years=True,
+        market_prices=px_for_merton,
     )
 
     # Production model inner OOF reliability & TT200 -> TT99 PSI across both H-01 arms
@@ -2391,6 +2395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "walk_forward_expanded": wf_expanded,
         "walk_forward_expanded_delay37": wf_expanded_delay37,
         "walk_forward_mode_a": wf_mode_a,
+        "walk_forward_merton_ablation": wf_merton,
         "production_oof_reliability": prod_oof_rel,
         "reliability_exact_2022_2025": rel_ex_2225,
         "psi_exact": psi_exact,

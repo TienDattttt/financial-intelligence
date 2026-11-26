@@ -122,14 +122,23 @@ def _eval_seasonal_ingestion_schedule(
     if cooldown_skip is not None:
         return cooldown_skip
 
+    settings = paths.load_settings_dict()
+    orch_cfg = settings.get("orchestration")
+    year_round = (
+        bool(orch_cfg.get("year_round_watermark_sweep"))
+        if isinstance(orch_cfg, Mapping)
+        else False
+    )
     in_peak, window_name = is_tt96_peak_window(vn_date)
-    if not in_peak and vn_dt.weekday() != 6:
+    if not in_peak and not year_round and vn_dt.weekday() != 6:
         return dg.SkipReason(
             f"Outside TT96 disclosure peak window ({vn_date.isoformat()}); "
             "off-season sweeps run Sundays only."
         )
+    if not window_name:
+        window_name = "YEAR_ROUND_WATERMARK"
 
-    max_per_run = _resolve_max_partitions_per_run(paths.load_settings_dict())
+    max_per_run = _resolve_max_partitions_per_run(settings)
     batch_tickers = select_seasonal_ingestion_batch(
         context.instance,
         target_date=vn_date,
@@ -651,10 +660,15 @@ def _exec_curated_pdf_rag_asset(
     _ = context
     data_root = paths.resolved_data_root()
     out_root = data_root / "curated_pdfs"
+    rag_dsn = os.getenv("FININTEL_RAG_PG_DSN", "").strip() or None
     summary = sync_curated_pdfs_from_archive(
         raw_root=paths.resolved_raw_root(),
         output_root=out_root,
         fetch_online=disclosure_fetcher.effective_fetch_online(),
+        parse_downloaded=True,
+        parsed_cache_dir=out_root / "parsed_cache",
+        index_to_pgvector=rag_dsn is not None,
+        rag_pg_dsn=rag_dsn,
         manifest_lock_path=state.pipeline_lock_path(),
         lock_timeout=storage.resolve_lock_timeout(),
         state_store_path=state.get_store().path,
@@ -664,6 +678,8 @@ def _exec_curated_pdf_rag_asset(
             "scanned_receipts": summary.scanned_receipts,
             "discovered_candidates": summary.discovered_candidates,
             "downloaded_count": summary.downloaded_count,
+            "parsed_count": summary.parsed_count,
+            "indexed_count": summary.indexed_count,
             "total_manifest_records": summary.total_manifest_records,
         }
     )

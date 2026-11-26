@@ -11,7 +11,7 @@
 Mọi cú pháp API trong đặc tả này được ghim cứng theo `pyproject.toml` và `frontend/package.json`:
 
 - **Backend (`Python >=3.11`):** `polars==1.35.2`, `duckdb==1.4.2`, `filelock==4.2.10`, `tenacity==9.2.1`, `httpx==0.28.1`, `vnstock-oapi==0.1.2`, `xgboost==2.1.4`, `scikit-learn==1.7.2`, `scipy==1.17.1`, `shap==0.49.1`, `dagster==1.13.30`, `dagster-webserver==1.13.30`, `dagster-postgres==0.29.30`, `fastapi==0.165.0`, `pydantic==2.14.4`, `psycopg[binary]==3.3.9`, `redis==8.1.0`, `structlog==26.1.0`, `prometheus-client==0.26.0`, `opentelemetry-api==1.45.2`, `opentelemetry-sdk==1.45.2`, `pymupdf==2.1`, `pgvector==0.5.1`.
-- **Frontend (`Node >=24`):** `next==16.3.5`, `react==19.2.4`, `@base-ui/react==^1.3.0`, `@tanstack/react-query==^5.90.0`, `echarts==^6.0.0`, `zod==^4.0.0`, `vitest==^4.0.0`, `@playwright/test==^1.65.1`, `@axe-core/playwright==^4.14.0`.
+- **Frontend (`Node >=24`):** `next==16.4.6`, `react==19.2.4`, `@base-ui/react==^1.3.0`, `@tanstack/react-query==^5.90.0`, `echarts==^6.0.0`, `zod==^4.1.0`, `vitest==^4.0.0`, `@playwright/test==^1.65.1`, `@axe-core/playwright==^4.14.0`.
 
 ### 1.2. Nguồn Tài Liệu Chính Thống & Học Thuật Đã Đối Chiếu
 1. **Quyết định giữ DuckDB/Polars/DuckLake đơn nút & bác bỏ Spark/Hadoop/Kafka:**
@@ -82,27 +82,27 @@ sequenceDiagram
    - Áp dụng thống nhất cho cả `FhscOapiAdapter` (`min_interval_s = 1.75` cho `<= 0.6 req/s`) VÀ `health_check(online=True)` trong `src/finintel/pipeline/health.py`.
 2. **Module `src/finintel/ingestion/ssrf_guard.py`:**
    - Kiểm tra `scheme == "https"`, cổng `443`, `hostname.lower() in ALLOWED_HOSTS`, phân giải `socket.getaddrinfo(host, 443)` và bắt buộc **mọi IP trả về** thỏa `ip.is_global and not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)`.
-   - Gắn `Accept-Encoding: identity`, đọc theo khung tối đa (`max_bytes = 5_242_880` cho HTML/JSON, `52_428_800` cho PDF) và từ chối tự động mọi HTTP redirect (`3xx`).
+   - Gắn `Accept-Encoding: identity`, từ chối mọi phản hồi nén ngoài ý muốn (`Content-Encoding` khác `identity`), đọc theo khung tối đa (`max_bytes = 5_242_880` cho HTML/JSON, `52_428_800` cho PDF) và từ chối tự động mọi HTTP redirect (`3xx`).
 
 ### B. Đối Soát Đa Nguồn `FHSC ↔ Vietcap IQ` & Tự Động Hóa Port 1/2/3 (`cap-02`)
 1. **Đối soát chéo đa nhà cung cấp (`src/finintel/normalization/reconciliation.py`):**
    - Trước khi chạy `coalesce_cross_provider_facts`, trên 4 chỉ tiêu mỏ neo (`BS_TOTAL_ASSETS`, `BS_TOTAL_EQUITY`, `IS_NET_REVENUE`, `IS_NET_INCOME_PARENT`), tính độ lệch tương đối:
      $$\delta = \frac{|v_{\text{fhsc}} - v_{\text{vietcap}}|}{\max(|v_{\text{fhsc}}|, |v_{\text{vietcap}}|, 10^9)}$$
    - Khi $\delta > 0.005$ (`0.5%`): ghi mã `CROSS_PROVIDER_DISCREPANCY_WARN` vào `info_codes` của `quality_summary` và tăng bộ đếm Prometheus `finintel_provider_discrepancy_total{metric_id=...}`.
-2. **Sensor BCTC sự kiện (`15` phút) + Quét TT96 theo Watermark (`30` phút):**
+2. **Sensor BCTC sự kiện (`15` phút) + Quét TT96 theo Watermark (`30` phút quanh năm):**
    - Bảng `ticker_sweep_watermarks(ticker TEXT PRIMARY KEY, last_swept_at TEXT, last_filing_seen_date TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0)` trong `state.sqlite`.
-   - `seasonal_ingestion_schedule` chạy `*/30 * * * *`, giữ `max_partitions_per_run = 5` (tương thích `3 <= max_partitions_per_run <= 5`), ưu tiên `last_swept_at ASC NULLS FIRST` (`240` mã/ngày = `2.85` ngày/685 mã).
+   - `seasonal_ingestion_schedule` chạy `*/30 * * * *` quanh năm (`year_round_watermark_sweep: true` bao phủ cả 18 mã niên độ lệch lịch `31/03`, `30/06`, `30/09`), giữ `max_partitions_per_run = 5` (tương thích `3 <= max_partitions_per_run <= 5`), ưu tiên `last_swept_at ASC NULLS FIRST` (`240` mã/ngày = `2.85` ngày/685 mã).
    - `bctc_disclosure_feed_sensor` (`minimum_interval_seconds=900`): phát tối đa `5` `RunRequest` mỗi nhịp với `run_key` tất định `feed:{ticker}:{pub_date}`.
 3. **Port 1, Port 2, Port 3:**
    - **Port 3 (`market_prices_collector.py`):** Kiểm tra cửa sổ chồng lấn `5` phiên; nếu $|\text{close\_adj}_{\text{new}} - \text{close\_adj}_{\text{old}}| > 10^{-3}$, tự động tải lại toàn bộ lịch sử `2018-01-01..today` cho riêng mã đó rồi gộp nguyên tử theo `(issuer_id, trade_date)`.
    - **Port 1 (`regulatory_events_collector.py` & `collect_regulatory_events.py`):** Gỡ bỏ các mốc ngày chặn cứng cuối năm 2026; nạp lại toàn bộ biên lai thô đã lưu kèm trang `0..1` mới nhất để chạy lại `build_regulatory_events_table()` bảo toàn cặp `(effective_from, resolution_date)`.
-   - **Port 2 (`curated_pdf_service.py`):** Trích xuất liên kết `.pdf` trực tiếp từ kho CAS `RawArchive`, giới hạn cứng `<= 400` trang PDF và ảnh `<= 4096px`.
+   - **Port 2 (`curated_pdf_service.py`):** Trích xuất liên kết `.pdf` trực tiếp từ `raw_disclosures/cafef_bctc/*.html` và kho CAS `RawArchive` kèm index `PgVectorRagStore`, giới hạn cứng `<= 400` trang PDF và ảnh `<= 4096px`.
 
 ### C. Quy Tắc Điều Tra Kế Toán Thứ 10: `RF_10_POST_AUDIT_PROFIT_DOWNGRADE` (`cap-03`)
-Được cài đặt trong `src/finintel/analytics/restatements.py` (`<= 300` dòng) và nối vào `src/finintel/analytics/red_flags.py` với `severity = "HIGH"`:
+Được cài đặt trong `src/finintel/analytics/restatements.py` (`<= 300` dòng) và nối vào `src/finintel/analytics/red_flags.py` với `severity = "HIGH"` (`TRANSFORM_STATE_SCHEMA_VERSION = 3`):
 1. **Đầu vào chuẩn PIT (`0%` Tautology & `0%` Look-Ahead):**
    - Chỉ tiêu đối chiếu: `IS_NET_INCOME`.
-   - Trích tập quý tự lập từ `visible_facts`: `period_type == "QUARTER"`, `audit_status == "UNAUDITED"`, `derivation_method != "DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX"` và `effective_available_at < effective_available_at(ANNUAL, AUDITED)`.
+   - Trích tập quý trước kiểm toán năm từ `visible_facts`: `period_type == "QUARTER"`, `audit_status != "AUDITED"` (bao gồm cả BCTC Q2 soát xét bán niên `REVIEWED` theo Thông tư 96/2020/TT-BTC và các quý tự lập `UNAUDITED`), `derivation_method != "DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX"` và `effective_available_at < effective_available_at(ANNUAL, AUDITED)`.
    - Nhóm theo `(issuer_id, statement_scope, fiscal_year_start_date, taxonomy_version)`, yêu cầu đủ 4 quý rời rạc `{1, 2, 3, 4}` với tổng số ngày thuộc `[350, 380]` và ngày kết thúc Q4 trùng `period_end_date` của BCTC `ANNUAL` (`AUDITED`).
 2. **Công thức định lượng & Ngưỡng trọng yếu kép (`severity = "HIGH"`):**
    - Với $NI_{\text{unaudited}} = \sum_{q=1}^{4} NI_{q}^{\text{UNAUDITED}}$ và $NI_{\text{audited}} = NI^{\text{ANNUAL, AUDITED}}$:

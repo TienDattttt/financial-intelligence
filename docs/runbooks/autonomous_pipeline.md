@@ -46,7 +46,7 @@
 
 ## 4. `ServingPointerSplitBrain` — Lệch con trỏ snapshot giữa `state.sqlite` và PostgreSQL `finintel_serving_pointer`
 
-- **Triệu chứng:** Header `X-Snapshot-ID` trả về từ `/api/v1/overview` khác với `active_snapshot_id` trong `state.sqlite`, hoặc `reconcile_unpromoted_snapshots()` cảnh báo có phiên bản DuckLake đã ghi trên đĩa nhưng chưa được đồng bộ lên PostgreSQL.
+- **Triệu chứng:** Header `X-Snapshot-ID` trả về từ `/api/v1/snapshot/overview` khác với `active_snapshot_id` trong `state.sqlite`, hoặc `reconcile_unpromoted_snapshots()` cảnh báo có phiên bản DuckLake đã ghi trên đĩa nhưng chưa được đồng bộ lên PostgreSQL.
 - **Lệnh kiểm tra (`< 30s`):**
   ```powershell
   curl -i -s http://127.0.0.1:8000/health/ready

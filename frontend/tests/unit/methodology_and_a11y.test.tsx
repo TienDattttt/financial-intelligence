@@ -3,6 +3,7 @@ import * as React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MethodologyPage from "@/app/methodology/page";
+import { MethodologyFormulaCards } from "@/components/financial/MethodologyFormulaCards";
 
 const mockReplace = vi.fn();
 let mockTabParam: string | null = null;
@@ -197,5 +198,14 @@ describe("TASK-12 (.tsx JSDOM): /methodology WAI-ARIA tabs, 10 red flags, and fo
       expect(wrapper.getAttribute("tabindex")).toBe("0");
       expect(wrapper.getAttribute("role")).toBe("region");
     }
+  });
+
+  it("renders Merton Distance-to-Default institutional formula card without internal tokens", () => {
+    const { container } = render(<MethodologyFormulaCards />);
+    expect(
+      screen.getByText(/Merton Distance-to-Default \(Bharath & Shumway 2008\)/i),
+    ).toBeTruthy();
+    expect(screen.getByText(/EDF = Φ\(−DTD\)/i)).toBeTruthy();
+    expect(container.textContent).not.toContain("BS_SHORT_TERM_BORROWINGS");
   });
 });

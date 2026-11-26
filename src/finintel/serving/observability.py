@@ -60,7 +60,7 @@ SPAN_STORAGE_PUBLISH = "finintel.storage.publish_snapshot"
 SPAN_SERVING_QUERY = "finintel.serving.query"
 
 VALID_ENTRY_POINTS: frozenset[str] = frozenset(
-    {"http_api", "dagster_sensor", "dagster_schedule", "cli"}
+    {"http_api", "dagster_sensor", "dagster_schedule", "dagster_asset", "cli"}
 )
 VALID_INGESTION_OUTCOMES: frozenset[str] = frozenset(
     {"success", "quarantined", "rate_limited", "error"}
@@ -291,6 +291,14 @@ def trace_span(
         yield None
         return
 
+    if not _OTEL_TRACING_CONFIGURED:
+        current_tp = trace.get_tracer_provider()
+        if (
+            isinstance(current_tp, trace.ProxyTracerProvider)
+            and getattr(current_tp, "_real_tracer_provider", None) is None
+        ):
+            configure_otel_tracing()
+
     tracer = trace.get_tracer(TRACER_NAME)
     ctx_fields = _TELEMETRY_CONTEXT.get()
     with tracer.start_as_current_span(name) as span:
@@ -496,6 +504,9 @@ class RequestCorrelationMiddleware:
                 duration_ms = round((time.perf_counter() - start) * 1000.0, 2)
                 headers = MutableHeaders(scope=message)
                 headers.setdefault("X-Request-ID", req_id)
+                headers.setdefault("X-Content-Type-Options", "nosniff")
+                headers.setdefault("X-Frame-Options", "DENY")
+                headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
                 headers["X-Process-Time-Ms"] = f"{duration_ms:.2f}"
                 x_cache = headers.get("x-cache")
                 if x_cache:

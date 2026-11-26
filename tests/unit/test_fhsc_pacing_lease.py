@@ -287,7 +287,7 @@ def test_ssrf_guard_blocks_non_global_ips_redirects_and_oversized_streams() -> N
 def test_observability_entry_point_context_and_ingestion_metrics() -> None:
     """TASK-03: entry_point contextvars and bounded Prometheus ingestion metrics work without platform deps."""
     assert VALID_ENTRY_POINTS == frozenset(
-        {"http_api", "dagster_sensor", "dagster_schedule", "cli"}
+        {"http_api", "dagster_sensor", "dagster_schedule", "dagster_asset", "cli"}
     )
     with pytest.raises(ValueError, match="entry_point"):
         with bind_telemetry_context(entry_point="invalid_source"):

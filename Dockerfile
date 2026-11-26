@@ -9,7 +9,7 @@ RUN groupadd --gid 10001 finintel \
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --group ml --group platform --no-dev \
+RUN uv sync --frozen --no-install-project --group ml --group platform --group rag --no-dev \
     && chown -R finintel:finintel /app
 
 COPY --chown=finintel:finintel config ./config

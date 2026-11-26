@@ -7,6 +7,7 @@ import {
   TierReliabilityChart,
   WalkForwardCharts,
 } from "@/components/charts/ModelCardCharts";
+import { MethodologyFormulaCards } from "@/components/financial/MethodologyFormulaCards";
 import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
@@ -722,32 +723,7 @@ function MethodologyContent() {
                     </CardContent>
                   </Card>
 
-                  <Card>
-                    <CardHeader className="py-2.5">
-                      <CardTitle className="text-[14px]">Altman Z″ (Emerging Markets)</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2 text-[13px] leading-5 text-ink-muted">
-                      <p>
-                        Công thức điều chỉnh cho doanh nghiệp phi tài chính tại thị trường mới nổi: sử dụng vốn lưu động ròng, lợi nhuận giữ lại, EBIT và tỷ lệ VCSH / Tổng nợ phải trả.
-                      </p>
-                      <p className="text-xs text-ink">
-                        Ngưỡng phân vùng: <strong>&gt; 2,60</strong> An toàn · <strong>1,10–2,60</strong> Vùng xám · <strong>&lt; 1,10</strong> Nguy cơ kiệt quệ.
-                      </p>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader className="py-2.5">
-                      <CardTitle className="text-[14px]">
-                        Piotroski F-Score, Beneish M-Score &amp; Stress Test IMF WP/15/216
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2 text-[13px] leading-5 text-ink-muted">
-                      <p>
-                        Piotroski F-Score đo 9 tiêu chí sức khỏe tài chính; Beneish M-Score sàng lọc biến dạng lợi nhuận; Core Earnings (Rouen, So &amp; Wang 2021) tách lợi nhuận cốt lõi; Stress Test mô phỏng tỷ trọng nợ rơi vào trạng thái khả năng trả lãi ICR &lt; 1,0x sau cú sốc.
-                      </p>
-                    </CardContent>
-                  </Card>
+                  <MethodologyFormulaCards />
                 </div>
               </div>
             );

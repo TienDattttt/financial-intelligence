@@ -23,6 +23,7 @@ import polars as pl
 
 from finintel.analytics.comparisons import benchmark_ratios
 from finintel.analytics.intermediates import prepare_periods
+from finintel.analytics.merton_dtd import attach_merton_dtd_to_periods
 from finintel.analytics.ratios import calculate_ratios
 from finintel.exceptions import ContractViolationError
 from finintel.ml.classical_scores import add_classical_scores
@@ -441,6 +442,7 @@ def build_pit_two_way_split(
     regulatory_events: pl.DataFrame | None = None,
     precomputed_as_of_scored: pl.DataFrame | None = None,
     statutory_delay_days: int = 0,
+    market_prices: pl.DataFrame | None = None,
 ) -> dict[str, pl.DataFrame]:
     """Construct a 2-way PIT split (Train_OOF at ``test_start`` -> Test at ``as_of``) (B-02)."""
     if test_start > as_of:
@@ -463,6 +465,14 @@ def build_pit_two_way_split(
                 statutory_delay_days=statutory_delay_days,
             )
             scored = add_classical_scores(calculate_ratios(periods))
+        if market_prices is not None and "merton_dtd" not in scored.columns:
+            scored = attach_merton_dtd_to_periods(
+                scored,
+                market_prices,
+                financial_facts=facts,
+                statement_scope=statement_scope,
+                as_of=cutoff,
+            )
         scoped = scored.filter(pl.col("statement_scope") == statement_scope)
         if taxonomy_version is not None:
             scoped = scoped.filter(pl.col("taxonomy_version") == taxonomy_version)
@@ -515,6 +525,7 @@ def build_expanding_walk_forward_splits(
     regulatory_events: pl.DataFrame | None = None,
     precomputed_as_of_scored: pl.DataFrame | None = None,
     statutory_delay_days: int = 0,
+    market_prices: pl.DataFrame | None = None,
 ) -> dict[int, dict[str, pl.DataFrame]]:
     """Build 2-way Purged Expanding Walk-Forward PIT splits across ``test_years`` (B-02)."""
     if not test_years:
@@ -530,6 +541,14 @@ def build_expanding_walk_forward_splits(
         scored_as_of = add_classical_scores(calculate_ratios(periods_as_of))
     else:
         scored_as_of = precomputed_as_of_scored
+    if market_prices is not None and "merton_dtd" not in scored_as_of.columns:
+        scored_as_of = attach_merton_dtd_to_periods(
+            scored_as_of,
+            market_prices,
+            financial_facts=facts,
+            statement_scope=statement_scope,
+            as_of=as_of,
+        )
 
     folds: dict[int, dict[str, pl.DataFrame]] = {}
     for year in test_years:
@@ -548,6 +567,7 @@ def build_expanding_walk_forward_splits(
             regulatory_events=regulatory_events,
             precomputed_as_of_scored=scored_as_of,
             statutory_delay_days=statutory_delay_days,
+            market_prices=market_prices,
         )
     return folds
 

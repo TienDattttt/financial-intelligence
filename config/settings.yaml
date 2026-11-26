@@ -24,6 +24,7 @@ orchestration:
   disclosure_fetch_online_env: FININTEL_DISCLOSURE_FETCH_ONLINE
   universe_tickers_path: universe_tickers.yaml
   max_partitions_per_run: 5
+  year_round_watermark_sweep: true
   timezone: Asia/Ho_Chi_Minh
   ml_artifact_dir: ../data/metadata/ml_models
   ml_retrain_cron: "0 2 1 1,4,7,10 *"

@@ -15,11 +15,11 @@
   - `src/finintel/ingestion/` *(Layer 1)*: Thu thập, lưu Raw CAS bất biến (`SHA-256`), enrich ngày công bố thực (PIT TT96), SSRF allowlist, rate-limit `0.6 req/s`.
   - `src/finintel/normalization/` *(Layer 2)*: Ánh xạ chuẩn mực VAS (`TT200`/`TT99`), tách quý rời rạc & TTM, xử lý điều chỉnh hồi tố.
   - `src/finintel/storage/` *(Layer 3)*: DuckLake ACID snapshots (`MANAGED_MART_TABLES` tách khỏi bảng Extension Ports), `ParquetRepository` đọc-chỉ.
-  - `src/finintel/analytics/` & `src/finintel/ml/` *(Layer 4A/4B)*: Toàn bộ tính toán tài chính, 9 cờ đỏ VAS, Stress Test IMF WP/15/216 và mô hình ML. **Cấm tính toán công thức tài chính trong tầng Serving, UI hay CLI.**
+  - `src/finintel/analytics/` & `src/finintel/ml/` *(Layer 4A/4B)*: Toàn bộ tính toán tài chính, 10 cờ đỏ VAS (`RF_01..RF_10`), Merton DTD, Stress Test IMF WP/15/216 và mô hình ML. **Cấm tính toán công thức tài chính trong tầng Serving, UI hay CLI.**
   - `src/finintel/transform/` & `src/finintel/orchestration/`: Động cơ gia tăng DBSP và điều phối Dagster.
-  - `src/finintel/serving/` *(Layer 5)*: FastAPI đọc-chỉ + DuckDB cursor per-thread + Valkey L2 cache + Observability.
+  - `src/finintel/serving/` *(Layer 5)*: FastAPI đọc-chỉ (`serving/queries/` chia gói domain `< 1.000` LOC) + DuckDB cursor per-thread + Valkey L2 cache + Observability.
   - `src/finintel/quality/` *(Layer 6)*: Cổng chất lượng QG1/QG2 và cách ly (`audit_quarantine`).
-  - `frontend/`: Giao diện sản phẩm duy nhất (Next.js 16). *(Thư mục `dashboard/` Streamlit là legacy, sẽ gỡ bỏ tại `ARCH-01`.)*
+  - `frontend/`: Giao diện sản phẩm duy nhất (Next.js 16).
 
 ---
 
@@ -47,12 +47,13 @@
 
 ### Backend (Python 3.11 / `.venv`)
 ```powershell
+.\.venv\Scripts\python.exe scripts/check_constraints.py --selftest
+.\.venv\Scripts\python.exe scripts/check_constraints.py
 .\.venv\Scripts\python.exe -m ruff format --check src scripts tests
 .\.venv\Scripts\python.exe -m ruff check src scripts tests
 .\.venv\Scripts\python.exe -m mypy --strict src/finintel scripts/spike_vnstock6.py scripts/spike_option_b.py tests/unit
 .\.venv\Scripts\python.exe -m pytest -q
 ```
-*(Trước khi hoàn tất `ARCH-01`, bổ sung thêm `dashboard` vào hai lệnh `ruff` theo đúng `.github/workflows/ci.yml`.)*
 
 ### Frontend (`frontend/` — Node 24+ qua `fnm`)
 ```powershell
