@@ -50,6 +50,7 @@ from finintel.normalization.archive import (
     NORMALIZATION_METADATA,
     normalize_archive_incremental,
 )
+from finintel.normalization.supplement_merge import merge_vietcap_supplement_facts
 from finintel.orchestration.partitions import (
     CORPORATE_TICKERS,
     FHSC_API_POOL,
@@ -1060,7 +1061,10 @@ def published_financial_marts(
                     f"Issuers reference file does not exist: {issuers_path}"
                 )
 
-            facts_df = pl.read_parquet(facts_path)
+            facts_df = merge_vietcap_supplement_facts(
+                pl.read_parquet(facts_path),
+                curated_root=paths.resolved_curated_root(),
+            )
             issuers_df = pl.read_parquet(issuers_path)
 
             transform_state_path = paths.resolved_transform_state_path()

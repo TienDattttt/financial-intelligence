@@ -12,6 +12,7 @@ from enum import StrEnum
 import polars as pl
 
 from finintel.exceptions import ContractViolationError
+from finintel.normalization.periods import DEFAULT_PROVIDER_PRIORITY
 from finintel.storage.schemas import FINANCIAL_FACTS_KEY
 
 
@@ -228,11 +229,33 @@ def build_period_wide(
         pl.col("fiscal_quarter").cast(pl.Int32),
         pl.col("value").cast(pl.Float64),
     )
-    latest = (
-        normalized.sort(list(_REVISION_ORDER))
-        .unique(subset=[*PERIOD_KEY, "_q_metric_id"], keep="last")
-        .sort(list(_REVISION_ORDER))
-    )
+    if "source_provider" in normalized.columns:
+        per_prov = normalized.sort(list(_REVISION_ORDER)).unique(
+            subset=[*PERIOD_KEY, "_q_metric_id", "source_provider"], keep="last"
+        )
+        latest = (
+            per_prov.with_columns(
+                pl.col("value").is_null().alias("_is_null"),
+                pl.col("source_provider")
+                .replace_strict(
+                    DEFAULT_PROVIDER_PRIORITY, default=99, return_dtype=pl.Int32
+                )
+                .alias("_prov_rank"),
+            )
+            .sort(
+                ["_is_null", "_prov_rank", *_REVISION_ORDER],
+                descending=[False, False, True, True, True],
+            )
+            .unique(subset=[*PERIOD_KEY, "_q_metric_id"], keep="first")
+            .drop(["_is_null", "_prov_rank"])
+            .sort(list(_REVISION_ORDER))
+        )
+    else:
+        latest = (
+            normalized.sort(list(_REVISION_ORDER))
+            .unique(subset=[*PERIOD_KEY, "_q_metric_id"], keep="last")
+            .sort(list(_REVISION_ORDER))
+        )
 
     wide = latest.group_by(list(PERIOD_KEY)).agg(
         pl.col("fiscal_year").last().alias("fiscal_year"),

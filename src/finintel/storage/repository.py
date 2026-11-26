@@ -49,6 +49,7 @@ from finintel.storage.ducklake_store import (
     read_postgres_active_snapshot,
     validate_sql_identifier,
 )
+from finintel.storage.manifest_export import build_pit_facts_sql
 from finintel.storage.schemas import MODEL_CARD_META_TABLE
 from finintel.storage.snapshot_publisher import (
     KNOWN_TABLES,
@@ -1592,10 +1593,22 @@ class ParquetRepository:
                 connection if connection is not None else self._session_connection
             )
             if active_conn is not None:
-                query = self._pit_facts_sql(
-                    "read_parquet(?)", require_exact_filing_date
-                )
+                stat_key = _parquet_file_stat_key(path)
+                if stat_key is None:
+                    raise FileNotFoundError(path)
                 try:
+                    cols = self._inspect_parquet_columns(
+                        path,
+                        stat_key,
+                        "financial_facts.parquet",
+                        connection=active_conn,
+                    )
+                    query = build_pit_facts_sql(
+                        "read_parquet(?)",
+                        require_exact_filing_date=require_exact_filing_date,
+                        has_provider="source_provider" in cols,
+                        has_value="value" in cols,
+                    )
                     result = active_conn.execute(
                         query, [str(path), as_of_date]
                     ).fetch_arrow_table()
@@ -1606,40 +1619,23 @@ class ParquetRepository:
                 return cast(pl.DataFrame, pl.from_arrow(result))
             return self._query_facts(path, as_of_date, require_exact_filing_date)
 
-    @staticmethod
-    def _pit_facts_sql(source_expr: str, require_exact_filing_date: bool) -> str:
-        date_column = (
-            "published_at" if require_exact_filing_date else "effective_available_at"
-        )
-        predicate = f"{date_column} IS NOT NULL AND {date_column} <= CAST(? AS DATE)"
-        if require_exact_filing_date:
-            predicate += " AND published_at_basis = 'EXACT_FILING'"
-        return f"""
-            WITH eligible AS (
-                SELECT *
-                FROM {source_expr}
-                WHERE {predicate}
-            ), ranked AS (
-                SELECT *, ROW_NUMBER() OVER (
-                    PARTITION BY issuer_id, statement_scope, period_type,
-                                 fiscal_year_start_date, period_end_date,
-                                 metric_id, taxonomy_version
-                    ORDER BY {date_column} DESC, effective_available_at DESC,
-                             revision_no DESC, filing_id DESC
-                ) AS _pit_rank
-                FROM eligible
-            )
-            SELECT * EXCLUDE (_pit_rank)
-            FROM ranked
-            WHERE _pit_rank = 1
-        """
-
     def _query_facts(
         self, path: Path, as_of_date: date, require_exact_filing_date: bool
     ) -> pl.DataFrame:
-        query = self._pit_facts_sql("read_parquet(?)", require_exact_filing_date)
+        stat_key = _parquet_file_stat_key(path)
+        if stat_key is None:
+            raise FileNotFoundError(path)
         try:
             with duckdb.connect(":memory:") as connection:
+                cols = self._inspect_parquet_columns(
+                    path, stat_key, "financial_facts.parquet", connection=connection
+                )
+                query = build_pit_facts_sql(
+                    "read_parquet(?)",
+                    require_exact_filing_date=require_exact_filing_date,
+                    has_provider="source_provider" in cols,
+                    has_value="value" in cols,
+                )
                 result = connection.execute(
                     query, [str(path), as_of_date]
                 ).fetch_arrow_table()
@@ -1989,14 +1985,19 @@ class ParquetRepository:
             )
             if not resolved.exists:
                 raise FileNotFoundError("financial_facts.parquet")
+            has_prov = "source_provider" in resolved.columns
+            has_val = "value" in resolved.columns
             if resolved.parquet_files:
                 param: object = (
                     resolved.parquet_files[0]
                     if len(resolved.parquet_files) == 1
                     else list(resolved.parquet_files)
                 )
-                query = self._pit_facts_sql(
-                    "read_parquet(?)", require_exact_filing_date
+                query = build_pit_facts_sql(
+                    "read_parquet(?)",
+                    require_exact_filing_date=require_exact_filing_date,
+                    has_provider=has_prov,
+                    has_value=has_val,
                 )
                 arrow = con.execute(query, [param, as_of_date]).fetch_arrow_table()
             else:
@@ -2013,7 +2014,12 @@ class ParquetRepository:
                     f'"{binding.catalog_alias}"."financial_facts" '
                     f"AT (VERSION => {int(binding.ducklake_version)})"
                 )
-                query = self._pit_facts_sql(source_expr, require_exact_filing_date)
+                query = build_pit_facts_sql(
+                    source_expr,
+                    require_exact_filing_date=require_exact_filing_date,
+                    has_provider=has_prov,
+                    has_value=has_val,
+                )
                 arrow = con.execute(query, [as_of_date]).fetch_arrow_table()
         except FileNotFoundError:
             raise

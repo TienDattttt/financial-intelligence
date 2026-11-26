@@ -10,6 +10,8 @@ Verified Sources:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -39,19 +41,88 @@ def _load_facts_frame(facts_source: Path | pl.DataFrame) -> pl.DataFrame:
         ) from exc
 
 
+def build_pit_facts_sql(
+    source_expr: str,
+    *,
+    require_exact_filing_date: bool,
+    has_provider: bool = False,
+    has_value: bool = True,
+) -> str:
+    """Build DuckDB PIT resolution SQL preserving within-provider revisions and provider priority."""
+    date_column = (
+        "published_at" if require_exact_filing_date else "effective_available_at"
+    )
+    predicate = f"{date_column} IS NOT NULL AND {date_column} <= CAST(? AS DATE)"
+    if require_exact_filing_date:
+        predicate += " AND published_at_basis = 'EXACT_FILING'"
+    if not has_provider:
+        return f"""
+            WITH eligible AS (
+                SELECT *
+                FROM {source_expr}
+                WHERE {predicate}
+            ), ranked AS (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY issuer_id, statement_scope, period_type,
+                                 fiscal_year_start_date, period_end_date,
+                                 metric_id, taxonomy_version
+                    ORDER BY {date_column} DESC, effective_available_at DESC,
+                             revision_no DESC, filing_id DESC
+                ) AS _pit_rank
+                FROM eligible
+            )
+            SELECT * EXCLUDE (_pit_rank)
+            FROM ranked
+            WHERE _pit_rank = 1
+        """
+    null_order = "(value IS NULL) ASC, " if has_value else ""
+    return f"""
+        WITH eligible AS (
+            SELECT *
+            FROM {source_expr}
+            WHERE {predicate}
+        ), per_provider AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY issuer_id, statement_scope, period_type,
+                             fiscal_year_start_date, period_end_date,
+                             metric_id, taxonomy_version, source_provider
+                ORDER BY {date_column} DESC, effective_available_at DESC,
+                         revision_no DESC, filing_id DESC
+            ) AS _prov_rank
+            FROM eligible
+        ), ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY issuer_id, statement_scope, period_type,
+                             fiscal_year_start_date, period_end_date,
+                             metric_id, taxonomy_version
+                ORDER BY {null_order}
+                         CASE source_provider
+                             WHEN 'fhsc' THEN 0
+                             WHEN 'issuer' THEN 1
+                             WHEN 'vietcap_iq' THEN 2
+                             WHEN 'cafef_pdf' THEN 3
+                             WHEN 'vndirect_finfo' THEN 4
+                             ELSE 99
+                         END ASC,
+                         {date_column} DESC, effective_available_at DESC,
+                         revision_no DESC, filing_id DESC
+            ) AS _pit_rank
+            FROM per_provider
+            WHERE _prov_rank = 1
+        )
+        SELECT * EXCLUDE (_prov_rank, _pit_rank)
+        FROM ranked
+        WHERE _pit_rank = 1
+    """
+
+
 def _resolve_pit_latest_facts(
     facts: pl.DataFrame,
     *,
     as_of: date,
     require_exact_filing_date: bool = False,
 ) -> pl.DataFrame:
-    """Resolve point-in-time latest facts in memory with deterministic tie-breakers.
-
-    Matches ``ParquetRepository._query_facts`` window ranking exactly:
-    ``PARTITION BY issuer_id, statement_scope, period_type, fiscal_year_start_date,
-    period_end_date, metric_id, taxonomy_version`` ordered by
-    ``{date_column} DESC, effective_available_at DESC, revision_no DESC, filing_id DESC``.
-    """
+    """Resolve point-in-time latest facts in memory with deterministic tie-breakers."""
     if type(as_of) is not date:
         raise TypeError("as_of must be a datetime.date instance.")
     if type(require_exact_filing_date) is not bool:
@@ -59,31 +130,12 @@ def _resolve_pit_latest_facts(
     if facts.is_empty():
         return facts
 
-    date_column = (
-        "published_at" if require_exact_filing_date else "effective_available_at"
+    query = build_pit_facts_sql(
+        "_in_memory_facts",
+        require_exact_filing_date=require_exact_filing_date,
+        has_provider="source_provider" in facts.columns,
+        has_value="value" in facts.columns,
     )
-    predicate = f"{date_column} IS NOT NULL AND {date_column} <= CAST(? AS DATE)"
-    if require_exact_filing_date:
-        predicate += " AND published_at_basis = 'EXACT_FILING'"
-    query = f"""
-        WITH eligible AS (
-            SELECT *
-            FROM _in_memory_facts
-            WHERE {predicate}
-        ), ranked AS (
-            SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY issuer_id, statement_scope, period_type,
-                             fiscal_year_start_date, period_end_date,
-                             metric_id, taxonomy_version
-                ORDER BY {date_column} DESC, effective_available_at DESC,
-                         revision_no DESC, filing_id DESC
-            ) AS _pit_rank
-            FROM eligible
-        )
-        SELECT * EXCLUDE (_pit_rank)
-        FROM ranked
-        WHERE _pit_rank = 1
-    """
     try:
         with duckdb.connect(":memory:") as connection:
             connection.register("_in_memory_facts", facts)
@@ -188,8 +240,11 @@ def build_latest_facts_table(
         "metric_id",
         "taxonomy_version",
     ]
-    if "source_provider" in latest.columns and "source_provider" in ttm.columns:
-        join_keys.append("source_provider")
+    if (
+        "fiscal_year_start_date" in latest.columns
+        and "fiscal_year_start_date" in ttm.columns
+    ):
+        join_keys.append("fiscal_year_start_date")
 
     ttm_slice = ttm.select(
         *join_keys,
@@ -213,6 +268,114 @@ def build_latest_facts_table(
     )
 
 
+def _load_vietcap_payload_sha_map(state: StateStore) -> dict[tuple[str, str], str]:
+    """Load optional 64-char raw payload SHA-256 receipts from ``vietcap_supplement``."""
+    db_path = getattr(state, "db_path", None)
+    if not isinstance(db_path, Path):
+        return {}
+    manifest_file = (
+        db_path.parent.parent
+        / "raw_disclosures"
+        / "vietcap_supplement"
+        / "receipts_manifest.json"
+    )
+    if not manifest_file.is_file():
+        return {}
+    try:
+        entries = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(entries, list):
+        return {}
+    sec_tag_map = {"NOTE": "note", "CASH_FLOW": "cf", "INCOME_STATEMENT": "is"}
+    out: dict[tuple[str, str], str] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        tk = str(item.get("ticker") or "").strip().upper()
+        sec = sec_tag_map.get(str(item.get("section") or ""))
+        sha = str(item.get("sha256") or "").strip().lower()
+        if tk and sec and len(sha) == 64:
+            out[(sec, tk)] = sha
+    return out
+
+
+def _build_vietcap_fallback_manifest_rows(
+    facts: pl.DataFrame,
+    missing_ids: set[str],
+    payload_sha_map: dict[tuple[str, str], str],
+) -> list[dict[str, object]]:
+    if not missing_ids or "source_provider" not in facts.columns:
+        return []
+    vci_facts = facts.filter(
+        pl.col("filing_id").cast(pl.String).is_in(sorted(missing_ids))
+        & (pl.col("source_provider") == "vietcap_iq")
+    )
+    if vci_facts.is_empty():
+        return []
+
+    out: list[dict[str, object]] = []
+    for sub_df in vci_facts.partition_by("filing_id", maintain_order=False):
+        first = sub_df.row(0, named=True)
+        fid = str(first["filing_id"])
+        tk = str(first.get("ticker_at_filing") or first["issuer_id"]).strip().upper()
+        parts = fid.split("_")
+        sec_tag = parts[1] if len(parts) >= 3 and parts[0] == "vci" else ""
+        payload_sha = payload_sha_map.get((sec_tag, tk))
+        if payload_sha is None:
+            payload_sha = hashlib.sha256(f"payload:{fid}".encode()).hexdigest()
+
+        metric_items = sorted(
+            (
+                str(r.get("metric_id") or ""),
+                str(r.get("raw_metric_key") or ""),
+                r.get("value"),
+            )
+            for r in sub_df.select("metric_id", "raw_metric_key", "value").to_dicts()
+        )
+        canonical_sha = hashlib.sha256(
+            json.dumps(
+                {"filing_id": fid, "metrics": metric_items},
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+        p_end = first.get("period_end_date")
+        pub_at = first.get("published_at")
+        eff_at = first.get("effective_available_at")
+        out.append(
+            {
+                "filing_id": fid,
+                "issuer_id": str(first["issuer_id"]),
+                "ticker_at_filing": tk,
+                "source_provider": "vietcap_iq",
+                "connector_name": "vietcap_iq_supplement",
+                "statement_type": str(first.get("statement_type") or "CASH_FLOW"),
+                "statement_scope": str(first.get("statement_scope") or "CONSOLIDATED"),
+                "period_type": str(first.get("period_type") or "ANNUAL"),
+                "period_end_date": p_end.isoformat()
+                if isinstance(p_end, date)
+                else str(p_end),
+                "published_at": pub_at.isoformat()
+                if isinstance(pub_at, date)
+                else (str(pub_at) if pub_at is not None else None),
+                "published_at_basis": str(
+                    first.get("published_at_basis") or "STATUTORY_LAG"
+                ),
+                "effective_available_at": eff_at.isoformat()
+                if isinstance(eff_at, date)
+                else str(eff_at),
+                "audit_status": str(first.get("audit_status") or "UNAUDITED"),
+                "audit_opinion": str(first.get("audit_opinion") or "NOT_APPLICABLE"),
+                "revision_no": int(first.get("revision_no") or 1),
+                "revision_reason": str(first.get("revision_reason") or "ORIGINAL"),
+                "canonical_content_sha256": canonical_sha,
+                "payload_file_sha256": payload_sha,
+            }
+        )
+    return out
+
+
 def build_filings_manifest_snapshot(
     state: StateStore, facts_source: Path | pl.DataFrame
 ) -> pl.DataFrame:
@@ -221,6 +384,7 @@ def build_filings_manifest_snapshot(
     Includes ``source_provider``, ``connector_name``, ``published_at``,
     ``published_at_basis``, and ``canonical_content_sha256`` so Layer 5 Lineage
     Cards read 100% from the immutable published snapshot without touching SQLite.
+    Synthesizes deterministic lineage rows for ``vietcap_iq`` supplement filings.
     """
     facts = _load_facts_frame(facts_source)
     if facts.is_empty():
@@ -239,6 +403,7 @@ def build_filings_manifest_snapshot(
         return pl.DataFrame(schema=FILINGS_MANIFEST_SCHEMA)
 
     rows: list[dict[str, object]] = []
+    found_ids: set[str] = set()
     try:
         with state.connection() as conn:
             table_exists = (
@@ -249,7 +414,6 @@ def build_filings_manifest_snapshot(
             )
             if table_exists:
                 sorted_ids = sorted(referenced_ids)
-                # Chunk parameters to stay comfortably below SQLite's variable limit.
                 chunk_size = 500
                 for start in range(0, len(sorted_ids), chunk_size):
                     chunk = sorted_ids[start : start + chunk_size]
@@ -267,11 +431,19 @@ def build_filings_manifest_snapshot(
                         """,
                         chunk,
                     ).fetchall()
-                    rows.extend(dict(row) for row in fetched)
+                    for row in fetched:
+                        row_dict = dict(row)
+                        rows.append(row_dict)
+                        found_ids.add(str(row_dict["filing_id"]))
     except sqlite3.Error as exc:
         raise ContractViolationError(
             "Unable to export filings_manifest provenance for snapshot publication."
         ) from exc
+
+    missing_ids = referenced_ids - found_ids
+    if missing_ids:
+        sha_map = _load_vietcap_payload_sha_map(state)
+        rows.extend(_build_vietcap_fallback_manifest_rows(facts, missing_ids, sha_map))
 
     if not rows:
         return pl.DataFrame(schema=FILINGS_MANIFEST_SCHEMA)

@@ -146,8 +146,10 @@ def attach_pre_vs_post_audit_restatement(
 
     pre_audit_quarters = (
         coalesce_cross_provider_facts(pre_audit_raw)
-        .sort(REVISION_ORDER)
+        .with_columns(prov_prio.alias("_prov_prio"))
+        .sort(["_prov_prio", *REVISION_ORDER])
         .unique(subset=[*_FY_MATCH_KEY, "fiscal_quarter"], keep="last")
+        .drop("_prov_prio")
         .with_columns(
             pl.concat_list(
                 pl.concat_list(pl.col("filing_id").cast(pl.String)),

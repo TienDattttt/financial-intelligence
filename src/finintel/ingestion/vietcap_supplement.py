@@ -34,6 +34,25 @@ VIETCAP_SECTION_URL_TEMPLATE = (
 
 PeriodDateTuple = tuple[date, date, date, str]
 PeriodDateMap = Mapping[tuple[str, int, int | None], PeriodDateTuple]
+AnchorSlotMap = Mapping[tuple[str, int, int | None], frozenset[str]]
+
+_ANCHOR_SECTION_SPECS: tuple[tuple[str, str, str, str, str], ...] = (
+    ("bs", "BALANCE_SHEET", "bsa53", "BS_TOTAL_ASSETS", "STOCK"),
+    ("bs", "BALANCE_SHEET", "bsa78", "BS_TOTAL_EQUITY", "STOCK"),
+    ("is", "INCOME_STATEMENT", "isa3", "IS_NET_REVENUE", "FLOW"),
+    ("is", "INCOME_STATEMENT", "isa22", "IS_NET_INCOME_PARENT", "FLOW"),
+)
+
+
+def _is_incompatible_vietcap_slot(
+    period_type: str,
+    p_end: date,
+    pub_raw: date | None,
+) -> bool:
+    """Reject calendarized Vietcap ANNUAL rows on non-calendar FYs and pre-end disclosures."""
+    if period_type == "ANNUAL" and p_end.month != 12:
+        return True
+    return pub_raw is not None and pub_raw < p_end
 
 
 def _parse_public_date(raw: object) -> date | None:
@@ -238,6 +257,8 @@ def parse_vietcap_depreciation_facts(
                     )
 
                 pub_raw = _parse_public_date(item.get("publicDate"))
+                if _is_incompatible_vietcap_slot(period_type, p_end, pub_raw):
+                    continue
                 pub_at, basis, eff_at = _resolve_disclosure(pub_raw, p_end, period_type)
                 audit_status = "AUDITED" if period_type == "ANNUAL" else "UNAUDITED"
                 period_tag = (
@@ -328,6 +349,8 @@ def parse_vietcap_annual_eps_facts(
             )
 
         pub_raw = _parse_public_date(item.get("publicDate"))
+        if _is_incompatible_vietcap_slot("ANNUAL", p_end, pub_raw):
+            continue
         pub_at, basis, eff_at = _resolve_disclosure(pub_raw, p_end, "ANNUAL")
         filing_id = f"vci_is_{ticker_clean}_{fy_raw}Y_{payload_sha}"
 
@@ -358,6 +381,134 @@ def parse_vietcap_annual_eps_facts(
                 value=val,
             )
         )
+
+    if not rows:
+        return pl.DataFrame(schema=FACT_SCHEMA)
+    return pl.DataFrame(rows, schema=FACT_SCHEMA)
+
+
+def parse_vietcap_anchor_facts(
+    *,
+    issuer_id: str,
+    ticker: str,
+    balance_sheet_bytes: bytes | None = None,
+    income_statement_bytes: bytes | None = None,
+    statement_scope: str = "CONSOLIDATED",
+    existing_period_dates: PeriodDateMap | None = None,
+    existing_anchor_metrics: AnchorSlotMap | None = None,
+    min_fiscal_year: int = 2008,
+) -> pl.DataFrame:
+    """Parse 4 cross-provider reconciliation anchor metrics from Vietcap BS & IS caches."""
+    ticker_clean = ticker.strip().upper()
+    payloads: dict[str, bytes | None] = {
+        "bs": balance_sheet_bytes,
+        "is": income_statement_bytes,
+    }
+    parsed_cache: dict[str, tuple[dict[str, object], str]] = {}
+    for src_tag, raw_b in payloads.items():
+        if raw_b is None:
+            continue
+        data = _parse_vietcap_sections_dict(raw_b)
+        if data is not None:
+            parsed_cache[src_tag] = (data, hashlib.sha256(raw_b).hexdigest()[:12])
+
+    if not parsed_cache:
+        return pl.DataFrame(schema=FACT_SCHEMA)
+
+    rows: list[dict[str, object]] = []
+    seen: set[tuple[str, int, int | None, str]] = set()
+
+    for src_tag, st_type, field_key, metric_id, val_type in _ANCHOR_SECTION_SPECS:
+        cached = parsed_cache.get(src_tag)
+        if cached is None:
+            continue
+        data, payload_sha = cached
+        for bucket_name, period_type in (("years", "ANNUAL"), ("quarters", "QUARTER")):
+            entries = data.get(bucket_name)
+            if not isinstance(entries, list):
+                continue
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                fy_raw = item.get("yearReport")
+                lr_raw = item.get("lengthReport")
+                if not isinstance(fy_raw, int) or isinstance(fy_raw, bool):
+                    continue
+                if fy_raw < min_fiscal_year or fy_raw > 2100:
+                    continue
+                if period_type == "ANNUAL":
+                    if lr_raw != 5:
+                        continue
+                    fq: int | None = None
+                else:
+                    if (
+                        not isinstance(lr_raw, int)
+                        or isinstance(lr_raw, bool)
+                        or not (1 <= lr_raw <= 4)
+                    ):
+                        continue
+                    fq = lr_raw
+
+                slot = (period_type, fy_raw, fq)
+                dedup_key = (period_type, fy_raw, fq, metric_id)
+                if dedup_key in seen:
+                    continue
+                if existing_anchor_metrics is not None:
+                    allowed = existing_anchor_metrics.get(slot)
+                    if allowed is None or metric_id not in allowed:
+                        continue
+
+                val = _extract_finite_float(item.get(field_key))
+                if val is None or val == 0.0:
+                    continue
+
+                if existing_period_dates is not None:
+                    if slot not in existing_period_dates:
+                        continue
+                    fy_start, p_start, p_end, taxonomy = existing_period_dates[slot]
+                else:
+                    fy_start, p_start, p_end, taxonomy = _calendar_period_dates(
+                        period_type, fy_raw, fq
+                    )
+
+                pub_raw = _parse_public_date(item.get("publicDate"))
+                if _is_incompatible_vietcap_slot(period_type, p_end, pub_raw):
+                    continue
+                pub_at, basis, eff_at = _resolve_disclosure(pub_raw, p_end, period_type)
+                audit_status = "AUDITED" if period_type == "ANNUAL" else "UNAUDITED"
+                period_tag = (
+                    f"{fy_raw}Y" if period_type == "ANNUAL" else f"{fy_raw}Q{fq}"
+                )
+                filing_id = f"vci_{src_tag}_{ticker_clean}_{period_tag}_{payload_sha}"
+                seen.add(dedup_key)
+
+                rows.append(
+                    _build_fact_row(
+                        filing_id=filing_id,
+                        issuer_id=issuer_id,
+                        ticker=ticker_clean,
+                        statement_type=st_type,
+                        statement_scope=statement_scope,
+                        period_type=period_type,
+                        fiscal_year=fy_raw,
+                        fiscal_quarter=fq,
+                        fy_start=fy_start,
+                        p_start=p_start,
+                        p_end=p_end,
+                        taxonomy_version=taxonomy,
+                        audit_status=audit_status,
+                        published_at=pub_at,
+                        published_at_basis=basis,
+                        effective_available_at=eff_at,
+                        metric_id=metric_id,
+                        value_type=val_type,
+                        unit="VND",
+                        sign_convention="SIGNED",
+                        comparable_across_taxonomy=True,
+                        raw_metric_key=f"vietcap_{src_tag}:{field_key}",
+                        value=val,
+                    )
+                )
 
     if not rows:
         return pl.DataFrame(schema=FACT_SCHEMA)

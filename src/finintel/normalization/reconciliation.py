@@ -140,17 +140,21 @@ def reconcile_cross_provider_facts(
         )
 
     rev_cols = [col for col in REVISION_ORDER if col in anchor_subset.columns]
+    audited_tier_expr = (
+        (pl.col("audit_status") == "AUDITED").alias("_is_audited")
+        if "audit_status" in anchor_subset.columns
+        else pl.lit(False).alias("_is_audited")
+    )
+    tiered = anchor_subset.with_columns(audited_tier_expr)
     extra_keys = [
-        col
-        for col in ("period_start_date", "audit_status")
-        if col in anchor_subset.columns
+        col for col in ("period_start_date", "_is_audited") if col in tiered.columns
     ]
     join_keys = [*PERIOD_KEY, *extra_keys, "metric_id"]
     dedup_subset = [*join_keys, "source_provider"]
     latest = (
-        anchor_subset.sort(rev_cols).unique(subset=dedup_subset, keep="last")
+        tiered.sort(rev_cols).unique(subset=dedup_subset, keep="last")
         if rev_cols
-        else anchor_subset.unique(subset=dedup_subset, keep="last")
+        else tiered.unique(subset=dedup_subset, keep="last")
     )
 
     fhsc_df = latest.filter(pl.col("source_provider") == "fhsc").select(
