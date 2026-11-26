@@ -24,6 +24,7 @@ import { SourceDrawer } from "@/components/layout/SourceDrawer";
 import { useAppState } from "@/components/providers/app-providers";
 import { Select } from "@/components/ui/primitives";
 import { useAllIssuers } from "@/hooks/use-finintel-queries";
+import type { DataFreshnessItem } from "@/lib/api-client";
 import {
   PERIOD_TYPE_LABELS,
   STATEMENT_SCOPE_LABELS,
@@ -39,6 +40,38 @@ import {
 } from "@/lib/watchlist-store";
 import { cn } from "@/lib/utils";
 import type { PeriodType, StatementScope } from "@/types/api";
+
+export interface FreshnessStripItem {
+  key: "bctc" | "eod" | "regulatory";
+  label: string;
+  value: string;
+}
+
+export function formatFreshnessStrip(
+  freshness: DataFreshnessItem | null | undefined,
+  publishedAt?: string | null,
+): FreshnessStripItem[] {
+  const bctcDate = freshness?.bctc_latest_period_end_date ?? publishedAt ?? null;
+  const eodDate = freshness?.market_prices_latest_trade_date ?? null;
+  const regDate = freshness?.regulatory_latest_event_date ?? null;
+  return [
+    {
+      key: "bctc",
+      label: "BCTC",
+      value: bctcDate ? formatDateVi(bctcDate) : "Kỳ mới nhất",
+    },
+    {
+      key: "eod",
+      label: "Giá EOD",
+      value: eodDate ? formatDateVi(eodDate) : "Theo phiên niêm yết",
+    },
+    {
+      key: "regulatory",
+      label: "Pháp lý",
+      value: regDate ? formatDateVi(regDate) : "Theo công bố Sở",
+    },
+  ];
+}
 
 const THEME_OPTIONS: readonly {
   id: ThemePreference;
@@ -64,6 +97,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setPeriodEndDate,
     availableDates,
     publishedAt,
+    freshness,
     snapshotId,
     closeSourceDrawer,
     setCommandOpen,
@@ -140,6 +174,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return pathname === href || pathname.startsWith(`${href}/`);
   };
 
+  const freshnessItems = React.useMemo(
+    () => formatFreshnessStrip(freshness, publishedAt),
+    [freshness, publishedAt],
+  );
+
   return (
     <div className="flex min-h-screen flex-col bg-canvas text-ink">
       {/* Skip-to-content link (WCAG 2.4.1) */}
@@ -158,7 +197,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Dialog.Popup
               aria-modal="true"
               aria-label="Menu điều hướng FinIntel"
-              className="flex h-full w-64 flex-col border-r border-border bg-surface text-ink shadow-popover outline-none"
+              className="flex h-full w-64 max-w-[85vw] flex-col border-r border-border bg-surface text-ink shadow-popover outline-none"
             >
               <Dialog.Title className="sr-only">Menu điều hướng FinIntel</Dialog.Title>
               <div className="flex h-[52px] items-center justify-between border-b border-border px-3">
@@ -175,7 +214,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Dialog.Close
                   type="button"
                   aria-label="Đóng menu"
-                  className="rounded-md p-1 text-ink-muted hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex size-7 items-center justify-center rounded-md text-ink-muted hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <X className="size-4" />
                 </Dialog.Close>
@@ -208,23 +247,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </Dialog.Portal>
       </Dialog.Root>
 
-      {/* Top Sticky Header: Row 1 Brand + Global Controls, Row 2 Horizontal Top Navigation */}
+      {/* Top Sticky Header: Row 1 Brand + Global Controls, Row 2 Navigation, Row 3 3-Tier Freshness */}
       <header className="sticky top-0 z-30 border-b border-border bg-surface">
         {/* Row 1: Brand + Search + Global Period/Scope + Theme */}
-        <div className="mx-auto flex min-h-[50px] max-w-[1440px] flex-wrap items-center justify-between gap-2 px-4 py-1.5 sm:px-6">
-          <div className="flex items-center gap-2.5">
+        <div className="mx-auto flex min-h-[50px] max-w-[1440px] flex-wrap items-center justify-between gap-2 px-3 py-1.5 sm:px-6">
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-initial sm:gap-2.5">
             <button
               type="button"
               aria-label="Mở menu điều hướng"
               onClick={() => setMobileMenuOpen(true)}
-              className="rounded-md border border-border p-1.5 text-ink-muted transition-colors duration-150 hover:bg-surface-hover lg:hidden"
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border text-ink-muted transition-colors duration-150 hover:bg-surface-hover lg:hidden"
             >
               <Menu className="size-4" />
             </button>
 
             <Link
               href="/"
-              className="flex shrink-0 items-center gap-2 font-semibold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
+              className="flex shrink-0 items-center gap-1.5 font-semibold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md sm:gap-2"
             >
               <span className="inline-flex size-6 items-center justify-center rounded-md bg-primary font-mono text-xs font-semibold text-primary-foreground">
                 FI
@@ -235,9 +274,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <button
               type="button"
               onClick={() => setCommandOpen(true)}
-              className="flex h-8 w-44 items-center justify-between gap-2 rounded-md border border-border-strong bg-canvas px-2.5 text-left text-[13px] text-ink-muted transition-colors duration-150 hover:border-accent-ink/50 hover:text-ink sm:w-64 md:w-72"
+              className="flex h-8 min-w-0 flex-1 items-center justify-between gap-2 rounded-md border border-border-strong bg-canvas px-2 text-left text-[13px] text-ink-muted transition-colors duration-150 hover:border-accent-ink/50 hover:text-ink sm:w-64 sm:flex-none sm:px-2.5 md:w-72"
             >
-              <span className="flex items-center gap-1.5 truncate">
+              <span className="flex min-w-0 items-center gap-1.5 truncate">
                 <Search className="size-3.5 shrink-0" aria-hidden="true" />
                 <span className="truncate">Tìm mã hoặc tên DN...</span>
               </span>
@@ -247,7 +286,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex max-w-full flex-wrap items-center gap-1.5 sm:gap-2">
             <Select
               aria-label="Chọn kỳ dữ liệu"
               value={periodEndDate ?? ""}
@@ -351,13 +390,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               })}
             </nav>
 
-            <span className="hidden shrink-0 text-[11px] text-ink-muted xl:inline">
-              Cập nhật{" "}
-              <strong className="font-medium text-ink">
-                {publishedAt ? formatDateVi(publishedAt) : "kỳ mới nhất"}
-              </strong>{" "}
-              · BCTC niêm yết VN
+            <span className="hidden shrink-0 text-[11px] text-ink-muted 2xl:inline">
+              {freshnessItems.map((item, idx) => (
+                <React.Fragment key={item.key}>
+                  {idx > 0 ? " · " : null}
+                  <span>{item.label}: </span>
+                  <strong className="num font-medium text-ink">{item.value}</strong>
+                </React.Fragment>
+              ))}
             </span>
+          </div>
+        </div>
+
+        {/* Row 3: Responsive 3-Tier Freshness Bar (visible < 2xl, incl. 1440x900, 720x450 200% zoom, 320x800) */}
+        <div
+          aria-label="Độ tươi dữ liệu ba tầng"
+          className="border-t border-border/70 bg-canvas/50 2xl:hidden"
+        >
+          <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-1 text-[11px] text-ink-muted sm:px-6">
+            {freshnessItems.map((item) => (
+              <span key={item.key} className="inline-flex items-center gap-1">
+                <span>{item.label}:</span>
+                <strong className="num font-medium text-ink">{item.value}</strong>
+              </span>
+            ))}
           </div>
         </div>
       </header>
@@ -366,7 +422,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <main
         id="main-content"
         tabIndex={-1}
-        className="mx-auto w-full max-w-[1440px] flex-1 p-4 outline-none sm:p-6"
+        className="mx-auto w-full max-w-[1440px] flex-1 p-3 outline-none sm:p-6"
       >
         {children}
       </main>
@@ -376,7 +432,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span>
             Thông tin chỉ mang tính tham khảo, không phải khuyến nghị đầu tư.
           </span>
-          <Link href="/methodology" className="text-accent-ink hover:underline">
+          <Link
+            href="/methodology"
+            className="inline-flex min-h-6 items-center text-accent-ink hover:underline"
+          >
             Phương pháp &amp; Giới hạn mô hình →
           </Link>
         </div>

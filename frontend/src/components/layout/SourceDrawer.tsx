@@ -37,6 +37,19 @@ const DENOMINATOR_MODE_LABELS: Record<string, string> = {
   COMPOSITE: "Chỉ số tổng hợp",
 };
 
+export function formatFilingReference(rawFilingId: string | null | undefined): string {
+  if (!rawFilingId) return "Hồ sơ BCTC gốc";
+  const cleaned = rawFilingId
+    .trim()
+    .replace(/\.(?:parquet|sqlite|json|pdf)\b/gi, "")
+    .replace(/\bISS_/gi, "")
+    .replace(/_?(?:CONSOLIDATED|SEPARATE)_?/gi, "_")
+    .replace(/\bREGIME_FALLBACK\b/gi, "")
+    .replace(/__+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return cleaned ? cleaned.slice(0, 48) : "Hồ sơ BCTC gốc";
+}
+
 function ComponentList({
   title,
   items,
@@ -84,7 +97,7 @@ function ComponentList({
                     Kỳ: {formatPeriodLabel(comp.period_end_date, comp.period_type)}
                   </span>
                   <span>
-                    Chuẩn: {TAXONOMY_LABELS[comp.taxonomy_version] ?? comp.taxonomy_version}
+                    Chuẩn: {TAXONOMY_LABELS[comp.taxonomy_version] ?? "Chuẩn kế toán VAS"}
                   </span>
                   {comp.published_at ? (
                     <span>Công bố: {formatDateVi(comp.published_at)}</span>
@@ -99,8 +112,8 @@ function ComponentList({
                   {basisLabel ? <span>Căn cứ ngày: {basisLabel}</span> : null}
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[11px] text-ink-subtle">
-                  <span className="truncate font-mono" title={comp.filing_id}>
-                    Hồ sơ: {comp.filing_id}
+                  <span className="truncate font-mono">
+                    Hồ sơ: {formatFilingReference(comp.filing_id)}
                   </span>
                   {comp.canonical_content_sha256 ? (
                     <span
@@ -175,7 +188,7 @@ export function SourceDrawer() {
                     {STATEMENT_SCOPE_LABELS[sourceTarget.statementScope] ??
                       sourceTarget.statementScope}
                     {card
-                      ? ` · ${TAXONOMY_LABELS[card.taxonomy_version] ?? card.taxonomy_version}`
+                      ? ` · ${TAXONOMY_LABELS[card.taxonomy_version] ?? "Chuẩn kế toán VAS"}`
                       : ""}
                   </Dialog.Description>
                 </div>
@@ -242,7 +255,7 @@ export function SourceDrawer() {
                         Hồ sơ neo &amp; kiểm chứng
                       </p>
                       <p className="font-mono text-[11px] text-ink">
-                        Hồ sơ neo: {card.anchor_filing_id}
+                        Hồ sơ neo: {formatFilingReference(card.anchor_filing_id)}
                       </p>
                       <p className="text-[11px] text-ink-muted">
                         Số hồ sơ nguồn tham gia: {card.source_filing_ids.length}
@@ -261,7 +274,7 @@ export function SourceDrawer() {
                 <Link
                   href="/methodology"
                   onClick={closeSourceDrawer}
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-accent-ink hover:underline"
+                  className="inline-flex min-h-6 items-center gap-1.5 text-xs font-medium text-accent-ink hover:underline"
                 >
                   <BookOpen className="size-3.5" aria-hidden="true" />
                   Xem định nghĩa đầy đủ trong Từ điển chỉ số →

@@ -23,7 +23,7 @@
 | *Cổng 3* | **Verification Checkpoint #3** | Kiểm chứng định lượng Layer 4A/4B (`0%` look-ahead, `0` QG2 orphan, DuPont `<= 1e-9`) | — | Hoàn tất (Cuối Đợt 3) |
 | `TASK-09` | Behavior-Changing | `cap-04`: Con trỏ tiến SQLite/Postgres + Composite `ETag` + API Freshness/DTD + OTel spans + Sanitizer | `6` tệp | Hoàn tất (Đợt 4) |
 | `TASK-10` | Behavior-Changing | `cap-05`: Frontend đồng bộ `X-Snapshot-ID`, tích hợp thẻ `Merton DTD` + bằng chứng `RF_10` & mã nhãn VN | `6` tệp | Hoàn tất (Đợt 4) |
-| `TASK-11` | Behavior-Changing | `cap-05`: Nâng cấp WAI-ARIA `frontend/src/components/ui/segmented-control.tsx`, thanh Freshness 3 mốc `200%` zoom & chuẩn hóa `SourceDrawer` | `6` tệp | Đợt 4 |
+| `TASK-11` | Behavior-Changing | `cap-05`: Nâng cấp WAI-ARIA `frontend/src/components/ui/segmented-control.tsx`, thanh Freshness 3 mốc `200%` zoom & chuẩn hóa `SourceDrawer` | `6` tệp | Hoàn tất (Đợt 4) |
 | `TASK-12` | Behavior-Changing | `cap-05`: Tab/vùng cuộn `/methodology` A11y + Vitest JSDOM `.tsx` + Cổng `wcag22aa` & CWV + Sidecar `/automation` | `5` tệp | Đợt 4 |
 
 ---
@@ -95,6 +95,11 @@
 - **Loại commit:** `feat(frontend)` (`Behavior-Changing`).
 - **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `frontend/src/lib/market-overlay-types.ts`, `frontend/src/lib/api-client.ts`, `frontend/src/components/providers/app-providers.tsx`, `frontend/src/lib/domain-labels.ts`, `frontend/src/components/charts/PriceRiskOverlayChart.tsx`, `frontend/src/components/rag/DocumentInvestigationPanel.tsx` (+ `frontend/tests/unit/task10_snapshot_dtd_rf10.test.ts`, cập nhật `frontend/tests/unit/ui08b.test.ts`).
 - **Chi tiết:** Giám sát tiêu đề phản hồi `X-Snapshot-ID` trên mọi lời gọi `fetch` với debounce `150ms` để xoay đồng bộ toàn bộ khóa TanStack Query (`[*, snapshotId]`) mà không bị lệch phiên giữa các panel, đồng thời phơi bày `freshness` trên `useAppState()`; mở rộng `PitValuationStrip` lên 4 thẻ bổ sung **Merton DTD (Thị trường)** kèm `EDF` ngụ ý, biến động giá `1Y`, tooltip/bảng dữ liệu và giải thích tiếng Việt sạch cho `ZERO_FINANCIAL_DEBT` / `INSUFFICIENT_TRADING_SESSIONS` / `STALE_BCTC_DEBT`; bổ sung ánh xạ bằng chứng kế toán `RF_10` (`ni_unaudited_4q_sum`, `ni_audited_annual`, `audit_earnings_diff_vnd`, `audit_adjustment_pct`), câu hỏi điều tra PDF định sẵn `RF_10`, nhãn ML `merton_dtd` / `equity_volatility_1y` / `naive_edf` và nhãn đối soát chéo `CROSS_PROVIDER_DISCREPANCY_WARN`.
+
+### `TASK-11` — Nâng Cấp WAI-ARIA `segmented-control.tsx`, Thanh Freshness 3 Mốc & Chuẩn Hóa `SourceDrawer` (`cap-05`)
+- **Loại commit:** `feat(frontend)` (`Behavior-Changing`).
+- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `frontend/src/components/ui/segmented-control.tsx`, `frontend/src/components/ui/info-tooltip.tsx`, `frontend/src/components/layout/AppShell.tsx`, `frontend/src/components/layout/SourceDrawer.tsx`, `frontend/src/components/company/OverviewTab.tsx`, `frontend/src/components/financial/RedFlagChecklist.tsx` (+ `frontend/tests/unit/task11_a11y_freshness_drawer.test.ts`).
+- **Chi tiết:** Nâng cấp `segmented-control.tsx` đạt chuẩn WAI-ARIA Tabs / Radiogroup với roving `tabIndex`, điều hướng bàn phím (`ArrowRight`/`ArrowDown`, `ArrowLeft`/`ArrowUp`, `Home`, `End`), liên kết `aria-controls` và kích thước vùng bấm tối thiểu `>= 24x24px` (`WCAG 2.2 AA SC 2.5.8`, đồng bộ trên cả `InfoTooltip` và nút hành động nội dòng); bổ sung thanh độ tươi dữ liệu 3 tầng (`BCTC`, `Giá EOD`, `Pháp lý`) co giãn không tràn ngang ở `1440x900`, `720x450` (`200%` zoom) và `320x800`; chuẩn hóa `SourceDrawer` (`formatFilingReference` khử đuôi tệp và mã nội bộ, nhãn dự phòng an toàn cho `taxonomy_version`) và cập nhật bộ đếm `10` quy tắc cờ đỏ trên `OverviewTab` / `RedFlagChecklist`.
 
 ---
 

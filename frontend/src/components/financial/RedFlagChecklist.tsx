@@ -90,7 +90,7 @@ export function RedFlagChecklist({
           <ShieldAlert className="size-4 text-risk-high" aria-hidden="true" />
           <span>
             Quy tắc phát hiện bất thường đang kích hoạt ({activeForLatest.length}/
-            {dictionary.length || 9})
+            {dictionary.length || 10})
           </span>
         </h3>
 

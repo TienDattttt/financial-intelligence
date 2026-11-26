@@ -19,7 +19,7 @@ export function InfoTooltip({
           type="button"
           aria-label={label}
           onClick={(e) => e.stopPropagation()}
-          className="inline-flex size-4 items-center justify-center rounded-full text-ink-subtle transition-colors duration-150 hover:text-accent-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex size-6 -my-1 shrink-0 items-center justify-center rounded-full text-ink-subtle transition-colors duration-150 hover:text-accent-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Info className="size-3.5" aria-hidden="true" />
         </Tooltip.Trigger>

@@ -26,6 +26,7 @@ import { getRedFlagPresetQuestion } from "@/components/rag/DocumentInvestigation
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import {
   ALTMAN_ZONE_META,
   AUDIT_OPINION_LABELS,
@@ -46,7 +47,6 @@ import {
   MINUS_SIGN,
 } from "@/lib/format";
 import type { CompanyMarketOverlayResponse } from "@/lib/market-overlay-types";
-import { cn } from "@/lib/utils";
 import type {
   CompanyBenchmarksSummaryResponse,
   CompanyProfileResponse,
@@ -404,14 +404,14 @@ export function OverviewTab({
             <CardHeader className="py-2.5">
               <CardTitle className="flex items-center gap-1.5 text-[14px]">
                 <ShieldAlert className="size-4 text-risk-high" aria-hidden="true" />
-                <span>Cờ đỏ kế toán đang kích hoạt ({activeRedFlags.length}/9)</span>
+                <span>Cờ đỏ kế toán đang kích hoạt ({activeRedFlags.length}/10)</span>
               </CardTitle>
               <button
                 type="button"
                 onClick={() => onNavigateTab("quality")}
-                className="text-xs font-medium text-accent-ink hover:underline"
+                className="inline-flex min-h-6 items-center px-1 text-xs font-medium text-accent-ink hover:underline"
               >
-                Xem 9 quy tắc →
+                Xem 10 quy tắc →
               </button>
             </CardHeader>
             <CardContent className="p-3.5">
@@ -473,7 +473,7 @@ export function OverviewTab({
               <button
                 type="button"
                 onClick={() => onNavigateTab("quality")}
-                className="text-xs font-medium text-accent-ink hover:underline"
+                className="inline-flex min-h-6 items-center px-1 text-xs font-medium text-accent-ink hover:underline"
               >
                 Lịch sử hồ sơ →
               </button>
@@ -562,59 +562,29 @@ export function OverviewTab({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-md border border-border bg-surface-muted p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => onChangeShowAll38(false)}
-                className={cn(
-                  "rounded-sm px-2 py-1 font-medium transition-colors duration-150",
-                  !showAll38
-                    ? "bg-primary text-primary-foreground shadow-xs"
-                    : "text-ink-muted hover:text-ink",
-                )}
-              >
-                12 chỉ số cốt lõi
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeShowAll38(true)}
-                className={cn(
-                  "rounded-sm px-2 py-1 font-medium transition-colors duration-150",
-                  showAll38
-                    ? "bg-primary text-primary-foreground shadow-xs"
-                    : "text-ink-muted hover:text-ink",
-                )}
-              >
-                Tất cả 38 chỉ số
-              </button>
-            </div>
+            <SegmentedControl
+              ariaLabel="Phạm vi hiển thị số lượng chỉ số"
+              semantics="radiogroup"
+              size="xs"
+              value={showAll38 ? "ALL_38" : "CORE_12"}
+              onChange={(v) => onChangeShowAll38(v === "ALL_38")}
+              options={[
+                { value: "CORE_12", label: "12 chỉ số cốt lõi" },
+                { value: "ALL_38", label: "Tất cả 38 chỉ số" },
+              ]}
+            />
 
-            <div className="inline-flex rounded-md border border-border bg-surface-muted p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => onChangeTrafficMode("VALUE")}
-                className={cn(
-                  "rounded-sm px-2 py-1 font-medium transition-colors duration-150",
-                  trafficMode === "VALUE"
-                    ? "bg-primary text-primary-foreground shadow-xs"
-                    : "text-ink-muted hover:text-ink",
-                )}
-              >
-                Giá trị tuyệt đối
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeTrafficMode("PERCENTILE")}
-                className={cn(
-                  "rounded-sm px-2 py-1 font-medium transition-colors duration-150",
-                  trafficMode === "PERCENTILE"
-                    ? "bg-primary text-primary-foreground shadow-xs"
-                    : "text-ink-muted hover:text-ink",
-                )}
-              >
-                Chỉ xem phân vị
-              </button>
-            </div>
+            <SegmentedControl
+              ariaLabel="Chế độ hiển thị giá trị hoặc phân vị"
+              semantics="radiogroup"
+              size="xs"
+              value={trafficMode}
+              onChange={onChangeTrafficMode}
+              options={[
+                { value: "VALUE", label: "Giá trị tuyệt đối" },
+                { value: "PERCENTILE", label: "Chỉ xem phân vị" },
+              ]}
+            />
           </div>
         </CardHeader>
 
@@ -689,7 +659,7 @@ export function OverviewTab({
                                   metric: item.metric_name,
                                 })
                               }
-                              className="text-left font-medium text-accent-ink hover:underline"
+                              className="inline-flex min-h-6 items-center text-left font-medium text-accent-ink hover:underline"
                             >
                               {item.display_name_vn}
                             </button>
