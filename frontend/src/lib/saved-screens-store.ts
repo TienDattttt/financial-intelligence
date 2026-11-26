@@ -427,14 +427,14 @@ export const SCREENER_COLUMN_GROUPS: readonly {
 export const SCREENER_OPTIONAL_COLUMNS: readonly ScreenerColumnOption[] = [
   {
     id: "distress",
-    label: "Bộ 3 Tín dụng (1Y PD · R1–R5 · Top %)",
+    label: "Đánh giá rủi ro (XS · R1–R5 · Top %)",
     group: "credit_risk",
     defaultVisible: true,
     align: "right",
   },
   {
     id: "risk_tier",
-    label: "Bậc tín nhiệm (R1–R5)",
+    label: "Bậc rủi ro (R1–R5)",
     group: "credit_risk",
     defaultVisible: false,
     align: "left",

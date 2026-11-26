@@ -48,29 +48,29 @@ export function assessCompanyDataCoverage(
   const modules: CoverageModuleStatus[] = [
     {
       id: "financials",
-      label: "BCTC, 38 tỷ số & 9 cờ đỏ VAS",
+      label: "BCTC, tỷ số & cờ đỏ kế toán",
       statusText: input.hasFinancialData ? "Đầy đủ" : "Chưa có dữ liệu kỳ chọn",
       available: input.hasFinancialData,
     },
     {
       id: "eod",
-      label: "Giá EOD & Định giá PIT",
+      label: "Giá lịch sử & Định giá",
       statusText:
         input.hasEodPrices === null
           ? "Đang kiểm tra"
           : input.hasEodPrices
             ? "Đầy đủ"
-            : "Chưa có dữ liệu EOD",
+            : "Chưa có dữ liệu giá",
       available: input.hasEodPrices,
     },
     {
       id: "pd",
-      label: "Điểm xác suất kiệt quệ (1Y PD)",
+      label: "Dự báo rủi ro 1 năm",
       statusText: isNonCorporate
         ? "Không áp dụng cho nhóm tài chính"
         : input.hasSupervisedPd
-          ? "Đã chấm (PIT)"
-          : "Chưa chấm (thiếu mốc công bố PIT)",
+          ? "Đầy đủ dữ liệu"
+          : "Chưa đủ lịch sử công bố",
       available: isNonCorporate ? false : input.hasSupervisedPd,
     },
     {
@@ -83,7 +83,7 @@ export function assessCompanyDataCoverage(
 
   let noticeTitle = `Phạm vi dữ liệu công bố cho ${ticker}`;
   let noticeText =
-    "Hệ thống cung cấp đầy đủ BCTC chuẩn hóa, 38 tỷ số tài chính, 9 cờ đỏ VAS, lớp phủ giá EOD và điểm xác suất kiệt quệ mô hình.";
+    "Hệ thống cung cấp đầy đủ báo cáo tài chính, bộ chỉ số phân tích, cảnh báo cờ đỏ, biểu đồ giá lịch sử và dự báo rủi ro 1 năm.";
 
   if (isNonCorporate) {
     noticeTitle = `${ticker} thuộc nhóm định chế tài chính / bảo hiểm`;
@@ -94,18 +94,14 @@ export function assessCompanyDataCoverage(
     noticeText =
       "Chưa đủ dữ liệu BCTC chuẩn hóa cho lát cắt báo cáo đang chọn. Thử chuyển giữa Hợp nhất / Riêng lẻ hoặc TTM / Theo năm trên thanh công cụ.";
   } else if (missingEod && missingPd) {
-    noticeTitle = isUpcom
-      ? `${ticker} (${exchange}) — Phạm vi dữ liệu công bố`
-      : `${ticker}${exchange ? ` (${exchange})` : ""} — Phạm vi dữ liệu công bố`;
-    noticeText = `${ticker}${isUpcom ? " giao dịch trên sàn UPCOM" : ""} hiện chưa có đủ dữ liệu giá giao dịch lịch sử (EOD) và chuỗi kỳ có mốc ngày công bố thực tế (PIT) xác thực. Tuân thủ nguyên tắc không suy đoán dữ liệu, hệ thống vẫn cung cấp đầy đủ BCTC chuẩn hóa, 38 tỷ số tài chính và 9 cờ đỏ VAS, đồng thời tạm ẩn điểm 1Y PD hoặc chuỗi giá cổ phiếu khi chưa có dữ liệu gốc.`;
+    noticeTitle = `${ticker}${exchange ? ` (${exchange})` : ""} — Phạm vi dữ liệu công bố`;
+    noticeText = `${ticker}${isUpcom ? " giao dịch trên sàn UPCOM" : ""} hiện chưa có đủ dữ liệu giá lịch sử và chuỗi kỳ công bố báo cáo để tính dự báo rủi ro 1 năm. Các báo cáo tài chính, chỉ số phân tích và cảnh báo cờ đỏ vẫn hiển thị đầy đủ.`;
   } else if (missingEod) {
-    noticeTitle = isUpcom
-      ? `${ticker} (${exchange}) — Chưa có chuỗi giá giao dịch EOD lịch sử`
-      : `${ticker}${exchange ? ` (${exchange})` : ""} — Chưa có chuỗi giá giao dịch EOD`;
-    noticeText = `${ticker}${isUpcom ? " trên sàn UPCOM" : ""} hiện chưa ghi nhận chuỗi giá giao dịch EOD lịch sử trong kho dữ liệu (thường gặp ở cổ phiếu thanh khoản thấp hoặc đã hủy niêm yết). Hệ thống vẫn cung cấp đầy đủ BCTC, 38 tỷ số, 9 cờ đỏ VAS và điểm mô hình định lượng.`;
+    noticeTitle = `${ticker}${exchange ? ` (${exchange})` : ""} — Chưa có dữ liệu giá lịch sử`;
+    noticeText = `${ticker}${isUpcom ? " trên sàn UPCOM" : ""} hiện chưa ghi nhận dữ liệu giá giao dịch lịch sử trong hệ thống (thường gặp ở cổ phiếu thanh khoản thấp hoặc đã hủy niêm yết). Các báo cáo tài chính, chỉ số phân tích, cảnh báo cờ đỏ và dự báo rủi ro vẫn hiển thị đầy đủ.`;
   } else if (missingPd) {
-    noticeTitle = `${ticker}${exchange ? ` (${exchange})` : ""} — Chưa chấm điểm 1Y PD do thiếu mốc công bố PIT`;
-    noticeText = `${ticker} chưa đủ chuỗi kỳ có ngày công bố thực tế (PIT) xác thực để chấm điểm xác suất kiệt quệ (1Y PD). Hệ thống không tự suy đoán ngày công bố và vẫn cung cấp đầy đủ BCTC, 38 tỷ số tài chính, 9 cờ đỏ VAS và chuỗi giá thị trường (nếu có).`;
+    noticeTitle = `${ticker}${exchange ? ` (${exchange})` : ""} — Chưa đủ lịch sử công bố để dự báo rủi ro 1 năm`;
+    noticeText = `${ticker} chưa đủ chuỗi kỳ báo cáo có ngày công bố xác thực để tính dự báo rủi ro 1 năm. Các báo cáo tài chính, chỉ số phân tích, cảnh báo cờ đỏ và biểu đồ giá (nếu có) vẫn hiển thị đầy đủ.`;
   }
 
   return {

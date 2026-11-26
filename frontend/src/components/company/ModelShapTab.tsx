@@ -48,7 +48,7 @@ export function ModelShapTab({
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <EChartBox
-          title="Diễn biến lịch sử điểm Altman Z″ (EM) — Nhấp kỳ để cập nhật TreeSHAP"
+          title="Diễn biến lịch sử điểm Altman Z″ (EM) — Nhấp kỳ để xem nguyên nhân"
           subtitle="Đơn vị: điểm Z″ · Ngưỡng < 1,10 Nguy cơ · > 2,60 An toàn"
           option={mlAltmanOption}
           height={290}
@@ -66,13 +66,13 @@ export function ModelShapTab({
         />
 
         <EChartBox
-          title="Diễn biến lịch sử Xác suất kiệt quệ mô hình — Nhấp kỳ để cập nhật TreeSHAP"
-          subtitle="Đơn vị: phần trăm (%) · Xác suất kiệt quệ 1 năm đã hiệu chỉnh (1Y PD)"
+          title="Diễn biến lịch sử Xác suất kiệt quệ mô hình — Nhấp kỳ để xem nguyên nhân"
+          subtitle="Đơn vị: phần trăm (%) · Xác suất kiệt quệ trong 12 tháng tới"
           option={mlDistressProbOption}
           height={290}
           isEmpty={sortedMl.length === 0}
           onChartClick={onRiskPeriodClick}
-          tableHeaders={["Kỳ", "1Y PD", "Bậc", "F-Score", "Beneish M"]}
+          tableHeaders={["Kỳ", "XS 1 năm", "Bậc", "F-Score", "Beneish M"]}
           tableRows={sortedMl.map((m) => [
             formatPeriodLabel(m.period_end_date, periodType),
             formatPercent(m.calibrated_distress_prob),
@@ -97,7 +97,7 @@ export function ModelShapTab({
         <Card className="lg:col-span-7">
           <CardHeader className="flex-wrap gap-2 py-2.5">
             <CardTitle className="text-[14px]">
-              Bảng chi tiết đóng góp TreeSHAP{" "}
+              Bảng chi tiết đóng góp từng chỉ số{" "}
               {activeMlPeriodLabel ? `(${activeMlPeriodLabel})` : "(Kỳ đang chọn)"}
             </CardTitle>
             {isCustomMlPeriod ? (
@@ -115,7 +115,7 @@ export function ModelShapTab({
           <CardContent className="p-0">
             {!activeMl?.shap_top_drivers ? (
               <p className="p-4 text-xs text-ink-muted">
-                Chưa có dữ liệu đóng góp TreeSHAP cho kỳ đang chọn.
+                Chưa có dữ liệu phân rã yếu tố tác động cho kỳ đang chọn.
               </p>
             ) : (
               <div className="overflow-x-auto">

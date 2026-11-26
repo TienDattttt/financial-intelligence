@@ -387,7 +387,7 @@ function ScreenerContent() {
         meta: { align: "right" } satisfies ScreenerColumnMeta,
         header: () => (
           <SortableHeader
-            label="Tín nhiệm & 1Y PD"
+            label="Bậc rủi ro & XS 1 năm"
             field="calibrated_distress_prob"
             activeField={sortBy}
             activeDir={sortDir}
@@ -421,7 +421,7 @@ function ScreenerContent() {
         meta: { align: "left" } satisfies ScreenerColumnMeta,
         header: () => (
           <span className="block text-left font-semibold text-ink-muted">
-            Bậc tín nhiệm
+            Bậc rủi ro
           </span>
         ),
         cell: ({ row }) => {
@@ -1302,7 +1302,7 @@ function ScreenerContent() {
 
                 <div className="space-y-1 lg:col-span-2">
                   <label htmlFor="scr-risk-tier" className="block text-[11px] font-semibold text-ink-muted">
-                    Bậc tín nhiệm (R1–R5)
+                    Bậc rủi ro (R1–R5)
                   </label>
                   <Combobox
                     id="scr-risk-tier"
@@ -1313,7 +1313,7 @@ function ScreenerContent() {
                     }
                     placeholder="Tất cả bậc R1–R5"
                     searchPlaceholder="Chọn bậc R1–R5..."
-                    ariaLabel="Bậc tín nhiệm (R1–R5)"
+                    ariaLabel="Bậc rủi ro (R1–R5)"
                   />
                 </div>
 
@@ -1398,7 +1398,7 @@ function ScreenerContent() {
                 <div className="grid grid-cols-2 gap-2 lg:col-span-3">
                   <div className="space-y-1">
                     <label htmlFor="scr-prob-min" className="block text-[11px] font-semibold text-ink-muted">
-                      1Y PD từ (%)
+                      XS rủi ro 1 năm từ (%)
                     </label>
                     <Input
                       id="scr-prob-min"
@@ -1575,7 +1575,7 @@ function ScreenerContent() {
                 className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
               >
                 <span>
-                  1Y PD: {toPctDisplay(minProbParam) || "0"}%–
+                  XS rủi ro 1 năm: {toPctDisplay(minProbParam) || "0"}%–
                   {toPctDisplay(maxProbParam) || "100"}%
                 </span>
                 <X className="size-3 text-ink-muted" />

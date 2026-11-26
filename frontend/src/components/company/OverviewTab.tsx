@@ -299,7 +299,7 @@ export function OverviewTab({
 
         <VerdictCard
           flat
-          title="Xác suất kiệt quệ 1 năm (1Y PD)"
+          title="Xác suất kiệt quệ 1 năm"
           tooltip={creditTrio.tierMeta.description}
           value={creditTrio.pdLabel}
           subValueText={creditTrio.liftLabel}
@@ -359,13 +359,13 @@ export function OverviewTab({
           />
 
           <EChartBox
-            title="Diễn biến Xác suất kiệt quệ theo kỳ — Nhấp kỳ để xem TreeSHAP"
+            title="Diễn biến Xác suất kiệt quệ theo kỳ — Nhấp kỳ để xem yếu tố tác động"
             subtitle="Đơn vị: phần trăm (%) · Nhấp vào một điểm bất kỳ để cập nhật biểu đồ giải thích phía trên"
             option={mlDistressProbOption}
             height={190}
             isEmpty={sortedMl.length === 0}
             onChartClick={onRiskPeriodClick}
-            tableHeaders={["Kỳ", "1Y PD", "Bậc", "Vị thế PIT", "Altman Z″"]}
+            tableHeaders={["Kỳ", "XS 1 năm", "Bậc", "Xếp hạng cùng kỳ", "Altman Z″"]}
             tableRows={sortedMl.map((m) => {
               const rowTrio = formatCreditTrio({
                 risk_tier: m.risk_tier,

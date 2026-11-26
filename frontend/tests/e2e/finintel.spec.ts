@@ -386,7 +386,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     await overlayPromise;
 
     // 1. R1-R5 + Top X% + 1Y PD credit trio
-    await expect(page.getByText("Xác suất kiệt quệ 1 năm (1Y PD)")).toBeVisible();
+    await expect(page.getByText("Xác suất kiệt quệ 1 năm")).toBeVisible();
     await expect(
       page.getByText(/\bR[1-5]\b|Chưa xếp hạng/).first(),
     ).toBeVisible();
@@ -410,7 +410,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     const riskHistoryCard = page
       .locator("div.overflow-hidden")
       .filter({
-        hasText: "Diễn biến Xác suất kiệt quệ theo kỳ — Nhấp kỳ để xem TreeSHAP",
+        hasText: "Diễn biến Xác suất kiệt quệ theo kỳ — Nhấp kỳ để xem yếu tố tác động",
       })
       .first();
     const riskCanvas = riskHistoryCard.locator("canvas").first();

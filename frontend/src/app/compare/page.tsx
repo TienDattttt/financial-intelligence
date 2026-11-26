@@ -345,7 +345,7 @@ function CompareContent() {
       ),
     ]);
     rows.push([
-      "Bậc tín nhiệm (R1–R5)",
+      "Bậc rủi ro (R1–R5)",
       ...matrixData.latestMl.map((m) => getRiskTierMeta(m?.risk_tier).shortLabel),
     ]);
     rows.push([
@@ -362,7 +362,7 @@ function CompareContent() {
       ),
     ]);
     rows.push([
-      "Xác suất kiệt quệ 1 năm (1Y PD)",
+      "Xác suất kiệt quệ 1 năm",
       ...matrixData.latestMl.map((m) => formatPercent(m?.calibrated_distress_prob)),
     ]);
     rows.push([
@@ -650,7 +650,7 @@ function CompareContent() {
                         scope="row"
                         className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
                       >
-                        Bậc tín nhiệm (R1–R5)
+                        Bậc rủi ro (R1–R5)
                       </th>
                       {matrixData.latestMl.map((m, i) => (
                         <td key={tickers[i]} className="px-3 py-2 text-right">
@@ -665,7 +665,7 @@ function CompareContent() {
                         scope="row"
                         className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
                       >
-                        Vị thế rủi ro cùng kỳ (PIT)
+                        Vị thế rủi ro cùng kỳ
                       </th>
                       {matrixData.latestMl.map((m, i) => {
                         const trio = formatCreditTrio({
@@ -687,7 +687,7 @@ function CompareContent() {
                         scope="row"
                         className="sticky left-0 z-10 border-r border-border bg-surface px-3 py-2 text-left font-semibold text-ink"
                       >
-                        Xác suất kiệt quệ 1 năm (1Y PD · × nền)
+                        Xác suất kiệt quệ 1 năm (so với TB)
                       </th>
                       {matrixData.latestMl.map((m, i) => {
                         const trio = formatCreditTrio({

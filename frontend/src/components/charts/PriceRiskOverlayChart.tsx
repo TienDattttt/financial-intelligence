@@ -401,13 +401,13 @@ export function buildPriceOverlayOption(
         const lines: string[] = [
           `<div style="font-weight:600;margin-bottom:4px">Phiên ${formatDateVi(pt.trade_date)}</div>`,
           `<div>Giá điều chỉnh (đồ thị): <b>${formatVndPerShare(pt.close_adj)} VND</b></div>`,
-          `<div>Giá thực tế PIT: <b>${formatVndPerShare(pt.close_raw)} VND</b></div>`,
+          `<div>Giá tại ngày công bố: <b>${formatVndPerShare(pt.close_raw)} VND</b></div>`,
           `<div>Drawdown từ đỉnh: <b>${formatPctFromPercentValue(pt.running_drawdown_pct)}</b></div>`,
         ];
 
         if (pt.market_cap_vnd !== null) {
           lines.push(
-            `<div>Vốn hóa PIT: <b>${formatVndBillions(pt.market_cap_vnd, { decimals: 1 })} tỷ</b></div>`,
+            `<div>Vốn hóa (tại ngày công bố): <b>${formatVndBillions(pt.market_cap_vnd, { decimals: 1 })} tỷ</b></div>`,
           );
         }
         if (pt.pe_ttm !== null && (pt.pe_flag === null || pt.pe_flag === "VALID")) {
@@ -444,7 +444,7 @@ export function buildPriceOverlayOption(
             `<div style="margin-top:6px;padding-top:4px;border-top:1px solid ${palette.border}">` +
               `<b style="color:${palette.riskHigh}">Mô hình nâng lên ${mm.risk_tier}</b> ` +
               `(${formatDateBasisLabel(mm.date_basis)}: ${formatDateVi(mm.disclosure_date)})<br/>` +
-              `1Y PD: <b>${trio.pdLabel}</b> · ${trio.topPercentLabel}` +
+              `XS rủi ro 1 năm: <b>${trio.pdLabel}</b> · ${trio.topPercentLabel}` +
               (trio.liftLabel ? ` · ${trio.liftLabel}` : "") +
               (t90 !== null && t90 !== undefined
                 ? `<br/>T+90d: <b>${formatPctFromPercentValue(t90)}</b>`
@@ -594,10 +594,10 @@ export function PitValuationStrip({
       <div className="bg-surface p-3.5">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
-            <span>Vốn hóa thị trường (PIT)</span>
+            <span>Vốn hóa thị trường</span>
             <InfoTooltip
-              text="Tính từ giá đóng cửa thực tế chưa điều chỉnh chia tách nhân số cổ phiếu lưu hành cùng thời điểm."
-              label="Giải thích Vốn hóa Point-in-Time"
+              text="Tính từ giá đóng cửa thực tế chưa điều chỉnh chia tách nhân số cổ phiếu lưu hành tại ngày công bố."
+              label="Giải thích Vốn hóa thị trường"
             />
           </span>
           <span className="num text-[11px] text-ink-subtle">{cards.tradeDateLabel}</span>
@@ -613,10 +613,10 @@ export function PitValuationStrip({
       <div className="bg-surface p-3.5">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
-            <span>P/E (TTM · PIT)</span>
+            <span>P/E (TTM)</span>
             <InfoTooltip
               text="Tỷ số Giá / Thu nhập 4 quý gần nhất khớp tiến ngày công bố BCTC (không nhìn trước tương lai)."
-              label="Giải thích P/E Point-in-Time"
+              label="Giải thích P/E (TTM)"
             />
           </span>
           <span className="num text-[11px] text-ink-subtle">Giá gốc {cards.closeRawLabel}</span>
@@ -632,10 +632,10 @@ export function PitValuationStrip({
       <div className="bg-surface p-3.5">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-xs font-medium text-ink-muted">
-            <span>P/B (PIT)</span>
+            <span>P/B</span>
             <InfoTooltip
               text="Tỷ số Giá / Giá trị sổ sách VCSH công ty mẹ tính từ giá thực tế chưa điều chỉnh."
-              label="Giải thích P/B Point-in-Time"
+              label="Giải thích P/B"
             />
           </span>
           <span className="num text-[11px] text-ink-subtle">{cards.tradeDateLabel}</span>

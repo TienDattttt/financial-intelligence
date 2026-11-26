@@ -489,11 +489,14 @@ function StressTestContent() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-ink">
-            Mô phỏng kịch bản sốc tài chính (IMF WP/15/216)
+            Mô phỏng kịch bản sốc tài chính
           </h1>
           <p className="mt-0.5 text-xs text-ink-muted">
             Phạm vi {STATEMENT_SCOPE_LABELS[statementScope] ?? statementScope} ·{" "}
-            {PERIOD_TYPE_LABELS[periodType] ?? periodType} · Nợ rủi ro được định nghĩa khi hệ số khả năng trả lãi ICR &lt; 1,0x
+            {PERIOD_TYPE_LABELS[periodType] ?? periodType} · Nợ rủi ro được định nghĩa khi hệ số khả năng trả lãi ICR &lt; 1,0x ·{" "}
+            <Link href="/methodology" className="text-accent-ink hover:underline">
+              Xem phương pháp
+            </Link>
           </p>
         </div>
 

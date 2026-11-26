@@ -333,13 +333,13 @@ export default function MarketOverviewPage() {
                         Ngành
                       </th>
                       <th scope="col" className="px-3 py-2 text-left font-semibold">
-                        Bậc tín nhiệm
+                        Bậc rủi ro
                       </th>
                       <th scope="col" className="px-3 py-2 text-left font-semibold">
                         Chuyển vùng Altman
                       </th>
                       <th scope="col" className="px-3 py-2 text-right font-semibold">
-                        1Y PD (Biến động)
+                        XS rủi ro 1 năm (Biến động)
                       </th>
                       <th scope="col" className="px-3 py-2 text-right font-semibold">
                         Cờ đỏ mới
@@ -559,7 +559,7 @@ export default function MarketOverviewPage() {
                         Bậc &amp; Vị thế
                       </th>
                       <th scope="col" className="px-2.5 py-2 text-right font-semibold">
-                        1Y PD (× nền)
+                        XS rủi ro 1 năm (so với TB)
                       </th>
                       <th scope="col" className="px-2.5 py-2 text-right font-semibold">
                         Cờ đỏ

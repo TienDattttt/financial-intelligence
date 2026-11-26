@@ -679,9 +679,9 @@ describe("P1-5 UI Transparent Data Coverage Scope (UPCOM / Partial Coverage)", (
 
     expect(assessment.isPartial).toBe(true);
     expect(assessment.badgeLabel).toContain("UPCOM");
-    expect(assessment.noticeText).toContain("BCTC");
-    expect(assessment.noticeText).toContain("38 tỷ số");
-    expect(assessment.noticeText).toContain("9 cờ đỏ");
+    expect(assessment.noticeText).toContain("báo cáo tài chính");
+    expect(assessment.noticeText).toContain("chỉ số phân tích");
+    expect(assessment.noticeText).toContain("cờ đỏ");
     expect(assessment.noticeText).not.toMatch(/REGIME_FALLBACK|EXACT_FILING|STATUTORY_LAG|\.parquet|✨/);
 
     const { container } = render(
@@ -696,8 +696,8 @@ describe("P1-5 UI Transparent Data Coverage Scope (UPCOM / Partial Coverage)", (
     );
 
     expect(container.textContent).toContain("Phủ dữ liệu một phần");
-    expect(container.textContent).toContain("Chưa có dữ liệu EOD");
-    expect(container.textContent).toContain("Chưa chấm (thiếu mốc công bố PIT)");
+    expect(container.textContent).toContain("Chưa có dữ liệu giá");
+    expect(container.textContent).toContain("Chưa đủ lịch sử công bố");
   });
 
   it("renders DataCoverageNotice on CompanyProfilePage for UPCOM ticker missing EOD and PD", async () => {
@@ -710,7 +710,7 @@ describe("P1-5 UI Transparent Data Coverage Scope (UPCOM / Partial Coverage)", (
     expect(await screen.findByText(/Phủ dữ liệu một phần/i)).toBeTruthy();
     expect(document.body.textContent).toContain("SDA");
     expect(document.body.textContent).toContain("UPCOM");
-    expect(document.body.textContent).toContain("38 tỷ số");
+    expect(document.body.textContent).toContain("Chưa đủ lịch sử công bố");
   });
 
   it("marks full coverage cleanly without partial warning banner when EOD and supervised PD are present", () => {

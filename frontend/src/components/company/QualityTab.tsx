@@ -3,6 +3,7 @@
 import * as React from "react";
 import { RedFlagChecklist } from "@/components/financial/RedFlagChecklist";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import {
   AUDIT_OPINION_LABELS,
   AUDIT_STATUS_LABELS,
@@ -44,8 +45,12 @@ export function QualityTab({
     <div className="space-y-5">
       <Card>
         <CardHeader className="py-2.5">
-          <CardTitle className="text-[14px]">
-            Lợi nhuận hoạt động cốt lõi (Core Earnings · Rouen, So &amp; Wang 2021)
+          <CardTitle className="flex items-center gap-1.5 text-[14px]">
+            <span>Lợi nhuận hoạt động cốt lõi (Core Earnings)</span>
+            <InfoTooltip
+              text="Tách phần lợi nhuận bền vững từ hoạt động kinh doanh chính, loại trừ các khoản mục bất thường và phi cốt lõi (theo phương pháp Rouen, So & Wang 2021)."
+              label="Giải thích Lợi nhuận hoạt động cốt lõi"
+            />
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">

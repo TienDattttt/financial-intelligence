@@ -118,7 +118,7 @@ function CommandSearchDialog({
         id: "screen-stress",
         group: "screen",
         title: "Kịch bản sốc tài chính",
-        subtitle: "Mô phỏng cú sốc lãi suất & doanh thu IMF WP/15/216",
+        subtitle: "Mô phỏng cú sốc lãi suất & doanh thu lên khả năng trả nợ",
         trailing: "/stress-test",
         onSelect: () => onNavigatePath("/stress-test"),
       },

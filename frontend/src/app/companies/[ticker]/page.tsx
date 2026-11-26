@@ -350,7 +350,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
           return [
             `<div style="font-weight:600;margin-bottom:4px">${formatPeriodLabel(m.period_end_date, periodType)}</div>`,
             `<div>Altman Z″ (EM): <b>${formatNumber(m.altman_z_double_prime, 2)}</b></div>`,
-            `<div style="color:${palette.company};font-size:11px;margin-top:3px">Nhấp để xem TreeSHAP kỳ này</div>`,
+            `<div style="color:${palette.company};font-size:11px;margin-top:3px">Nhấp để xem yếu tố tác động kỳ này</div>`,
           ].join("");
         },
       },
@@ -440,9 +440,9 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
           });
           return [
             `<div style="font-weight:600;margin-bottom:4px">${formatPeriodLabel(m.period_end_date, periodType)}</div>`,
-            `<div>1Y PD mô hình: <b style="color:${palette.riskHigh}">${trio.pdLabel}</b>${trio.liftLabel ? ` (${trio.liftLabel})` : ""}</div>`,
+            `<div>XS rủi ro 1 năm: <b style="color:${palette.riskHigh}">${trio.pdLabel}</b>${trio.liftLabel ? ` (${trio.liftLabel})` : ""}</div>`,
             `<div>Bậc &amp; Vị thế: <b>${trio.tierMeta.shortLabel}</b> · ${trio.topPercentLabel}</div>`,
-            `<div style="color:${palette.company};font-size:11px;margin-top:3px">Nhấp để xem TreeSHAP kỳ này</div>`,
+            `<div style="color:${palette.company};font-size:11px;margin-top:3px">Nhấp để xem yếu tố tác động kỳ này</div>`,
           ].join("");
         },
       },
