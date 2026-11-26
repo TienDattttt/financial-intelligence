@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import polars as pl
 
@@ -40,6 +40,8 @@ from finintel.storage.schemas import (
 )
 
 logger = logging.getLogger("finintel.quality")
+
+TT200_ACTIVE_SCOPE_START: date = date(2015, 1, 1)
 
 
 @dataclass(frozen=True)
@@ -160,8 +162,22 @@ def evaluate_quality_gate(
     else:
         audit_quarantine = _empty_audit_quarantine()
 
-    total_issuers = int(facts["issuer_id"].n_unique())
-    critical_issuers = int(audit_quarantine["issuer_id"].n_unique())
+    active_facts = (
+        facts.filter(
+            pl.col("period_end_date").cast(pl.Date) >= TT200_ACTIVE_SCOPE_START
+        )
+        if "period_end_date" in facts.columns
+        else pl.DataFrame()
+    )
+    if not active_facts.is_empty():
+        active_quarantine = audit_quarantine.filter(
+            pl.col("period_end_date").cast(pl.Date) >= TT200_ACTIVE_SCOPE_START
+        )
+        total_issuers = int(active_facts["issuer_id"].n_unique())
+        critical_issuers = int(active_quarantine["issuer_id"].n_unique())
+    else:
+        total_issuers = int(facts["issuer_id"].n_unique())
+        critical_issuers = int(audit_quarantine["issuer_id"].n_unique())
     critical_ratio = (
         float(critical_issuers / total_issuers) if total_issuers > 0 else 0.0
     )

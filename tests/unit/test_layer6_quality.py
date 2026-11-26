@@ -449,6 +449,48 @@ def test_quality_gate_config_validation() -> None:
         QualityGateConfig(max_critical_issuer_ratio=1.5)
 
 
+def test_pre_tt200_legacy_quarantine_isolates_filings_without_false_active_circuit_break() -> (
+    None
+):
+    """Pre-2015 (QĐ 15/2006) defects are quarantined from clean_facts without halting clean TT200/TT99 batches."""
+    frames: list[pl.DataFrame] = []
+    for i in range(1, 11):
+        issuer = f"HIST{i:02d}"
+        frames.append(
+            _make_issuer_facts(
+                issuer,
+                fiscal_year=2025,
+                fiscal_start=date(2025, 1, 1),
+                period_start=date(2025, 1, 1),
+                period_end=date(2025, 12, 31),
+            )
+        )
+        if i <= 3:
+            frames.append(
+                _make_issuer_facts(
+                    issuer,
+                    fiscal_year=2012,
+                    fiscal_start=date(2012, 1, 1),
+                    period_start=date(2012, 1, 1),
+                    period_end=date(2012, 12, 31),
+                    net_revenue=None,
+                )
+            )
+    result = evaluate_quality_gate(pl.concat(frames))
+    assert result.audit_quarantine.height == 3
+    assert sorted(result.audit_quarantine["issuer_id"].to_list()) == [
+        "HIST01",
+        "HIST02",
+        "HIST03",
+    ]
+    assert result.clean_facts.filter(pl.col("fiscal_year") == 2012).is_empty()
+    assert (
+        result.clean_facts.filter(pl.col("fiscal_year") == 2025)["issuer_id"].n_unique()
+        == 10
+    )
+    assert result.critical_issuer_ratio == 0.0
+
+
 def test_serving_and_frontend_boundary_zero_raw_or_curated_reads() -> None:
     """Architectural guard: legacy dashboard/ is removed and serving/frontend respect layer boundaries."""
     assert not (REPO_ROOT / "dashboard").exists(), (

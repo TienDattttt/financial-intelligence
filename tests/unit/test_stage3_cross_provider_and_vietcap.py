@@ -446,3 +446,60 @@ def test_parse_vietcap_annual_eps_and_direct_cf_unlock_in_analytics() -> None:
     sc_2024 = scores.row(-1, named=True)
     assert sc_2024["beneish_flag"] in ("VALID", "HIGH_MANIPULATION_RISK_SCREEN")
     assert sc_2024["beneish_m8_score"] is not None
+
+
+def test_vietcap_supplement_skips_orphan_periods_when_existing_period_dates_given() -> (
+    None
+):
+    """When existing_period_dates is supplied, slots absent from primary filings must be skipped."""
+    existing = {
+        ("ANNUAL", 2024, None): (
+            date(2024, 1, 1),
+            date(2024, 1, 1),
+            date(2024, 12, 31),
+            "VAS_TT200_2014",
+        ),
+        ("QUARTER", 2024, 1): (
+            date(2024, 1, 1),
+            date(2024, 1, 1),
+            date(2024, 3, 31),
+            "VAS_TT200_2014",
+        ),
+    }
+    note_payload = {
+        "successful": True,
+        "data": {
+            "years": [
+                {"yearReport": 2008, "lengthReport": 5, "noc143": 50.0},
+                {"yearReport": 2024, "lengthReport": 5, "noc143": 100.0},
+            ],
+            "quarters": [
+                {"yearReport": 2008, "lengthReport": 1, "noc143": 12.0},
+                {"yearReport": 2024, "lengthReport": 1, "noc143": 25.0},
+            ],
+        },
+    }
+    is_payload = {
+        "successful": True,
+        "data": {
+            "years": [
+                {"yearReport": 2008, "lengthReport": 5, "isa23": 1200.0},
+                {"yearReport": 2024, "lengthReport": 5, "isa23": 3500.0},
+            ],
+            "quarters": [],
+        },
+    }
+    dep = parse_vietcap_depreciation_facts(
+        issuer_id="DHC",
+        ticker="DHC",
+        note_bytes=json.dumps(note_payload).encode("utf-8"),
+        existing_period_dates=existing,
+    )
+    eps = parse_vietcap_annual_eps_facts(
+        issuer_id="DHC",
+        ticker="DHC",
+        income_statement_bytes=json.dumps(is_payload).encode("utf-8"),
+        existing_period_dates=existing,
+    )
+    assert sorted(dep["fiscal_year"].to_list()) == [2024, 2024]
+    assert eps["fiscal_year"].to_list() == [2024]

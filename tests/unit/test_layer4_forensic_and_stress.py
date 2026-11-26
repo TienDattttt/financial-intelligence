@@ -1115,6 +1115,9 @@ def test_task07_rf10_post_audit_profit_downgrade_pit_tautology_and_qg2() -> None
             prev_end = q_end
             q_avail = q_end + timedelta(days=25)
             deriv = q4_derivation if idx == 4 else "REPORTED_DIRECTLY"
+            q_audit = (
+                "REVIEWED" if (idx == 2 and issuer_id == "REVERSAL") else "UNAUDITED"
+            )
             _append_period(
                 "QUARTER",
                 2025,
@@ -1124,7 +1127,7 @@ def test_task07_rf10_post_audit_profit_downgrade_pit_tautology_and_qg2() -> None
                 q_end,
                 q_avail,
                 q_ni,
-                "UNAUDITED",
+                q_audit,
                 deriv,
                 f"{issuer_id}-2025-Q{idx}",
             )

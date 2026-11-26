@@ -81,7 +81,7 @@ from finintel.pipeline.state_store import StateStore
 from finintel.ports.market_prices import validate_market_prices
 from finintel.ports.regulatory import validate_regulatory_events
 from finintel.quality.gate import evaluate_quality_gate
-from finintel.quality.rules import QualityGateConfig
+from finintel.quality.rules import PERIOD_KEY, QualityGateConfig
 from finintel.storage.ducklake_store import (
     EXTENSION_PORT_CATALOG_TABLES,
     DuckLakeStore,
@@ -120,6 +120,7 @@ from finintel.transform import (
     write_transform_state,
 )
 from finintel.transform.incremental import (
+    TRANSFORM_STATE_SCHEMA_VERSION,
     PersistedMLArtifactBundle,
     _hash_facts_per_issuer,
     _hash_issuers_metadata,
@@ -186,15 +187,7 @@ def assert_safe_write_root(target: Path, forbidden_roots: Sequence[Path]) -> Pat
 def harmonize_stub_fiscal_year_start_dates(
     facts: pl.DataFrame,
 ) -> tuple[pl.DataFrame, int]:
-    """Align stub-year BS fiscal_year_start_date to matching IS/CF flow start dates.
-
-    When an issuer transitions fiscal calendar (e.g. SJ1 2016 ANNUAL 9-month stub),
-    IS/CF report the true stub ``fiscal_year_start_date = 2016-01-01`` while BS may carry
-    ``period_end_date - 1y + 1d = 2015-10-01`` for the exact same
-    ``(issuer_id, statement_scope, period_type, fiscal_year, period_end_date)`` slot.
-    Harmonizing BS rows to the flow ``fiscal_year_start_date`` keeps 100% of facts intact
-    without touching frozen disk files or modifying ``intermediates.py``.
-    """
+    """Align stub-year fiscal_year_start_date, period_start_date, and period_days across statements."""
     slot_cols = [
         "issuer_id",
         "statement_scope",
@@ -202,19 +195,21 @@ def harmonize_stub_fiscal_year_start_dates(
         "fiscal_year",
         "period_end_date",
     ]
-    flow_starts = (
-        facts.filter(pl.col("statement_type").is_in(["INCOME_STATEMENT", "CASH_FLOW"]))
-        .group_by(slot_cols)
-        .agg(pl.col("fiscal_year_start_date").max().alias("_flow_fysd"))
+    flow_starts = facts.group_by(slot_cols).agg(
+        pl.col("fiscal_year_start_date").max().alias("_fysd")
     )
+    fysd_expr = pl.coalesce("_fysd", "fiscal_year_start_date")
+    pstart_expr = pl.max_horizontal("period_start_date", fysd_expr)
     harmonized = (
         facts.join(flow_starts, on=slot_cols, how="left")
         .with_columns(
-            pl.coalesce("_flow_fysd", "fiscal_year_start_date").alias(
-                "fiscal_year_start_date"
-            )
+            fysd_expr.alias("fiscal_year_start_date"),
+            pstart_expr.alias("period_start_date"),
+            ((pl.col("period_end_date") - pstart_expr).dt.total_days() + 1)
+            .cast(pl.Int32)
+            .alias("period_days"),
         )
-        .drop("_flow_fysd")
+        .drop("_fysd")
     )
     changed_rows = int(
         facts.select(
@@ -1127,7 +1122,7 @@ def publish_production_685_snapshot(
     }
 
     next_state: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": TRANSFORM_STATE_SCHEMA_VERSION,
         "snapshot_id": None,
         "run_id": run_id,
         "as_of": as_of.isoformat(),
@@ -2140,7 +2135,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw_facts = canonicalize_financial_facts(pl.read_parquet(facts_path))
     supp_facts_path = universe_dir / "curated" / "vietcap_supplement_facts.parquet"
     if supp_facts_path.is_file():
-        supp_facts = canonicalize_financial_facts(pl.read_parquet(supp_facts_path))
+        supp_facts = canonicalize_financial_facts(
+            pl.read_parquet(supp_facts_path)
+        ).join(
+            raw_facts.select(list(PERIOD_KEY)).unique(), on=list(PERIOD_KEY), how="semi"
+        )
         if not supp_facts.is_empty():
             logger.info(
                 "Merging %d supplementary Vietcap facts from %s",

@@ -132,7 +132,7 @@ def attach_pre_vs_post_audit_restatement(
     pre_audit_raw = (
         ni_facts.filter(
             (pl.col("period_type") == "QUARTER")
-            & (pl.col("audit_status") == "UNAUDITED")
+            & (pl.col("audit_status") != "AUDITED")
             & (pl.col("derivation_method") != DERIVED_Q4_MIX)
             & pl.col("fiscal_quarter").is_in([1, 2, 3, 4])
             & pl.col("period_days").is_between(80, 100)

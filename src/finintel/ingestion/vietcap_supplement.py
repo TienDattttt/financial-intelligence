@@ -228,7 +228,9 @@ def parse_vietcap_depreciation_facts(
                 if val is None or val <= 0.0:
                     continue
 
-                if existing_period_dates is not None and slot in existing_period_dates:
+                if existing_period_dates is not None:
+                    if slot not in existing_period_dates:
+                        continue
                     fy_start, p_start, p_end, taxonomy = existing_period_dates[slot]
                 else:
                     fy_start, p_start, p_end, taxonomy = _calendar_period_dates(
@@ -316,7 +318,9 @@ def parse_vietcap_annual_eps_facts(
         seen_years.add(fy_raw)
 
         slot = ("ANNUAL", fy_raw, None)
-        if existing_period_dates is not None and slot in existing_period_dates:
+        if existing_period_dates is not None:
+            if slot not in existing_period_dates:
+                continue
             fy_start, p_start, p_end, taxonomy = existing_period_dates[slot]
         else:
             fy_start, p_start, p_end, taxonomy = _calendar_period_dates(
