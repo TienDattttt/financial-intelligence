@@ -33,6 +33,7 @@ from datetime import date, timedelta
 
 import polars as pl
 
+from finintel.analytics.restatements import attach_pre_vs_post_audit_restatement
 from finintel.domain.schemas import _roll_to_next_vn_business_day
 from finintel.exceptions import ContractViolationError
 from finintel.normalization.mapper import FACT_SCHEMA
@@ -1333,6 +1334,7 @@ def prepare_periods(
             pl.col("_period_filing_ids"), pl.col("_period_filing_ids_prior")
         ).alias("source_filing_ids"),
     ).rename({"taxonomy_version_prior": "_prior_taxonomy"})
+    assembled = attach_pre_vs_post_audit_restatement(assembled, visible_facts)
     if include_ml_inputs:
         assembled = _attach_ml_candidate_features(
             assembled,

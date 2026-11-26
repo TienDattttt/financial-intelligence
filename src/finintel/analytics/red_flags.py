@@ -118,7 +118,7 @@ def _net_non_customer_receivables(inputs: tuple[str, str, str, str]) -> pl.Expr:
 
 
 def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
-    """Emit the nine screening rules (RF_01..RF_09), with no trigger on missing evidence.
+    """Emit the ten screening rules (RF_01..RF_10), with no trigger on missing evidence.
 
     Compute receivable growth (current/prior − 1), adjusted net non-customer
     receivables / BS_TOTAL_ASSETS, and inventory / BS_TOTAL_ASSETS. Require positive
@@ -154,8 +154,24 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
     long_other = _net_non_customer_receivables(LT_RECEIVABLE_INPUTS)
     other_receivables = (short_other + long_other) / assets
     prior_trade = c(f"{TRADE_RECEIVABLES}_prior")
+    rf10_defaults: list[pl.Expr] = []
+    for rf10_col, rf10_default in (
+        ("ni_unaudited_4q_sum", pl.lit(None, dtype=pl.Float64)),
+        ("ni_audited_annual", pl.lit(None, dtype=pl.Float64)),
+        ("audit_earnings_diff_vnd", pl.lit(None, dtype=pl.Float64)),
+        ("audit_adjustment_pct", pl.lit(None, dtype=pl.Float64)),
+        ("_rf10_triggered", pl.lit(False, dtype=pl.Boolean)),
+        ("_rf10_source_filing_ids", pl.lit([], dtype=pl.List(pl.String))),
+    ):
+        if rf10_col not in ratios.columns:
+            rf10_defaults.append(rf10_default.alias(rf10_col))
+    base_ratios = ratios.with_columns(rf10_defaults) if rf10_defaults else ratios
     frame = with_prior_year(
-        ratios.drop("_prior_end"), "dio", "dso", "gross_margin", "source_filing_ids"
+        base_ratios.drop("_prior_end"),
+        "dio",
+        "dso",
+        "gross_margin",
+        "source_filing_ids",
     ).with_columns(
         (
             adjacent
@@ -387,6 +403,19 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
                 revenue_growth.alias("revenue_growth_yoy"),
             ],
         ),
+        (
+            "RF_10_POST_AUDIT_PROFIT_DOWNGRADE",
+            "HIGH",
+            "Lợi nhuận suy giảm trọng yếu hoặc đảo chiều lỗ sau kiểm toán",
+            "Tổng lợi nhuận sau thuế 4 quý tự lập trước kiểm toán bị điều chỉnh giảm từ 15% trở lên (tối thiểu 5 tỷ đồng) hoặc đảo chiều từ lãi sang lỗ (tối thiểu 1 tỷ đồng) trên báo cáo tài chính năm đã kiểm toán.",
+            CORPORATE & c("_rf10_triggered").fill_null(False),
+            [
+                c("ni_unaudited_4q_sum"),
+                c("ni_audited_annual"),
+                c("audit_earnings_diff_vnd"),
+                c("audit_adjustment_pct"),
+            ],
+        ),
     ]
     filings = c("source_filing_ids")
     evidence_filings = {
@@ -405,6 +434,7 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
         "RF_09_FROZEN_CIP_CAPITALIZATION": combine_filing_ids(
             filings, c("source_filing_ids_prior")
         ),
+        "RF_10_POST_AUDIT_PROFIT_DOWNGRADE": c("_rf10_source_filing_ids"),
     }
     evidence_filing = {
         "RF_03_OTHER_RECEIVABLES_ANOMALY": c(f"_filing_{ASSETS}"),

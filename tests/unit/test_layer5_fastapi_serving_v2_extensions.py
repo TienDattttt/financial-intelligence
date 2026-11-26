@@ -241,20 +241,23 @@ def test_dictionary_and_yaml_catalog_completeness() -> None:
     assert set(RATIO_DICTIONARY_META.keys()) == set(ALL_RATIOS)
     assert set(RATIO_DICTIONARY_META.keys()) == set(RATIO_LINEAGE_CATALOG.keys())
     assert len(OVERVIEW_CORE_RATIOS) == 12
-    assert len(RED_FLAG_DICTIONARY) == 9
+    assert len(RED_FLAG_DICTIONARY) == 10
     assert [rf.flag_code for rf in RED_FLAG_DICTIONARY] == [
-        f"RF_0{i}_" + suffix
-        for i, suffix in (
-            (1, "ACCRUAL_DIVERGENCE"),
-            (2, "RECEIVABLES_SURGE"),
-            (3, "OTHER_RECEIVABLES_ANOMALY"),
-            (4, "INVENTORY_BLOAT"),
-            (5, "DEBT_SERVICE_DISTRESS"),
-            (6, "NEGATIVE_EQUITY"),
-            (7, "AUDIT_OR_FILING_WARNING"),
-            (8, "NON_CORE_EARNINGS_DEPENDENCE"),
-            (9, "FROZEN_CIP_CAPITALIZATION"),
-        )
+        *(
+            f"RF_0{i}_" + suffix
+            for i, suffix in (
+                (1, "ACCRUAL_DIVERGENCE"),
+                (2, "RECEIVABLES_SURGE"),
+                (3, "OTHER_RECEIVABLES_ANOMALY"),
+                (4, "INVENTORY_BLOAT"),
+                (5, "DEBT_SERVICE_DISTRESS"),
+                (6, "NEGATIVE_EQUITY"),
+                (7, "AUDIT_OR_FILING_WARNING"),
+                (8, "NON_CORE_EARNINGS_DEPENDENCE"),
+                (9, "FROZEN_CIP_CAPITALIZATION"),
+            )
+        ),
+        "RF_10_POST_AUDIT_PROFIT_DOWNGRADE",
     ]
 
     catalog = load_statement_metric_catalog()
@@ -306,7 +309,7 @@ def test_all_7_v2_routes_etag_304_and_screener_extensions(
         assert r_dict.status_code == 200
         d_json = r_dict.json()
         assert len(d_json["ratios"]) == 38
-        assert len(d_json["red_flags"]) == 9
+        assert len(d_json["red_flags"]) == 10
         dte = next(r for r in d_json["ratios"] if r["ratio_name"] == "debt_to_equity")
         assert dte["direction"] == "LOWER_IS_BETTER"
 

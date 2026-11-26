@@ -485,6 +485,13 @@ RED_FLAG_DICTIONARY: tuple[RedFlagDictionaryMeta, ...] = (
         "Schilit et al. (2018) Shenanigan #4",
         "Chi phí xây dựng cơ bản dở dang dài hạn vượt 20% tổng tài sản hai năm liên tiếp và không giảm quá 5%, trong khi tài sản cố định hữu hình và doanh thu tăng trưởng không quá 5%.",
     ),
+    RedFlagDictionaryMeta(
+        "RF_10_POST_AUDIT_PROFIT_DOWNGRADE",
+        "Lợi nhuận suy giảm trọng yếu hoặc đảo chiều lỗ sau kiểm toán",
+        "HIGH",
+        "Dechow et al. (2011); Schilit et al. (2018); Thông tư 96/2020/TT-BTC",
+        "Tổng lợi nhuận sau thuế 4 quý tự lập trước kiểm toán bị điều chỉnh giảm từ 15% trở lên (tối thiểu 5 tỷ đồng) hoặc đảo chiều từ lãi sang lỗ (tối thiểu 1 tỷ đồng) trên báo cáo tài chính năm đã kiểm toán.",
+    ),
 )
 
 

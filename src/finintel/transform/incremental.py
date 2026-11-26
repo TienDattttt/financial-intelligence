@@ -68,7 +68,7 @@ from finintel.storage.schemas import (
 logger = logging.getLogger("finintel.transform")
 
 TRANSFORM_STATE_FILENAME = "_transform_state.json"
-TRANSFORM_STATE_SCHEMA_VERSION = 1
+TRANSFORM_STATE_SCHEMA_VERSION = 2
 ML_ARTIFACT_FILENAME = "latest_model_bundle.pkl"
 ML_MANIFEST_FILENAME = "latest_model_manifest.json"
 ML_ARTIFACT_SCHEMA_VERSION = 1

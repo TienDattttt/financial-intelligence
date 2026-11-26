@@ -1002,3 +1002,356 @@ def test_stress_scenario_rejects_out_of_bounds_or_non_finite_parameters(
     """StressScenario.__post_init__ must enforce finite bounds on all 5 parameters."""
     with pytest.raises(ContractViolationError):
         StressScenario(name="invalid", **kwargs)
+
+
+def test_task07_rf10_post_audit_profit_downgrade_pit_tautology_and_qg2() -> None:
+    """TASK-07: RF_10 detects reversal/wipeout with 0% PIT look-ahead, excludes derived Q4, supports HSG FY, and passes QG2."""
+    from finintel.analytics.restatements import attach_pre_vs_post_audit_restatement
+    from finintel.quality.gate import (
+        evaluate_quality_gate,
+        verify_analytics_quality_gate,
+    )
+    from finintel.serving.dictionary import RED_FLAG_DICTIONARY
+    from finintel.storage.schemas import RED_FLAGS_TABLE
+    from finintel.transform.incremental import TRANSFORM_STATE_SCHEMA_VERSION
+
+    assert TRANSFORM_STATE_SCHEMA_VERSION >= 2
+    rf10_meta = [
+        m
+        for m in RED_FLAG_DICTIONARY
+        if m.flag_code == "RF_10_POST_AUDIT_PROFIT_DOWNGRADE"
+    ]
+    assert len(rf10_meta) == 1
+    assert rf10_meta[0].default_severity == "HIGH"
+    assert attach_pre_vs_post_audit_restatement is not None
+
+    def _make_fy_facts(
+        issuer_id: str,
+        *,
+        q_nis: tuple[float, float, float, float],
+        annual_ni: float,
+        q4_derivation: str = "REPORTED_DIRECTLY",
+        fy_start: date = date(2025, 1, 1),
+        q_ends: tuple[date, date, date, date] = (
+            date(2025, 3, 31),
+            date(2025, 6, 30),
+            date(2025, 9, 30),
+            date(2025, 12, 31),
+        ),
+        annual_avail: date = date(2026, 3, 25),
+        include_2026_q1_q4: bool = False,
+        post_audit_q4_amendment: float | None = None,
+    ) -> pl.DataFrame:
+        rows: list[dict[str, object]] = []
+
+        def _append_period(
+            ptype: str,
+            fy: int,
+            fq: int | None,
+            fstart: date,
+            pstart: date,
+            pend: date,
+            avail: date,
+            ni_val: float,
+            audit: str,
+            deriv: str,
+            fid: str,
+            rev_no: int = 1,
+            tax: str = "VAS_TT200_2014",
+        ) -> None:
+            metrics = {
+                "BS_TOTAL_ASSETS": 100_000_000_000.0,
+                "BS_TOTAL_LIABILITIES": 40_000_000_000.0,
+                "BS_TOTAL_EQUITY": 60_000_000_000.0,
+                "BS_CURRENT_ASSETS": 50_000_000_000.0,
+                "BS_CURRENT_LIABILITIES": 20_000_000_000.0,
+                "IS_NET_REVENUE": 80_000_000_000.0,
+                "IS_NET_INCOME": ni_val,
+                "IS_NET_INCOME_PARENT": ni_val,
+                "CF_OPERATING_CASH_FLOW": 15_000_000_000.0,
+                "CF_DEPRECIATION_AMORTIZATION": 3_000_000_000.0,
+            }
+            for mid, val in metrics.items():
+                rows.append(
+                    {
+                        "issuer_id": issuer_id,
+                        "statement_scope": "CONSOLIDATED",
+                        "period_type": ptype,
+                        "fiscal_year": fy,
+                        "fiscal_quarter": fq,
+                        "fiscal_year_start_date": fstart,
+                        "period_start_date": pstart,
+                        "period_end_date": pend,
+                        "period_days": (pend - pstart).days + 1,
+                        "published_at": avail,
+                        "effective_available_at": avail,
+                        "published_at_basis": "EXACT_FILING",
+                        "revision_no": rev_no,
+                        "filing_id": fid,
+                        "source_filing_ids": [fid],
+                        "source_provider": "vietcap_iq"
+                        if issuer_id == "BANK_CO"
+                        else "fhsc",
+                        "taxonomy_version": tax,
+                        "revision_reason": "ORIGINAL" if rev_no == 1 else "CORRECTION",
+                        "audit_status": audit,
+                        "audit_opinion": "UNMODIFIED"
+                        if audit == "AUDITED"
+                        else "NOT_APPLICABLE",
+                        "derivation_method": deriv
+                        if mid.startswith("IS_")
+                        else "REPORTED_DIRECTLY",
+                        "metric_id": mid,
+                        "value": val,
+                        "value_type": "STOCK" if mid.startswith("BS_") else "FLOW",
+                        "comparable_across_taxonomy": True,
+                        "is_filed_late": False,
+                    }
+                )
+
+        prev_end: date | None = None
+        for idx, (q_end, q_ni) in enumerate(zip(q_ends, q_nis, strict=True), start=1):
+            q_start = fy_start if prev_end is None else prev_end + timedelta(days=1)
+            prev_end = q_end
+            q_avail = q_end + timedelta(days=25)
+            deriv = q4_derivation if idx == 4 else "REPORTED_DIRECTLY"
+            _append_period(
+                "QUARTER",
+                2025,
+                idx,
+                fy_start,
+                q_start,
+                q_end,
+                q_avail,
+                q_ni,
+                "UNAUDITED",
+                deriv,
+                f"{issuer_id}-2025-Q{idx}",
+            )
+            if idx == 4 and post_audit_q4_amendment is not None:
+                _append_period(
+                    "QUARTER",
+                    2025,
+                    4,
+                    fy_start,
+                    q_start,
+                    q_end,
+                    q_avail + timedelta(days=5),
+                    q_ni,
+                    "UNAUDITED",
+                    "REPORTED_DIRECTLY",
+                    f"{issuer_id}-2025-Q4-corr1",
+                    rev_no=2,
+                )
+                _append_period(
+                    "QUARTER",
+                    2025,
+                    4,
+                    fy_start,
+                    q_start,
+                    q_end,
+                    annual_avail + timedelta(days=5),
+                    post_audit_q4_amendment,
+                    "UNAUDITED",
+                    "REPORTED_DIRECTLY",
+                    f"{issuer_id}-2025-Q4-rev2",
+                    rev_no=3,  # Same revision_reason="CORRECTION" as pre-audit corr1 (P1-1)!
+                )
+
+        _append_period(
+            "ANNUAL",
+            2025,
+            None,
+            fy_start,
+            fy_start,
+            q_ends[-1],
+            annual_avail,
+            annual_ni,
+            "AUDITED",
+            "REPORTED_DIRECTLY",
+            f"{issuer_id}-2025-FY",
+        )
+        if include_2026_q1_q4:
+            # Late rev_no=2 audited annual restatement on 2026-09-15 must NOT erase 2026-Q1/Q2 carry-forward (P1-1)!
+            _append_period(
+                "ANNUAL",
+                2025,
+                None,
+                fy_start,
+                fy_start,
+                q_ends[-1],
+                date(2026, 9, 15),
+                annual_ni,
+                "AUDITED",
+                "REPORTED_DIRECTLY",
+                f"{issuer_id}-2025-FY-rev2",
+                rev_no=2,
+            )
+            for fq_next, ps_next, pe_next in (
+                (1, date(2026, 1, 1), date(2026, 3, 31)),
+                (2, date(2026, 4, 1), date(2026, 6, 30)),
+                (3, date(2026, 7, 1), date(2026, 9, 30)),
+                (4, date(2026, 10, 1), date(2026, 12, 31)),
+            ):
+                _append_period(
+                    "QUARTER",
+                    2026,
+                    fq_next,
+                    date(2026, 1, 1),
+                    ps_next,
+                    pe_next,
+                    pe_next + timedelta(days=25),
+                    10_000_000_000.0,
+                    "UNAUDITED",
+                    "REPORTED_DIRECTLY",
+                    f"{issuer_id}-2026-Q{fq_next}",
+                    tax="VAS_TT99_2025",
+                )
+        return pl.DataFrame(rows, schema=FACT_SCHEMA)
+
+    issuers = pl.concat(
+        [
+            _issuer("WIPEOUT"),
+            _issuer("REVERSAL"),
+            _issuer("NOISE_REV"),
+            _issuer("DERIVED_Q4"),
+            _issuer("HSG_FY"),
+            _issuer("BANK_CO", regime="BANK"),
+        ]
+    )
+    facts = pl.concat(
+        [
+            # 1. Branch B: +50B -> +40B (-20% <= -15%, -10B <= -5B) + post-audit Q4 amendment must NOT hide it!
+            _make_fy_facts(
+                "WIPEOUT",
+                q_nis=(12.5e9, 12.5e9, 12.5e9, 12.5e9),
+                annual_ni=40.0e9,
+                include_2026_q1_q4=True,
+                post_audit_q4_amendment=2.5e9,
+            ),
+            # 2. Branch A: +2.0B -> -0.5B (profit-to-loss reversal, diff=-2.5B <= -1B)
+            _make_fy_facts(
+                "REVERSAL",
+                q_nis=(0.5e9, 0.5e9, 0.5e9, 0.5e9),
+                annual_ni=-0.5e9,
+            ),
+            # 3. Noise near zero: +0.3B -> -0.2B (diff=-0.5B > -1B) -> must NOT trigger
+            _make_fy_facts(
+                "NOISE_REV",
+                q_nis=(0.1e9, 0.1e9, 0.05e9, 0.05e9),
+                annual_ni=-0.2e9,
+            ),
+            # 4. Derived Q4 (DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX) -> must NOT trigger
+            _make_fy_facts(
+                "DERIVED_Q4",
+                q_nis=(15.0e9, 15.0e9, 15.0e9, -15.0e9),
+                annual_ni=30.0e9,
+                q4_derivation="DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX",
+            ),
+            # 5. Non-calendar FY (HSG 01/10/2024 - 30/09/2025): +20B -> +10B (-50%, -10B)
+            _make_fy_facts(
+                "HSG_FY",
+                q_nis=(5.0e9, 5.0e9, 5.0e9, 5.0e9),
+                annual_ni=10.0e9,
+                fy_start=date(2024, 10, 1),
+                q_ends=(
+                    date(2024, 12, 31),
+                    date(2025, 3, 31),
+                    date(2025, 6, 30),
+                    date(2025, 9, 30),
+                ),
+                annual_avail=date(2025, 12, 20),
+            ),
+            # 6. BANK regime -> must NOT trigger CORPORATE RF_10
+            _make_fy_facts(
+                "BANK_CO",
+                q_nis=(20.0e9, 20.0e9, 20.0e9, 20.0e9),
+                annual_ni=40.0e9,
+            ),
+        ]
+    )
+
+    # PIT Check 1: Before FY2025 audited report (as_of=2026-02-15), WIPEOUT & REVERSAL must NOT fire RF_10!
+    early_tables = build_analytics_tables(facts, issuers, as_of=date(2026, 2, 15))
+    early_rf10 = early_tables[RED_FLAGS_TABLE].filter(
+        pl.col("flag_code") == "RF_10_POST_AUDIT_PROFIT_DOWNGRADE"
+    )
+    assert set(early_rf10["issuer_id"].to_list()) == {
+        "HSG_FY"
+    }  # Only HSG_FY audited on 2025-12-20!
+
+    # PIT Check 2: After FY2025 audited + 2026 Q1..Q4 (as_of=2027-02-01)
+    qg1 = evaluate_quality_gate(facts, issuers=issuers)
+    late_tables = build_analytics_tables(
+        qg1.clean_facts, issuers, as_of=date(2027, 2, 1)
+    )
+    rf10 = late_tables[RED_FLAGS_TABLE].filter(
+        pl.col("flag_code") == "RF_10_POST_AUDIT_PROFIT_DOWNGRADE"
+    )
+    assert set(rf10["issuer_id"].to_list()) == {"WIPEOUT", "REVERSAL", "HSG_FY"}
+    assert set(rf10["severity"].to_list()) == {"HIGH"}
+
+    # WIPEOUT must fire on ANNUAL 2025-12-31 AND QUARTER 2026-Q1..Q3 (1..275d), NEVER on QUARTER 2025-Q4 or 2026-Q4 (365d)!
+    wipeout_rows = rf10.filter(pl.col("issuer_id") == "WIPEOUT").sort(
+        ["period_type", "period_end_date"]
+    )
+    wipeout_periods = [
+        (r["period_type"], r["period_end_date"]) for r in wipeout_rows.to_dicts()
+    ]
+    assert wipeout_periods == [
+        ("ANNUAL", date(2025, 12, 31)),
+        ("QUARTER", date(2026, 3, 31)),
+        ("QUARTER", date(2026, 6, 30)),
+        ("QUARTER", date(2026, 9, 30)),
+    ]
+    q1_ev = json.loads(
+        wipeout_rows.filter(
+            (pl.col("period_type") == "QUARTER")
+            & (pl.col("period_end_date") == date(2026, 3, 31))
+        ).row(0, named=True)["evidence_json"]
+    )
+    assert q1_ev["ni_unaudited_4q_sum"] == pytest.approx(50.0e9)
+    assert q1_ev["ni_audited_annual"] == pytest.approx(40.0e9)
+    assert q1_ev["audit_earnings_diff_vnd"] == pytest.approx(-10.0e9)
+    assert q1_ev["audit_adjustment_pct"] == pytest.approx(-0.20)
+    assert {
+        "WIPEOUT-2025-FY",
+        "WIPEOUT-2025-Q1",
+        "WIPEOUT-2025-Q2",
+        "WIPEOUT-2025-Q3",
+        "WIPEOUT-2025-Q4-corr1",
+    } <= set(q1_ev["source_filing_ids"])
+    assert "WIPEOUT-2025-Q4-rev2" not in set(q1_ev["source_filing_ids"])
+
+    # QG2 Check: 0 orphan filing_id references across ratios and red_flags!
+    verify_analytics_quality_gate(
+        qg1.clean_facts,
+        late_tables[RATIOS_TABLE],
+        benchmarks=late_tables["industry_benchmarks.parquet"],
+        red_flags=late_tables[RED_FLAGS_TABLE],
+        quality_summary=qg1.quality_summary,
+    )
+
+    # P2-2: Direct public call on canonical facts without period_days / source_filing_ids columns
+    from finintel.analytics.intermediates import prepare_periods
+    from finintel.analytics.restatements import attach_pre_vs_post_audit_restatement
+
+    raw_wipeout = facts.filter(pl.col("issuer_id") == "WIPEOUT").drop(
+        "period_days", "source_filing_ids"
+    )
+    direct_periods = prepare_periods(
+        facts.filter(pl.col("issuer_id") == "WIPEOUT"),
+        issuers.filter(pl.col("issuer_id") == "WIPEOUT"),
+        as_of=date(2026, 5, 1),
+    )
+    re_attached = attach_pre_vs_post_audit_restatement(
+        direct_periods.select(
+            [
+                c
+                for c in direct_periods.columns
+                if not c.startswith(("ni_unaudited", "ni_audited", "audit_", "_rf10"))
+            ]
+        ),
+        raw_wipeout.filter(pl.col("effective_available_at") <= date(2026, 5, 1)),
+    )
+    assert re_attached.filter(pl.col("_rf10_triggered")).height >= 2
