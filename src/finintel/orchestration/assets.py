@@ -670,7 +670,14 @@ def raw_fhsc_filings(
             as_of_year=config.as_of_year,
         )
         try:
-            with trace_span(SPAN_INGEST_FETCH, {"finintel.ticker": ticker}):
+            with trace_span(
+                SPAN_INGEST_FETCH,
+                {
+                    "finintel.entry_point": "dagster_asset",
+                    "finintel.run_id": context.run.run_id,
+                    "finintel.ticker": ticker,
+                },
+            ):
                 outcome = handler(step_ctx)
         except RateLimitOrCircuitOpenError:
             if completed:
@@ -1112,6 +1119,7 @@ def published_financial_marts(
             with trace_span(
                 SPAN_TRANSFORM_INCREMENTAL,
                 {
+                    "finintel.entry_point": "dagster_asset",
                     "finintel.run_id": pipeline_run_id,
                     "finintel.as_of": as_of.isoformat(),
                 },
@@ -1170,6 +1178,7 @@ def published_financial_marts(
             with trace_span(
                 SPAN_STORAGE_PUBLISH,
                 {
+                    "finintel.entry_point": "dagster_asset",
                     "finintel.snapshot_id": snapshot_id,
                     "finintel.run_id": pipeline_run_id,
                 },

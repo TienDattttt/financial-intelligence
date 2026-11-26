@@ -825,9 +825,13 @@ function MethodologyContent() {
                             label: "Có cảnh báo",
                             tone: "mid" as const,
                           };
+                          const displayCodes = [
+                            ...row.warning_codes,
+                            ...(row.info_codes ?? []).filter((c) => c in QUALITY_RULE_LABELS),
+                          ];
                           const warningText =
-                            row.warning_codes.length > 0
-                              ? row.warning_codes
+                            displayCodes.length > 0
+                              ? displayCodes
                                   .map((c) => QUALITY_RULE_LABELS[c] ?? "Lưu ý kiểm định")
                                   .join(" · ")
                               : "—";
@@ -905,7 +909,7 @@ function MethodologyContent() {
                 </div>
               ) : (
                 <>
-                  <div tabIndex={0} role="region" aria-label="Bảng nhật ký kiểm tra chất lượng theo kỳ" className={SCROLL_REGION_CLS}>
+                  <div tabIndex={0} role="region" aria-label="Bảng danh sách hồ sơ bị giữ lại kiểm định" className={SCROLL_REGION_CLS}>
                     <table className="w-full border-collapse text-xs">
                       <thead>
                         <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">

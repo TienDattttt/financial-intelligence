@@ -602,8 +602,9 @@ def upsert_postgres_active_snapshot(
                     (alias, snapshot_id, int(ducklake_version), run_id, published_at),
                 )
                 cur.execute(
-                    f"CREATE OR REPLACE VIEW {POSTGRES_SERVING_POINTER_TABLE} "
-                    f"AS SELECT * FROM {POSTGRES_ACTIVE_SNAPSHOT_TABLE}"
+                    f"DO $$ BEGIN IF to_regclass('{POSTGRES_SERVING_POINTER_TABLE}') IS NULL "
+                    f"THEN CREATE VIEW {POSTGRES_SERVING_POINTER_TABLE} "
+                    f"AS SELECT * FROM {POSTGRES_ACTIVE_SNAPSHOT_TABLE}; END IF; END $$;"
                 )
             pg_conn.commit()
     except ContractViolationError:
@@ -1406,8 +1407,11 @@ class DuckLakeStore:
                         active_ver = audit_by_snap_id.get(active_sid)
                         if active_ver is not None and (
                             pg_pointer is None
-                            or pg_pointer.snapshot_id != active_sid
-                            or int(pg_pointer.ducklake_version) != active_ver
+                            or active_ver > int(pg_pointer.ducklake_version)
+                            or (
+                                int(pg_pointer.ducklake_version) == active_ver
+                                and pg_pointer.snapshot_id != active_sid
+                            )
                         ):
                             upsert_postgres_active_snapshot(
                                 postgres_dsn_env=self.postgres_dsn_env,

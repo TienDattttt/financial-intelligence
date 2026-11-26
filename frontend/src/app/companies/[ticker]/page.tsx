@@ -552,6 +552,11 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
         }
       />
 
+      <div
+        id={`company-panel-${activeTab}`}
+        role="tabpanel"
+        aria-labelledby={`company-tab-${activeTab}`}
+      >
       {activeTab === "overview" ? (
         <OverviewTab
           profile={profile}
@@ -673,6 +678,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
           onOpenSourceDrawer={openSourceDrawer}
         />
       )}
+      </div>
     </div>
   );
 }

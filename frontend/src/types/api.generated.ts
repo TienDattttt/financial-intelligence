@@ -852,6 +852,35 @@ export interface components {
             /** Core To Ebt Ratio Flag */
             core_to_ebt_ratio_flag?: string | null;
         };
+        /**
+         * DataFreshnessItem
+         * @description Three-tier freshness summary across BCTC snapshot and Extension Ports 1/2/3.
+         */
+        DataFreshnessItem: {
+            /** Bctc Snapshot Id */
+            bctc_snapshot_id?: string | null;
+            /** Bctc Published At */
+            bctc_published_at?: string | null;
+            /** Bctc Latest Period End Date */
+            bctc_latest_period_end_date?: string | null;
+            /** Market Prices Latest Trade Date */
+            market_prices_latest_trade_date?: string | null;
+            /** Market Prices Updated At */
+            market_prices_updated_at?: string | null;
+            /** Regulatory Latest Event Date */
+            regulatory_latest_event_date?: string | null;
+            /** Regulatory Updated At */
+            regulatory_updated_at?: string | null;
+            /**
+             * Curated Pdfs Count
+             * @default 0
+             */
+            curated_pdfs_count: number;
+            /** Curated Pdfs Updated At */
+            curated_pdfs_updated_at?: string | null;
+            /** Extension Ports Digest */
+            extension_ports_digest: string;
+        };
         /** DocumentFileItem */
         DocumentFileItem: {
             /** Filing Id */
@@ -1409,6 +1438,7 @@ export interface components {
             };
             /** Sectors Level2 */
             sectors_level2: components["schemas"]["SectorOptionItem"][];
+            freshness?: components["schemas"]["DataFreshnessItem"] | null;
         };
         /**
          * ModelCardResponse
@@ -1624,6 +1654,14 @@ export interface components {
             pb_flag?: string | null;
             /** Shares Source */
             shares_source?: string | null;
+            /** Merton Dtd */
+            merton_dtd?: number | null;
+            /** Equity Volatility 1Y */
+            equity_volatility_1y?: number | null;
+            /** Naive Edf */
+            naive_edf?: number | null;
+            /** Dtd Flag */
+            dtd_flag?: string | null;
         };
         /**
          * QualitySummaryItem

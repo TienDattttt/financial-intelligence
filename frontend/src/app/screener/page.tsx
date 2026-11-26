@@ -37,6 +37,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/primitives";
 import { useScreener } from "@/hooks/use-finintel-queries";
+import { observeResponseSnapshotHeader } from "@/lib/api-client";
 import {
   ALTMAN_ZONE_META,
   BENEISH_FLAG_META,
@@ -879,6 +880,7 @@ function ScreenerContent() {
       const res = await fetch(exportUrl, {
         headers: { Accept: "text/csv, application/json" },
       });
+      observeResponseSnapshotHeader(res);
       if (!res.ok) {
         let detail = "";
         try {
@@ -1103,7 +1105,7 @@ function ScreenerContent() {
                     <button
                       type="submit"
                       aria-label="Xác nhận đổi tên"
-                      className="rounded p-0.5 text-risk-low hover:bg-surface-muted"
+                      className="inline-flex size-6 items-center justify-center rounded text-risk-low hover:bg-surface-muted"
                     >
                       <Check className="size-3" />
                     </button>
@@ -1114,7 +1116,7 @@ function ScreenerContent() {
                         setEditingScreenId(null);
                         setSaveFeedback(null);
                       }}
-                      className="rounded p-0.5 text-ink-muted hover:bg-surface-muted"
+                      className="inline-flex size-6 items-center justify-center rounded text-ink-muted hover:bg-surface-muted"
                     >
                       <X className="size-3" />
                     </button>
@@ -1122,12 +1124,12 @@ function ScreenerContent() {
                 ) : (
                   <div
                     key={scr.id}
-                    className="inline-flex items-center gap-1 rounded border border-border bg-canvas px-2 py-0.5 text-xs text-ink"
+                    className="inline-flex items-center gap-0.5 rounded border border-border bg-canvas px-1.5 text-xs text-ink"
                   >
                     <button
                       type="button"
                       onClick={() => applyFilterPreset(scr.filters)}
-                      className="font-medium hover:text-accent-ink hover:underline"
+                      className="inline-flex min-h-6 items-center px-1 font-medium hover:text-accent-ink hover:underline"
                     >
                       {scr.name}
                     </button>
@@ -1139,7 +1141,7 @@ function ScreenerContent() {
                         setEditingNameDraft(scr.name);
                         setSaveFeedback(null);
                       }}
-                      className="rounded p-0.5 text-ink-subtle hover:bg-surface-muted hover:text-ink"
+                      className="inline-flex size-6 items-center justify-center rounded text-ink-subtle hover:bg-surface-muted hover:text-ink"
                     >
                       <Pencil className="size-3" />
                     </button>
@@ -1147,7 +1149,7 @@ function ScreenerContent() {
                       type="button"
                       aria-label={`Xóa bộ lọc ${scr.name}`}
                       onClick={() => deleteSavedScreen(scr.id)}
-                      className="rounded p-0.5 text-ink-subtle hover:bg-risk-high-soft hover:text-risk-high"
+                      className="inline-flex size-6 items-center justify-center rounded text-ink-subtle hover:bg-risk-high-soft hover:text-risk-high"
                     >
                       <Trash2 className="size-3" />
                     </button>
@@ -1451,7 +1453,7 @@ function ScreenerContent() {
                       id="scr-rf-min"
                       type="number"
                       min={0}
-                      max={9}
+                      max={10}
                       value={minRfParam}
                       onChange={(e) =>
                         updateParams({ min_red_flags: e.target.value || null })
@@ -1467,12 +1469,12 @@ function ScreenerContent() {
                       id="scr-rf-max"
                       type="number"
                       min={0}
-                      max={9}
+                      max={10}
                       value={maxRfParam}
                       onChange={(e) =>
                         updateParams({ max_red_flags: e.target.value || null })
                       }
-                      placeholder="9"
+                      placeholder="10"
                     />
                   </div>
                 </div>
@@ -1588,7 +1590,7 @@ function ScreenerContent() {
                 className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-ink hover:bg-surface-hover"
               >
                 <span>
-                  Cờ đỏ: {minRfParam || "0"}–{maxRfParam || "9"}
+                  Cờ đỏ: {minRfParam || "0"}–{maxRfParam || "10"}
                 </span>
                 <X className="size-3 text-ink-muted" />
               </button>

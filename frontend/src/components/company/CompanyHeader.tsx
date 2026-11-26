@@ -146,6 +146,8 @@ export function CompanyHeader({
           variant="underline"
           value={activeTab}
           onChange={onChangeTab}
+          idPrefix="company"
+          controlsPanelId={(t) => `company-panel-${t}`}
           className="border-b-0"
           options={COMPANY_TABS.map((t) => ({
             value: t.id,

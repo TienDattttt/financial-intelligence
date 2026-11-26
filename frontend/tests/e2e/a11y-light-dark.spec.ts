@@ -275,6 +275,10 @@ test.describe("FinIntel Local CWV Budgets (LCP <= 2500ms, INP <= 200ms, CLS <= 0
 
       expect(
         metrics.lcpMs,
+        `LCP missing (0ms) on ${route}`,
+      ).toBeGreaterThan(0);
+      expect(
+        metrics.lcpMs,
         `LCP exceeded 2500ms on ${route}: ${metrics.lcpMs.toFixed(1)}ms`,
       ).toBeLessThanOrEqual(2500);
       expect(

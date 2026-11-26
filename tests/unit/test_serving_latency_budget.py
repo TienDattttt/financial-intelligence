@@ -243,12 +243,25 @@ def test_composite_etag_freshness_dtd_query_guard_and_sanitizer(
 
     app = create_app(data_root=data_root, valkey_url="redis://127.0.0.1:6379/0")
     with TestClient(app) as client:
-        # 1. Public ?snapshot_id= query parameter MUST be rejected with 422
+        # 1. Public ?snapshot_id= query parameter (plain or percent-encoded) MUST be rejected with 422
         r_forbid = client.get(
             "/api/v1/snapshot/overview", params={"snapshot_id": "snap_old"}
         )
         assert r_forbid.status_code == 422
         assert "snap_old" not in r_forbid.text
+        r_forbid_enc = client.get("/api/v1/snapshot/overview?snapshot%5Fid=snap_old")
+        assert r_forbid_enc.status_code == 422
+
+        # 1b. Scrape /metrics BEFORE /api/v2/meta/periods is ever called -> freshness gauges live!
+        boot_metrics = client.get("/metrics").text
+        assert (
+            'finintel_snapshot_freshness_age_seconds{port="bctc_snapshot"}'
+            in boot_metrics
+        )
+        assert (
+            'finintel_snapshot_freshness_age_seconds{port="market_prices"}'
+            in boot_metrics
+        )
 
         # 2. Market overlay exposes Merton DTD fields AND Composite ETag while X-Snapshot-ID stays pure
         r_ov = client.get("/api/v2/companies/FPT/market-overlay")
@@ -403,8 +416,27 @@ def test_forward_only_postgres_serving_pointer_and_otel_metrics(
         )
     before_upserts = len(upsert_calls)
     store.reconcile_unpromoted_snapshots()
+    store.maintain(keep_snapshots=2, min_snapshot_age_seconds=0)
     assert len(upsert_calls) == before_upserts
     assert pg_box["ptr"] is not None and pg_box["ptr"].ducklake_version == v2
+
+    # Verify parent-data/ Extension Port fallback for nested universe_600_800 roots
+    import finintel.serving.freshness as freshness_mod
+
+    fake_default_data = tmp_path / "parent_data"
+    nested_root = fake_default_data / "universe_600_800"
+    nested_root.mkdir(parents=True, exist_ok=True)
+    parent_mp = fake_default_data / "market_prices" / "market_prices.parquet"
+    parent_mp.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"trade_date": [date(2026, 11, 24)]}).write_parquet(parent_mp)
+    monkeypatch.setattr(freshness_mod, "DEFAULT_DATA_ROOT", fake_default_data)
+    nested_fresh = freshness_mod.collect_data_freshness(
+        snapshot_id="snap_fwd_002",
+        published_at="2026-11-25T00:00:00Z",
+        data_root=nested_root,
+    )
+    assert nested_fresh["market_prices_latest_trade_date"] == date(2026, 11, 24)
+    assert nested_fresh["extension_ports_digest"] != freshness_mod._EMPTY_PORTS_DIGEST
 
     # Verify OTel canonical spans + context propagation + Prometheus freshness/WAP metrics
     pytest.importorskip("opentelemetry")

@@ -51,6 +51,7 @@ class DataFreshnessResponse(BaseModel):
 
 
 _EMPTY_PORTS_DIGEST: str = hashlib.sha256(b"v1|ports:empty").hexdigest()[:12]
+DEFAULT_DATA_ROOT: Path = Path(__file__).resolve().parents[3] / "data"
 
 _EXTENSION_PORT_REL_PATHS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("regulatory_events", ("regulatory_ledger", "regulatory_events.parquet")),
@@ -120,6 +121,20 @@ def _stat_regular_file(path: Path) -> tuple[int, int] | None:
     return (int(st.st_mtime_ns), int(st.st_size))
 
 
+def _resolve_port_file(root: Path | None, parts: tuple[str, ...]) -> Path | None:
+    if root is None:
+        return None
+    direct = root.joinpath(*parts)
+    if _stat_regular_file(direct) is not None:
+        return direct
+    default_resolved = DEFAULT_DATA_ROOT.resolve()
+    if root == default_resolved or default_resolved in root.parents:
+        fallback = default_resolved.joinpath(*parts)
+        if _stat_regular_file(fallback) is not None:
+            return fallback
+    return direct
+
+
 def compute_extension_ports_digest(data_root: Path | None) -> str:
     """Compute a deterministic 12-hex SHA-256 digest of Extension Port 1/2/3 artifacts."""
     root = resolve_serving_data_root(data_root)
@@ -128,7 +143,10 @@ def compute_extension_ports_digest(data_root: Path | None) -> str:
 
     entries: list[str] = []
     for port_name, parts in _EXTENSION_PORT_REL_PATHS:
-        stat_pair = _stat_regular_file(root.joinpath(*parts))
+        resolved_port = _resolve_port_file(root, parts)
+        stat_pair = (
+            _stat_regular_file(resolved_port) if resolved_port is not None else None
+        )
         if stat_pair is not None:
             mtime_ns, size = stat_pair
             entries.append(f"{port_name}:{size}:{mtime_ns}")
@@ -202,7 +220,7 @@ def has_forbidden_public_snapshot_query(raw_query_string: bytes | str) -> bool:
         if isinstance(raw_query_string, bytes)
         else raw_query_string
     )
-    if "snapshot_id" not in qs.lower():
+    if "snapshot_id" not in qs.lower() and "%" not in qs:
         return False
     for key, _ in parse_qsl(qs, keep_blank_values=True):
         if key.strip().lower() == "snapshot_id":
@@ -285,28 +303,28 @@ def collect_data_freshness(
     if bctc_age is not None:
         record_snapshot_freshness_age("bctc_snapshot", bctc_age)
 
+    mp_path = _resolve_port_file(root, ("market_prices", "market_prices.parquet"))
     mp_info = (
-        _inspect_parquet_port_cached(
-            root / "market_prices" / "market_prices.parquet",
-            date_columns=("trade_date",),
-        )
-        if root is not None
+        _inspect_parquet_port_cached(mp_path, date_columns=("trade_date",))
+        if mp_path is not None
         else None
+    )
+    reg_path = _resolve_port_file(
+        root, ("regulatory_ledger", "regulatory_events.parquet")
     )
     reg_info = (
         _inspect_parquet_port_cached(
-            root / "regulatory_ledger" / "regulatory_events.parquet",
-            date_columns=("effective_from", "event_date"),
+            reg_path, date_columns=("effective_from", "event_date")
         )
-        if root is not None
+        if reg_path is not None
         else None
     )
+    pdf_path = _resolve_port_file(
+        root, ("curated_pdfs", "curated_pdfs_manifest.parquet")
+    )
     pdf_info = (
-        _inspect_parquet_port_cached(
-            root / "curated_pdfs" / "curated_pdfs_manifest.parquet",
-            date_columns=(),
-        )
-        if root is not None
+        _inspect_parquet_port_cached(pdf_path, date_columns=())
+        if pdf_path is not None
         else None
     )
 

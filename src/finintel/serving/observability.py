@@ -101,6 +101,7 @@ _SNAPSHOT_FRESHNESS_AGE_SECONDS = Gauge(
     "Age in seconds of the active BCTC snapshot and Extension Port datasets.",
     labelnames=("port",),
     registry=_INGESTION_METRICS_REGISTRY,
+    multiprocess_mode="max",
 )
 _WAP_PUBLISH_TOTAL = Counter(
     "finintel_wap_publish_total",
@@ -514,9 +515,15 @@ class RequestCorrelationMiddleware:
 
         try:
             if path.startswith("/api/"):
-                with trace_span(
-                    SPAN_SERVING_QUERY,
-                    {"http.method": method, "http.route": _normalize_metric_path(path)},
+                with (
+                    bind_telemetry_context(entry_point="http_api", run_id=req_id),
+                    trace_span(
+                        SPAN_SERVING_QUERY,
+                        {
+                            "http.method": method,
+                            "http.route": _normalize_metric_path(path),
+                        },
+                    ),
                 ):
                     await self.app(scope, receive, send_wrapper)
             else:
@@ -625,6 +632,27 @@ def attach_observability(api: FastAPI) -> None:
 
         @api.get("/metrics", include_in_schema=False)
         async def prometheus_metrics() -> Response:
+            repo = getattr(api.state, "repository", None)
+            conn = getattr(api.state, "duckdb_conn", None)
+            if repo is not None:
+                try:
+                    from finintel.serving.freshness import collect_data_freshness
+
+                    cursor = conn.cursor() if conn is not None else None
+                    try:
+                        meta = repo.get_snapshot_metadata(connection=cursor)
+                    finally:
+                        if cursor is not None:
+                            cursor.close()
+                    raw_sid = meta.get("snapshot_id")
+                    raw_pub = meta.get("published_at")
+                    collect_data_freshness(
+                        snapshot_id=str(raw_sid) if isinstance(raw_sid, str) else None,
+                        published_at=str(raw_pub) if isinstance(raw_pub, str) else None,
+                        data_root=getattr(repo, "_source", None),
+                    )
+                except Exception:
+                    pass
             return Response(
                 content=generate_metrics_payload(registry),
                 media_type=CONTENT_TYPE_LATEST,

@@ -98,7 +98,7 @@ export function resetObservedSnapshotRegistryForTests(): void {
   snapshotSubscribers.clear();
 }
 
-function observeResponseSnapshotHeader(res: Response): void {
+export function observeResponseSnapshotHeader(res: Response): void {
   const raw = res.headers.get("X-Snapshot-ID");
   if (!raw) return;
   const cleaned = raw.trim();
@@ -133,7 +133,7 @@ function sanitizeClientMessage(raw: string, status: number): string {
   if (/not found/i.test(cleaned) || status === 404) {
     return "Không tìm thấy dữ liệu cho yêu cầu này trong kỳ hiện hành.";
   }
-    if (!cleaned || INTERNAL_LEAK_RE.test(cleaned)) {
+  if (!cleaned || INTERNAL_LEAK_RE.test(cleaned)) {
     if (status === 422) return "Tham số truy vấn không hợp lệ.";
     if (status === 503) return "Dịch vụ tra cứu hiện tạm thời chưa sẵn sàng, vui lòng thử lại sau giây lát.";
     return "Không thể tải dữ liệu từ máy chủ phân tích.";
