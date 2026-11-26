@@ -1425,3 +1425,108 @@ def quarterly_ml_retrain_schedule(
 
     return _eval_quarterly_ml_retrain_schedule(context, paths)
 
+
+@dg.asset(
+    pool=PIPELINE_WRITE_POOL,
+    group_name="extension_ports",
+    description="Incremental Port 3 EOD prices with 5-session corporate-action split detection.",
+)
+def market_prices_eod_asset(
+    context: dg.AssetExecutionContext,
+    paths: FinIntelPathsResource,
+    state: StateStoreResource,
+    storage: StorageResource,
+    disclosure_fetcher: DisclosureFetcherResource,
+) -> dg.MaterializeResult[None]:
+    """Sync Port 3 EOD market prices atomically under ``pipeline.lock``."""
+    from finintel.orchestration.definitions import _exec_market_prices_eod_asset
+
+    return _exec_market_prices_eod_asset(
+        context, paths, state, storage, disclosure_fetcher
+    )
+
+
+@dg.asset(
+    pool=PIPELINE_WRITE_POOL,
+    group_name="extension_ports",
+    description="Incremental Port 1 regulatory events ledger replay preserving state intervals.",
+)
+def regulatory_events_ledger_asset(
+    context: dg.AssetExecutionContext,
+    paths: FinIntelPathsResource,
+    state: StateStoreResource,
+    storage: StorageResource,
+    disclosure_fetcher: DisclosureFetcherResource,
+) -> dg.MaterializeResult[None]:
+    """Replay Port 1 regulatory events from cached receipts + head pages under ``pipeline.lock``."""
+    from finintel.orchestration.definitions import _exec_regulatory_events_ledger_asset
+
+    return _exec_regulatory_events_ledger_asset(
+        context, paths, state, storage, disclosure_fetcher
+    )
+
+
+@dg.asset(
+    pool=PIPELINE_WRITE_POOL,
+    group_name="extension_ports",
+    description="Port 2 CAS-backed audited annual consolidated PDF discovery and archival.",
+)
+def curated_pdf_rag_asset(
+    context: dg.AssetExecutionContext,
+    paths: FinIntelPathsResource,
+    state: StateStoreResource,
+    storage: StorageResource,
+    disclosure_fetcher: DisclosureFetcherResource,
+) -> dg.MaterializeResult[None]:
+    """Sync Port 2 curated PDFs from ``RawArchive`` CAS receipts under ``pipeline.lock``."""
+    from finintel.orchestration.definitions import _exec_curated_pdf_rag_asset
+
+    return _exec_curated_pdf_rag_asset(
+        context, paths, state, storage, disclosure_fetcher
+    )
+
+
+market_prices_eod_job = dg.define_asset_job(
+    name="market_prices_eod_job",
+    selection=dg.AssetSelection.assets(market_prices_eod_asset),
+    description="Daily 18:45 ICT (11:45 UTC) trading-day EOD market prices sync.",
+)
+
+regulatory_events_ledger_job = dg.define_asset_job(
+    name="regulatory_events_ledger_job",
+    selection=dg.AssetSelection.assets(regulatory_events_ledger_asset),
+    description="Daily 19:15 ICT (12:15 UTC) regulatory events ledger sync.",
+)
+
+curated_pdf_rag_job = dg.define_asset_job(
+    name="curated_pdf_rag_job",
+    selection=dg.AssetSelection.assets(curated_pdf_rag_asset),
+    description="Weekly Sunday 02:00 ICT (Saturday 19:00 UTC) curated PDF RAG sync.",
+)
+
+market_prices_eod_schedule = dg.ScheduleDefinition(
+    name="market_prices_eod_schedule",
+    job=market_prices_eod_job,
+    cron_schedule="45 11 * * 1-5",
+    execution_timezone="UTC",
+    default_status=dg.DefaultScheduleStatus.RUNNING,
+    description="Mon-Fri 11:45 UTC (18:45 ICT) Port 3 EOD market prices sync.",
+)
+
+regulatory_events_ledger_schedule = dg.ScheduleDefinition(
+    name="regulatory_events_ledger_schedule",
+    job=regulatory_events_ledger_job,
+    cron_schedule="15 12 * * *",
+    execution_timezone="UTC",
+    default_status=dg.DefaultScheduleStatus.RUNNING,
+    description="Daily 12:15 UTC (19:15 ICT) Port 1 regulatory events ledger sync.",
+)
+
+curated_pdf_rag_schedule = dg.ScheduleDefinition(
+    name="curated_pdf_rag_schedule",
+    job=curated_pdf_rag_job,
+    cron_schedule="0 19 * * 6",
+    execution_timezone="UTC",
+    default_status=dg.DefaultScheduleStatus.RUNNING,
+    description="Saturday 19:00 UTC (Sunday 02:00 ICT) Port 2 curated PDF RAG sync.",
+)

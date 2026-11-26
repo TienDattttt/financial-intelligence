@@ -1328,3 +1328,83 @@ def test_empirical_snapshot_partitions_publish_and_blocking_checks(
         )
         assert maint_res.success
 
+
+def test_task06_extension_port_schedules_and_docker_daemon_readonly_webserver() -> None:
+    """TASK-06: defs registers Port 1/2/3 assets + RUNNING UTC schedules, and Docker isolates daemon vs read-only UI."""
+    from finintel.orchestration.assets import (
+        PIPELINE_WRITE_POOL,
+        curated_pdf_rag_asset,
+        curated_pdf_rag_schedule,
+        market_prices_eod_asset,
+        market_prices_eod_schedule,
+        regulatory_events_ledger_asset,
+        regulatory_events_ledger_schedule,
+    )
+
+    dg.Definitions.validate_loadable(defs)
+    for asset_def in (
+        market_prices_eod_asset,
+        regulatory_events_ledger_asset,
+        curated_pdf_rag_asset,
+    ):
+        assert asset_def.op.pool == PIPELINE_WRITE_POOL
+
+    sched_by_name = {s.name: s for s in (defs.schedules or [])}
+    assert sched_by_name["market_prices_eod_schedule"] == market_prices_eod_schedule
+    assert market_prices_eod_schedule.cron_schedule == "45 11 * * 1-5"
+    assert market_prices_eod_schedule.execution_timezone == "UTC"
+    assert market_prices_eod_schedule.default_status == dg.DefaultScheduleStatus.RUNNING
+
+    assert (
+        sched_by_name["regulatory_events_ledger_schedule"]
+        == regulatory_events_ledger_schedule
+    )
+    assert regulatory_events_ledger_schedule.cron_schedule == "15 12 * * *"
+    assert regulatory_events_ledger_schedule.execution_timezone == "UTC"
+    assert (
+        regulatory_events_ledger_schedule.default_status
+        == dg.DefaultScheduleStatus.RUNNING
+    )
+
+    assert sched_by_name["curated_pdf_rag_schedule"] == curated_pdf_rag_schedule
+    assert curated_pdf_rag_schedule.cron_schedule == "0 19 * * 6"
+    assert curated_pdf_rag_schedule.execution_timezone == "UTC"
+    assert curated_pdf_rag_schedule.default_status == dg.DefaultScheduleStatus.RUNNING
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text("utf-8"))
+    services = compose["services"]
+    assert "dagster-daemon" in services
+    daemon_hc = " ".join(services["dagster-daemon"]["healthcheck"]["test"])
+    assert "dagster-daemon" in daemon_hc and "liveness-check" in daemon_hc
+
+    assert "dagster-webserver" in services
+    web_cmd = " ".join(services["dagster-webserver"]["command"])
+    assert "--read-only" in web_cmd
+    web_ports = services["dagster-webserver"]["ports"]
+    assert all(str(p).startswith("127.0.0.1:") for p in web_ports)
+
+    dockerfile = REPO_ROOT / "Dockerfile"
+    assert dockerfile.is_file()
+    df_text = dockerfile.read_text("utf-8")
+    assert "USER " in df_text
+    assert "ghcr.io/astral-sh/uv:0.9.30" in df_text
+    assert "dagster.postgres.yaml" in df_text
+
+    # Zero host port collisions across all docker-compose services; Dagster uses /app/dagster_home
+    host_ports: list[str] = []
+    for svc_cfg in services.values():
+        for mapping in svc_cfg.get("ports", []):
+            parts = str(mapping).split(":")
+            host_ports.append(parts[-2])
+    assert len(host_ports) == len(set(host_ports)), (
+        f"Duplicate host ports: {host_ports}"
+    )
+    assert (
+        services["dagster-daemon"]["environment"]["DAGSTER_HOME"] == "/app/dagster_home"
+    )
+    assert (
+        services["dagster-webserver"]["environment"]["DAGSTER_HOME"]
+        == "/app/dagster_home"
+    )
+    daemon_cmd_str = " ".join(str(x) for x in services["dagster-daemon"]["command"])
+    assert "finintel.orchestration.resources" in daemon_cmd_str

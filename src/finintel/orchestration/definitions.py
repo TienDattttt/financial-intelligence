@@ -18,8 +18,19 @@ from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import dagster as dg
+import polars as pl
 
 from finintel.exceptions import RateLimitOrCircuitOpenError, TransientSourceError
+from finintel.ingestion.curated_pdf_service import sync_curated_pdfs_from_archive
+from finintel.ingestion.market_prices_collector import (
+    PoliteMarketPriceHttpClient,
+    sync_incremental_market_prices,
+)
+from finintel.ingestion.regulatory_events_collector import (
+    PoliteHostHttpClient,
+    build_regulatory_events_table,
+    collect_ticker_raw_candidates,
+)
 from finintel.orchestration.assets import (
     _COOLDOWN_PROVIDER_KEYS,
     _INFLIGHT_RUN_STATUSES,
@@ -28,6 +39,9 @@ from finintel.orchestration.assets import (
     FhscIngestConfig,
     PublishMartsConfig,
     _resolve_max_partitions_per_run,
+    curated_pdf_rag_asset,
+    curated_pdf_rag_job,
+    curated_pdf_rag_schedule,
     downstream_publish_job,
     downstream_publish_sensor,
     ensure_pipeline_write_pool,
@@ -35,12 +49,18 @@ from finintel.orchestration.assets import (
     is_tt96_peak_window,
     lakehouse_maintenance_job,
     lakehouse_maintenance_schedule,
+    market_prices_eod_asset,
+    market_prices_eod_job,
+    market_prices_eod_schedule,
     normalized_financial_facts,
     published_financial_marts,
     quarterly_ml_retrain_job,
     quarterly_ml_retrain_schedule,
     raw_fhsc_filings,
     raw_public_disclosures,
+    regulatory_events_ledger_asset,
+    regulatory_events_ledger_job,
+    regulatory_events_ledger_schedule,
     seasonal_ingestion_schedule,
     select_seasonal_ingestion_batch,
 )
@@ -53,6 +73,12 @@ from finintel.orchestration.resources import (
     StorageResource,
 )
 from finintel.pipeline.state_store import StateStore
+from finintel.ports.market_prices import MARKET_PRICES_SCHEMA, validate_market_prices
+from finintel.ports.regulatory import (
+    REGULATORY_EVENTS_SCHEMA,
+    validate_regulatory_events,
+)
+from finintel.storage.snapshot_publisher import pipeline_write_lock
 
 MAX_FEED_RUN_REQUESTS_PER_TICK = 5
 
@@ -492,11 +518,168 @@ def bctc_disclosure_feed_sensor(
     ]
 
 
+def _load_corporate_issuer_maps(
+    paths: FinIntelPathsResource,
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    issuers_path = paths.resolved_issuers_path()
+    if not issuers_path.is_file():
+        return [], {}, {}
+    df = pl.read_parquet(issuers_path)
+    if "accounting_regime" in df.columns:
+        df = df.filter(pl.col("accounting_regime") == "CORPORATE")
+    tickers: list[str] = []
+    issuer_map: dict[str, str] = {}
+    exchange_map: dict[str, str] = {}
+    for row in df.select("issuer_id", "ticker", "exchange").to_dicts():
+        tk = str(row["ticker"]).strip().upper()
+        iid = str(row["issuer_id"]).strip()
+        ex = str(row["exchange"]).strip().upper()
+        if tk and iid:
+            tickers.append(tk)
+            issuer_map[tk] = iid
+            exchange_map[tk] = ex
+    return sorted(set(tickers)), issuer_map, exchange_map
+
+
+def _write_parquet_atomic(df: pl.DataFrame, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".parquet.tmp")
+    df.write_parquet(tmp)
+    tmp.replace(target)
+
+
+def _exec_market_prices_eod_asset(
+    context: dg.AssetExecutionContext,
+    paths: FinIntelPathsResource,
+    state: StateStoreResource,
+    storage: StorageResource,
+    disclosure_fetcher: DisclosureFetcherResource,
+) -> dg.MaterializeResult[None]:
+    _ = context
+    data_root = paths.resolved_data_root()
+    out_path = data_root / "market_prices" / "market_prices.parquet"
+    existing = (
+        validate_market_prices(pl.read_parquet(out_path))
+        if out_path.is_file()
+        else pl.DataFrame(schema=MARKET_PRICES_SCHEMA)
+    )
+    if not disclosure_fetcher.effective_fetch_online():
+        return dg.MaterializeResult(
+            metadata={"status": "SKIPPED_OFFLINE", "rows": existing.height}
+        )
+    tickers, issuer_map, exchange_map = _load_corporate_issuer_maps(paths)
+    merged, refetched = sync_incremental_market_prices(
+        existing,
+        tickers=tickers,
+        issuer_map=issuer_map,
+        exchange_map=exchange_map,
+        raw_dir=data_root / "market_prices" / "raw",
+        client=PoliteMarketPriceHttpClient(),
+    )
+    with pipeline_write_lock(
+        state.pipeline_lock_path(), timeout=storage.resolve_lock_timeout()
+    ):
+        _write_parquet_atomic(merged, out_path)
+    return dg.MaterializeResult(
+        metadata={
+            "status": "SYNCED",
+            "rows": merged.height,
+            "split_refetched_count": len(refetched),
+        }
+    )
+
+
+def _exec_regulatory_events_ledger_asset(
+    context: dg.AssetExecutionContext,
+    paths: FinIntelPathsResource,
+    state: StateStoreResource,
+    storage: StorageResource,
+    disclosure_fetcher: DisclosureFetcherResource,
+) -> dg.MaterializeResult[None]:
+    _ = context
+    data_root = paths.resolved_data_root()
+    ledger_dir = data_root / "regulatory_ledger"
+    out_path = ledger_dir / "regulatory_events.parquet"
+    online = disclosure_fetcher.effective_fetch_online()
+    if not online and not (ledger_dir / "raw").is_dir():
+        existing_rows = (
+            validate_regulatory_events(pl.read_parquet(out_path)).height
+            if out_path.is_file()
+            else 0
+        )
+        return dg.MaterializeResult(
+            metadata={"status": "SKIPPED_OFFLINE", "rows": existing_rows}
+        )
+    tickers, issuer_map, exchange_map = _load_corporate_issuer_maps(paths)
+    client = PoliteHostHttpClient()
+    all_cands = []
+    ex_by_issuer: dict[str, str] = {}
+    for tk in tickers:
+        iid = issuer_map[tk]
+        ex = exchange_map.get(tk, "UNKNOWN")
+        ex_by_issuer[iid] = ex
+        cands, _ = collect_ticker_raw_candidates(
+            ticker=tk,
+            issuer_id=iid,
+            current_exchange=ex,
+            raw_dir=ledger_dir / "raw",
+            client=client,
+            use_cache=True,
+            fetch_online=online,
+            refresh_head_pages=2 if online else 0,
+        )
+        all_cands.extend(cands)
+    reg_df = (
+        build_regulatory_events_table(all_cands, exchange_by_issuer=ex_by_issuer)
+        if all_cands
+        else validate_regulatory_events(pl.DataFrame(schema=REGULATORY_EVENTS_SCHEMA))
+    )
+    with pipeline_write_lock(
+        state.pipeline_lock_path(), timeout=storage.resolve_lock_timeout()
+    ):
+        _write_parquet_atomic(reg_df, out_path)
+    return dg.MaterializeResult(metadata={"status": "SYNCED", "rows": reg_df.height})
+
+
+def _exec_curated_pdf_rag_asset(
+    context: dg.AssetExecutionContext,
+    paths: FinIntelPathsResource,
+    state: StateStoreResource,
+    storage: StorageResource,
+    disclosure_fetcher: DisclosureFetcherResource,
+) -> dg.MaterializeResult[None]:
+    _ = context
+    data_root = paths.resolved_data_root()
+    out_root = data_root / "curated_pdfs"
+    summary = sync_curated_pdfs_from_archive(
+        raw_root=paths.resolved_raw_root(),
+        output_root=out_root,
+        fetch_online=disclosure_fetcher.effective_fetch_online(),
+        manifest_lock_path=state.pipeline_lock_path(),
+        lock_timeout=storage.resolve_lock_timeout(),
+        state_store_path=state.get_store().path,
+    )
+    return dg.MaterializeResult(
+        metadata={
+            "scanned_receipts": summary.scanned_receipts,
+            "discovered_candidates": summary.discovered_candidates,
+            "downloaded_count": summary.downloaded_count,
+            "total_manifest_records": summary.total_manifest_records,
+        }
+    )
+
+
 ALL_ASSETS = [
     raw_fhsc_filings,
     raw_public_disclosures,
     normalized_financial_facts,
     published_financial_marts,
+]
+
+EXTENSION_PORT_ASSETS = [
+    market_prices_eod_asset,
+    regulatory_events_ledger_asset,
+    curated_pdf_rag_asset,
 ]
 
 
@@ -523,18 +706,24 @@ def build_default_resources() -> dict[str, object]:
 DEFAULT_RESOURCES: dict[str, object] = build_default_resources()
 
 defs = dg.Definitions(
-    assets=ALL_ASSETS,
+    assets=[*ALL_ASSETS, *EXTENSION_PORT_ASSETS],
     asset_checks=ALL_ASSET_CHECKS,
     jobs=[
         fhsc_ingestion_job,
         downstream_publish_job,
         quarterly_ml_retrain_job,
         lakehouse_maintenance_job,
+        market_prices_eod_job,
+        regulatory_events_ledger_job,
+        curated_pdf_rag_job,
     ],
     schedules=[
         seasonal_ingestion_schedule,
         quarterly_ml_retrain_schedule,
         lakehouse_maintenance_schedule,
+        market_prices_eod_schedule,
+        regulatory_events_ledger_schedule,
+        curated_pdf_rag_schedule,
     ],
     sensors=[downstream_publish_sensor, bctc_disclosure_feed_sensor],
     resources=DEFAULT_RESOURCES,

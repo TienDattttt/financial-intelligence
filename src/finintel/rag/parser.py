@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from finintel.exceptions import ContractViolationError
 from finintel.rag._gemini import (
     GeminiClientBundle,
     create_verified_gemini_bundle,
@@ -26,6 +27,8 @@ ExtractionMethod = Literal["digital", "vision_ocr", "local_gpu_ocr", "empty"]
 OcrBackend = Literal["auto", "gemini", "easyocr"]
 
 DEFAULT_OCR_DPI = 200
+MAX_PDF_PAGES = 400
+MAX_RENDERED_IMAGE_DIMENSION_PX = 4096
 DEFAULT_MIN_DIGITAL_ALNUM_CHARS = 100
 DEFAULT_OCR_CONCURRENCY = 8
 DEFAULT_OCR_BATCH_SIZE = 5
@@ -434,12 +437,30 @@ def _save_cached_page(cache_dir: Path, pdf_sha256: str, page: ParsedPage) -> Non
     os.replace(tmp_path, path)
 
 
-def _render_page_png_bytes(page: Any, dpi: int = DEFAULT_OCR_DPI) -> bytes:
+def _render_page_png_bytes(
+    page: Any,
+    dpi: int = DEFAULT_OCR_DPI,
+    *,
+    max_dimension_px: int = MAX_RENDERED_IMAGE_DIMENSION_PX,
+) -> bytes:
     pymupdf: Any = importlib.import_module("pymupdf")  # Lazy import (M-03)
 
     scale = dpi / 72.0
+    rect = getattr(page, "rect", None)
+    width = float(getattr(rect, "width", 0.0) or 0.0)
+    height = float(getattr(rect, "height", 0.0) or 0.0)
+    max_pt = max(width, height)
+    if max_pt > 0.0 and max_pt * scale > float(max_dimension_px):
+        scale = float(max_dimension_px) / max_pt
     matrix = pymupdf.Matrix(scale, scale)
     pix = page.get_pixmap(matrix=matrix, alpha=False)
+    if (
+        max(int(getattr(pix, "width", 0)), int(getattr(pix, "height", 0)))
+        > max_dimension_px
+    ):
+        raise ContractViolationError(
+            f"Rendered PDF page exceeds {max_dimension_px}px dimension cap."
+        )
     return bytes(pix.tobytes("png"))
 
 
@@ -733,6 +754,10 @@ def parse_curated_pdf(
 
     with pymupdf.open(str(pdf_path)) as doc:
         total_pages = len(doc)
+        if total_pages > MAX_PDF_PAGES:
+            raise ContractViolationError(
+                f"PDF exceeds maximum allowed page count ({total_pages} > {MAX_PDF_PAGES}): {pdf_path.name}"
+            )
         running_unit = "VND"
         running_section = "Báo cáo tài chính hợp nhất"
 
@@ -916,6 +941,8 @@ __all__ = [
     "DEFAULT_OCR_CONCURRENCY",
     "DEFAULT_OCR_DPI",
     "DEFAULT_PARSED_CACHE_DIR",
+    "MAX_PDF_PAGES",
+    "MAX_RENDERED_IMAGE_DIMENSION_PX",
     "ExtractionMethod",
     "LocalGpuOcrEngine",
     "OcrBackend",
