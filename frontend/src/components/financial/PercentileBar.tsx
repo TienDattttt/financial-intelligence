@@ -33,12 +33,12 @@ export function PercentileBar({
 
   return (
     <div
-      className="flex items-center gap-2"
+      className="flex items-center gap-1.5 sm:gap-2"
       title={`Phân vị giá trị: ${formatNumber(clamped, 0)}% · ${peerInfo.text}`}
     >
       <div
         className={cn(
-          "relative h-2.5 w-28 overflow-hidden rounded-[2px] border border-border/80 bg-surface-muted",
+          "relative h-2.5 w-20 sm:w-28 overflow-hidden rounded-[2px] border border-border/80 bg-surface-muted",
           lowSample && "striped-fallback",
         )}
       >
@@ -50,7 +50,7 @@ export function PercentileBar({
         <span className="pointer-events-none absolute inset-y-0 left-1/2 w-px bg-surface/90" />
         <span className="pointer-events-none absolute inset-y-0 left-3/4 w-px bg-surface/80" />
       </div>
-      <span className="num w-9 text-right text-xs text-ink-muted">
+      <span className="num w-8 sm:w-9 text-right text-xs text-ink-muted">
         {formatNumber(clamped, 0)}%
       </span>
       {lowSample ? (

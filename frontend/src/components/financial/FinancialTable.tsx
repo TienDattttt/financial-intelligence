@@ -190,10 +190,10 @@ const AUDIT_BADGE_CLASSES: Record<"low" | "mid" | "neutral", string> = {
 };
 
 const DEPTH_PADDING_CLASSES: Record<0 | 1 | 2 | 3, string> = {
-  0: "pl-3",
-  1: "pl-5",
-  2: "pl-8",
-  3: "pl-11",
+  0: "pl-2 md:pl-3",
+  1: "pl-3.5 md:pl-5",
+  2: "pl-5 md:pl-8",
+  3: "pl-7 md:pl-11",
 };
 
 export function FinancialTable({
@@ -471,7 +471,7 @@ export function FinancialTable({
             <tr className="border-b border-border bg-surface-muted/70 text-left text-xs font-semibold text-ink-muted">
               <th
                 scope="col"
-                className="sticky left-0 z-10 min-w-[280px] border-r border-border bg-surface-muted px-3 py-2"
+                className="min-w-[160px] max-w-[190px] border-r border-border bg-surface-muted px-3 py-2 md:sticky md:left-0 md:z-10 md:min-w-[280px] md:max-w-[360px]"
               >
                 Chỉ tiêu ({viewMode === "VALUE" ? "tỷ đồng" : "%"})
               </th>
@@ -549,7 +549,7 @@ export function FinancialTable({
                   <th
                     scope="row"
                     className={cn(
-                      "sticky left-0 z-10 border-r border-border bg-surface pr-3 text-left font-normal text-ink",
+                      "min-w-[160px] max-w-[190px] border-r border-border bg-surface pr-2 text-left font-normal text-ink md:sticky md:left-0 md:z-10 md:min-w-[280px] md:max-w-[360px] md:pr-3",
                       DEPTH_PADDING_CLASSES[h.depth],
                       row.is_total && "bg-surface-muted/95 font-semibold",
                       isSelected && "bg-accent-soft",

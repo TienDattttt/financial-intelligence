@@ -52,10 +52,12 @@ export function EmptyState({
   title,
   description,
   action,
+  actions,
 }: {
   title: string;
   description: string;
   action?: React.ReactNode;
+  actions?: React.ReactNode;
 }) {
   return (
     <div className="rounded-lg border border-dashed border-border-strong bg-surface/60">
@@ -63,7 +65,12 @@ export function EmptyState({
         <FileSearch className="size-7 text-ink-subtle" aria-hidden="true" />
         <p className="text-[15px] font-semibold text-ink">{title}</p>
         <p className="max-w-md text-[13px] text-ink-muted">{description}</p>
-        {action ? <div className="mt-2">{action}</div> : null}
+        {action || actions ? (
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+            {action}
+            {actions}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -73,10 +80,12 @@ export function ErrorState({
   title = "Không thể tải dữ liệu",
   message,
   onRetry,
+  actions,
 }: {
   title?: string;
   message: string;
   onRetry?: () => void;
+  actions?: React.ReactNode;
 }) {
   return (
     <div
@@ -94,11 +103,16 @@ export function ErrorState({
             <p className="text-[13px] text-ink-muted">{message}</p>
           </div>
         </div>
-        {onRetry ? (
-          <Button variant="outline" size="sm" onClick={onRetry}>
-            <RefreshCw className="size-3.5" />
-            Thử lại
-          </Button>
+        {onRetry || actions ? (
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {onRetry ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                <RefreshCw className="size-3.5" />
+                Thử lại
+              </Button>
+            ) : null}
+            {actions}
+          </div>
         ) : null}
       </div>
     </div>
