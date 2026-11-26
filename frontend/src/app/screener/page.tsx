@@ -91,7 +91,7 @@ function ScreenerContent() {
   const {
     statementScope,
     periodType,
-    periodEndDate,
+    queryPeriodEndDate = null,
     sectorsLevel2,
     cacheSnapshotKey,
   } = useAppState();
@@ -318,7 +318,7 @@ function ScreenerContent() {
     return {
       statement_scope: statementScope,
       period_type: periodType,
-      period_end_date: periodEndDate,
+      period_end_date: queryPeriodEndDate,
       q: qParam || null,
       exchange: (exchangeParam || null) as ScreenerQueryParams["exchange"],
       icb_code_level2: sectorParam || null,
@@ -348,9 +348,9 @@ function ScreenerContent() {
     minProbParam,
     minRfParam,
     page,
-    periodEndDate,
     periodType,
     qParam,
+    queryPeriodEndDate,
     riskTiersParam,
     sectorParam,
     sortBy,

@@ -242,6 +242,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     const summaryPromise = page.waitForResponse(
       (res) =>
         res.url().includes("/api/v2/sectors/risk-summary") &&
+        res.url().includes("period_type=QUARTER") &&
         res.status() === 200 &&
         (!res.url().includes("period_end_date=") ||
           (Boolean(latestQuarter) &&

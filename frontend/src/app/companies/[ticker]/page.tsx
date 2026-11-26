@@ -93,6 +93,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
     statementScope,
     periodType,
     periodEndDate,
+    queryPeriodEndDate = null,
     periodView,
     snapshotId,
     cacheSnapshotKey,
@@ -197,7 +198,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
     {
       statementScope,
       periodType,
-      periodEndDate,
+      periodEndDate: queryPeriodEndDate,
       metrics:
         shouldFetchAllSummary && allMetricNames.length > 0
           ? allMetricNames
@@ -225,7 +226,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
       metricName: metricParam,
       statementScope,
       periodType,
-      periodEndDate,
+      periodEndDate: queryPeriodEndDate,
       enabled: activeTab === "ratios",
     },
     querySnapshotKey,

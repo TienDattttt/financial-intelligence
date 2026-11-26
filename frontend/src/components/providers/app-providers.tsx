@@ -42,6 +42,7 @@ export interface AppContextValue {
   periodType: PeriodType;
   setPeriodType: (pt: PeriodType) => void;
   periodEndDate: string | null;
+  queryPeriodEndDate: string | null;
   setPeriodEndDate: (dateStr: string | null) => void;
   periodView: PeriodView;
   snapshotId: string | null;
@@ -231,6 +232,17 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
     return availableDates[0] ?? null;
   }, [availableDates, selectedPeriodEndDate]);
 
+  const queryPeriodEndDate = useMemo(() => {
+    if (!selectedPeriodEndDate) return null;
+    if (availableDates.length > 0 && !availableDates.includes(selectedPeriodEndDate)) {
+      return null;
+    }
+    if (availableDates[0] && selectedPeriodEndDate === availableDates[0]) {
+      return null;
+    }
+    return selectedPeriodEndDate;
+  }, [availableDates, selectedPeriodEndDate]);
+
   const setStatementScope = useCallback(
     (next: StatementScope) => {
       if (next === "SEPARATE" && !hasSeparateData) {
@@ -266,6 +278,7 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
       periodType,
       setPeriodType,
       periodEndDate: effectivePeriodEndDate,
+      queryPeriodEndDate,
       setPeriodEndDate: setSelectedPeriodEndDate,
       periodView,
       snapshotId,
@@ -297,6 +310,7 @@ function AppStateInner({ children }: { children: React.ReactNode }) {
       openSourceDrawer,
       periodType,
       periodView,
+      queryPeriodEndDate,
       ragAvailable,
       resolvedTheme,
       setPeriodType,

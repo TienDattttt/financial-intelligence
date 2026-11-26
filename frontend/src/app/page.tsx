@@ -45,6 +45,7 @@ export default function MarketOverviewPage() {
     statementScope,
     periodType,
     periodEndDate,
+    queryPeriodEndDate = null,
     availableDates,
     snapshotId,
     cacheSnapshotKey,
@@ -58,7 +59,7 @@ export default function MarketOverviewPage() {
   );
 
   const sectorSummary = useSectorRiskSummary(
-    { statementScope, periodType, periodEndDate },
+    { statementScope, periodType, periodEndDate: queryPeriodEndDate },
     effectiveCacheKey,
   );
   const currentPeriodDate =
@@ -74,7 +75,7 @@ export default function MarketOverviewPage() {
     {
       statementScope,
       periodType,
-      periodEndDate: prevPeriodDate ?? periodEndDate,
+      periodEndDate: prevPeriodDate ?? queryPeriodEndDate,
     },
     effectiveCacheKey,
   );

@@ -75,7 +75,7 @@ function StressTestContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { statementScope, periodType, periodEndDate, cacheSnapshotKey } = useAppState();
+  const { statementScope, periodType, queryPeriodEndDate = null, cacheSnapshotKey } = useAppState();
 
   const localWatchlist = React.useSyncExternalStore(
     subscribePreferences,
@@ -184,7 +184,7 @@ function StressTestContent() {
       scenario_name: shocks.scenarioName.trim() || "Tùy chỉnh",
       statement_scope: statementScope,
       period_type: periodType,
-      period_end_date: periodEndDate,
+      period_end_date: queryPeriodEndDate,
       revenue_shock_pct: Number((shocks.revPct / 100).toFixed(4)),
       gross_margin_shock_pp: Number((shocks.gmPp / 100).toFixed(4)),
       interest_rate_shock_bps: shocks.rateBps,
@@ -201,8 +201,8 @@ function StressTestContent() {
     return base;
   }, [
     activeTickers,
-    periodEndDate,
     periodType,
+    queryPeriodEndDate,
     referenceIcrs,
     scope,
     shocks,

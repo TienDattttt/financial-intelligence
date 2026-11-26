@@ -37,7 +37,13 @@ import type { RatioName } from "@/types/api";
 function CompareContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { statementScope, periodType, periodEndDate, cacheSnapshotKey } = useAppState();
+  const {
+    statementScope,
+    periodType,
+    periodEndDate,
+    queryPeriodEndDate = null,
+    cacheSnapshotKey,
+  } = useAppState();
   const { palette } = useChartTheme();
 
   const tickers = React.useMemo(() => {
@@ -61,7 +67,7 @@ function CompareContent() {
     tickers,
     statementScope,
     periodType,
-    periodEndDate,
+    queryPeriodEndDate,
     cacheSnapshotKey,
   );
 

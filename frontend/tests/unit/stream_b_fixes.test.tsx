@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import * as React from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const capturedSetOptions: unknown[] = [];
 const mockRouterReplace = vi.fn();
@@ -46,14 +46,24 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => mockSearchParams,
 }));
 
-vi.mock("@/components/providers/app-providers", () => ({
-  useAppState: () => ({
-    statementScope: "CONSOLIDATED",
-    periodType: "QUARTER",
-    periodEndDate: "2026-03-31",
-    cacheSnapshotKey: "active",
-  }),
-}));
+let useRealAppProviders = false;
+let useRealCompareCompanies = false;
+
+vi.mock("@/components/providers/app-providers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/providers/app-providers")>();
+  return {
+    ...actual,
+    useAppState: () =>
+      useRealAppProviders
+        ? actual.useAppState()
+        : {
+            statementScope: "CONSOLIDATED",
+            periodType: "QUARTER",
+            periodEndDate: "2026-03-31",
+            cacheSnapshotKey: "active",
+          },
+  };
+});
 
 vi.mock("@/hooks/use-finintel-queries", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/hooks/use-finintel-queries")>();
@@ -64,10 +74,15 @@ vi.mock("@/hooks/use-finintel-queries", async (importOriginal) => {
       isLoading: false,
       isError: false,
     }),
-    useCompareCompanies: () => ({
-      profiles: [],
-      summaries: [],
-    }),
+    useCompareCompanies: (
+      ...args: Parameters<typeof actual.useCompareCompanies>
+    ) =>
+      useRealCompareCompanies
+        ? actual.useCompareCompanies(...args)
+        : {
+            profiles: [],
+            summaries: [],
+          },
     useMarketChanges: () => ({
       data: { items: [] },
       isLoading: false,
@@ -114,8 +129,12 @@ import {
   computePriceOverlayZoomRange,
 } from "@/components/charts/PriceRiskOverlayChart";
 import { ScoreDots } from "@/components/financial/ScoreDots";
-import { shouldRetryFinintelQuery } from "@/hooks/use-finintel-queries";
-import { ApiError } from "@/lib/api-client";
+import { AppProviders, useAppState } from "@/components/providers/app-providers";
+import {
+  shouldRetryFinintelQuery,
+  useCompareCompanies,
+} from "@/hooks/use-finintel-queries";
+import { ApiError, apiClient } from "@/lib/api-client";
 import {
   AUDIT_OPINION_LABELS,
   formatFormulaVi,
@@ -243,6 +262,8 @@ describe("Stream B Regression Suite (Wave 1–3 Fixes)", () => {
   });
 
   afterEach(() => {
+    useRealAppProviders = false;
+    useRealCompareCompanies = false;
     cleanup();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -771,5 +792,161 @@ describe("Stream B Regression Suite (Wave 1–3 Fixes)", () => {
     expect(cmp.issuerDeltas).toHaveLength(1);
     expect(cmp.issuerDeltas[0]?.ticker).toBe("NVL");
     expect(cmp.issuerDeltas[0]?.icrA).toBeNull();
+  });
+
+  it("Challenger 1: computeScenarioComparison guards icrB against Object.prototype lookups on REMOVED_IN_B", () => {
+    const scenarioA = makeStressRes({
+      issuer_icrs: {},
+      newly_distressed_issuers: [
+        makeStressIssuer("toString", { stressed_interest_coverage: 0.5 }),
+        makeStressIssuer("hasOwnProperty", { stressed_interest_coverage: 0.7 }),
+      ],
+    });
+    const scenarioB = makeStressRes({
+      issuer_icrs: {},
+      newly_distressed_issuers: [],
+      top_stressed_issuers: [],
+    });
+
+    const cmp = computeScenarioComparison(scenarioA, scenarioB);
+    const byTicker = new Map(cmp.issuerDeltas.map((r) => [r.ticker, r]));
+
+    expect(byTicker.get("toString")?.status).toBe("REMOVED_IN_B");
+    expect(byTicker.get("toString")?.icrB).toBeNull();
+    expect(byTicker.get("hasOwnProperty")?.status).toBe("REMOVED_IN_B");
+    expect(byTicker.get("hasOwnProperty")?.icrB).toBeNull();
+  });
+
+  it("Reviewer 1: queryPeriodEndDate remains null when useMetaPeriods resolves so useCompareCompanies avoids a cold-load double-GET", async () => {
+    useRealAppProviders = true;
+    useRealCompareCompanies = true;
+
+    let resolveMetaPeriods!: (val: Awaited<ReturnType<typeof apiClient.getMetaPeriods>>) => void;
+    const pendingMetaPeriods = new Promise<Awaited<ReturnType<typeof apiClient.getMetaPeriods>>>(
+      (resolve) => {
+        resolveMetaPeriods = resolve;
+      },
+    );
+
+    vi.spyOn(apiClient, "getHealth").mockResolvedValue({
+      status: "ok",
+      active_snapshot_id: "snap-cold-1",
+      storage_backend: "ducklake",
+      rag_available: false,
+    });
+    vi.spyOn(apiClient, "getMetaPeriods").mockReturnValue(pendingMetaPeriods);
+    const profileSpy = vi.spyOn(apiClient, "getCompanyProfile").mockResolvedValue({
+      snapshot_id: "snap-cold-1",
+      issuer_id: "ISS_HPG",
+      ticker: "HPG",
+      company_name_vn: "Hòa Phát",
+      exchange: "HOSE",
+      icb_code_level2: "1700",
+      icb_name_level2: "Tài nguyên cơ bản",
+      statement_scope: "CONSOLIDATED",
+      period_view: "TTM",
+      ml_scores: [],
+      red_flags: [],
+      growth_series: [],
+      ratios_table: [],
+    } as unknown as Awaited<ReturnType<typeof apiClient.getCompanyProfile>>);
+    const summarySpy = vi
+      .spyOn(apiClient, "getCompanyBenchmarksSummary")
+      .mockResolvedValue({
+        snapshot_id: "snap-cold-1",
+        ticker: "HPG",
+        issuer_id: "ISS_HPG",
+        statement_scope: "CONSOLIDATED",
+        period_type: "QUARTER",
+        period_end_date: "2026-09-30",
+        items: [],
+      });
+
+    function ColdLoadHarness() {
+      const {
+        statementScope,
+        periodType,
+        periodEndDate,
+        queryPeriodEndDate,
+        setPeriodEndDate,
+        cacheSnapshotKey,
+      } = useAppState();
+      const { summaries } = useCompareCompanies(
+        ["HPG"],
+        statementScope,
+        periodType,
+        queryPeriodEndDate,
+        cacheSnapshotKey,
+      );
+      return React.createElement(
+        "div",
+        null,
+        React.createElement("span", { "data-testid": "period-end" }, periodEndDate ?? "null"),
+        React.createElement(
+          "span",
+          { "data-testid": "query-period-end" },
+          queryPeriodEndDate ?? "null",
+        ),
+        React.createElement(
+          "span",
+          { "data-testid": "summary-status" },
+          summaries[0]?.status ?? "none",
+        ),
+        React.createElement(
+          "button",
+          { type: "button", onClick: () => setPeriodEndDate("2026-06-30") },
+          "Pick historical",
+        ),
+        React.createElement(
+          "button",
+          { type: "button", onClick: () => setPeriodEndDate("2026-09-30") },
+          "Pick latest",
+        ),
+      );
+    }
+
+    render(React.createElement(AppProviders, null, React.createElement(ColdLoadHarness)));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("summary-status").textContent).toBe("success");
+    });
+    expect(screen.getByTestId("period-end").textContent).toBe("null");
+    expect(screen.getByTestId("query-period-end").textContent).toBe("null");
+    expect(summarySpy).toHaveBeenCalledTimes(1);
+    expect(profileSpy).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveMetaPeriods({
+        snapshot_id: "snap-cold-1",
+        published_at: "2026-11-26",
+        available_periods: {
+          CONSOLIDATED: {
+            QUARTER: ["2026-09-30", "2026-06-30"],
+            ANNUAL: ["2025-12-31"],
+          },
+          SEPARATE: { QUARTER: [], ANNUAL: [] },
+        },
+        sectors_level2: [],
+        freshness: null,
+      } as unknown as Awaited<ReturnType<typeof apiClient.getMetaPeriods>>);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("period-end").textContent).toBe("2026-09-30");
+    });
+    expect(screen.getByTestId("query-period-end").textContent).toBe("null");
+    expect(summarySpy).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Pick historical" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("query-period-end").textContent).toBe("2026-06-30");
+      expect(summarySpy).toHaveBeenCalledTimes(2);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Pick latest" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("query-period-end").textContent).toBe("null");
+    });
+    expect(summarySpy).toHaveBeenCalledTimes(2);
   });
 });

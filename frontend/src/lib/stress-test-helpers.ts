@@ -512,8 +512,10 @@ export function computeScenarioComparison(
             : (itemA?.stressed_interest_coverage ?? itemB?.scenario_a_icr ?? null),
         icrB:
           itemB?.stressed_interest_coverage ??
-          scenarioB.issuer_icrs?.[ticker] ??
-          null,
+          (scenarioB.issuer_icrs &&
+          Object.prototype.hasOwnProperty.call(scenarioB.issuer_icrs, ticker)
+            ? (scenarioB.issuer_icrs[ticker] ?? null)
+            : null),
       };
     })
     .sort((x, y) => {
