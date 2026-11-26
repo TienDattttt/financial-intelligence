@@ -9,15 +9,15 @@
 
 | Mã Task | Phân loại Commit (`AGENTS.md` §2.2.1) | Năng lực (`Capability`) | Tệp sản phẩm tối đa | Trạng thái |
 |---|---|---|---|---|
-| `TASK-00` | Governance & Spec Baseline | Khởi tạo `CONSTRAINTS.md`, `spec/`, `tasks/`, `scripts/check_constraints.py`, `docs/runbooks/` | `6` tệp mới | Đang thực thi (Đợt 1) |
-| `TASK-01` | **Behavior-Preserving** *(100% giữ nguyên hành vi)* | `cap-04`: Phân rã `serving/queries.py` -> gói `serving/queries/` (`< 1.000` dòng/file, `0` sửa `tests/`) | `7` tệp gói con (xóa file đơn) | Chờ (Đợt 1) |
-| `TASK-02` | Behavior-Changing | `cap-01`: Hợp nhất `FININTEL_DATA_ROOT` + chặn `DisclosureFetcherResource` báo pass giả offline | `6` tệp | Chờ (Đợt 1) |
-| `TASK-03` | Behavior-Changing | `cap-01` + `cap-04`: Pacing SQLite `< 1ms` liên tiến trình + `ssrf_guard.py` + Telemetry `entry_point` | `6` tệp | Chờ (Đợt 1) |
-| *Cổng 1* | **Verification Checkpoint #1** | Chạy toàn bộ `CONSTRAINTS.md` sau `TASK-00..03` | — | Chờ (Cuối Đợt 1) |
-| `TASK-04` | Behavior-Changing | `cap-02`: Sửa Dagster retrain path, `pipeline_write_pool=1`, Sensor BCTC `15m` & Quét TT96 Watermark `30m` | `5` tệp | Đợt 2 |
-| `TASK-05` | Behavior-Changing | `cap-02`: Port 3 EOD an toàn chia tách + Port 1 replay pháp lý + Đối soát chéo `FHSC ↔ Vietcap IQ` | `5` tệp | Đợt 2 |
-| `TASK-06` | Behavior-Changing | `cap-02`: Port 2 PDF CAS (`<= 400` trang) + Dagster Port 1/2/3 schedules + Docker `dagster-daemon` (`--read-only` UI) | `6` tệp | Đợt 2 |
-| *Cổng 2* | **Verification Checkpoint #2** | Chạy toàn bộ `CONSTRAINTS.md` + kiểm chứng Dagster definitions sau `TASK-04..06` | — | Đợt 2 |
+| `TASK-00` | Governance & Spec Baseline | Khởi tạo `CONSTRAINTS.md`, `spec/`, `tasks/`, `scripts/check_constraints.py`, `docs/runbooks/` | `6` tệp mới | Hoàn tất (Đợt 1) |
+| `TASK-01` | **Behavior-Preserving** *(100% giữ nguyên hành vi)* | `cap-04`: Phân rã `serving/queries.py` -> gói `serving/queries/` (`< 1.000` dòng/file, `0` sửa `tests/`) | `7` tệp gói con (xóa file đơn) | Hoàn tất (Đợt 1) |
+| `TASK-02` | Behavior-Changing | `cap-01`: Hợp nhất `FININTEL_DATA_ROOT` + chặn `DisclosureFetcherResource` báo pass giả offline | `6` tệp | Hoàn tất (Đợt 1) |
+| `TASK-03` | Behavior-Changing | `cap-01` + `cap-04`: Pacing SQLite `< 1ms` liên tiến trình + `ssrf_guard.py` + Telemetry `entry_point` | `6` tệp | Hoàn tất (Đợt 1) |
+| *Cổng 1* | **Verification Checkpoint #1** | Chạy toàn bộ `CONSTRAINTS.md` sau `TASK-00..03` | — | Hoàn tất (Cuối Đợt 1) |
+| `TASK-04` | Behavior-Changing | `cap-02`: Sửa Dagster retrain path, `pipeline_write_pool=1`, Sensor BCTC `15m` & Quét TT96 Watermark `30m` | `6` tệp | Hoàn tất (Đợt 2) |
+| `TASK-05` | Behavior-Changing | `cap-02`: Port 3 EOD an toàn chia tách + Port 1 replay pháp lý + Đối soát chéo `FHSC ↔ Vietcap IQ` | `6` tệp | Hoàn tất (Đợt 2) |
+| `TASK-06` | Behavior-Changing | `cap-02`: Port 2 PDF CAS (`<= 400` trang) + Dagster Port 1/2/3 schedules + Docker `dagster-daemon` (`--read-only` UI) | `6` tệp | Hoàn tất (Đợt 2) |
+| *Cổng 2* | **Verification Checkpoint #2** | Chạy toàn bộ `CONSTRAINTS.md` + kiểm chứng Dagster definitions sau `TASK-04..06` | — | Hoàn tất (Cuối Đợt 2) |
 | `TASK-07` | Behavior-Changing | `cap-03`: Cờ đỏ Hậu kiểm toán `RF_10_POST_AUDIT_PROFIT_DOWNGRADE` (`severity="HIGH"`, `restatements.py` + DBSP bump) | `6` tệp | Đợt 3 |
 | `TASK-08` | Behavior-Changing | `cap-03`: Chỉ báo cấu trúc thị trường `Merton DTD` (`merton_dtd.py` cho Overlay + Walk-Forward ML Ablation độc lập) | `6` tệp | Đợt 3 |
 | *Cổng 3* | **Verification Checkpoint #3** | Kiểm chứng định lượng Layer 4A/4B (`0%` look-ahead, `0` QG2 orphan, DuPont `<= 1e-9`) | — | Đợt 3 |
@@ -48,6 +48,25 @@
 - **Loại commit:** `feat(ingestion,observability)` (`Behavior-Changing`).
 - **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `src/finintel/ingestion/ssrf_guard.py` *(mới)*, `src/finintel/pipeline/state_store.py`, `src/finintel/pipeline/health.py`, `src/finintel/ingestion/fhsc_oapi_adapter.py`, `src/finintel/ingestion/disclosure_enricher.py`, `src/finintel/serving/observability.py` (+ `tests/unit/test_fhsc_pacing_lease.py`).
 - **Chi tiết:** `acquire_host_pacing_slot()` (`BEGIN IMMEDIATE` `< 1ms`, `time.sleep` ngoài khóa) áp dụng cho cả `FhscOapiAdapter` (`min_interval=1.75s`) và `health_check(online=True)`; `ssrf_guard.py` chặn IP nội bộ/loopback/metadata + HTTP redirect + giới hạn kích thước đọc với `Accept-Encoding: identity`; bổ sung ngữ cảnh `entry_point` và metrics `finintel_ingestion_requests_total`, `finintel_ingestion_duration_seconds`.
+
+---
+
+## Chi Tiết Đợt 2 (`TASK-04` → `Verification Checkpoint #2`)
+
+### `TASK-04` — Chuẩn Hóa Huấn Luyện Lại ML, Pool Ghi Đơn, Sensor BCTC `15m` & Quét TT96 Watermark `30m` (`cap-02`)
+- **Loại commit:** `feat(orchestration)` (`Behavior-Changing`).
+- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `config/dagster.yaml`, `config/dagster.postgres.yaml`, `src/finintel/pipeline/state_store.py`, `src/finintel/orchestration/partitions.py`, `src/finintel/orchestration/assets.py`, `src/finintel/orchestration/definitions.py`.
+- **Chi tiết:** Chuẩn hóa đường dẫn tương đối `regulatory_ledger/regulatory_events.parquet`, gắn `pool="pipeline_write_pool"` (`limit=1`) và khởi tạo sẵn trong `DEFAULT_CONCURRENCY_POOL_LIMITS`, ghi nhận cooldown FHSC 429 & thất bại quét watermark, giới hạn tối đa `3` lần thử lại ở `downstream_publish_sensor`, bổ sung bảng `ticker_sweep_watermarks` (`*/30 * * * *`, `< 2.86` ngày/685 mã) và `bctc_disclosure_feed_sensor` (`900s`, tối đa `5` mã/nhịp, đối chiếu đúng ngày công bố thực `EXACT_FILING`).
+
+### `TASK-05` — Port 3 An Toàn Chia Tách Cổ Tức, Port 1 Replay Pháp Lý & Đối Soát Chéo `FHSC ↔ Vietcap IQ` (`cap-02`)
+- **Loại commit:** `feat(ingestion,normalization)` (`Behavior-Changing`).
+- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `src/finintel/normalization/reconciliation.py` *(mới)*, `src/finintel/ingestion/market_prices_collector.py`, `src/finintel/ingestion/regulatory_events_collector.py`, `scripts/collect_regulatory_events.py`, `src/finintel/quality/gate.py`, `src/finintel/serving/observability.py`.
+- **Chi tiết:** Đồng bộ giá EOD cửa sổ chồng lấn `5` phiên phát hiện chia tách/cổ tức (`|Δclose_adj| > 1e-3`) cùng nhà cung cấp tự tải lại `2018-01-01..today` và bảo toàn `shares_outstanding_market`; gỡ bỏ mốc chặn cứng cuối năm 2026, khóa ngoại tuyến `fetch_online=False` và nạp lại toàn bộ biên lai thô kèm trang đầu mới ở Port 1; cài đặt `reconcile_cross_provider_facts()` khớp cùng cấp kiểm toán phát `CROSS_PROVIDER_DISCREPANCY_WARN` vào `info_codes` (giữ nguyên toàn bộ phiên bản lịch sử trong `clean_facts`) và phơi bày `finintel_provider_discrepancy_total` qua `/metrics`.
+
+### `TASK-06` — Gia Cố Port 2 PDF Từ Kho CAS, Lịch Chạy Dagster Port 1/2/3 & Docker Daemon Tự Trị (`cap-02`)
+- **Loại commit:** `feat(ingestion,orchestration,docker)` (`Behavior-Changing`).
+- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `src/finintel/ingestion/curated_pdf_service.py` *(mới)*, `src/finintel/rag/parser.py`, `src/finintel/orchestration/assets.py`, `src/finintel/orchestration/definitions.py`, `docker-compose.yml`, `Dockerfile`.
+- **Chi tiết:** Trích xuất liên kết `.pdf`/`.zip` trực tiếp từ kho CAS `RawArchive` (lazy-import `pymupdf`/`pgvector`, pacing `0.6s`/host và chỉ khóa `pipeline.lock` lúc ghi manifest), chặn cứng `<= 400` trang và `<= 4096px`; đăng ký 3 asset & lịch chạy UTC `RUNNING` (`market_prices_eod_schedule`, `regulatory_events_ledger_schedule`, `curated_pdf_rag_schedule`); đồng bộ `uv:0.9.30` + `DAGSTER_HOME=/app/dagster_home` (`dagster.postgres.yaml`), bootstrap tự động pools/partitions trên `dagster-daemon` và tách `dagster-webserver --read-only` trên `127.0.0.1:3002`.
 
 ---
 

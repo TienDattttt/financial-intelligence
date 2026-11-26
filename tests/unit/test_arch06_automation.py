@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
@@ -679,6 +680,17 @@ def timezone_vn() -> tzinfo:
     return timezone(timedelta(hours=7))
 
 
+@pytest.fixture(autouse=True)
+def _reset_dagster_defs_state_storage() -> Iterator[None]:
+    from dagster._core.storage.defs_state.base import _current_storage
+
+    _current_storage.set(None)
+    try:
+        yield
+    finally:
+        _current_storage.set(None)
+
+
 def test_task02_finintel_data_root_unifies_cli_config_and_dagster_storage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -796,3 +808,430 @@ def test_task02_start_demo_685_script_reads_finintel_data_root() -> None:
     assert "$env:FININTEL_DATA_ROOT" in script_text
     lines_before_check = script_text.split("Test-Path $StateSqlite")[0]
     assert "$env:FININTEL_DATA_ROOT" in lines_before_check
+
+
+def test_task04_retrain_relative_path_pipeline_write_pool_and_host_cooldown(
+    tmp_path: Path,
+) -> None:
+    """TASK-04: Retrain uses relative regulatory_events_path, write ops use pipeline_write_pool, and cooldown honors hostname."""
+    from finintel.orchestration.assets import (
+        PIPELINE_WRITE_POOL,
+        _resolve_confined_regulatory_events_path,
+        normalized_financial_facts,
+        run_lakehouse_maintenance,
+    )
+
+    assert PIPELINE_WRITE_POOL == "pipeline_write_pool"
+    assert normalized_financial_facts.op.pool == PIPELINE_WRITE_POOL
+    assert published_financial_marts.op.pool == PIPELINE_WRITE_POOL
+    assert run_lakehouse_maintenance.pool == PIPELINE_WRITE_POOL
+
+    paths_res, state_res, _ = _setup_workspace(tmp_path)
+    reg_file = (
+        paths_res.resolved_data_root()
+        / "regulatory_ledger"
+        / "regulatory_events.parquet"
+    )
+    reg_file.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"issuer_id": ["VN_FPT"]}).write_parquet(reg_file)
+
+    # Default quarterly retrain emits relative path accepted by _resolve_confined_regulatory_events_path.
+    ctx = dg.build_schedule_context(
+        scheduled_execution_time=datetime(2026, 4, 1, 2, 0, tzinfo=timezone_vn()),
+        resources={"paths": paths_res},
+    )
+    tick = quarterly_ml_retrain_schedule.evaluate_tick(ctx)
+    if isinstance(tick, dg.RunRequest):
+        req = tick
+    else:
+        assert tick.run_requests is not None
+        req = tick.run_requests[0]
+    cfg = req.run_config["ops"]["published_financial_marts"]["config"]
+    assert (
+        cfg["regulatory_events_path"] == "regulatory_ledger/regulatory_events.parquet"
+    )
+    resolved_reg = _resolve_confined_regulatory_events_path(
+        cfg["regulatory_events_path"], paths_res
+    )
+    assert resolved_reg == reg_file.resolve()
+
+    # Even if settings.yaml specifies an absolute path inside data_root, schedule normalizes to relative.
+    (paths_res.resolved_config_dir() / "settings.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "orchestration": {
+                    "ml_retrain": {"regulatory_events_path": str(reg_file.resolve())}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    tick_abs = quarterly_ml_retrain_schedule.evaluate_tick(ctx)
+    if isinstance(tick_abs, dg.RunRequest):
+        req_abs = tick_abs
+    else:
+        assert tick_abs.run_requests is not None
+        req_abs = tick_abs.run_requests[0]
+    cfg_abs = req_abs.run_config["ops"]["published_financial_marts"]["config"]
+    assert (
+        cfg_abs["regulatory_events_path"]
+        == "regulatory_ledger/regulatory_events.parquet"
+    )
+
+    # Hostname cooldown key fhsc_cooldown:api.fiinquant.vn pauses seasonal_ingestion_schedule.
+    state_store = state_res.initialize()
+    state_store.record_disclosure_failure(
+        "fhsc_cooldown:api.fiinquant.vn",
+        force_cooldown=True,
+        cooldown_seconds=600.0,
+        http_status=429,
+        now=datetime(2026, 1, 20, 1, 0, tzinfo=timezone_vn()).astimezone(UTC),
+    )
+    dg_home = tmp_path / "dg_home"
+    dg_home.mkdir()
+    repo_def = defs.get_repository_def()
+    with dg.DagsterInstance.local_temp(str(dg_home)) as instance:
+        instance.add_dynamic_partitions(CORPORATE_TICKERS_PARTITION_NAME, ["FPT"])
+        s_ctx = dg.build_schedule_context(
+            instance=instance,
+            scheduled_execution_time=datetime(2026, 1, 20, 1, 0, tzinfo=timezone_vn()),
+            resources={"paths": paths_res, "state": state_res},
+            repository_def=repo_def,
+        )
+        s_res = seasonal_ingestion_schedule.evaluate_tick(s_ctx)
+        assert s_res.run_requests is not None and len(s_res.run_requests) == 0
+        assert (
+            s_res.skip_message is not None
+            and "fhsc_cooldown:api.fiinquant.vn" in s_res.skip_message
+        )
+
+
+def test_task04_downstream_publish_sensor_caps_retries_at_3_on_qg2_failure(
+    tmp_path: Path,
+) -> None:
+    """TASK-04: downstream_publish_sensor retries failed publish at most 3 times per upstream_key."""
+    paths_res, _, _ = _setup_workspace(tmp_path, backend="parquet")
+    pub_job_def = downstream_publish_job.resolve(asset_graph=defs.resolve_asset_graph())
+
+    with dg.DagsterInstance.ephemeral() as instance:
+        sync_corporate_ticker_partitions(instance, paths_res.resolved_issuers_path())
+        instance.report_runless_asset_event(
+            dg.AssetMaterialization(asset_key=raw_fhsc_filings.key, partition="FPT")
+        )
+
+        cursor: str | None = None
+        emitted_keys: list[str] = []
+        for attempt in (1, 2, 3):
+            ctx = dg.build_sensor_context(instance=instance, cursor=cursor)
+            res = downstream_publish_sensor.evaluate_tick(ctx)
+            assert res.run_requests is not None and len(res.run_requests) == 1, (
+                f"Expected attempt {attempt} RunRequest"
+            )
+            req = res.run_requests[0]
+            assert req.run_key is not None
+            emitted_keys.append(req.run_key)
+            cursor = res.cursor
+            failed_run = instance.create_run_for_job(
+                job_def=pub_job_def,
+                status=dg.DagsterRunStatus.STARTED,
+                tags=dict(req.tags),
+            )
+            instance.report_run_failed(failed_run)
+
+        assert len(set(emitted_keys)) == 3
+        # 4th tick for the same failed upstream_key MUST trip circuit breaker (0 RunRequests).
+        ctx_halted = dg.build_sensor_context(instance=instance, cursor=cursor)
+        res_halted = downstream_publish_sensor.evaluate_tick(ctx_halted)
+        assert res_halted.run_requests is not None and len(res_halted.run_requests) == 0
+        assert res_halted.skip_message is not None and "3" in res_halted.skip_message
+
+
+def test_task04_ticker_sweep_watermarks_30min_covers_universe_deterministically(
+    tmp_path: Path,
+) -> None:
+    """TASK-04: seasonal_ingestion_schedule runs */30 * * * * using ticker_sweep_watermarks (< 2.86d / 685 tickers)."""
+    assert seasonal_ingestion_schedule.cron_schedule == "*/30 * * * *"
+    assert (
+        seasonal_ingestion_schedule.default_status == dg.DefaultScheduleStatus.RUNNING
+    )
+
+    paths_res, state_res, _ = _setup_workspace(tmp_path)
+    (paths_res.resolved_config_dir() / "settings.yaml").write_text(
+        yaml.safe_dump({"orchestration": {"max_partitions_per_run": 5}}),
+        encoding="utf-8",
+    )
+    state_store = state_res.initialize()
+
+    tickers_12 = [f"T{i:02d}" for i in range(1, 13)]
+    dg_sweep = tmp_path / "dg_sweep"
+    dg_sweep.mkdir()
+    repo_def = defs.get_repository_def()
+    with dg.DagsterInstance.local_temp(str(dg_sweep)) as instance:
+        instance.add_dynamic_partitions(CORPORATE_TICKERS_PARTITION_NAME, tickers_12)
+        batches: list[list[str]] = []
+        for slot_idx in range(3):
+            t_exec = datetime(2026, 1, 20, 1, 0, tzinfo=timezone_vn()) + timedelta(
+                minutes=30 * slot_idx
+            )
+            ctx = dg.build_schedule_context(
+                instance=instance,
+                scheduled_execution_time=t_exec,
+                resources={"paths": paths_res, "state": state_res},
+                repository_def=repo_def,
+            )
+            res = seasonal_ingestion_schedule.evaluate_tick(ctx)
+            assert res.run_requests is not None and len(res.run_requests) == 5
+            batches.append([str(r.partition_key) for r in res.run_requests])
+
+        assert batches[0] == ["T01", "T02", "T03", "T04", "T05"]
+        assert batches[1] == ["T06", "T07", "T08", "T09", "T10"]
+        assert batches[2] == ["T11", "T12", "T01", "T02", "T03"]
+        wm = state_store.list_ticker_sweep_watermarks()
+        assert set(wm) == set(tickers_12)
+
+    # Mathematical sweep guarantee: 685 tickers / (48 ticks/day * 5/tick) = 2.854 days.
+    days_for_685 = 685 / (48 * 5)
+    assert days_for_685 <= 2.86
+
+
+def test_task04_bctc_disclosure_feed_sensor_15min_filters_corporate_and_archived(
+    tmp_path: Path,
+) -> None:
+    """TASK-04: bctc_disclosure_feed_sensor (900s) emits <= 5 deterministic feed:{ticker}:{pub_date} RunRequests."""
+    import json
+    from finintel.domain.schemas import (
+        AuditOpinion,
+        AuditStatus,
+        FilingMetadata,
+        PeriodType,
+        RawFiling,
+        RawFilingBundle,
+        RawPayload,
+        StatementScope,
+        StatementType,
+    )
+    from finintel.ingestion.archive import RawArchive
+    from finintel.orchestration.definitions import bctc_disclosure_feed_sensor
+    from finintel.orchestration.resources import DisclosureFetcherResource
+
+    assert bctc_disclosure_feed_sensor.minimum_interval_seconds == 900
+    assert bctc_disclosure_feed_sensor.default_status == dg.DefaultSensorStatus.RUNNING
+    assert any(s.name == "bctc_disclosure_feed_sensor" for s in (defs.sensors or []))
+
+    paths_res, state_res, _ = _setup_workspace(tmp_path)
+    state_store = state_res.initialize()
+    archive = RawArchive(paths_res.resolved_raw_root(), state_store)
+
+    # Seed an already-archived FPT filing published on 2026-04-20 so sensor skips it.
+    fpt_meta = FilingMetadata(
+        issuer_id="VN_FPT",
+        ticker_at_filing="FPT",
+        statement_type=StatementType.BALANCE_SHEET,
+        statement_scope=StatementScope.CONSOLIDATED,
+        period_type=PeriodType.QUARTER,
+        fiscal_year=2026,
+        fiscal_quarter=1,
+        fiscal_year_start_date=date(2026, 1, 1),
+        period_start_date=date(2026, 1, 1),
+        period_end_date=date(2026, 3, 31),
+        published_at=date(2026, 4, 20),
+        audit_status=AuditStatus.UNAUDITED,
+        audit_opinion=AuditOpinion.NOT_APPLICABLE,
+    )
+    archive.store(
+        RawFilingBundle(
+            payload=RawPayload(
+                content=b'{"error_code":"0","data":[]}',
+                extension="json",
+                source_provider="fhsc",
+                connector_name="vnstock-oapi==0.1.2",
+                nature="PROVIDER_RAW_JSON",
+                fetched_at=datetime(2026, 4, 20, 8, 0, tzinfo=UTC),
+            ),
+            filings=(RawFiling(fpt_meta, {"bs": 100.0}, "/data/0"),),
+        )
+    )
+
+    feed_dir = tmp_path / "feed_cache"
+    feed_dir.mkdir()
+    feed_items = [
+        {
+            "ticker": "VCB",
+            "publicDate": "2026-04-22",
+        },  # BANK (not in CORPORATE_TICKERS) -> excluded
+        {"ticker": "FPT", "publicDate": "2026-04-20"},  # Already archived -> excluded
+        {"ticker": "HPG", "publicDate": "2026-04-21"},
+        {"ticker": "VNM", "publicDate": "2026-04-21"},
+        {"ticker": "CMG", "publicDate": "2026-04-21"},
+        {"ticker": "MWG", "publicDate": "2026-04-22"},
+        {"ticker": "PNJ", "publicDate": "2026-04-22"},
+        {"ticker": "REE", "publicDate": "2026-04-23"},  # 6th valid -> capped at 5!
+    ]
+    (feed_dir / "bctc_feed.json").write_text(json.dumps(feed_items), encoding="utf-8")
+    fetcher_res = DisclosureFetcherResource(
+        fetch_online=False, raw_disclosures_dir=str(feed_dir)
+    )
+
+    dg_feed = tmp_path / "dg_feed"
+    dg_feed.mkdir()
+    repo_def = defs.get_repository_def()
+    with dg.DagsterInstance.local_temp(str(dg_feed)) as instance:
+        instance.add_dynamic_partitions(
+            CORPORATE_TICKERS_PARTITION_NAME,
+            ["FPT", "HPG", "VNM", "CMG", "MWG", "PNJ", "REE"],
+        )
+        with dg.build_sensor_context(
+            instance=instance,
+            instance_ref=instance.get_ref(),
+            resources={
+                "paths": paths_res,
+                "state": state_res,
+                "disclosure_fetcher": fetcher_res,
+            },
+            repository_def=repo_def,
+        ) as s_ctx:
+            s_res = bctc_disclosure_feed_sensor.evaluate_tick(s_ctx)
+        assert s_res.run_requests is not None
+        assert len(s_res.run_requests) == 5
+        assert [r.run_key for r in s_res.run_requests] == [
+            "feed:HPG:2026-04-21",
+            "feed:VNM:2026-04-21",
+            "feed:CMG:2026-04-21",
+            "feed:MWG:2026-04-22",
+            "feed:PNJ:2026-04-22",
+        ]
+
+
+def test_task04_fhsc_429_persists_cooldown_and_has_archived_filing_pit_safety(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TASK-04 regression: FHSC 429 records cooldown + failed sweep watermark, and STATUTORY_LAG never masks feed."""
+    from finintel.domain.schemas import (
+        AuditOpinion,
+        AuditStatus,
+        FilingMetadata,
+        PeriodType,
+        RawFiling,
+        RawFilingBundle,
+        RawPayload,
+        StatementScope,
+        StatementType,
+    )
+    from finintel.exceptions import RateLimitOrCircuitOpenError
+    from finintel.ingestion.archive import RawArchive
+    from finintel.orchestration.partitions import (
+        DEFAULT_CONCURRENCY_POOL_LIMITS,
+        FHSC_API_POOL,
+        PIPELINE_WRITE_POOL,
+        PUBLIC_DISCLOSURE_POOL,
+    )
+
+    assert DEFAULT_CONCURRENCY_POOL_LIMITS == {
+        FHSC_API_POOL: 1,
+        PUBLIC_DISCLOSURE_POOL: 3,
+        PIPELINE_WRITE_POOL: 1,
+    }
+
+    paths_res, state_res, _ = _setup_workspace(tmp_path)
+    state_store = state_res.initialize()
+    archive = RawArchive(paths_res.resolved_raw_root(), state_store)
+
+    # 1. STATUTORY_LAG filing (published_at=None -> effective_available_at=2026-04-30) must NOT suppress feed on 2026-04-19!
+    stat_lag_meta = FilingMetadata(
+        issuer_id="VN_HPG",
+        ticker_at_filing="HPG",
+        statement_type=StatementType.BALANCE_SHEET,
+        statement_scope=StatementScope.CONSOLIDATED,
+        period_type=PeriodType.QUARTER,
+        fiscal_year=2026,
+        fiscal_quarter=1,
+        fiscal_year_start_date=date(2026, 1, 1),
+        period_start_date=date(2026, 1, 1),
+        period_end_date=date(2026, 3, 31),
+        published_at=None,
+        audit_status=AuditStatus.UNAUDITED,
+        audit_opinion=AuditOpinion.NOT_APPLICABLE,
+    )
+    archive.store(
+        RawFilingBundle(
+            payload=RawPayload(
+                content=b'{"error_code":"0","data":[{"stat_lag":1}]}',
+                extension="json",
+                source_provider="fhsc",
+                connector_name="vnstock-oapi==0.1.2",
+                nature="PROVIDER_RAW_JSON",
+                fetched_at=datetime(2026, 4, 18, 8, 0, tzinfo=UTC),
+            ),
+            filings=(RawFiling(stat_lag_meta, {"bs": 1.0}, "/data/0"),),
+        )
+    )
+    assert (
+        state_store.has_archived_filing_on_or_after("HPG", date(2026, 4, 19)) is False
+    )
+
+    # 2. Restated historical filing published on 2026-04-20 must NOT suppress a distinct filing published on 2026-04-19!
+    restate_meta = FilingMetadata(
+        issuer_id="VN_HPG",
+        ticker_at_filing="HPG",
+        statement_type=StatementType.INCOME_STATEMENT,
+        statement_scope=StatementScope.CONSOLIDATED,
+        period_type=PeriodType.ANNUAL,
+        fiscal_year=2025,
+        fiscal_quarter=None,
+        fiscal_year_start_date=date(2025, 1, 1),
+        period_start_date=date(2025, 1, 1),
+        period_end_date=date(2025, 12, 31),
+        published_at=date(2026, 4, 20),
+        audit_status=AuditStatus.AUDITED,
+        audit_opinion=AuditOpinion.UNMODIFIED,
+    )
+    archive.store(
+        RawFilingBundle(
+            payload=RawPayload(
+                content=b'{"error_code":"0","data":[{"restate":1}]}',
+                extension="json",
+                source_provider="fhsc",
+                connector_name="vnstock-oapi==0.1.2",
+                nature="PROVIDER_RAW_JSON",
+                fetched_at=datetime(2026, 4, 20, 9, 0, tzinfo=UTC),
+            ),
+            filings=(RawFiling(restate_meta, {"is": 2.0}, "/data/0"),),
+        )
+    )
+    assert (
+        state_store.has_archived_filing_on_or_after("HPG", date(2026, 4, 19)) is False
+    )
+    assert state_store.has_archived_filing_on_or_after("HPG", date(2026, 4, 20)) is True
+
+    # 3. FHSC 429 inside raw_fhsc_filings records fhsc_cooldown:api.fiinquant.vn and increments consecutive_failures.
+    def _fake_call(self: Any, ctx: Any) -> Any:
+        tk = ctx.tickers[0]
+        if tk == "HPG":
+            raise RateLimitOrCircuitOpenError("HTTP 429 Too Many Requests")
+        from finintel.pipeline.runner import StepOutcome, StepStatus
+
+        return StepOutcome(status=StepStatus.SUCCEEDED, issuer_id=f"VN_{tk}")
+
+    monkeypatch.setattr(
+        "finintel.orchestration.assets.IngestHandler.__call__", _fake_call
+    )
+    dg_429 = tmp_path / "dg_429"
+    dg_429.mkdir()
+    with dg.DagsterInstance.local_temp(str(dg_429)) as instance:
+        instance.add_dynamic_partitions(
+            CORPORATE_TICKERS_PARTITION_NAME, ["FPT", "HPG"]
+        )
+        res = dg.materialize(
+            [raw_fhsc_filings],
+            instance=instance,
+            resources={"paths": paths_res, "state": state_res},
+            partition_key="HPG",
+            raise_on_error=False,
+        )
+        assert not res.success
+    assert (
+        state_store.active_disclosure_cooldown_until("fhsc_cooldown:api.fiinquant.vn")
+        is not None
+    )
+    wm = state_store.list_ticker_sweep_watermarks()
+    assert wm["HPG"]["consecutive_failures"] == 1

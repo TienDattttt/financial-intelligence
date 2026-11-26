@@ -15,6 +15,7 @@
 #    `op_granularity_run_buffer`). Initialize per-pool slot limits once per instance via CLI:
 #      DAGSTER_HOME=config uv run dagster instance concurrency set fhsc_api_pool 1
 #      DAGSTER_HOME=config uv run dagster instance concurrency set public_disclosure_pool 3
+#      DAGSTER_HOME=config uv run dagster instance concurrency set pipeline_write_pool 1
 #    or programmatically via `finintel.orchestration.partitions.configure_concurrency_pools(instance)`.
 # 4. Separation of Concurrency vs Request-Rate Pacing:
 #    - `fhsc_api_pool` (limit = 1) bounds concurrent FHSC ops to 1 worker at a time.
@@ -36,6 +37,7 @@ concurrency:
   pools:
     granularity: "op"
     default_limit: 4
+    op_granularity_run_buffer: 1
 
 telemetry:
   enabled: false

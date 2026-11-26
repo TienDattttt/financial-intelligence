@@ -32,11 +32,13 @@ CORPORATE_TICKERS = dg.DynamicPartitionsDefinition(
 
 FHSC_API_POOL = "fhsc_api_pool"
 PUBLIC_DISCLOSURE_POOL = "public_disclosure_pool"
+PIPELINE_WRITE_POOL = "pipeline_write_pool"
 
 # Op-level concurrency slot limits (separate from the 0.6 req/s pacing inside FhscOapiAdapter).
 DEFAULT_CONCURRENCY_POOL_LIMITS: dict[str, int] = {
     FHSC_API_POOL: 1,
     PUBLIC_DISCLOSURE_POOL: 3,
+    PIPELINE_WRITE_POOL: 1,
 }
 
 _TICKER_RE = re.compile(r"^[A-Z0-9]{1,16}$")

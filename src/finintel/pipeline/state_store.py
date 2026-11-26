@@ -18,9 +18,9 @@ import json
 import math
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 FHSC_CONNECTOR_VERSION = "0.1.2"
@@ -54,6 +54,15 @@ _PROVIDER_RATE_LIMITS_TABLE_DDL = """
     CREATE TABLE IF NOT EXISTS provider_rate_limits (
         host TEXT PRIMARY KEY,
         next_allowed_at_epoch REAL NOT NULL
+    )
+    """
+
+_TICKER_SWEEP_WATERMARK_TABLE_DDL = """
+    CREATE TABLE IF NOT EXISTS ticker_sweep_watermarks (
+        ticker TEXT PRIMARY KEY,
+        last_swept_at TEXT,
+        last_filing_seen_date TEXT,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0
     )
     """
 
@@ -112,6 +121,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     _FHSC_WATERMARK_TABLE_DDL,
     _FHSC_DISCLOSURE_COOLDOWN_TABLE_DDL,
     _PROVIDER_RATE_LIMITS_TABLE_DDL,
+    _TICKER_SWEEP_WATERMARK_TABLE_DDL,
 )
 SCHEMA = ";\n".join(statement.strip() for statement in SCHEMA_STATEMENTS) + ";\n"
 
@@ -752,6 +762,106 @@ class StateStore:
             sleeper=sleeper,
             now_fn=now_fn,
         )
+
+    def list_ticker_sweep_watermarks(self) -> dict[str, dict[str, object]]:
+        """Return ``{ticker: watermark_row}`` from ``ticker_sweep_watermarks``."""
+        if not self.path.exists():
+            return {}
+        try:
+            with closing(
+                sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, timeout=5)
+            ) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout = 5000")
+                rows = conn.execute(
+                    """SELECT ticker, last_swept_at, last_filing_seen_date, consecutive_failures
+                       FROM ticker_sweep_watermarks
+                       ORDER BY ticker ASC"""
+                ).fetchall()
+            return {str(row["ticker"]): dict(row) for row in rows}
+        except sqlite3.OperationalError as error:
+            if "no such table" in str(error).lower():
+                return {}
+            raise
+
+    def select_tickers_by_watermark(
+        self,
+        universe_tickers: Sequence[str],
+        *,
+        limit: int,
+    ) -> tuple[str, ...]:
+        """Select up to ``limit`` tickers ordered by ``last_swept_at ASC NULLS FIRST, ticker ASC``."""
+        if limit < 1 or not universe_tickers:
+            return ()
+        cleaned = sorted({t.strip().upper() for t in universe_tickers if t.strip()})
+        watermarks = self.list_ticker_sweep_watermarks()
+        ordered = sorted(
+            cleaned,
+            key=lambda ticker: (
+                watermarks.get(ticker, {}).get("last_swept_at") is not None,
+                str(watermarks.get(ticker, {}).get("last_swept_at") or ""),
+                ticker,
+            ),
+        )
+        return tuple(ordered[:limit])
+
+    def record_ticker_sweep_batch(
+        self,
+        tickers: Sequence[str],
+        *,
+        swept_at: str | None = None,
+        last_filing_seen_date: str | None = None,
+        failed: bool = False,
+    ) -> None:
+        """Upsert ``ticker_sweep_watermarks`` rows for ``tickers`` in one transaction."""
+        cleaned = [t.strip().upper() for t in tickers if t.strip()]
+        if not cleaned:
+            return
+        stamp = swept_at if swept_at is not None else _now()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_TICKER_SWEEP_WATERMARK_TABLE_DDL)
+            for ticker in cleaned:
+                if failed:
+                    conn.execute(
+                        """INSERT INTO ticker_sweep_watermarks
+                           (ticker, last_swept_at, last_filing_seen_date, consecutive_failures)
+                           VALUES (?, ?, ?, 1)
+                           ON CONFLICT(ticker) DO UPDATE SET
+                               last_swept_at = excluded.last_swept_at,
+                               consecutive_failures = ticker_sweep_watermarks.consecutive_failures + 1""",
+                        (ticker, stamp, last_filing_seen_date),
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO ticker_sweep_watermarks
+                           (ticker, last_swept_at, last_filing_seen_date, consecutive_failures)
+                           VALUES (?, ?, ?, 0)
+                           ON CONFLICT(ticker) DO UPDATE SET
+                               last_swept_at = excluded.last_swept_at,
+                               last_filing_seen_date = COALESCE(excluded.last_filing_seen_date, ticker_sweep_watermarks.last_filing_seen_date),
+                               consecutive_failures = 0""",
+                        (ticker, stamp, last_filing_seen_date),
+                    )
+
+    def has_archived_filing_on_or_after(self, ticker: str, pub_date: date) -> bool:
+        """Return True when ``filings_manifest`` holds an exact-dated filing for ``ticker`` on ``pub_date``."""
+        clean_ticker = ticker.strip().upper()
+        if not clean_ticker or not self.path.exists():
+            return False
+        iso_date = pub_date.isoformat()
+        hit = self._read_one(
+            """SELECT 1 AS hit
+               FROM filings_manifest
+               WHERE ticker_at_filing = ?
+                 AND published_at IS NOT NULL
+                 AND published_at_basis != 'STATUTORY_LAG'
+                 AND substr(published_at, 1, 10) = ?
+               LIMIT 1""",
+            (clean_ticker, iso_date),
+        )
+        return hit is not None
 
     def _one(
         self, query: str, parameters: tuple[object, ...]

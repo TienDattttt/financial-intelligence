@@ -419,6 +419,17 @@ def _setup_workspace(
     return paths_res, state_res, storage_res
 
 
+@pytest.fixture(autouse=True)
+def _reset_dagster_defs_state_storage() -> Iterator[None]:
+    from dagster._core.storage.defs_state.base import _current_storage
+
+    _current_storage.set(None)
+    try:
+        yield
+    finally:
+        _current_storage.set(None)
+
+
 def test_definitions_validate_loadable_pools_deps_and_schedule() -> None:
     """Definitions load cleanly; pools, deps=[raw_fhsc_filings], blocking checks, and schedule match Spec 07."""
     dg.Definitions.validate_loadable(defs)
@@ -488,9 +499,15 @@ def test_dagster_yaml_storage_location_and_concurrency_pools(
     shutil.copy2(yaml_src, cfg_dir / "dagster.yaml")
     monkeypatch.chdir(tmp_path)
 
+    from finintel.orchestration.partitions import PIPELINE_WRITE_POOL
+
     with dg.DagsterInstance.from_config(str(cfg_dir)) as instance:
         applied = configure_concurrency_pools(instance)
-        assert applied == {FHSC_API_POOL: 1, PUBLIC_DISCLOSURE_POOL: 3}
+        assert applied == {
+            FHSC_API_POOL: 1,
+            PUBLIC_DISCLOSURE_POOL: 3,
+            PIPELINE_WRITE_POOL: 1,
+        }
 
         limits = {
             item.name: item.limit
@@ -498,6 +515,7 @@ def test_dagster_yaml_storage_location_and_concurrency_pools(
         }
         assert limits[FHSC_API_POOL] == 1
         assert limits[PUBLIC_DISCLOSURE_POOL] == 3
+        assert limits[PIPELINE_WRITE_POOL] == 1
 
         assert (tmp_path / "data" / "metadata" / "dagster" / "history").is_dir()
         assert list(cfg_dir.glob("*.db")) == []
@@ -709,6 +727,9 @@ def test_end_to_end_materialize_3_partitions_mock_fhsc_and_disclosures(
         assert repo.read_table(AUDIT_QUARANTINE_TABLE).is_empty()
 
         # Verify sync mode enables early-stop (fewer FHSC calls than backfill on unchanged older pages).
+        from dagster._core.storage.defs_state.base import _current_storage
+
+        _current_storage.set(None)
         requests.clear()
         sync_res = dg.materialize(
             [raw_fhsc_filings],
@@ -1306,3 +1327,4 @@ def test_empirical_snapshot_partitions_publish_and_blocking_checks(
             }
         )
         assert maint_res.success
+

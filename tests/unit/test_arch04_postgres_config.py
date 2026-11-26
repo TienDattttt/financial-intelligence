@@ -26,6 +26,7 @@ from finintel.config import FinIntelRuntimeConfig, resolve_runtime_config  # noq
 from finintel.orchestration.partitions import (  # noqa: E402
     CORPORATE_TICKERS_PARTITION_NAME,
     FHSC_API_POOL,
+    PIPELINE_WRITE_POOL,
     PUBLIC_DISCLOSURE_POOL,
 )
 from finintel.orchestration.resources import (  # noqa: E402
@@ -304,6 +305,7 @@ def test_bootstrap_dagster_instance_and_storage_resource_pg_env(
     assert summary["pool_limits"] == {
         FHSC_API_POOL: 1,
         PUBLIC_DISCLOSURE_POOL: 3,
+        PIPELINE_WRITE_POOL: 1,
     }
     assert summary["synced_partitions_count"] == 2
 
@@ -314,6 +316,7 @@ def test_bootstrap_dagster_instance_and_storage_resource_pg_env(
         }
         assert limits[FHSC_API_POOL] == 1
         assert limits[PUBLIC_DISCLOSURE_POOL] == 3
+        assert limits[PIPELINE_WRITE_POOL] == 1
         assert set(
             instance.get_dynamic_partitions(CORPORATE_TICKERS_PARTITION_NAME)
         ) == {
