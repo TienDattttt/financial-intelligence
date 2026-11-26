@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import duckdb
 import polars as pl
@@ -96,6 +96,7 @@ from finintel.serving.queries._cache import (
     percent_to_decimal,
     resolve_data_root,
 )
+from finintel.serving.queries._helpers import build_statement_periods_and_rows
 from finintel.serving.queries.company import (
     ALL_RATIOS,
     RATIO_LINEAGE_CATALOG,
@@ -734,121 +735,8 @@ class DashboardQueryService(
             if valid_facts.is_empty():
                 return issuer_id, [], []
 
-            fy_expr = (
-                pl.coalesce(
-                    pl.col("fiscal_year").cast(pl.Int64, strict=False),
-                    pl.col("period_end_date").dt.year().cast(pl.Int64),
-                )
-                if "fiscal_year" in valid_facts.columns
-                else pl.col("period_end_date").dt.year().cast(pl.Int64)
-            )
-            fq_expr = (
-                pl.col("fiscal_quarter").cast(pl.Int64, strict=False)
-                if "fiscal_quarter" in valid_facts.columns
-                else pl.lit(None, dtype=pl.Int64)
-            )
-            derived_fq = (
-                (pl.col("period_end_date").dt.month().cast(pl.Int64) - 1) // 3
-            ) + 1
-            label_expr = (
-                (pl.lit("Năm ") + fy_expr.cast(pl.String))
-                if period_type == "ANNUAL"
-                else (
-                    pl.lit("Q")
-                    + pl.coalesce(
-                        pl.when(fq_expr != 0).then(fq_expr).otherwise(None),
-                        derived_fq,
-                    ).cast(pl.String)
-                    + pl.lit("/")
-                    + fy_expr.cast(pl.String)
-                )
-            )
-            periods_df = (
-                valid_facts.unique(subset=["period_end_date"], keep="first")
-                .select(
-                    pl.col("period_end_date"),
-                    fy_expr.alias("fiscal_year"),
-                    fq_expr.alias("fiscal_quarter"),
-                    label_expr.alias("label"),
-                    (
-                        pl.col("taxonomy_version").cast(pl.String)
-                        if "taxonomy_version" in valid_facts.columns
-                        else pl.lit(None, dtype=pl.String)
-                    ).alias("taxonomy_version"),
-                    (
-                        pl.col("audit_status").cast(pl.String)
-                        if "audit_status" in valid_facts.columns
-                        else pl.lit(None, dtype=pl.String)
-                    ).alias("audit_status"),
-                )
-                .sort("period_end_date", descending=True)
-            )
-            periods_out = cast(list[dict[str, object]], periods_df.to_dicts())
-
-            val_f64 = pl.col("value").cast(pl.Float64, strict=False)
-            clean_facts = valid_facts.select(
-                pl.col("metric_id").cast(pl.String).alias("metric_id"),
-                pl.col("period_end_date").dt.strftime("%Y-%m-%d").alias("period_iso"),
-                pl.when(val_f64.is_finite())
-                .then(val_f64)
-                .otherwise(None)
-                .alias("value"),
-                (
-                    pl.col("unit").cast(pl.String)
-                    if "unit" in valid_facts.columns
-                    else pl.lit(None, dtype=pl.String)
-                ).alias("unit"),
-                (
-                    pl.col("comparable_across_taxonomy").cast(pl.Boolean, strict=False)
-                    if "comparable_across_taxonomy" in valid_facts.columns
-                    else pl.lit(None, dtype=pl.Boolean)
-                ).alias("comparable_across_taxonomy"),
-            )
-
-            rows_out: list[dict[str, object]] = []
-            for key_tuple, sub in clean_facts.partition_by(
-                "metric_id", as_dict=True, maintain_order=True
-            ).items():
-                mid = str(key_tuple[0])
-                mmeta = catalog.get(mid)
-                values: dict[str, float | None] = dict(
-                    zip(
-                        sub.get_column("period_iso").to_list(),
-                        sub.get_column("value").to_list(),
-                        strict=True,
-                    )
-                )
-                if mmeta is not None:
-                    unit_val = mmeta.unit
-                    comp_val = mmeta.comparable_across_taxonomy
-                else:
-                    non_null_units = sub.get_column("unit").drop_nulls()
-                    unit_val = (
-                        str(non_null_units[0])
-                        if not non_null_units.is_empty()
-                        else "VND"
-                    )
-                    non_null_comp = sub.get_column(
-                        "comparable_across_taxonomy"
-                    ).drop_nulls()
-                    comp_val = (
-                        bool(non_null_comp[0]) if not non_null_comp.is_empty() else True
-                    )
-                rows_out.append(
-                    {
-                        "metric_id": mid,
-                        "display_name_vn": mmeta.display_name_vn if mmeta else mid,
-                        "tt200_code": mmeta.tt200_code if mmeta else None,
-                        "tt99_code": mmeta.tt99_code if mmeta else None,
-                        "unit": unit_val,
-                        "is_total": mmeta.is_total if mmeta else False,
-                        "comparable_across_taxonomy": comp_val,
-                        "sort_order": mmeta.sort_order if mmeta else 99_999,
-                        "values": values,
-                    }
-                )
-            rows_out.sort(
-                key=lambda r: (int(cast(int, r["sort_order"])), str(r["metric_id"]))
+            periods_out, rows_out = build_statement_periods_and_rows(
+                valid_facts, period_type=period_type, catalog=catalog
             )
         return issuer_id, periods_out, rows_out
 

@@ -40,6 +40,12 @@ from finintel.serving.queries._cache import (
     _sql_count_quality_statuses,
     _sql_count_rows,
 )
+from finintel.serving.queries._helpers import (
+    empty_sector_risk_summary,
+    read_ml_scores_slice,
+    read_red_flag_counts_for_period,
+    resolve_latest_ratio_period,
+)
 from finintel.storage.repository import ParquetRepository
 from finintel.storage.schemas import (
     AUDIT_QUARANTINE_TABLE,
@@ -658,47 +664,19 @@ class OverviewQueryMixin(_QueryServiceBase):
                 pinned, RATIOS_TABLE, connection=connection
             )
             if not avail_ratio_cols:
-                return {
-                    "period_end_date": period_end_date,
-                    "total_issuers": 0,
-                    "safe_zone_count": 0,
-                    "grey_zone_count": 0,
-                    "distress_zone_count": 0,
-                    "beneish_flagged_count": 0,
-                    "high_red_flag_count": 0,
-                    "sectors": [],
-                    "top_deteriorating": [],
-                }
+                return empty_sector_risk_summary(period_end_date)
 
             resolved_date = period_end_date
             if resolved_date is None:
-                dates_df = pinned.read_table(
-                    RATIOS_TABLE,
-                    columns=["period_end_date"],
-                    filters={
-                        "statement_scope": statement_scope,
-                        "period_type": period_type,
-                    },
+                resolved_date, _ = resolve_latest_ratio_period(
+                    pinned,
+                    statement_scope=statement_scope,
+                    period_type=period_type,
+                    snap_key=pinned._snapshot_cache_key(),
                     connection=connection,
                 )
-                raw_max = (
-                    dates_df.get_column("period_end_date").max()
-                    if not dates_df.is_empty()
-                    else None
-                )
-                if not isinstance(raw_max, date):
-                    return {
-                        "period_end_date": None,
-                        "total_issuers": 0,
-                        "safe_zone_count": 0,
-                        "grey_zone_count": 0,
-                        "distress_zone_count": 0,
-                        "beneish_flagged_count": 0,
-                        "high_red_flag_count": 0,
-                        "sectors": [],
-                        "top_deteriorating": [],
-                    }
-                resolved_date = raw_max
+                if resolved_date is None:
+                    return empty_sector_risk_summary(None)
 
             ratio_cols = _select_existing_columns(
                 ("issuer_id", "total_debt"), avail_ratio_cols
@@ -714,17 +692,7 @@ class OverviewQueryMixin(_QueryServiceBase):
                 connection=connection,
             )
             if ratios.is_empty():
-                return {
-                    "period_end_date": resolved_date,
-                    "total_issuers": 0,
-                    "safe_zone_count": 0,
-                    "grey_zone_count": 0,
-                    "distress_zone_count": 0,
-                    "beneish_flagged_count": 0,
-                    "high_red_flag_count": 0,
-                    "sectors": [],
-                    "top_deteriorating": [],
-                }
+                return empty_sector_risk_summary(resolved_date)
             if "total_debt" not in ratios.columns:
                 ratios = ratios.with_columns(
                     pl.lit(0.0, dtype=pl.Float64).alias("total_debt")
@@ -736,33 +704,14 @@ class OverviewQueryMixin(_QueryServiceBase):
                 connection=connection,
             )
 
-            avail_rf = _available_table_columns(
-                pinned, RED_FLAGS_TABLE, connection=connection
+            rf_counts = read_red_flag_counts_for_period(
+                pinned,
+                statement_scope=statement_scope,
+                period_type=period_type,
+                period_end_date=resolved_date,
+                include_critical=False,
+                connection=connection,
             )
-            if avail_rf:
-                rf_slice = pinned.read_table(
-                    RED_FLAGS_TABLE,
-                    columns=["issuer_id"],
-                    filters={
-                        "statement_scope": statement_scope,
-                        "period_type": period_type,
-                        "period_end_date": resolved_date,
-                    },
-                    connection=connection,
-                )
-                rf_counts = (
-                    rf_slice.group_by("issuer_id").agg(
-                        pl.len().cast(pl.Int64).alias("red_flag_count")
-                    )
-                    if not rf_slice.is_empty()
-                    else pl.DataFrame(
-                        schema={"issuer_id": pl.String, "red_flag_count": pl.Int64}
-                    )
-                )
-            else:
-                rf_counts = pl.DataFrame(
-                    schema={"issuer_id": pl.String, "red_flag_count": pl.Int64}
-                )
 
             ml_join_schema = pl.Schema(
                 {
@@ -772,44 +721,21 @@ class OverviewQueryMixin(_QueryServiceBase):
                     "calibrated_distress_prob": pl.Float64,
                 }
             )
-            avail_ml = _available_table_columns(
-                pinned, ML_SCORES_TABLE, connection=connection
+            ml_slice = read_ml_scores_slice(
+                pinned,
+                desired_cols=(
+                    "issuer_id",
+                    "filing_id",
+                    "altman_zone",
+                    "beneish_flag",
+                    "calibrated_distress_prob",
+                ),
+                target_schema=ml_join_schema,
+                statement_scope=statement_scope,
+                period_type=period_type,
+                period_end_date=resolved_date,
+                connection=connection,
             )
-            if avail_ml:
-                ml_cols = _select_existing_columns(
-                    (
-                        "issuer_id",
-                        "filing_id",
-                        "altman_zone",
-                        "beneish_flag",
-                        "calibrated_distress_prob",
-                    ),
-                    avail_ml,
-                )
-                ml_raw = pinned.read_table(
-                    ML_SCORES_TABLE,
-                    columns=ml_cols,
-                    filters={
-                        "statement_scope": statement_scope,
-                        "period_type": period_type,
-                        "period_end_date": resolved_date,
-                    },
-                    connection=connection,
-                )
-                if not ml_raw.is_empty():
-                    sort_ml = (
-                        ["issuer_id", "filing_id"]
-                        if "filing_id" in ml_raw.columns
-                        else ["issuer_id"]
-                    )
-                    ml_slice = _pad_schema_columns(
-                        ml_raw.sort(sort_ml).unique(subset=["issuer_id"], keep="last"),
-                        ml_join_schema,
-                    )
-                else:
-                    ml_slice = pl.DataFrame(schema=ml_join_schema)
-            else:
-                ml_slice = pl.DataFrame(schema=ml_join_schema)
 
             joined = (
                 ratios.join(issuers, on="issuer_id", how="inner")

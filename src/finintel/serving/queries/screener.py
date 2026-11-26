@@ -13,7 +13,6 @@ Verified Sources:
 
 from __future__ import annotations
 
-import math
 from datetime import date
 from typing import Literal
 
@@ -23,17 +22,10 @@ import polars as pl
 from finintel.serving.queries._cache import (
     _COHORT_PEER_RANKING_CACHE,
     _INDUSTRY_COMPARISON_CACHE,
-    _LATEST_RATIO_PERIOD_CACHE,
     _MAX_QUERY_CACHE_SIZE,
     _QUERY_CACHE_LOCK,
     _SCREENER_CACHE,
-    ALTMAN_ZONES,
-    BENEISH_FLAGS,
-    PERIOD_TYPES,
-    RISK_TIERS_ORDERED,
     SCREENER_SCHEMA,
-    SCREENER_SORT_FIELDS,
-    STATEMENT_SCOPES,
     IndustryComparisonData,
     QualityTablesPage,
     _available_table_columns,
@@ -47,82 +39,27 @@ from finintel.serving.queries._cache import (
     _validate_pagination,
     _wrap_cached_dicts_df,
 )
+from finintel.serving.queries._helpers import (
+    empty_industry_comparison,
+    read_ml_scores_slice,
+    read_red_flag_counts_for_period,
+    resolve_latest_ratio_period,
+    validate_screener_filters,
+)
 from finintel.storage.repository import ParquetRepository
 from finintel.storage.schemas import (
     AUDIT_QUARANTINE_SCHEMA,
     AUDIT_QUARANTINE_TABLE,
     BENCHMARKS_TABLE,
     ML_SCORES_SCHEMA,
-    ML_SCORES_TABLE,
     QUALITY_SUMMARY_SCHEMA,
     QUALITY_SUMMARY_TABLE,
     RATIOS_TABLE,
-    RED_FLAGS_TABLE,
 )
 
 
 class ScreenerQueryMixin(_QueryServiceBase):
     """Market screener, cohort peer comparison, and quality/quarantine table queries."""
-
-    @staticmethod
-    def _validate_screener_filters(
-        *,
-        period_type: str,
-        statement_scope: str,
-        min_f_score: int | None,
-        altman_zone: str | None,
-        risk_tier: str | None,
-        beneish_flag: str | None,
-        max_distress_prob: float | None,
-        min_distress_prob: float | None,
-        max_red_flags: int | None,
-        min_red_flags: int | None,
-        q: str | None,
-        sort_by: str,
-        sort_dir: Literal["asc", "desc"],
-    ) -> str | None:
-        if statement_scope not in STATEMENT_SCOPES:
-            raise ValueError(f"Unsupported statement_scope: {statement_scope!r}")
-        if period_type not in PERIOD_TYPES:
-            raise ValueError(f"Unsupported period_type: {period_type!r}")
-        if min_f_score is not None and (
-            isinstance(min_f_score, bool)
-            or not isinstance(min_f_score, int)
-            or not (0 <= min_f_score <= 9)
-        ):
-            raise ValueError("min_f_score must be an integer between 0 and 9.")
-        if altman_zone is not None and altman_zone not in ALTMAN_ZONES:
-            raise ValueError(f"Unsupported altman_zone: {altman_zone!r}")
-        if risk_tier is not None and risk_tier not in RISK_TIERS_ORDERED:
-            raise ValueError(f"Unsupported risk_tier: {risk_tier!r}")
-        if beneish_flag is not None and beneish_flag not in BENEISH_FLAGS:
-            raise ValueError(f"Unsupported beneish_flag: {beneish_flag!r}")
-        for label, prob in (
-            ("max_distress_prob", max_distress_prob),
-            ("min_distress_prob", min_distress_prob),
-        ):
-            if prob is not None and (
-                isinstance(prob, bool)
-                or not isinstance(prob, (int, float))
-                or not math.isfinite(float(prob))
-                or not (0.0 <= float(prob) <= 1.0)
-            ):
-                raise ValueError(f"{label} must be a finite float in [0.0, 1.0].")
-        for label, count_bound in (
-            ("max_red_flags", max_red_flags),
-            ("min_red_flags", min_red_flags),
-        ):
-            if count_bound is not None and (
-                isinstance(count_bound, bool)
-                or not isinstance(count_bound, int)
-                or count_bound < 0
-            ):
-                raise ValueError(f"{label} must be a non-negative integer.")
-        if sort_by not in SCREENER_SORT_FIELDS:
-            raise ValueError(f"Unsupported sort_by: {sort_by!r}")
-        if sort_dir not in ("asc", "desc"):
-            raise ValueError(f"Unsupported sort_dir: {sort_dir!r}")
-        return q.strip().lower() if q and q.strip() else None
 
     @staticmethod
     def _resolve_screener_period_date(
@@ -134,40 +71,15 @@ class ScreenerQueryMixin(_QueryServiceBase):
         snap_key: tuple[object, ...] | None,
         connection: duckdb.DuckDBPyConnection | None,
     ) -> date | None:
-        resolved_date = period_end_date
-        if resolved_date is not None:
-            return resolved_date
-        period_cache_key = (
-            (*snap_key, statement_scope, period_type) if snap_key is not None else None
+        if period_end_date is not None:
+            return period_end_date
+        resolved_date, _ = resolve_latest_ratio_period(
+            pinned,
+            statement_scope=statement_scope,
+            period_type=period_type,
+            snap_key=snap_key,
+            connection=connection,
         )
-        if period_cache_key is not None:
-            with _QUERY_CACHE_LOCK:
-                _evict_stale_l1b_caches_locked(snap_key)
-                resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
-                if resolved_date is not None:
-                    _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
-        if resolved_date is None:
-            dates_df = pinned.read_table(
-                RATIOS_TABLE,
-                columns=["period_end_date"],
-                filters={
-                    "statement_scope": statement_scope,
-                    "period_type": period_type,
-                },
-                connection=connection,
-            )
-            if dates_df.is_empty():
-                return None
-            raw_max = dates_df.get_column("period_end_date").max()
-            if not isinstance(raw_max, date):
-                return None
-            resolved_date = raw_max
-            if period_cache_key is not None:
-                with _QUERY_CACHE_LOCK:
-                    _evict_stale_l1b_caches_locked(snap_key)
-                    _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
-                    while len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE:
-                        _LATEST_RATIO_PERIOD_CACHE.popitem(last=False)
         return resolved_date
 
     @staticmethod
@@ -260,44 +172,14 @@ class ScreenerQueryMixin(_QueryServiceBase):
                     pl.lit(None, dtype=pl.Float64).alias(forensic_col)
                 )
 
-        avail_rf_cols = _available_table_columns(
-            pinned, RED_FLAGS_TABLE, connection=connection
+        rf_counts = read_red_flag_counts_for_period(
+            pinned,
+            statement_scope=statement_scope,
+            period_type=period_type,
+            period_end_date=resolved_date,
+            include_critical=True,
+            connection=connection,
         )
-        if avail_rf_cols:
-            rf_slice = pinned.read_table(
-                RED_FLAGS_TABLE,
-                columns=["issuer_id", "severity"],
-                filters={
-                    "statement_scope": statement_scope,
-                    "period_type": period_type,
-                    "period_end_date": resolved_date,
-                },
-                connection=connection,
-            )
-            if rf_slice.is_empty():
-                rf_counts = pl.DataFrame(
-                    schema={
-                        "issuer_id": pl.String,
-                        "red_flag_count": pl.Int64,
-                        "critical_red_flag_count": pl.Int64,
-                    }
-                )
-            else:
-                rf_counts = rf_slice.group_by("issuer_id").agg(
-                    pl.len().cast(pl.Int64).alias("red_flag_count"),
-                    (pl.col("severity") == "CRITICAL")
-                    .sum()
-                    .cast(pl.Int64)
-                    .alias("critical_red_flag_count"),
-                )
-        else:
-            rf_counts = pl.DataFrame(
-                schema={
-                    "issuer_id": pl.String,
-                    "red_flag_count": pl.Int64,
-                    "critical_red_flag_count": pl.Int64,
-                }
-            )
 
         ml_desired = (
             "issuer_id",
@@ -323,35 +205,15 @@ class ScreenerQueryMixin(_QueryServiceBase):
         ml_join_schema = pl.Schema(
             {name: ML_SCORES_SCHEMA[name] for name in ml_desired if name != "filing_id"}
         )
-        avail_ml_cols = _available_table_columns(
-            pinned, ML_SCORES_TABLE, connection=connection
+        ml_slice = read_ml_scores_slice(
+            pinned,
+            desired_cols=ml_desired,
+            target_schema=ml_join_schema,
+            statement_scope=statement_scope,
+            period_type=period_type,
+            period_end_date=resolved_date,
+            connection=connection,
         )
-        if avail_ml_cols:
-            ml_cols = _select_existing_columns(ml_desired, avail_ml_cols)
-            ml_raw = pinned.read_table(
-                ML_SCORES_TABLE,
-                columns=ml_cols,
-                filters={
-                    "statement_scope": statement_scope,
-                    "period_type": period_type,
-                    "period_end_date": resolved_date,
-                },
-                connection=connection,
-            )
-            if ml_raw.is_empty():
-                ml_slice = pl.DataFrame(schema=ml_join_schema)
-            else:
-                sort_ml = (
-                    ["issuer_id", "filing_id"]
-                    if "filing_id" in ml_raw.columns
-                    else ["issuer_id"]
-                )
-                ml_dedup = ml_raw.sort(sort_ml).unique(
-                    subset=["issuer_id"], keep="last"
-                )
-                ml_slice = _pad_schema_columns(ml_dedup, ml_join_schema)
-        else:
-            ml_slice = pl.DataFrame(schema=ml_join_schema)
 
         joined = (
             ratios.join(issuers, on="issuer_id", how="inner")
@@ -447,7 +309,7 @@ class ScreenerQueryMixin(_QueryServiceBase):
         so screening degrades cleanly when a snapshot has no ML or red-flag tables.
         """
         _validate_pagination(limit, offset, max_limit=200)
-        clean_q = self._validate_screener_filters(
+        clean_q = validate_screener_filters(
             period_type=period_type,
             statement_scope=statement_scope,
             min_f_score=min_f_score,
@@ -565,7 +427,7 @@ class ScreenerQueryMixin(_QueryServiceBase):
         connection: duckdb.DuckDBPyConnection | None = None,
     ) -> pl.DataFrame:
         """Return 100% of filtered & sorted screener rows without pagination cap (UI-05a)."""
-        clean_q = self._validate_screener_filters(
+        clean_q = validate_screener_filters(
             period_type=period_type,
             statement_scope=statement_scope,
             min_f_score=min_f_score,
@@ -675,25 +537,14 @@ class ScreenerQueryMixin(_QueryServiceBase):
                 pinned, BENCHMARKS_TABLE, connection=connection
             )
             if not avail_bench_cols:
-                return IndustryComparisonData(
+                return empty_industry_comparison(
                     ticker=clean_ticker,
                     issuer_id=issuer_id,
                     statement_scope=statement_scope,
                     period_type=period_type,
                     period_end_date=period_end_date or date.today(),
                     metric_name=metric_name,
-                    peer_group_level=None,
-                    icb_code_used=None,
-                    peer_count=0,
-                    company_value=None,
-                    peer_median=None,
-                    peer_p25=None,
-                    peer_p75=None,
-                    peer_iqr=None,
-                    percentile_rank=None,
-                    robust_z_score=None,
                     industry_snapshot_date=resolved_snapshot_date,
-                    peer_ranking=pl.DataFrame(),
                 )
 
             target_cols = _select_existing_columns(
@@ -737,25 +588,14 @@ class ScreenerQueryMixin(_QueryServiceBase):
 
             if target_rows.is_empty():
                 resolved_end = period_end_date or date.today()
-                return IndustryComparisonData(
+                return empty_industry_comparison(
                     ticker=clean_ticker,
                     issuer_id=issuer_id,
                     statement_scope=statement_scope,
                     period_type=period_type,
                     period_end_date=resolved_end,
                     metric_name=metric_name,
-                    peer_group_level=None,
-                    icb_code_used=None,
-                    peer_count=0,
-                    company_value=None,
-                    peer_median=None,
-                    peer_p25=None,
-                    peer_p75=None,
-                    peer_iqr=None,
-                    percentile_rank=None,
-                    robust_z_score=None,
                     industry_snapshot_date=resolved_snapshot_date,
-                    peer_ranking=pl.DataFrame(),
                 )
 
             selected = target_rows.row(0, named=True)

@@ -13,7 +13,6 @@ Verified Sources:
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
@@ -30,11 +29,9 @@ from finintel.analytics.market_valuation import (
 from finintel.analytics.stress_test import REQUIRED_STRESS_COLUMNS
 from finintel.exceptions import ContractViolationError
 from finintel.serving.queries._cache import (
-    _LATEST_RATIO_PERIOD_CACHE,
     _MAX_QUERY_CACHE_SIZE,
     _QUERY_CACHE_LOCK,
     _STRESS_INPUTS_CACHE,
-    DEFAULT_DATA_ROOT,
     PERIOD_TYPES,
     STATEMENT_SCOPES,
     SectorOptionDict,
@@ -44,11 +41,17 @@ from finintel.serving.queries._cache import (
     _resolve_issuer_row,
     _select_existing_columns,
 )
+from finintel.serving.queries._helpers import (
+    build_port_candidate_roots,
+    load_port_parquet_for_issuer,
+    read_overlay_dtd_facts,
+    read_overlay_ml_scores,
+    resolve_latest_ratio_period,
+)
 from finintel.storage.repository import ParquetRepository
 from finintel.storage.schemas import (
     FILINGS_MANIFEST_TABLE,
     FINANCIAL_RATIOS_SCHEMA,
-    ML_SCORES_TABLE,
     RATIOS_TABLE,
 )
 
@@ -110,55 +113,31 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
             snap_key = pinned._snapshot_cache_key()
             resolved_date = period_end_date
             if resolved_date is None:
-                period_cache_key = (
-                    (*snap_key, statement_scope, period_type)
-                    if snap_key is not None
-                    else None
+                resolved_date, has_rows = resolve_latest_ratio_period(
+                    pinned,
+                    statement_scope=statement_scope,
+                    period_type=period_type,
+                    snap_key=snap_key,
+                    connection=connection,
                 )
-                if period_cache_key is not None:
-                    with _QUERY_CACHE_LOCK:
-                        _evict_stale_l1b_caches_locked(snap_key)
-                        resolved_date = _LATEST_RATIO_PERIOD_CACHE.get(period_cache_key)
-                        if resolved_date is not None:
-                            _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
-                if resolved_date is None:
-                    dates_df = pinned.read_table(
-                        RATIOS_TABLE,
-                        columns=["period_end_date"],
-                        filters={
-                            "statement_scope": statement_scope,
-                            "period_type": period_type,
-                        },
-                        connection=connection,
+                if not has_rows:
+                    return pl.DataFrame(
+                        schema={
+                            "issuer_id": pl.String,
+                            "ticker": pl.String,
+                            **{
+                                col: FINANCIAL_RATIOS_SCHEMA[col]
+                                for col in REQUIRED_STRESS_COLUMNS
+                            },
+                            "company_name_vn": pl.String,
+                            "icb_code_level2": pl.String,
+                            "icb_name_level2": pl.String,
+                        }
                     )
-                    if dates_df.is_empty():
-                        return pl.DataFrame(
-                            schema={
-                                "issuer_id": pl.String,
-                                "ticker": pl.String,
-                                **{
-                                    col: FINANCIAL_RATIOS_SCHEMA[col]
-                                    for col in REQUIRED_STRESS_COLUMNS
-                                },
-                                "company_name_vn": pl.String,
-                                "icb_code_level2": pl.String,
-                                "icb_name_level2": pl.String,
-                            }
-                        )
-                    raw_max = dates_df.get_column("period_end_date").max()
-                    if not isinstance(raw_max, date):
-                        raise ContractViolationError(
-                            "Unable to resolve latest period_end_date for stress-test inputs."
-                        )
-                    resolved_date = raw_max
-                    if period_cache_key is not None:
-                        with _QUERY_CACHE_LOCK:
-                            _evict_stale_l1b_caches_locked(snap_key)
-                            _LATEST_RATIO_PERIOD_CACHE[period_cache_key] = resolved_date
-                            while (
-                                len(_LATEST_RATIO_PERIOD_CACHE) > _MAX_QUERY_CACHE_SIZE
-                            ):
-                                _LATEST_RATIO_PERIOD_CACHE.popitem(last=False)
+                if resolved_date is None:
+                    raise ContractViolationError(
+                        "Unable to resolve latest period_end_date for stress-test inputs."
+                    )
 
             stress_cache_key = (
                 (*snap_key, statement_scope, period_type, resolved_date)
@@ -313,67 +292,6 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                         )
                     ]
         return published_at, available_periods, sectors
-
-    @staticmethod
-    def _build_port_candidate_roots(
-        repo_source: Path,
-        pinned_source: Path,
-        *,
-        port_data_root: Path | None = None,
-    ) -> list[Path]:
-        raw_candidates: list[Path] = []
-        if port_data_root is not None:
-            raw_candidates.extend([port_data_root, port_data_root.parent])
-        raw_candidates.extend([repo_source, pinned_source, repo_source.parent])
-        for src in (repo_source, pinned_source):
-            if (
-                src.name.startswith("snap_")
-                and src.parent.name == "snapshots"
-                and src.parent.parent.name == "published"
-                and len(src.parents) >= 3
-            ):
-                snap_root = src.parents[2]
-                raw_candidates.extend([snap_root, snap_root.parent])
-        env_root = os.getenv("FININTEL_DATA_ROOT")
-        if env_root:
-            env_path = Path(env_root).resolve()
-            raw_candidates.extend([env_path, env_path.parent])
-        else:
-            default_resolved = DEFAULT_DATA_ROOT.resolve()
-            for maybe_src in (port_data_root, repo_source, pinned_source):
-                if maybe_src is not None:
-                    src_resolved = maybe_src.resolve()
-                    if (
-                        src_resolved == default_resolved
-                        or default_resolved in src_resolved.parents
-                    ):
-                        raw_candidates.append(default_resolved)
-                        break
-        deduped: list[Path] = []
-        seen: set[Path] = set()
-        for candidate in raw_candidates:
-            resolved = candidate.resolve()
-            if resolved not in seen:
-                seen.add(resolved)
-                deduped.append(resolved)
-        return deduped
-
-    @staticmethod
-    def _load_port_parquet_for_issuer(
-        *,
-        rel_parquet_path: Path,
-        issuer_id: str,
-        candidate_roots: Sequence[Path],
-    ) -> pl.DataFrame | None:
-        for root in candidate_roots:
-            parquet_path = root / rel_parquet_path
-            if parquet_path.is_file():
-                return (
-                    pl.scan_parquet(parquet_path)
-                    .filter(pl.col("issuer_id") == issuer_id)
-                    .collect()
-                )
-        return None
 
     @staticmethod
     def _build_overlay_financial_periods(
@@ -837,13 +755,13 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
             resolved_ticker = str(issuer_row["ticker"])
             accounting_regime = str(issuer_row["accounting_regime"])
 
-            candidate_roots = self._build_port_candidate_roots(
+            candidate_roots = build_port_candidate_roots(
                 self.repository._source,
                 pinned._source,
                 port_data_root=port_data_root,
             )
 
-            prices = self._load_port_parquet_for_issuer(
+            prices = load_port_parquet_for_issuer(
                 rel_parquet_path=Path("market_prices") / "market_prices.parquet",
                 issuer_id=issuer_id,
                 candidate_roots=candidate_roots,
@@ -865,7 +783,7 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                     "earliest_warning_summary": None,
                 }
 
-            reg_events = self._load_port_parquet_for_issuer(
+            reg_events = load_port_parquet_for_issuer(
                 rel_parquet_path=Path("regulatory_ledger")
                 / "regulatory_events.parquet",
                 issuer_id=issuer_id,
@@ -874,79 +792,18 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
             if reg_events is not None and reg_events.is_empty():
                 reg_events = None
 
-            ml_scores: pl.DataFrame | None = None
-            avail_ml_cols = _available_table_columns(
-                pinned, ML_SCORES_TABLE, connection=connection
+            ml_scores = read_overlay_ml_scores(
+                pinned,
+                issuer_id=issuer_id,
+                statement_scope=statement_scope,
+                connection=connection,
             )
-            if avail_ml_cols:
-                ml_cols = _select_existing_columns(
-                    (
-                        "issuer_id",
-                        "statement_scope",
-                        "period_type",
-                        "period_end_date",
-                        "filing_id",
-                        "risk_tier",
-                        "calibrated_distress_prob",
-                        "risk_market_percentile",
-                        "relative_risk_lift",
-                        "model_role",
-                        "available_at",
-                        "published_at",
-                        "effective_available_at",
-                    ),
-                    avail_ml_cols,
-                )
-                if {"issuer_id", "period_end_date", "risk_tier"} <= set(ml_cols):
-                    ml_raw = pinned.read_table(
-                        ML_SCORES_TABLE,
-                        columns=ml_cols,
-                        filters={
-                            "issuer_id": issuer_id,
-                            "statement_scope": statement_scope,
-                        },
-                        connection=connection,
-                    )
-                    if not ml_raw.is_empty():
-                        sort_ml = [
-                            c
-                            for c in ("period_type", "period_end_date", "filing_id")
-                            if c in ml_raw.columns
-                        ]
-                        dedup_ml = [
-                            c
-                            for c in ("issuer_id", "period_type", "period_end_date")
-                            if c in ml_raw.columns
-                        ]
-                        ml_scores = ml_raw.sort(sort_ml).unique(
-                            subset=dedup_ml, keep="last"
-                        )
-
-            dtd_facts: pl.DataFrame | None = None
-            dtd_want = (
-                "issuer_id statement_scope period_type period_end_date metric_id value "
-                "published_at published_at_basis effective_available_at revision_no "
-                "revision_reason filing_id source_provider"
-            ).split()
-            for ft_name in ("financial_facts.parquet", "latest_facts.parquet"):
-                ft_avail = _available_table_columns(
-                    pinned, ft_name, connection=connection
-                )
-                if ft_avail and {"metric_id", "value"} <= set(ft_avail):
-                    cand_ft = pinned.read_table(
-                        ft_name,
-                        columns=_select_existing_columns(dtd_want, ft_avail),
-                        filters={
-                            "issuer_id": issuer_id,
-                            "statement_scope": statement_scope,
-                        },
-                        connection=connection,
-                    )
-                    if not cand_ft.filter(
-                        pl.col("metric_id") == "BS_TOTAL_ASSETS"
-                    ).is_empty():
-                        dtd_facts = cand_ft
-                        break
+            dtd_facts = read_overlay_dtd_facts(
+                pinned,
+                issuer_id=issuer_id,
+                statement_scope=statement_scope,
+                connection=connection,
+            )
 
             financial_periods = self._build_overlay_financial_periods(
                 pinned,

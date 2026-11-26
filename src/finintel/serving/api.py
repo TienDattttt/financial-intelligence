@@ -20,13 +20,9 @@ Verified Sources:
 
 from __future__ import annotations
 
-import asyncio
 import contextvars
-import csv
 import importlib
-import io
 import logging
-import math
 import os
 import re
 import threading
@@ -42,7 +38,6 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi import Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
 
 from finintel.analytics.stress_test import (
     StressScenario,
@@ -50,6 +45,23 @@ from finintel.analytics.stress_test import (
     summarize_stress_by_sector,
 )
 from finintel.exceptions import ContractViolationError
+from finintel.serving._api_helpers import (
+    STRESS_CACHE_CONTROL_HEADER,
+    RagAvailabilityMiddleware,
+    StressBulkheadMiddleware,
+    _dataframe_to_safe_csv_bytes,
+    _finite_scalar,
+    _frame_to_records,
+    _is_rag_unavailable_error,
+    _rag_unavailable_response,
+)
+from finintel.serving._api_helpers import (
+    _sanitize_csv_cell as _sanitize_csv_cell,
+)
+from finintel.serving._stress_helpers import (
+    build_empty_stress_response_kwargs,
+    build_stress_response_kwargs,
+)
 from finintel.serving.cache import (
     ValkeyResponseCache,
     build_snapshot_cache_key,
@@ -140,9 +152,7 @@ from finintel.serving.schemas import (
     SortDirection,
     StatementPeriodItem,
     StatementRowItem,
-    StressIssuerItem,
     StressScenarioRequest,
-    StressSectorSummaryItem,
     StressTestResponse,
     parse_shap_top_drivers,
 )
@@ -151,7 +161,6 @@ from finintel.storage.repository import ParquetRepository
 logger = logging.getLogger("finintel.serving.api")
 
 CACHE_CONTROL_HEADER = "private, max-age=0, must-revalidate"
-STRESS_CACHE_CONTROL_HEADER = "private, no-store"
 _TICKER_PATTERN = r"^[A-Z0-9]{1,10}$"
 _ICB_CODE_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 _REQUEST_DATA_ROOT: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
@@ -195,65 +204,6 @@ def _apply_cache_headers(response: Response, snapshot_id: str | None) -> None:
     response.headers["Cache-Control"] = CACHE_CONTROL_HEADER
     if snapshot_id is not None:
         response.headers["ETag"] = _format_etag(snapshot_id)
-
-
-def _finite_frame(df: pl.DataFrame) -> pl.DataFrame:
-    """Replace any non-finite floats (NaN/Inf) with NULL vectorially before JSON export."""
-    if df.is_empty():
-        return df
-    float_cols = [name for name, dtype in df.schema.items() if dtype.is_float()]
-    if not float_cols:
-        return df
-    return df.with_columns(
-        pl.when(pl.col(name).is_finite()).then(pl.col(name)).otherwise(None).alias(name)
-        for name in float_cols
-    )
-
-
-def _finite_scalar(value: float | None) -> float | None:
-    if value is None:
-        return None
-    return value if math.isfinite(value) else None
-
-
-def _frame_to_records(df: pl.DataFrame) -> list[dict[str, Any]]:
-    """Serialize a bounded Polars slice to JSON-safe dicts via ``to_dicts()``."""
-    if df.is_empty():
-        return []
-    return _finite_frame(df).to_dicts()
-
-
-_CSV_FORMULA_PREFIXES: tuple[str, ...] = ("=", "+", "-", "@", "\t", "\r")
-
-
-def _sanitize_csv_cell(value: object) -> str | int | float:
-    """Apply OWASP CSV formula injection guard while preserving numeric negatives."""
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return str(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else ""
-    if isinstance(value, date):
-        return value.isoformat()
-    text = str(value)
-    if text.startswith(_CSV_FORMULA_PREFIXES) or text.lstrip().startswith(
-        _CSV_FORMULA_PREFIXES
-    ):
-        return f"'{text}"
-    return text
-
-
-def _dataframe_to_safe_csv_bytes(df: pl.DataFrame) -> bytes:
-    """Serialize a Polars DataFrame to UTF-8 BOM CSV with OWASP formula sanitization."""
-    buf = io.StringIO()
-    writer = csv.writer(buf, lineterminator="\r\n")
-    writer.writerow(df.columns)
-    for row in df.rows():
-        writer.writerow([_sanitize_csv_cell(cell) for cell in row])
-    return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
 
 def _extract_snapshot_id(meta: dict[str, object]) -> str | None:
@@ -333,160 +283,6 @@ def _store_cached_model(
         return Response(content=raw, media_type="application/json", headers=headers)
     except Exception:
         return model
-
-
-class StressBulkheadMiddleware:
-    """Pure ASGI event-loop bulkhead for ``POST /api/v1/stress-test`` (NFR-03).
-
-    Uses an event-loop-native ``asyncio.Semaphore`` (instant 0-sleep wakeup) paired
-    with ``app.state.stress_semaphore`` BEFORE FastAPI dispatches into the AnyIO
-    threadpool or opens a DuckDB cursor.
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-        self._loop_sems: dict[int, asyncio.Semaphore] = {}
-
-    def _get_async_semaphore(self, app_state: Any) -> asyncio.Semaphore:
-        loop_id = id(asyncio.get_running_loop())
-        sem = self._loop_sems.get(loop_id)
-        if sem is None:
-            max_conc = int(
-                getattr(
-                    app_state,
-                    "stress_max_concurrency",
-                    DEFAULT_STRESS_MAX_CONCURRENCY,
-                )
-            )
-            sem = asyncio.Semaphore(max(1, max_conc))
-            if len(self._loop_sems) > 16:
-                self._loop_sems.clear()
-            self._loop_sems[loop_id] = sem
-        return sem
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if (
-            scope["type"] != "http"
-            or scope.get("method") != "POST"
-            or scope.get("path") != "/api/v1/stress-test"
-        ):
-            await self.app(scope, receive, send)
-            return
-
-        fastapi_app = scope.get("app")
-        app_state = getattr(fastapi_app, "state", None)
-        thread_sem = getattr(app_state, "stress_semaphore", None)
-        if not isinstance(thread_sem, threading.Semaphore):
-            await self.app(scope, receive, send)
-            return
-        sem_timeout = float(
-            getattr(
-                app_state,
-                "stress_semaphore_timeout",
-                DEFAULT_STRESS_SEMAPHORE_TIMEOUT,
-            )
-        )
-        async_sem = self._get_async_semaphore(app_state)
-        try:
-            await asyncio.wait_for(async_sem.acquire(), timeout=max(0.001, sem_timeout))
-        except TimeoutError:
-            resp = JSONResponse(
-                status_code=503,
-                content={
-                    "detail": "Stress-test simulator is busy; please retry shortly."
-                },
-                headers={"Retry-After": "1"},
-            )
-            await resp(scope, receive, send)
-            return
-
-        # Fast-path non-blocking check against app.state.stress_semaphore (keeps
-        # unit-test manual semaphore pre-acquisition 100% compatible without polling).
-        if not thread_sem.acquire(blocking=False):
-            async_sem.release()
-            resp = JSONResponse(
-                status_code=503,
-                content={
-                    "detail": "Stress-test simulator is busy; please retry shortly."
-                },
-                headers={"Retry-After": "1"},
-            )
-            await resp(scope, receive, send)
-            return
-
-        state_dict = scope.setdefault("state", {})
-        state_dict["_stress_permit_held"] = True
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            state_dict["_stress_permit_held"] = False
-            thread_sem.release()
-            async_sem.release()
-
-
-_RAG_UNAVAILABLE_DETAIL = (
-    "Dịch vụ tra cứu Thuyết minh PDF hiện tạm thời chưa sẵn sàng. Vui lòng thử lại sau."
-)
-
-
-def _is_rag_unavailable_error(exc: Exception) -> bool:
-    """Return True when a RAG dependency, vector DB, or LLM backend is unavailable."""
-    if isinstance(
-        exc,
-        (ImportError, OSError, TimeoutError, ConnectionError, RuntimeError),
-    ):
-        return True
-    mod_name = type(exc).__module__ or ""
-    return mod_name.startswith(
-        (
-            "psycopg",
-            "pgvector",
-            "redis",
-            "httpx",
-            "google",
-            "torch",
-            "sentence_transformers",
-        )
-    )
-
-
-def _rag_unavailable_response() -> JSONResponse:
-    return JSONResponse(
-        status_code=503,
-        content={"detail": _RAG_UNAVAILABLE_DETAIL},
-        headers={
-            "Cache-Control": STRESS_CACHE_CONTROL_HEADER,
-            "Retry-After": "5",
-        },
-    )
-
-
-class RagAvailabilityMiddleware:
-    """Pure ASGI guard converting missing optional deps / unreachable Postgres into HTTP 503 on ``/api/v2/documents/*``."""
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        path = str(scope.get("path", ""))
-        if not path.startswith("/api/v2/documents/"):
-            await self.app(scope, receive, send)
-            return
-        try:
-            await self.app(scope, receive, send)
-        except Exception as exc:
-            if not _is_rag_unavailable_error(exc):
-                raise
-            logger.warning(
-                "RAG endpoint unavailable (%s): %s",
-                type(exc).__name__,
-                path,
-            )
-            resp = _rag_unavailable_response()
-            await resp(scope, receive, send)
 
 
 def _mount_rag_router(
@@ -1560,19 +1356,13 @@ def create_app(
 
             if inputs_df.is_empty():
                 empty_body = StressTestResponse(
-                    snapshot_id=snap_id,
-                    scenario_name=scenario.name,
-                    statement_scope=payload.statement_scope,
-                    period_type=payload.period_type,
-                    period_end_date=payload.period_end_date,
-                    total_issuers_evaluated=0,
-                    total_debt_sum=0.0,
-                    baseline_debt_at_risk_pct=0.0,
-                    stressed_debt_at_risk_pct=0.0,
-                    newly_distressed_count=0,
-                    sector_summary=[],
-                    newly_distressed_issuers=[],
-                    top_stressed_issuers=[],
+                    **build_empty_stress_response_kwargs(
+                        snapshot_id=snap_id,
+                        scenario_name=scenario.name,
+                        statement_scope=payload.statement_scope,
+                        period_type=payload.period_type,
+                        period_end_date=payload.period_end_date,
+                    )
                 )
                 return _store_cached_model(
                     cache,
@@ -1601,82 +1391,21 @@ def create_app(
                         pl.lit("MARKET").alias("icb_name_level2"),
                     )
                 )
-            market_row = market_df.row(0, named=True)
-
-            issuer_cols = [
-                "issuer_id",
-                "ticker",
-                "company_name_vn",
-                "icb_code_level2",
-                "icb_name_level2",
-                "total_debt",
-                "interest_coverage",
-                "stressed_interest_coverage",
-                "stressed_interest_coverage_flag",
-                "ebit_ttm",
-                "stressed_ebit_ttm",
-                "borrowing_cost_ttm",
-                "stressed_borrowing_cost_ttm",
-                "cfo_ttm",
-                "stressed_cfo_ttm",
-                "baseline_debt_at_risk",
-                "stressed_debt_at_risk",
-                "newly_distressed_under_shock",
-            ]
-            newly_limit = (
-                1000 if payload.include_all_newly_distressed else payload.top_n
-            )
-            newly_df = (
-                stressed_df.filter(
-                    pl.col("newly_distressed_under_shock").eq(True).fill_null(False)
-                )
-                .select(issuer_cols)
-                .sort(
-                    ["total_debt", "ticker"],
-                    descending=[True, False],
-                    nulls_last=True,
-                )
-                .head(newly_limit)
-            )
-            top_df = (
-                stressed_df.select(issuer_cols)
-                .sort(
-                    ["stressed_debt_at_risk", "total_debt", "ticker"],
-                    descending=[True, True, False],
-                    nulls_last=True,
-                )
-                .head(payload.top_n)
-            )
 
             body = StressTestResponse(
-                snapshot_id=snap_id,
-                scenario_name=scenario.name,
-                statement_scope=payload.statement_scope,
-                period_type=payload.period_type,
-                period_end_date=(
-                    resolved_end
-                    if isinstance(resolved_end, date)
-                    else payload.period_end_date
-                ),
-                total_issuers_evaluated=int(market_row["issuer_count"]),
-                total_debt_sum=float(market_row["total_debt_sum"]),
-                baseline_debt_at_risk_pct=float(
-                    market_row["baseline_debt_at_risk_pct"]
-                ),
-                stressed_debt_at_risk_pct=float(
-                    market_row["stressed_debt_at_risk_pct"]
-                ),
-                newly_distressed_count=int(market_row["newly_distressed_count"]),
-                sector_summary=[
-                    StressSectorSummaryItem(**row)
-                    for row in _frame_to_records(sector_df)
-                ],
-                newly_distressed_issuers=[
-                    StressIssuerItem(**row) for row in _frame_to_records(newly_df)
-                ],
-                top_stressed_issuers=[
-                    StressIssuerItem(**row) for row in _frame_to_records(top_df)
-                ],
+                **build_stress_response_kwargs(
+                    snapshot_id=snap_id,
+                    scenario_name=scenario.name,
+                    statement_scope=payload.statement_scope,
+                    period_type=payload.period_type,
+                    resolved_end=resolved_end,
+                    fallback_period_end_date=payload.period_end_date,
+                    stressed_df=stressed_df,
+                    sector_df=sector_df,
+                    market_df=market_df,
+                    top_n=payload.top_n,
+                    include_all_newly_distressed=payload.include_all_newly_distressed,
+                )
             )
             return _store_cached_model(
                 cache,

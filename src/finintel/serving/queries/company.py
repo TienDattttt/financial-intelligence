@@ -13,10 +13,8 @@ Verified Sources:
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from datetime import date
-from typing import Literal
 
 import duckdb
 import polars as pl
@@ -28,7 +26,6 @@ from finintel.serving.queries._cache import (
     _RATIO_LINEAGE_CACHE,
     PERIOD_TYPES,
     STATEMENT_SCOPES,
-    LineageComponent,
     RatioLineageCard,
     RatioLineageSpec,
     _available_table_columns,
@@ -37,6 +34,10 @@ from finintel.serving.queries._cache import (
     _QueryServiceBase,
     _resolve_issuer_row,
     _select_existing_columns,
+)
+from finintel.serving.queries._helpers import (
+    extract_lineage_components,
+    opt_finite_float,
 )
 from finintel.storage.schemas import (
     BENCHMARKS_TABLE,
@@ -533,14 +534,6 @@ class CompanyQueryMixin(_QueryServiceBase):
                     ).items():
                         bench_by_metric[str(key_tuple[0])] = sub.row(0, named=True)
 
-            def _opt_finite(raw: object) -> float | None:
-                if raw is None or isinstance(raw, bool):
-                    return None
-                if isinstance(raw, (int, float)):
-                    val = float(raw)
-                    return val if math.isfinite(val) else None
-                return None
-
             spark_cols = [m for m in selected_metrics if m in hist_window.columns]
             cleaned_hist = (
                 hist_window.select(
@@ -564,9 +557,9 @@ class CompanyQueryMixin(_QueryServiceBase):
                     if metric_name in cleaned_hist.columns
                     else []
                 )
-                company_val = _opt_finite(b_row.get("value"))
+                company_val = opt_finite_float(b_row.get("value"))
                 if company_val is None:
-                    company_val = _opt_finite(latest_ratio_row.get(metric_name))
+                    company_val = opt_finite_float(latest_ratio_row.get(metric_name))
                 raw_peer_count = b_row.get("peer_count")
                 peer_count = (
                     int(raw_peer_count) if isinstance(raw_peer_count, int) else 0
@@ -580,11 +573,13 @@ class CompanyQueryMixin(_QueryServiceBase):
                         "format_type": meta.format_type,
                         "direction": meta.direction,
                         "company_value": company_val,
-                        "peer_median": _opt_finite(b_row.get("peer_median")),
-                        "peer_p25": _opt_finite(b_row.get("peer_p25")),
-                        "peer_p75": _opt_finite(b_row.get("peer_p75")),
-                        "percentile_rank": _opt_finite(b_row.get("percentile_rank")),
-                        "robust_z_score": _opt_finite(b_row.get("robust_z_score")),
+                        "peer_median": opt_finite_float(b_row.get("peer_median")),
+                        "peer_p25": opt_finite_float(b_row.get("peer_p25")),
+                        "peer_p75": opt_finite_float(b_row.get("peer_p75")),
+                        "percentile_rank": opt_finite_float(
+                            b_row.get("percentile_rank")
+                        ),
+                        "robust_z_score": opt_finite_float(b_row.get("robust_z_score")),
                         "peer_group_level": (
                             str(b_row["peer_group_level"])
                             if b_row.get("peer_group_level") is not None
@@ -762,163 +757,6 @@ class CompanyQueryMixin(_QueryServiceBase):
                 for row in matched_manifest.to_dicts():
                     manifest_lookup[str(row["filing_id"])] = row
 
-            def _select_window(
-                frame: pl.DataFrame,
-                role: Literal["NUMERATOR", "DENOMINATOR"],
-            ) -> pl.DataFrame:
-                if frame.is_empty():
-                    return frame
-                is_stock = pl.col("metric_id").str.starts_with("BS_")
-                if role == "NUMERATOR":
-                    if period_type == "ANNUAL":
-                        return frame.filter(
-                            (pl.col("period_end_date") == period_end_date)
-                            & (is_stock | (pl.col("period_type") == "ANNUAL"))
-                        )
-                    stock_rows = frame.filter(
-                        is_stock & (pl.col("period_end_date") == period_end_date)
-                    )
-                    flow_rows = (
-                        frame.filter(
-                            ~is_stock
-                            & (pl.col("period_type") == "QUARTER")
-                            & (pl.col("period_end_date") <= period_end_date)
-                        )
-                        .sort(["metric_id", "period_end_date"])
-                        .group_by("metric_id", maintain_order=True)
-                        .tail(4)
-                        .select(frame.columns)
-                    )
-                    return pl.concat([stock_rows, flow_rows])
-
-                mode = spec.denominator_mode
-                if mode == "POINT_IN_TIME_STOCK":
-                    return frame.filter(pl.col("period_end_date") == period_end_date)
-                if mode == "AVERAGE_STOCK":
-                    closing = frame.filter(pl.col("period_end_date") == period_end_date)
-                    opening = (
-                        frame.filter(pl.col("period_end_date") < period_end_date)
-                        .sort(["metric_id", "period_end_date"])
-                        .group_by("metric_id", maintain_order=True)
-                        .tail(1)
-                        .select(frame.columns)
-                    )
-                    return pl.concat([opening, closing])
-                if mode == "FLOW":
-                    if period_type == "ANNUAL":
-                        return frame.filter(
-                            (pl.col("period_end_date") == period_end_date)
-                            & (pl.col("period_type") == "ANNUAL")
-                        )
-                    return (
-                        frame.filter(
-                            (pl.col("period_type") == "QUARTER")
-                            & (pl.col("period_end_date") <= period_end_date)
-                        )
-                        .sort(["metric_id", "period_end_date"])
-                        .group_by("metric_id", maintain_order=True)
-                        .tail(4)
-                        .select(frame.columns)
-                    )
-                if mode == "PRIOR_YEAR_FLOW":
-                    if period_type == "ANNUAL":
-                        return (
-                            frame.filter(
-                                (pl.col("period_type") == "ANNUAL")
-                                & (pl.col("period_end_date") < period_end_date)
-                            )
-                            .sort(["metric_id", "period_end_date"])
-                            .group_by("metric_id", maintain_order=True)
-                            .tail(1)
-                            .select(frame.columns)
-                        )
-                    return (
-                        frame.filter(
-                            (pl.col("period_type") == "QUARTER")
-                            & (pl.col("period_end_date") < period_end_date)
-                        )
-                        .sort(["metric_id", "period_end_date"])
-                        .group_by("metric_id", maintain_order=True)
-                        .tail(4)
-                        .select(frame.columns)
-                    )
-                return frame
-
-            def _extract_components(
-                role: Literal["NUMERATOR", "DENOMINATOR"],
-                metrics: tuple[str, ...],
-            ) -> tuple[LineageComponent, ...]:
-                matched = (
-                    scoped_facts.filter(pl.col("metric_id").is_in(list(metrics)))
-                    .sort(["metric_id", "period_end_date", "revision_no", "filing_id"])
-                    .unique(
-                        subset=["metric_id", "period_end_date", "period_type"],
-                        keep="last",
-                    )
-                )
-                windowed = _select_window(matched, role).sort(
-                    ["metric_id", "period_end_date"]
-                )
-                items: list[LineageComponent] = []
-                for row in windowed.to_dicts():
-                    fid = str(row["filing_id"])
-                    m_info = manifest_lookup.get(fid, {})
-                    raw_src_provider = m_info.get("source_provider") or row.get(
-                        "source_provider"
-                    )
-                    raw_connector = m_info.get("connector_name")
-                    raw_sha = m_info.get("canonical_content_sha256")
-                    pub_at = row.get("published_at")
-                    if pub_at is None and isinstance(m_info.get("published_at"), date):
-                        pub_at = m_info["published_at"]
-                    eff_at = row.get("effective_available_at")
-                    pub_basis = row.get("published_at_basis") or m_info.get(
-                        "published_at_basis"
-                    )
-                    items.append(
-                        LineageComponent(
-                            role=role,
-                            metric_id=str(row["metric_id"]),
-                            period_type=str(row["period_type"]),
-                            fiscal_year=int(row["fiscal_year"]),
-                            fiscal_quarter=(
-                                int(row["fiscal_quarter"])
-                                if row.get("fiscal_quarter") is not None
-                                else None
-                            ),
-                            period_end_date=row["period_end_date"],
-                            value=(
-                                float(row["value"])
-                                if row.get("value") is not None
-                                else None
-                            ),
-                            filing_id=fid,
-                            taxonomy_version=str(row["taxonomy_version"]),
-                            derivation_method=str(row["derivation_method"]),
-                            source_provider=(
-                                str(raw_src_provider)
-                                if raw_src_provider is not None
-                                else None
-                            ),
-                            connector_name=(
-                                str(raw_connector)
-                                if raw_connector is not None
-                                else None
-                            ),
-                            published_at=pub_at if isinstance(pub_at, date) else None,
-                            published_at_basis=(
-                                str(pub_basis) if pub_basis is not None else None
-                            ),
-                            effective_available_at=(
-                                eff_at if isinstance(eff_at, date) else None
-                            ),
-                            canonical_content_sha256=(
-                                str(raw_sha) if raw_sha is not None else None
-                            ),
-                        )
-                    )
-                return tuple(items)
-
             lineage_result = RatioLineageCard(
                 ticker=clean_ticker,
                 issuer_id=issuer_id,
@@ -948,11 +786,23 @@ class CompanyQueryMixin(_QueryServiceBase):
                 denominator_mode=spec.denominator_mode,
                 anchor_filing_id=anchor_filing_id,
                 source_filing_ids=source_ids,
-                numerator_components=_extract_components(
-                    "NUMERATOR", spec.numerator_metrics
+                numerator_components=extract_lineage_components(
+                    scoped_facts,
+                    role="NUMERATOR",
+                    metrics=spec.numerator_metrics,
+                    period_type=period_type,
+                    period_end_date=period_end_date,
+                    denominator_mode=spec.denominator_mode,
+                    manifest_lookup=manifest_lookup,
                 ),
-                denominator_components=_extract_components(
-                    "DENOMINATOR", spec.denominator_metrics
+                denominator_components=extract_lineage_components(
+                    scoped_facts,
+                    role="DENOMINATOR",
+                    metrics=spec.denominator_metrics,
+                    period_type=period_type,
+                    period_end_date=period_end_date,
+                    denominator_mode=spec.denominator_mode,
+                    manifest_lookup=manifest_lookup,
                 ),
                 orphan_filing_ids=orphans,
             )
