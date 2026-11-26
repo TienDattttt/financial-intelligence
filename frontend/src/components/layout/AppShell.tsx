@@ -377,8 +377,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               aria-label="FinIntel — Trang chủ"
               className="flex shrink-0 items-center gap-1.5 rounded-md font-semibold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:gap-2"
             >
-              <span className="inline-flex size-6 items-center justify-center rounded-md bg-primary font-mono text-xs font-semibold text-primary-foreground">
-                FI
+              <span
+                aria-hidden="true"
+                className="inline-flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  className="size-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M5 18V6h7" />
+                  <path d="M5 12h5.5" />
+                  <path d="M17.5 6v12" />
+                </svg>
               </span>
               <span className="hidden tracking-tight text-[15px] sm:inline">FinIntel</span>
             </Link>
@@ -411,7 +427,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <button
               type="button"
               onClick={() => setMobileControlsOpen(true)}
-              aria-label="Chọn kỳ dữ liệu và phạm vi báo cáo"
+              aria-label={`${periodEndDate ? formatPeriodLabel(periodEndDate, periodType) : "Kỳ mới nhất"} — Chọn kỳ dữ liệu và phạm vi báo cáo`}
               aria-expanded={mobileControlsOpen}
               className="inline-flex h-8 max-w-[82px] shrink-0 items-center gap-1 rounded-md border border-border bg-canvas px-1.5 text-[11px] font-medium text-ink transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:max-w-[160px] sm:px-2 sm:text-xs md:hidden"
             >

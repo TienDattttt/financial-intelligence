@@ -233,10 +233,19 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     });
     page.on("pageerror", (err) => pageErrors.push(err.message));
 
+    const metaRes = await page.request.get("/api/v2/meta/periods");
+    const metaJson = (await metaRes.json()) as {
+      available_periods?: { CONSOLIDATED?: { QUARTER?: string[] } };
+    };
+    const latestQuarter = metaJson.available_periods?.CONSOLIDATED?.QUARTER?.[0];
+
     const summaryPromise = page.waitForResponse(
       (res) =>
         res.url().includes("/api/v2/sectors/risk-summary") &&
-        res.status() === 200,
+        res.status() === 200 &&
+        (!res.url().includes("period_end_date=") ||
+          (Boolean(latestQuarter) &&
+            res.url().includes(`period_end_date=${latestQuarter}`))),
     );
     await page.goto("/", { waitUntil: "networkidle" });
     const summaryRes = await summaryPromise;

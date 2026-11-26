@@ -470,7 +470,7 @@ function StressTestContent() {
           <p className="mt-0.5 text-xs text-ink-muted">
             Phạm vi {STATEMENT_SCOPE_LABELS[statementScope] ?? statementScope} ·{" "}
             {PERIOD_TYPE_LABELS[periodType] ?? periodType} · Nợ rủi ro được định nghĩa khi hệ số khả năng trả lãi ICR &lt; 1,0x ·{" "}
-            <Link href="/methodology" className="text-accent-ink hover:underline">
+            <Link href="/methodology" className="text-accent-ink underline underline-offset-2">
               Xem phương pháp
             </Link>
           </p>

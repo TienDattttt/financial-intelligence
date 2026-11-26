@@ -67,11 +67,14 @@ test.describe("M3 P0/P1 Audit Regression E2E", () => {
     await expect(page.getByRole("button", { name: /EBIT\/Lãi vay/i })).toBeVisible();
 
     const compactBtn = page.getByRole("button", { name: /Bảng gọn/i });
-    await expect(compactBtn).toHaveAttribute("aria-pressed", "false");
+    await expect(compactBtn).toHaveAttribute("aria-pressed", "true");
     await compactBtn.click();
+    const comfortableBtn = page.getByRole("button", { name: /Bảng thoáng/i });
+    await expect(comfortableBtn).toHaveAttribute("aria-pressed", "false");
+    await comfortableBtn.click();
     await expect(compactBtn).toHaveAttribute("aria-pressed", "true");
 
-    await page.getByRole("tab", { name: /Biểu đồ phân tán/i }).click();
+    await page.getByRole("button", { name: /Biểu đồ phân tán/i }).click();
     await expect(page.getByText(/Trang 1 \//)).toBeVisible();
     await expect(page.getByRole("button", { name: /Bảng gọn/i })).toBeHidden();
     await expect(page.getByRole("button", { name: /^Cột \(/ })).toBeHidden();
@@ -86,7 +89,9 @@ test.describe("M3 P0/P1 Audit Regression E2E", () => {
 
     await compareInput.fill("ZZZZZ9");
     await page.getByRole("button", { name: /^Thêm$/ }).click();
-    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(
+      page.getByRole("alert").filter({ hasText: /ZZZZZ9/i }),
+    ).toBeVisible();
 
     const compare404Counts = new Map<string, number>();
     const compareNon404Errors: string[] = [];
@@ -142,14 +147,14 @@ test.describe("M3 P0/P1 Audit Regression E2E", () => {
     await page.getByRole("tab", { name: /1 Doanh nghiệp cụ thể/i }).click();
     for (const chipTicker of ["HPG", "FPT", "VNM", "MWG"]) {
       await expect(
-        page.getByRole("button", { name: new RegExp(`^${chipTicker}$`) }),
+        page.getByRole("button", { name: new RegExp(`^${chipTicker}\\b`) }),
       ).toBeVisible();
     }
 
     await page.getByRole("tab", { name: /Danh mục Watchlist/i }).click();
     await expect(
-      page.getByRole("tab", { name: /Nợ rủi ro lớn nhất/i }),
-    ).toHaveAttribute("aria-selected", "true");
+      page.getByRole("button", { name: /Nợ rủi ro lớn nhất/i }),
+    ).toHaveClass(/bg-primary/);
   });
 
   test("Company profiles (/companies/HPG, /companies/HBC, /companies/VCB) & Methodology D12", async ({
@@ -183,16 +188,30 @@ test.describe("M3 P0/P1 Audit Regression E2E", () => {
 
     await page.getByRole("tab", { name: "Tổng quan" }).click();
     await page.getByRole("button", { name: /Truy nguồn/i }).first().click();
-    const drawer = page.getByRole("dialog", { name: "Nguồn dữ liệu chỉ số" });
+    const drawer = page.getByRole("dialog").filter({ hasText: "Nguồn dữ liệu chỉ số" });
     await expect(drawer).toBeVisible();
     const shaSpan = drawer.locator("span", { hasText: /^SHA:/ }).first();
+    await page.waitForTimeout(250);
     if ((await shaSpan.count()) > 0) {
+      await expect(shaSpan).toBeVisible();
       const filingSpan = drawer.locator("span", { hasText: /^Hồ sơ:/ }).first();
-      const box1 = await filingSpan.boundingBox();
-      const box2 = await shaSpan.boundingBox();
-      if (box1 && box2) {
+      const rects = await drawer.evaluate((dlg) => {
+        const spans = Array.from(dlg.querySelectorAll("span"));
+        const f = spans.find((s) => /^Hồ sơ:/.test((s.textContent ?? "").trim()));
+        const sh = spans.find((s) => /^SHA:/.test((s.textContent ?? "").trim()));
+        if (!f || !sh) return null;
+        const r1 = f.getBoundingClientRect();
+        const r2 = sh.getBoundingClientRect();
+        return {
+          b1: { x: r1.x, y: r1.y, width: r1.width, height: r1.height },
+          b2: { x: r2.x, y: r2.y, width: r2.width, height: r2.height },
+        };
+      });
+      expect(await filingSpan.isVisible()).toBe(true);
+      if (rects) {
         const noOverlap =
-          box2.x >= box1.x + box1.width - 1 || box2.y >= box1.y + box1.height - 1;
+          rects.b2.x >= rects.b1.x + rects.b1.width - 1 ||
+          rects.b2.y >= rects.b1.y + rects.b1.height - 1;
         expect(noOverlap).toBe(true);
       }
     }
@@ -240,8 +259,12 @@ test.describe("M3 P0/P1 Audit Regression E2E", () => {
     await expect(
       page.getByText(/Ngân hàng, Công ty Chứng khoán và Bảo hiểm/i),
     ).toBeVisible();
-    await expect(page.getByRole("link", { name: "Trang chủ" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Sàng lọc DN" })).toBeVisible();
+    await expect(
+      page.locator("main").getByRole("link", { name: "Trang chủ", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.locator("main").getByRole("link", { name: "Sàng lọc DN", exact: true }),
+    ).toBeVisible();
 
     // 4. /methodology?tab=models: D12 retrospective classification clarity
     await page.goto("/methodology?tab=models", { waitUntil: "networkidle" });

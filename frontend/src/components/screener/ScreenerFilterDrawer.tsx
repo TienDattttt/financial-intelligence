@@ -189,7 +189,7 @@ export function ScreenerFilterDrawer({
                   type="button"
                   aria-haspopup="listbox"
                   aria-expanded={riskTierMenuOpen}
-                  aria-label="Bậc rủi ro (R1–R5)"
+                  aria-label={`Bậc rủi ro (R1–R5): ${riskTierTriggerLabel}`}
                   onClick={() => setRiskTierMenuOpen((v) => !v)}
                   className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-border-strong bg-surface px-2.5 text-left text-[13px] text-ink shadow-xs transition-colors duration-150 hover:border-accent-ink/50 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
                 >
