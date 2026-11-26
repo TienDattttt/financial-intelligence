@@ -43,13 +43,6 @@ class DataFreshnessItem(BaseModel):
     extension_ports_digest: str
 
 
-class DataFreshnessResponse(BaseModel):
-    """Dedicated V2 freshness endpoint payload."""
-
-    snapshot_id: str | None = None
-    freshness: DataFreshnessItem
-
-
 _EMPTY_PORTS_DIGEST: str = hashlib.sha256(b"v1|ports:empty").hexdigest()[:12]
 DEFAULT_DATA_ROOT: Path = Path(__file__).resolve().parents[3] / "data"
 
