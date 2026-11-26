@@ -123,15 +123,6 @@ function MethodologyContent() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-ink">
-          Dữ liệu, Từ điển chỉ số &amp; Phương pháp mô hình
-        </h1>
-        <p className="mt-0.5 text-xs text-ink-muted">
-          Tài liệu minh bạch công thức 38 tỷ số tài chính, 10 quy tắc kế toán điều tra, mô hình định lượng và kiểm tra chất lượng dữ liệu
-        </p>
-      </div>
-
       <SegmentedControl<MethodTab>
         ariaLabel="Các mục tài liệu phương pháp"
         variant="underline"
@@ -987,8 +978,18 @@ function MethodologyContent() {
 
 export default function MethodologyPage() {
   return (
-    <React.Suspense fallback={<PageSkeleton />}>
-      <MethodologyContent />
-    </React.Suspense>
+    <div className="space-y-4">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight text-ink">
+          Dữ liệu, Từ điển chỉ số &amp; Phương pháp mô hình
+        </h1>
+        <p className="mt-0.5 text-xs text-ink-muted">
+          Tài liệu minh bạch công thức 38 tỷ số tài chính, 10 quy tắc kế toán điều tra, mô hình định lượng và kiểm tra chất lượng dữ liệu
+        </p>
+      </div>
+      <React.Suspense fallback={<PageSkeleton />}>
+        <MethodologyContent />
+      </React.Suspense>
+    </div>
   );
 }

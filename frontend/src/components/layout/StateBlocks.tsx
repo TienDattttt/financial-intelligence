@@ -10,7 +10,7 @@ export function PageSkeleton() {
   return (
     <div
       role="status"
-      className="space-y-4"
+      className="min-h-[75vh] space-y-4"
       aria-busy="true"
       aria-label="Đang tải dữ liệu"
     >
