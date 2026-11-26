@@ -42,6 +42,7 @@ _BOUNDS: tuple[tuple[str, float, float], ...] = (
     ("dso_shock_days", -90.0, 180.0),
     ("dio_shock_days", -90.0, 180.0),
 )
+MIN_INTEREST_DENOMINATOR_VND = 100_000_000.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +190,8 @@ def simulate_financial_stress(
             .then(pl.lit("NUMERIC_OVERFLOW"))
             .when(c("stressed_borrowing_cost_ttm") == 0.0)
             .then(pl.lit("NO_INTEREST_EXPENSE"))
+            .when(c("stressed_borrowing_cost_ttm") < MIN_INTEREST_DENOMINATOR_VND)
+            .then(pl.lit("TINY_DENOMINATOR"))
             .when(~c("_icr_q").is_finite())
             .then(pl.lit("NUMERIC_OVERFLOW"))
             .otherwise(pl.lit("VALID"))
@@ -236,6 +239,12 @@ def simulate_financial_stress(
             )
             .then(pl.lit(False))
             .when(
+                (c("interest_coverage_flag") == "TINY_DENOMINATOR")
+                & c("borrowing_cost_ttm").is_not_null()
+                & (c("borrowing_cost_ttm") > 0.0)
+            )
+            .then((c("ebit_ttm") < c("borrowing_cost_ttm")) & (c("total_debt") > 0.0))
+            .when(
                 c("interest_coverage").is_not_null()
                 & (c("interest_coverage") < 1.0)
                 & (c("total_debt") > 0.0)
@@ -261,6 +270,15 @@ def simulate_financial_stress(
                 | (c("total_debt") <= 0.0)
             )
             .then(pl.lit(False))
+            .when(
+                (c("stressed_interest_coverage_flag") == "TINY_DENOMINATOR")
+                & c("stressed_borrowing_cost_ttm").is_not_null()
+                & (c("stressed_borrowing_cost_ttm") > 0.0)
+            )
+            .then(
+                (c("stressed_ebit_ttm") < c("stressed_borrowing_cost_ttm"))
+                & (c("total_debt") > 0.0)
+            )
             .when(
                 c("stressed_interest_coverage").is_not_null()
                 & (c("stressed_interest_coverage") < 1.0)

@@ -1907,21 +1907,23 @@ class ParquetRepository:
                 return cached
 
         active_conn = connection if connection is not None else self._session_connection
-        owns_conn = active_conn is None
-        con = duckdb.connect(":memory:") if active_conn is None else active_conn
-        try:
-            schema_cursor = con.execute(
+        if active_conn is None:
+            try:
+                cols = tuple(pl.read_parquet_schema(path).keys())
+            except (OSError, pl.exceptions.PolarsError) as exc:
+                raise ContractViolationError(
+                    f"Unable to inspect schema for table {table_name!r}."
+                ) from exc
+        else:
+            schema_cursor = active_conn.execute(
                 "SELECT * FROM read_parquet(?) WHERE 1 = 0", [str(path)]
             )
             description = schema_cursor.description
-            if not description:
-                raise ContractViolationError(
-                    f"Unable to inspect schema for table {table_name!r}."
-                )
-            cols = tuple(str(desc[0]) for desc in description)
-        finally:
-            if owns_conn:
-                con.close()
+            cols = tuple(str(desc[0]) for desc in description) if description else ()
+        if not cols:
+            raise ContractViolationError(
+                f"Unable to inspect schema for table {table_name!r}."
+            )
 
         with _CACHE_LOCK:
             _PARQUET_SCHEMA_CACHE[stat_key] = cols

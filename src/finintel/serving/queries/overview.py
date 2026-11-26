@@ -40,10 +40,15 @@ from finintel.serving.queries._cache import (
     _sql_count_quality_statuses,
     _sql_count_rows,
 )
+from finintel.serving.queries._guards import (
+    build_market_change_period_pairs,
+    normalize_company_display_name_expr,
+)
 from finintel.serving.queries._helpers import (
     empty_sector_risk_summary,
     read_ml_scores_slice,
     read_red_flag_counts_for_period,
+    resolve_filings_taxonomy_lookup,
     resolve_latest_ratio_period,
 )
 from finintel.storage.repository import ParquetRepository
@@ -147,6 +152,12 @@ class OverviewQueryMixin(_QueryServiceBase):
             issuers = pinned.read_table(
                 "issuers.parquet", columns=cols, connection=connection
             ).sort("ticker")
+            if "company_name_vn" in issuers.columns and not issuers.is_empty():
+                issuers = issuers.with_columns(
+                    normalize_company_display_name_expr(
+                        ticker_col="ticker" if "ticker" in issuers.columns else None
+                    )
+                )
             if offset > 0 or limit is not None:
                 return issuers.slice(offset, limit)
             return issuers
@@ -232,6 +243,86 @@ class OverviewQueryMixin(_QueryServiceBase):
                 df = df.sort(sort_cols, descending=sort_desc, nulls_last=True)
 
             head_df = df.head(limit)
+            raw_tax_col = (
+                pl.col("taxonomy_version").cast(pl.String)
+                if "taxonomy_version" in head_df.columns
+                else pl.lit(None, dtype=pl.String)
+            )
+            existing_tax_expr = (
+                pl.when(raw_tax_col.is_not_null() & (raw_tax_col != ""))
+                .then(raw_tax_col)
+                .otherwise(None)
+            )
+            missing_fids = (
+                head_df.filter(
+                    pl.col("taxonomy_version").is_null()
+                    | (pl.col("taxonomy_version").cast(pl.String) == "")
+                )
+                .get_column("filing_id")
+                .drop_nulls()
+                .cast(pl.String)
+                .to_list()
+                if "taxonomy_version" in head_df.columns
+                else head_df.get_column("filing_id")
+                .drop_nulls()
+                .cast(pl.String)
+                .to_list()
+            )
+            tax_lookup = (
+                resolve_filings_taxonomy_lookup(
+                    pinned,
+                    issuer_id=issuer_id,
+                    filing_ids=missing_fids,
+                    connection=connection,
+                )
+                if missing_fids
+                else {}
+            )
+            lookup_tax_expr = (
+                pl.col("filing_id")
+                .cast(pl.String)
+                .replace_strict(tax_lookup, default=None, return_dtype=pl.String)
+                if tax_lookup
+                else pl.lit(None, dtype=pl.String)
+            )
+            date_fallback_tax = (
+                pl.when(
+                    pl.col("period_end_date").is_not_null()
+                    & (pl.col("period_end_date") >= date(2026, 1, 1))
+                )
+                .then(pl.lit("VAS_TT99_2025"))
+                .when(pl.col("period_end_date").is_not_null())
+                .then(pl.lit("VAS_TT200_2014"))
+                .otherwise(pl.lit(None, dtype=pl.String))
+                if "period_end_date" in head_df.columns
+                else pl.lit(None, dtype=pl.String)
+            )
+            resolved_tax_expr = pl.coalesce(
+                existing_tax_expr, lookup_tax_expr, date_fallback_tax
+            )
+
+            raw_status_col = (
+                pl.col("audit_status").cast(pl.String)
+                if "audit_status" in head_df.columns
+                else pl.lit(None, dtype=pl.String)
+            )
+            raw_opinion_col = (
+                pl.col("audit_opinion").cast(pl.String)
+                if "audit_opinion" in head_df.columns
+                else pl.lit(None, dtype=pl.String)
+            )
+            normalized_opinion_expr = (
+                pl.when(
+                    (raw_status_col == "REVIEWED")
+                    & (
+                        raw_opinion_col.is_null()
+                        | raw_opinion_col.is_in(["NOT_APPLICABLE", "UNKNOWN", ""])
+                    )
+                )
+                .then(pl.lit("REVIEWED_NO_OPINION"))
+                .otherwise(raw_opinion_col)
+            )
+
             rev_expr = (
                 pl.col("revision_no").cast(pl.Int64, strict=False)
                 if "revision_no" in head_df.columns
@@ -264,11 +355,7 @@ class OverviewQueryMixin(_QueryServiceBase):
                     if "period_end_date" in head_df.columns
                     else pl.lit(None, dtype=pl.Date)
                 ).alias("period_end_date"),
-                (
-                    pl.col("taxonomy_version")
-                    if "taxonomy_version" in head_df.columns
-                    else pl.lit(None, dtype=pl.String)
-                ).alias("taxonomy_version"),
+                resolved_tax_expr.alias("taxonomy_version"),
                 (
                     pl.col("published_at")
                     if "published_at" in head_df.columns
@@ -284,16 +371,8 @@ class OverviewQueryMixin(_QueryServiceBase):
                     if "effective_available_at" in head_df.columns
                     else pl.lit(None, dtype=pl.Date)
                 ).alias("effective_available_at"),
-                (
-                    pl.col("audit_status")
-                    if "audit_status" in head_df.columns
-                    else pl.lit(None, dtype=pl.String)
-                ).alias("audit_status"),
-                (
-                    pl.col("audit_opinion")
-                    if "audit_opinion" in head_df.columns
-                    else pl.lit(None, dtype=pl.String)
-                ).alias("audit_opinion"),
+                raw_status_col.alias("audit_status"),
+                normalized_opinion_expr.alias("audit_opinion"),
                 rev_expr.alias("revision_no"),
                 (
                     pl.col("revision_reason")
@@ -334,6 +413,7 @@ class OverviewQueryMixin(_QueryServiceBase):
         )
         if issuers.is_empty():
             return []
+        issuers = issuers.with_columns(normalize_company_display_name_expr())
         issuer_ids = issuers["issuer_id"].unique().to_list()
 
         avail_ratio_cols = _available_table_columns(
@@ -341,40 +421,15 @@ class OverviewQueryMixin(_QueryServiceBase):
         )
         if not avail_ratio_cols:
             return []
-        ratio_filters: dict[str, object] = {
-            "statement_scope": statement_scope,
-            "period_type": period_type,
-        }
-        if tickers:
-            ratio_filters["issuer_id"] = issuer_ids
-        ratio_dates_df = pinned.read_table(
-            RATIOS_TABLE,
-            columns=["issuer_id", "period_end_date"],
-            filters=ratio_filters,
+        pairs_df = build_market_change_period_pairs(
+            pinned,
+            statement_scope=statement_scope,
+            period_type=period_type,
+            issuer_ids=issuer_ids,
+            filter_by_issuers=bool(tickers),
+            target_date=target_date,
             connection=connection,
-        ).filter(pl.col("period_end_date").is_not_null())
-        if target_date is not None:
-            ratio_dates_df = ratio_dates_df.filter(
-                pl.col("period_end_date") <= target_date
-            )
-        if ratio_dates_df.is_empty():
-            return []
-
-        pairs_df = (
-            ratio_dates_df.unique()
-            .sort(["issuer_id", "period_end_date"], descending=[False, True])
-            .group_by("issuer_id", maintain_order=True)
-            .agg(
-                pl.col("period_end_date").first().alias("curr_period_end_date"),
-                pl.when(pl.len() > 1)
-                .then(pl.col("period_end_date").get(1))
-                .otherwise(None)
-                .cast(pl.Date)
-                .alias("prev_period_end_date"),
-            )
         )
-        if target_date is not None:
-            pairs_df = pairs_df.filter(pl.col("curr_period_end_date") == target_date)
         if pairs_df.is_empty():
             return []
 

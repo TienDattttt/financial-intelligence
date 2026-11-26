@@ -30,6 +30,7 @@ from finintel.serving.queries._cache import (
     ALTMAN_ZONES,
     BENEISH_FLAGS,
     DEFAULT_DATA_ROOT,
+    EXCHANGES,
     PERIOD_TYPES,
     RISK_TIERS_ORDERED,
     SCREENER_SORT_FIELDS,
@@ -45,6 +46,7 @@ from finintel.serving.queries._cache import (
 )
 from finintel.storage.repository import ParquetRepository
 from finintel.storage.schemas import (
+    BENCHMARKS_TABLE,
     ML_SCORES_TABLE,
     RATIOS_TABLE,
     RED_FLAGS_TABLE,
@@ -59,6 +61,46 @@ def opt_finite_float(raw: object) -> float | None:
         val = float(raw)
         return val if math.isfinite(val) else None
     return None
+
+
+def filter_broad_coverage_annual_dates(
+    dates_with_counts: Sequence[tuple[date, int]],
+) -> list[date]:
+    """Keep broad-coverage fiscal year-ends (``>= max(20, 25% of max)`` when ``max >= 20``)."""
+    if not dates_with_counts:
+        return []
+    sorted_rows = sorted(dates_with_counts, key=lambda item: item[0], reverse=True)
+    max_count = max(cnt for _, cnt in sorted_rows)
+    if max_count < 20:
+        return [d for d, _ in sorted_rows]
+    threshold = max(20, int(0.25 * max_count))
+    return [d for d, cnt in sorted_rows if cnt >= threshold]
+
+
+def compute_broad_annual_coverage(
+    dates_df: pl.DataFrame,
+) -> tuple[list[date], int]:
+    """Compute broad-coverage ``ANNUAL`` dates and max issuer count per period."""
+    if dates_df.is_empty():
+        return [], 0
+    counts_df = (
+        dates_df.filter(pl.col("period_end_date").is_not_null())
+        .group_by("period_end_date")
+        .agg(pl.col("issuer_id").n_unique().cast(pl.Int64).alias("n"))
+    )
+    pairs = [
+        (d, int(n))
+        for d, n in zip(
+            counts_df.get_column("period_end_date").to_list(),
+            counts_df.get_column("n").to_list(),
+            strict=True,
+        )
+        if isinstance(d, date)
+    ]
+    if not pairs:
+        return [], 0
+    max_count = max(cnt for _, cnt in pairs)
+    return filter_broad_coverage_annual_dates(pairs), max_count
 
 
 def resolve_latest_ratio_period(
@@ -85,9 +127,16 @@ def resolve_latest_ratio_period(
                 _LATEST_RATIO_PERIOD_CACHE.move_to_end(period_cache_key)
                 return cached_date, True
 
+    avail_cols = _available_table_columns(pinned, RATIOS_TABLE, connection=connection)
+    use_annual_coverage = (
+        period_type == "ANNUAL" and avail_cols is not None and "issuer_id" in avail_cols
+    )
+    read_cols = (
+        ["issuer_id", "period_end_date"] if use_annual_coverage else ["period_end_date"]
+    )
     dates_df = pinned.read_table(
         RATIOS_TABLE,
-        columns=["period_end_date"],
+        columns=read_cols,
         filters={
             "statement_scope": statement_scope,
             "period_type": period_type,
@@ -97,11 +146,17 @@ def resolve_latest_ratio_period(
     if dates_df.is_empty():
         return None, False
 
-    raw_max = dates_df.get_column("period_end_date").max()
-    if not isinstance(raw_max, date):
-        return None, True
+    if use_annual_coverage:
+        filtered, _ = compute_broad_annual_coverage(dates_df)
+        if not filtered:
+            return None, True
+        resolved_date = filtered[0]
+    else:
+        raw_max = dates_df.get_column("period_end_date").max()
+        if not isinstance(raw_max, date):
+            return None, True
+        resolved_date = raw_max
 
-    resolved_date = raw_max
     if period_cache_key is not None:
         with _QUERY_CACHE_LOCK:
             _evict_stale_l1b_caches_locked(snap_key)
@@ -241,13 +296,41 @@ def empty_industry_comparison(
     )
 
 
+def parse_screener_risk_tiers(
+    risk_tier: str | None, risk_tiers: str | None
+) -> tuple[str, ...] | None:
+    """Validate and canonicalize ``risk_tier`` and comma-separated ``risk_tiers``."""
+    selected: set[str] = set()
+    if risk_tier is not None:
+        if risk_tier not in RISK_TIERS_ORDERED:
+            raise ValueError(f"Unsupported risk_tier: {risk_tier!r}")
+        selected.add(risk_tier)
+    if risk_tiers is not None:
+        if not risk_tiers.strip():
+            if "," in risk_tiers:
+                raise ValueError(f"Unsupported risk_tier in risk_tiers: {risk_tiers!r}")
+        else:
+            for raw_tok in risk_tiers.split(","):
+                tok = raw_tok.strip().upper()
+                if not tok or tok not in RISK_TIERS_ORDERED:
+                    raise ValueError(
+                        f"Unsupported risk_tier in risk_tiers: {raw_tok!r}"
+                    )
+                selected.add(tok)
+    if not selected:
+        return None
+    return tuple(tier for tier in RISK_TIERS_ORDERED if tier in selected)
+
+
 def validate_screener_filters(
     *,
     period_type: str,
     statement_scope: str,
+    exchange: str | None = None,
     min_f_score: int | None,
     altman_zone: str | None,
     risk_tier: str | None,
+    risk_tiers: str | None = None,
     beneish_flag: str | None,
     max_distress_prob: float | None,
     min_distress_prob: float | None,
@@ -256,12 +339,14 @@ def validate_screener_filters(
     q: str | None,
     sort_by: str,
     sort_dir: Literal["asc", "desc"],
-) -> str | None:
-    """Validate screener filter inputs and return normalized lowercase search text."""
+) -> tuple[str | None, tuple[str, ...] | None]:
+    """Validate screener filter inputs and return ``(clean_q, effective_risk_tiers)``."""
     if statement_scope not in STATEMENT_SCOPES:
         raise ValueError(f"Unsupported statement_scope: {statement_scope!r}")
     if period_type not in PERIOD_TYPES:
         raise ValueError(f"Unsupported period_type: {period_type!r}")
+    if exchange is not None and exchange not in EXCHANGES:
+        raise ValueError(f"Unsupported exchange: {exchange!r}")
     if min_f_score is not None and (
         isinstance(min_f_score, bool)
         or not isinstance(min_f_score, int)
@@ -270,8 +355,7 @@ def validate_screener_filters(
         raise ValueError("min_f_score must be an integer between 0 and 9.")
     if altman_zone is not None and altman_zone not in ALTMAN_ZONES:
         raise ValueError(f"Unsupported altman_zone: {altman_zone!r}")
-    if risk_tier is not None and risk_tier not in RISK_TIERS_ORDERED:
-        raise ValueError(f"Unsupported risk_tier: {risk_tier!r}")
+    effective_tiers = parse_screener_risk_tiers(risk_tier, risk_tiers)
     if beneish_flag is not None and beneish_flag not in BENEISH_FLAGS:
         raise ValueError(f"Unsupported beneish_flag: {beneish_flag!r}")
     for label, prob in (
@@ -299,7 +383,8 @@ def validate_screener_filters(
         raise ValueError(f"Unsupported sort_by: {sort_by!r}")
     if sort_dir not in ("asc", "desc"):
         raise ValueError(f"Unsupported sort_dir: {sort_dir!r}")
-    return q.strip().lower() if q and q.strip() else None
+    clean_q = q.strip().lower() if q and q.strip() else None
+    return clean_q, effective_tiers
 
 
 def select_lineage_window(
@@ -721,3 +806,117 @@ def build_statement_periods_and_rows(
         )
     rows_out.sort(key=lambda r: (int(cast(int, r["sort_order"])), str(r["metric_id"])))
     return periods_out, rows_out
+
+
+def resolve_filings_taxonomy_lookup(
+    pinned: ParquetRepository,
+    *,
+    issuer_id: str,
+    filing_ids: Sequence[str],
+    connection: duckdb.DuckDBPyConnection | None,
+) -> dict[str, str]:
+    """Lookup ``taxonomy_version`` per ``filing_id`` from ``financial_facts`` (fallback ``latest_facts``)."""
+    clean_ids = list(dict.fromkeys(str(fid) for fid in filing_ids if fid))
+    if not clean_ids:
+        return {}
+    lookup: dict[str, str] = {}
+    for ft_name in ("financial_facts.parquet", "latest_facts.parquet"):
+        remaining = [fid for fid in clean_ids if fid not in lookup]
+        if not remaining:
+            break
+        avail = _available_table_columns(pinned, ft_name, connection=connection)
+        if not avail or not {"filing_id", "taxonomy_version"}.issubset(avail):
+            continue
+        facts_df = pinned.read_table(
+            ft_name,
+            columns=["filing_id", "taxonomy_version"],
+            filters={"issuer_id": issuer_id, "filing_id": remaining},
+            connection=connection,
+        )
+        if facts_df.is_empty():
+            continue
+        dedup = facts_df.filter(
+            pl.col("filing_id").is_not_null()
+            & pl.col("taxonomy_version").is_not_null()
+            & (pl.col("taxonomy_version").cast(pl.String) != "")
+        ).unique(subset=["filing_id"], keep="last")
+        for fid, tax in zip(
+            dedup.get_column("filing_id").to_list(),
+            dedup.get_column("taxonomy_version").to_list(),
+            strict=True,
+        ):
+            lookup[str(fid)] = str(tax)
+    return lookup
+
+
+def resolve_benchmark_cohort_fallback(
+    pinned: ParquetRepository,
+    *,
+    avail_bench_cols: set[str],
+    accounting_regime: str,
+    icb_code_level3: str | None,
+    icb_code_level2: str | None,
+    statement_scope: str,
+    period_type: str,
+    period_end_date: date,
+    metric_names: Sequence[str],
+    connection: duckdb.DuckDBPyConnection | None,
+) -> dict[str, dict[str, object]]:
+    """Resolve missing issuer benchmark cohort medians via ``ICB_LEVEL_3 -> ICB_LEVEL_2 -> REGIME_FALLBACK``."""
+    if not {"metric_or_ratio_name", "peer_group_level", "peer_median"}.issubset(
+        avail_bench_cols
+    ):
+        return {}
+    remaining = list(dict.fromkeys(m for m in metric_names if m))
+    if not remaining:
+        return {}
+
+    tiers: list[tuple[str, str | None]] = []
+    if icb_code_level3 and icb_code_level3.strip():
+        tiers.append(("ICB_LEVEL_3", icb_code_level3.strip()))
+    if icb_code_level2 and icb_code_level2.strip():
+        tiers.append(("ICB_LEVEL_2", icb_code_level2.strip()))
+    tiers.append(("REGIME_FALLBACK", None))
+
+    b_cols = _select_existing_columns(
+        (
+            "metric_or_ratio_name",
+            "peer_median",
+            "peer_p25",
+            "peer_p75",
+            "peer_iqr",
+            "peer_group_level",
+            "icb_code_used",
+            "peer_count",
+        ),
+        avail_bench_cols,
+    )
+    resolved: dict[str, dict[str, object]] = {}
+    for level, code in tiers:
+        if not remaining:
+            break
+        filters: dict[str, object] = {
+            "accounting_regime": accounting_regime,
+            "statement_scope": statement_scope,
+            "period_type": period_type,
+            "period_end_date": period_end_date,
+            "metric_or_ratio_name": remaining,
+            "peer_group_level": level,
+        }
+        if code is not None and "icb_code_used" in avail_bench_cols:
+            filters["icb_code_used"] = code
+        df = pinned.read_table(
+            BENCHMARKS_TABLE, columns=b_cols, filters=filters, connection=connection
+        )
+        if df.is_empty():
+            continue
+        if "peer_count" in df.columns:
+            df = df.sort("peer_count", descending=True, nulls_last=True)
+        dedup = df.unique(subset=["metric_or_ratio_name"], keep="first")
+        for row in dedup.to_dicts():
+            m_name = str(row["metric_or_ratio_name"])
+            if level == "REGIME_FALLBACK":
+                row["icb_code_used"] = None
+            resolved[m_name] = row
+        remaining = [m for m in remaining if m not in resolved]
+    return resolved

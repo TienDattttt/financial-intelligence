@@ -54,6 +54,7 @@ from finintel.serving.queries._cache import (
     ALTMAN_ZONES,
     BENEISH_FLAGS,
     DEFAULT_DATA_ROOT,
+    EXCHANGES,
     PEER_BAND_HISTORY_SCHEMA,
     PEER_GROUP_LEVELS,
     PERIOD_TYPES,
@@ -67,6 +68,7 @@ from finintel.serving.queries._cache import (
     BeneishFlag,
     CompanyProfileData,
     DenominatorMode,
+    Exchange,
     IndustryComparisonData,
     LineageComponent,
     PeerGroupLevel,
@@ -96,7 +98,19 @@ from finintel.serving.queries._cache import (
     percent_to_decimal,
     resolve_data_root,
 )
-from finintel.serving.queries._helpers import build_statement_periods_and_rows
+from finintel.serving.queries._guards import (
+    apply_d8_ratio_guards,
+    guard_benchmark_frame_d8,
+    normalize_company_display_name,
+)
+from finintel.serving.queries._helpers import (
+    build_statement_periods_and_rows,
+    filter_broad_coverage_annual_dates,
+)
+from finintel.serving.queries._piotroski import (
+    PIOTROSKI_EXTRA_FACT_METRICS,
+    enrich_ml_scores_piotroski_diagnostics,
+)
 from finintel.serving.queries.company import (
     ALL_RATIOS,
     RATIO_LINEAGE_CATALOG,
@@ -260,6 +274,7 @@ class DashboardQueryService(
             ]
             if missing_v2_exprs:
                 ratios = ratios.with_columns(missing_v2_exprs)
+            ratios = apply_d8_ratio_guards(ratios)
 
             growth_metrics = (
                 "IS_NET_REVENUE",
@@ -267,7 +282,11 @@ class DashboardQueryService(
                 "CF_OPERATING_CASH_FLOW",
             )
             bs_metrics = ("BS_TOTAL_ASSETS", "BS_TOTAL_EQUITY", "BS_TOTAL_LIABILITIES")
-            needed_metrics = [*growth_metrics, *bs_metrics]
+            needed_metrics = [
+                *growth_metrics,
+                *bs_metrics,
+                *PIOTROSKI_EXTRA_FACT_METRICS,
+            ]
 
             facts_table = "latest_facts.parquet"
             avail_fact_cols = _available_table_columns(
@@ -286,6 +305,8 @@ class DashboardQueryService(
                 "metric_id",
                 "value",
                 "ttm_value",
+                "comparable_across_taxonomy",
+                "computation_note",
                 "effective_available_at",
                 "revision_no",
                 "filing_id",
@@ -425,20 +446,26 @@ class DashboardQueryService(
             else:
                 red_flags = pl.DataFrame(schema=_EMPTY_RED_FLAGS_SCHEMA)
 
-            ml_scores = self._read_ml_scores_for_issuer(
-                pinned,
-                issuer_id=issuer_id,
-                statement_scope=statement_scope,
+            ml_scores = enrich_ml_scores_piotroski_diagnostics(
+                self._read_ml_scores_for_issuer(
+                    pinned,
+                    issuer_id=issuer_id,
+                    statement_scope=statement_scope,
+                    period_type=target_period_type,
+                    connection=connection,
+                ),
+                ratios,
+                company_facts,
                 period_type=target_period_type,
-                connection=connection,
             )
 
             raw_company_name = issuer_row.get("company_name_vn")
             profile_result = CompanyProfileData(
                 ticker=clean_ticker,
                 issuer_id=issuer_id,
-                company_name_vn=(
-                    str(raw_company_name) if raw_company_name is not None else None
+                company_name_vn=normalize_company_display_name(
+                    str(raw_company_name) if raw_company_name is not None else None,
+                    ticker=clean_ticker,
                 ),
                 accounting_regime=str(issuer_row["accounting_regime"]),
                 statement_scope=statement_scope,
@@ -493,47 +520,58 @@ class DashboardQueryService(
                         _PEER_BAND_HISTORY_CACHE.move_to_end(hist_cache_key)
                         return cached_hist
 
-            issuer_row = _resolve_issuer_row(
-                pinned,
-                ticker,
-                columns=("issuer_id", "ticker"),
-                connection=connection,
-            )
-            issuer_id = str(issuer_row["issuer_id"])
-
-            avail = _available_table_columns(
-                pinned, BENCHMARKS_TABLE, connection=connection
-            )
-            if not avail:
-                return pl.DataFrame(schema=PEER_BAND_HISTORY_SCHEMA)
-            cols = _select_existing_columns(
-                list(PEER_BAND_HISTORY_SCHEMA.keys()), avail
-            )
-            frame = pinned.read_table(
-                BENCHMARKS_TABLE,
-                columns=cols,
-                filters={
-                    "issuer_id": issuer_id,
-                    "statement_scope": statement_scope,
-                    "period_type": period_type,
-                    "metric_or_ratio_name": metric_name,
-                },
-                connection=connection,
-            )
-            if frame.is_empty():
-                return pl.DataFrame(schema=PEER_BAND_HISTORY_SCHEMA)
-            hist_res = _wrap_cached_dicts_df(
-                _pad_schema_columns(frame, PEER_BAND_HISTORY_SCHEMA).sort(
-                    "period_end_date"
+            with self._parquet_cursor(pinned, connection) as q_conn:
+                issuer_row = _resolve_issuer_row(
+                    pinned,
+                    ticker,
+                    columns=("issuer_id", "ticker"),
+                    connection=q_conn,
                 )
-            )
-            if hist_cache_key is not None:
-                with _QUERY_CACHE_LOCK:
-                    _evict_stale_l1b_caches_locked(snap_key)
-                    _PEER_BAND_HISTORY_CACHE[hist_cache_key] = hist_res
-                    while len(_PEER_BAND_HISTORY_CACHE) > _MAX_QUERY_CACHE_SIZE:
-                        _PEER_BAND_HISTORY_CACHE.popitem(last=False)
-            return hist_res
+                issuer_id = str(issuer_row["issuer_id"])
+
+                avail = _available_table_columns(
+                    pinned, BENCHMARKS_TABLE, connection=q_conn
+                )
+                if not avail:
+                    return pl.DataFrame(schema=PEER_BAND_HISTORY_SCHEMA)
+                cols = _select_existing_columns(
+                    list(PEER_BAND_HISTORY_SCHEMA.keys()), avail
+                )
+                frame = pinned.read_table(
+                    BENCHMARKS_TABLE,
+                    columns=cols,
+                    filters={
+                        "issuer_id": issuer_id,
+                        "statement_scope": statement_scope,
+                        "period_type": period_type,
+                        "metric_or_ratio_name": metric_name,
+                    },
+                    connection=q_conn,
+                )
+                if frame.is_empty():
+                    return pl.DataFrame(schema=PEER_BAND_HISTORY_SCHEMA)
+                frame = guard_benchmark_frame_d8(
+                    frame,
+                    pinned=pinned,
+                    metric_name=metric_name,
+                    statement_scope=statement_scope,
+                    period_type=period_type,
+                    join_on="period_end_date",
+                    issuer_id=issuer_id,
+                    connection=q_conn,
+                )
+                hist_res = _wrap_cached_dicts_df(
+                    _pad_schema_columns(frame, PEER_BAND_HISTORY_SCHEMA).sort(
+                        "period_end_date"
+                    )
+                )
+                if hist_cache_key is not None:
+                    with _QUERY_CACHE_LOCK:
+                        _evict_stale_l1b_caches_locked(snap_key)
+                        _PEER_BAND_HISTORY_CACHE[hist_cache_key] = hist_res
+                        while len(_PEER_BAND_HISTORY_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                            _PEER_BAND_HISTORY_CACHE.popitem(last=False)
+                return hist_res
 
     def list_ratio_periods(
         self,
@@ -607,9 +645,12 @@ class DashboardQueryService(
             )
             if not avail or "period_end_date" not in avail:
                 return []
+            use_annual_coverage = period_type == "ANNUAL" and "issuer_id" in avail
             dates_df = pinned.read_table(
                 RATIOS_TABLE,
-                columns=["period_end_date"],
+                columns=["issuer_id", "period_end_date"]
+                if use_annual_coverage
+                else ["period_end_date"],
                 filters={
                     "statement_scope": statement_scope,
                     "period_type": period_type,
@@ -618,6 +659,22 @@ class DashboardQueryService(
             )
             if dates_df.is_empty():
                 return []
+            if use_annual_coverage:
+                counts_df = (
+                    dates_df.filter(pl.col("period_end_date").is_not_null())
+                    .group_by("period_end_date")
+                    .agg(pl.col("issuer_id").n_unique().cast(pl.Int64).alias("n"))
+                )
+                pairs = [
+                    (d, int(n))
+                    for d, n in zip(
+                        counts_df.get_column("period_end_date").to_list(),
+                        counts_df.get_column("n").to_list(),
+                        strict=True,
+                    )
+                    if isinstance(d, date)
+                ]
+                return filter_broad_coverage_annual_dates(pairs)
             unique_dates = (
                 dates_df.get_column("period_end_date")
                 .drop_nulls()
@@ -777,6 +834,17 @@ class DashboardQueryService(
                 raise ContractViolationError(
                     "Model card metadata payload must be a JSON object."
                 )
+            case_studies = parsed.get("case_studies")
+            if isinstance(case_studies, list):
+                for cs in case_studies:
+                    if isinstance(cs, dict) and cs.get("company_name_vn") is not None:
+                        raw_cs_ticker = cs.get("ticker")
+                        cs["company_name_vn"] = normalize_company_display_name(
+                            str(cs["company_name_vn"]),
+                            ticker=str(raw_cs_ticker)
+                            if raw_cs_ticker is not None
+                            else None,
+                        )
             return parsed
 
 
@@ -791,6 +859,8 @@ __all__ = [
     "DEFAULT_DATA_ROOT",
     "DashboardQueryService",
     "DenominatorMode",
+    "EXCHANGES",
+    "Exchange",
     "IndustryComparisonData",
     "LineageComponent",
     "OverviewQueryMixin",

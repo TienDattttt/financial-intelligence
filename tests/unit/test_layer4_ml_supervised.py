@@ -500,10 +500,10 @@ def test_ml_pipeline_guardrails_and_publishable_ml_scores_snapshot(
         for year in range(2017, 2025):
             for q in range(1, 5):
                 hit = distressed_year == year and q == 3
-                scale = 1.0 + 0.03 * idx + 0.01 * q
+                scale = (1.0 + 0.03 * idx + 0.01 * q) * 10_000_000.0
                 periods_map[(year, q)] = {
                     "BS_TOTAL_ASSETS": 1000.0 * scale,
-                    "BS_TOTAL_EQUITY": -25.0
+                    "BS_TOTAL_EQUITY": -25.0 * 10_000_000.0
                     if hit
                     else (450.0 - 8.0 * (idx % 7)) * scale,
                     "BS_MINORITY_INTEREST": 10.0 * scale,
@@ -514,7 +514,7 @@ def test_ml_pipeline_guardrails_and_publishable_ml_scores_snapshot(
                     "BS_SHORT_TERM_BORROWINGS": (120.0 + 6.0 * (idx % 5)) * scale,
                     "BS_LONG_TERM_BORROWINGS": (90.0 + 4.0 * (idx % 3)) * scale,
                     "BS_RETAINED_EARNINGS": (150.0 - 5.0 * (idx % 6)) * scale,
-                    "BS_ORDINARY_SHARES_CAPITAL": 200_000.0,
+                    "BS_ORDINARY_SHARES_CAPITAL": 200_000.0 * 10_000_000.0,
                     "BS_TREASURY_SHARES": 0.0,
                     "BS_INVENTORIES": (70.0 + 2.0 * (idx % 5)) * scale,
                     "BS_TRADE_RECEIVABLES_ST": (95.0 + 3.0 * (idx % 4)) * scale,
@@ -1271,7 +1271,7 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
         periods_map: dict[tuple[int, int | None], dict[str, float | None]] = {}
         for year in range(2017, 2025):
             for q in range(1, 5):
-                scale = 1.0 + 0.03 * idx + 0.01 * q
+                scale = (1.0 + 0.03 * idx + 0.01 * q) * 10_000_000.0
                 periods_map[(year, q)] = {
                     "BS_TOTAL_ASSETS": 1000.0 * scale,
                     "BS_TOTAL_EQUITY": (450.0 - 8.0 * (idx % 7)) * scale,
@@ -1283,7 +1283,7 @@ def test_mode_b_regulatory_distress_offline_contract_delisting_and_right_censori
                     "BS_SHORT_TERM_BORROWINGS": (120.0 + 6.0 * (idx % 5)) * scale,
                     "BS_LONG_TERM_BORROWINGS": (90.0 + 4.0 * (idx % 3)) * scale,
                     "BS_RETAINED_EARNINGS": (150.0 - 5.0 * (idx % 6)) * scale,
-                    "BS_ORDINARY_SHARES_CAPITAL": 200_000.0,
+                    "BS_ORDINARY_SHARES_CAPITAL": 200_000.0 * 10_000_000.0,
                     "BS_TREASURY_SHARES": 0.0,
                     "BS_INVENTORIES": (70.0 + 2.0 * (idx % 5)) * scale,
                     "BS_TRADE_RECEIVABLES_ST": (95.0 + 3.0 * (idx % 4)) * scale,
@@ -2642,7 +2642,7 @@ def test_p1_1_explain_float32_tolerance_and_two_way_incremental(
         for yr in range(2018, 2025):
             for q in range(1, 5):
                 hit = distressed_year == yr and q == 3
-                s = 1.0 + 0.02 * idx
+                s = (1.0 + 0.02 * idx) * 10_000_000.0
                 pmap[(yr, q)] = {
                     "BS_TOTAL_ASSETS": 1000.0 * s,
                     "BS_TOTAL_EQUITY": -20.0 * s if hit else 450.0 * s,
@@ -2654,7 +2654,7 @@ def test_p1_1_explain_float32_tolerance_and_two_way_incremental(
                     "BS_SHORT_TERM_BORROWINGS": 100.0 * s,
                     "BS_LONG_TERM_BORROWINGS": 80.0 * s,
                     "BS_RETAINED_EARNINGS": 120.0 * s,
-                    "BS_ORDINARY_SHARES_CAPITAL": 200_000.0,
+                    "BS_ORDINARY_SHARES_CAPITAL": 200_000.0 * 10_000_000.0,
                     "BS_TREASURY_SHARES": 0.0,
                     "BS_INVENTORIES": 60.0 * s,
                     "BS_TRADE_RECEIVABLES_ST": 90.0 * s,

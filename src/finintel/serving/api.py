@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import threading
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import date
@@ -50,10 +51,16 @@ from finintel.serving._api_helpers import (
     RagAvailabilityMiddleware,
     StressBulkheadMiddleware,
     _dataframe_to_safe_csv_bytes,
+    _extract_snapshot_id,
+    _extract_storage_backend,
     _finite_scalar,
     _frame_to_records,
     _is_rag_unavailable_error,
     _rag_unavailable_response,
+    build_meta_dictionary_kwargs,
+    build_screener_cache_params,
+    health_etag_source,
+    probe_rag_available,
 )
 from finintel.serving._api_helpers import (
     _sanitize_csv_cell as _sanitize_csv_cell,
@@ -83,11 +90,7 @@ from finintel.serving.observability import (
     attach_observability,
     trace_span,
 )
-from finintel.serving.dictionary import (
-    RATIO_DICTIONARY_META,
-    RED_FLAG_DICTIONARY,
-    StatementType,
-)
+from finintel.serving.dictionary import StatementType
 from finintel.serving.freshness import (
     build_composite_cache_token,
     build_freshness_item,
@@ -97,15 +100,16 @@ from finintel.serving.freshness import (
     sanitize_error_detail,
 )
 from finintel.serving.queries import (
-    RATIO_LINEAGE_CATALOG,
     AltmanZone,
     BeneishFlag,
     DashboardQueryService,
+    Exchange,
     PeriodType,
     PeriodView,
     RiskTier,
     StatementScope,
 )
+from finintel.serving.queries._helpers import parse_screener_risk_tiers
 from finintel.serving.schemas import (
     AuditQuarantineItem,
     AuditQuarantinePageResponse,
@@ -136,11 +140,9 @@ from finintel.serving.schemas import (
     PeerRankingItem,
     QualitySummaryItem,
     QualitySummaryPageResponse,
-    RatioDictionaryItem,
     RatioLineageResponse,
     RatioName,
     ReadinessResponse,
-    RedFlagDictionaryItem,
     RedFlagItem,
     ScreenerItem,
     ScreenerResponse,
@@ -204,16 +206,6 @@ def _apply_cache_headers(response: Response, snapshot_id: str | None) -> None:
     response.headers["Cache-Control"] = CACHE_CONTROL_HEADER
     if snapshot_id is not None:
         response.headers["ETag"] = _format_etag(snapshot_id)
-
-
-def _extract_snapshot_id(meta: dict[str, object]) -> str | None:
-    raw = meta.get("snapshot_id")
-    return str(raw) if isinstance(raw, str) and raw else None
-
-
-def _extract_storage_backend(meta: dict[str, object]) -> str:
-    raw = meta.get("storage_backend")
-    return str(raw) if isinstance(raw, str) and raw else "parquet"
 
 
 def _attach_lineage_state(request: Request, meta: Mapping[str, object]) -> None:
@@ -297,6 +289,9 @@ def _mount_rag_router(
     investigator_lock = threading.Lock()
     api.state._rag_store = rag_store
     api.state._rag_investigator = rag_investigator
+    api.state._rag_injected = rag_store is not None or rag_investigator is not None
+    api.state._rag_probe_cache = None
+    api.state._rag_router_mounted = False
 
     def _get_store() -> Any:
         existing = getattr(api.state, "_rag_store", None)
@@ -389,6 +384,7 @@ def _mount_rag_router(
                 return
             try:
                 api.state._rag_investigator = _build_investigator_sync(warm_models=True)
+                api.state._rag_probe_cache = (time.monotonic(), True)
                 logger.info("RAG embedder and Gemini bundle pre-warmed successfully.")
             except Exception as exc:
                 logger.warning("RAG pre-warm failed (%s).", type(exc).__name__)
@@ -419,7 +415,9 @@ def _mount_rag_router(
                 get_investigator=_get_investigator,
             )
         )
+        api.state._rag_router_mounted = True
     except ImportError as exc:
+        api.state._rag_router_mounted = False
         logger.warning(
             "Port 2 RAG router mounted in 503 fallback mode (%s).",
             type(exc).__name__,
@@ -649,6 +647,7 @@ def create_app(
                 status="degraded",
                 active_snapshot_id=None,
                 storage_backend="parquet",
+                rag_available=False,
             )
             return JSONResponse(
                 status_code=503,
@@ -658,15 +657,18 @@ def create_app(
 
         _attach_lineage_state(request, meta)
         snap_id = _extract_snapshot_id(meta)
-        not_modified = _conditional_not_modified(if_none_match, snap_id)
+        rag_available = probe_rag_available(request.app.state)
+        etag_key = health_etag_source(snap_id, _REQUEST_DATA_ROOT.get(), rag_available)
+        not_modified = _conditional_not_modified(if_none_match, etag_key)
         if not_modified is not None:
             return not_modified
 
-        _apply_cache_headers(response, snap_id)
+        _apply_cache_headers(response, etag_key)
         return HealthResponse(
             status="ok",
             active_snapshot_id=snap_id,
             storage_backend=_extract_storage_backend(meta),
+            rag_available=rag_available,
         )
 
     # ------------------------------------------------------------------
@@ -1112,9 +1114,11 @@ def create_app(
         period_end_date: date | None = Query(None),
         statement_scope: StatementScope = Query("CONSOLIDATED"),
         icb_code_level2: str | None = Query(None, pattern=_ICB_CODE_PATTERN),
+        exchange: Exchange | None = Query(None),
         min_f_score: int | None = Query(None, ge=0, le=9),
         altman_zone: AltmanZone | None = Query(None),
         risk_tier: RiskTier | None = Query(None),
+        risk_tiers: str | None = Query(None, max_length=32),
         beneish_flag: BeneishFlag | None = Query(None),
         max_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
         min_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
@@ -1130,6 +1134,7 @@ def create_app(
         service: DashboardQueryService = Depends(get_query_service),
         cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> ScreenerResponse | Response:
+        effective_tiers = parse_screener_risk_tiers(risk_tier, risk_tiers)
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
             _attach_lineage_state(request, meta)
@@ -1142,29 +1147,26 @@ def create_app(
                 cache,
                 snap_id,
                 "v1/screener",
-                {
-                    "period_type": period_type,
-                    "period_end_date": (
-                        period_end_date.isoformat()
-                        if period_end_date is not None
-                        else None
-                    ),
-                    "statement_scope": statement_scope,
-                    "icb_code_level2": icb_code_level2,
-                    "min_f_score": min_f_score,
-                    "altman_zone": altman_zone,
-                    "risk_tier": risk_tier,
-                    "beneish_flag": beneish_flag,
-                    "max_distress_prob": max_distress_prob,
-                    "min_distress_prob": min_distress_prob,
-                    "max_red_flags": max_red_flags,
-                    "min_red_flags": min_red_flags,
-                    "q": q,
-                    "sort_by": sort_by,
-                    "sort_dir": sort_dir,
-                    "limit": limit,
-                    "offset": offset,
-                },
+                build_screener_cache_params(
+                    period_type=period_type,
+                    period_end_date=period_end_date,
+                    statement_scope=statement_scope,
+                    icb_code_level2=icb_code_level2,
+                    exchange=exchange,
+                    min_f_score=min_f_score,
+                    altman_zone=altman_zone,
+                    effective_tiers=effective_tiers,
+                    beneish_flag=beneish_flag,
+                    max_distress_prob=max_distress_prob,
+                    min_distress_prob=min_distress_prob,
+                    max_red_flags=max_red_flags,
+                    min_red_flags=min_red_flags,
+                    q=q,
+                    sort_by=sort_by,
+                    sort_dir=sort_dir,
+                    limit=limit,
+                    offset=offset,
+                ),
             )
             if hit is not None:
                 return hit
@@ -1175,9 +1177,11 @@ def create_app(
                 period_end_date=period_end_date,
                 statement_scope=statement_scope,
                 icb_code_level2=icb_code_level2,
+                exchange=exchange,
                 min_f_score=min_f_score,
                 altman_zone=altman_zone,
                 risk_tier=risk_tier,
+                risk_tiers=risk_tiers,
                 beneish_flag=beneish_flag,
                 max_distress_prob=max_distress_prob,
                 min_distress_prob=min_distress_prob,
@@ -1236,9 +1240,11 @@ def create_app(
         period_end_date: date | None = Query(None),
         statement_scope: StatementScope = Query("CONSOLIDATED"),
         icb_code_level2: str | None = Query(None, pattern=_ICB_CODE_PATTERN),
+        exchange: Exchange | None = Query(None),
         min_f_score: int | None = Query(None, ge=0, le=9),
         altman_zone: AltmanZone | None = Query(None),
         risk_tier: RiskTier | None = Query(None),
+        risk_tiers: str | None = Query(None, max_length=32),
         beneish_flag: BeneishFlag | None = Query(None),
         max_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
         min_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
@@ -1264,9 +1270,11 @@ def create_app(
                 period_end_date=period_end_date,
                 statement_scope=statement_scope,
                 icb_code_level2=icb_code_level2,
+                exchange=exchange,
                 min_f_score=min_f_score,
                 altman_zone=altman_zone,
                 risk_tier=risk_tier,
+                risk_tiers=risk_tiers,
                 beneish_flag=beneish_flag,
                 max_distress_prob=max_distress_prob,
                 min_distress_prob=min_distress_prob,
@@ -1405,6 +1413,7 @@ def create_app(
                     market_df=market_df,
                     top_n=payload.top_n,
                     include_all_newly_distressed=payload.include_all_newly_distressed,
+                    reference_icrs=payload.reference_icrs,
                 )
             )
             return _store_cached_model(
@@ -1592,31 +1601,7 @@ def create_app(
                 return hit
 
         _apply_cache_headers(response, snap_id)
-        ratios = [
-            RatioDictionaryItem(
-                ratio_name=cast(RatioName, name),
-                display_name_vn=RATIO_LINEAGE_CATALOG[name].display_name_vn,
-                category=entry.category,
-                unit=entry.unit,
-                format_type=entry.format_type,
-                direction=entry.direction,
-                formula_display=RATIO_LINEAGE_CATALOG[name].formula,
-                description_vn=entry.description_vn,
-                is_overview_core=entry.is_overview_core,
-            )
-            for name, entry in RATIO_DICTIONARY_META.items()
-        ]
-        red_flags = [
-            RedFlagDictionaryItem(
-                flag_code=rf.flag_code,
-                title_vn=rf.title_vn,
-                default_severity=rf.default_severity,
-                methodology_ref=rf.methodology_ref,
-                description_vn=rf.description_vn,
-            )
-            for rf in RED_FLAG_DICTIONARY
-        ]
-        body = MetaDictionaryResponse(ratios=ratios, red_flags=red_flags)
+        body = MetaDictionaryResponse(**build_meta_dictionary_kwargs())
         return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     @api.get(

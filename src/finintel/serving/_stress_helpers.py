@@ -9,13 +9,32 @@ Verified Sources:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
 import polars as pl
 
-from finintel.serving._api_helpers import _frame_to_records
+from finintel.serving._api_helpers import _finite_scalar, _frame_to_records
+from finintel.serving.queries._guards import apply_d8_ratio_guards
 from finintel.serving.schemas import StressIssuerItem, StressSectorSummaryItem
+
+
+def build_stress_issuer_icrs(stressed_df: pl.DataFrame) -> dict[str, float | None]:
+    """Extract ``{ticker: stressed_interest_coverage}`` vectorially via column lists."""
+    if stressed_df.is_empty():
+        return {}
+    tickers = stressed_df.get_column("ticker").to_list()
+    icrs = stressed_df.get_column("stressed_interest_coverage").to_list()
+    return {
+        str(ticker).strip().upper(): _finite_scalar(
+            float(val)
+            if isinstance(val, (int, float)) and not isinstance(val, bool)
+            else None
+        )
+        for ticker, val in zip(tickers, icrs, strict=True)
+        if ticker is not None
+    }
 
 
 def build_empty_stress_response_kwargs(
@@ -38,6 +57,8 @@ def build_empty_stress_response_kwargs(
         "baseline_debt_at_risk_pct": 0.0,
         "stressed_debt_at_risk_pct": 0.0,
         "newly_distressed_count": 0,
+        "total_newly_distressed": 0,
+        "issuer_icrs": {},
         "sector_summary": [],
         "newly_distressed_issuers": [],
         "top_stressed_issuers": [],
@@ -57,8 +78,10 @@ def build_stress_response_kwargs(
     market_df: pl.DataFrame,
     top_n: int,
     include_all_newly_distressed: bool | None,
+    reference_icrs: Mapping[str, float | None] | None = None,
 ) -> dict[str, Any]:
     """Assemble ``StressTestResponse`` kwargs from simulated Polars DataFrames."""
+    guarded_df = apply_d8_ratio_guards(stressed_df)
     market_row = market_df.row(0, named=True)
     issuer_cols = [
         "issuer_id",
@@ -82,7 +105,7 @@ def build_stress_response_kwargs(
     ]
     newly_limit = 1000 if include_all_newly_distressed else top_n
     newly_df = (
-        stressed_df.filter(
+        guarded_df.filter(
             pl.col("newly_distressed_under_shock").eq(True).fill_null(False)
         )
         .select(issuer_cols)
@@ -94,7 +117,7 @@ def build_stress_response_kwargs(
         .head(newly_limit)
     )
     top_df = (
-        stressed_df.select(issuer_cols)
+        guarded_df.select(issuer_cols)
         .sort(
             ["stressed_debt_at_risk", "total_debt", "ticker"],
             descending=[True, True, False],
@@ -102,6 +125,28 @@ def build_stress_response_kwargs(
         )
         .head(top_n)
     )
+    ref_map = (
+        {
+            str(k).strip().upper(): _finite_scalar(
+                float(v)
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+                else None
+            )
+            for k, v in reference_icrs.items()
+        }
+        if reference_icrs is not None
+        else None
+    )
+
+    def _to_issuer_items(frame: pl.DataFrame) -> list[StressIssuerItem]:
+        items: list[StressIssuerItem] = []
+        for row in _frame_to_records(frame):
+            if ref_map is not None:
+                row["scenario_a_icr"] = ref_map.get(str(row["ticker"]).strip().upper())
+            items.append(StressIssuerItem(**row))
+        return items
+
+    newly_count = int(market_row["newly_distressed_count"])
     return {
         "snapshot_id": snapshot_id,
         "scenario_name": scenario_name,
@@ -114,14 +159,12 @@ def build_stress_response_kwargs(
         "total_debt_sum": float(market_row["total_debt_sum"]),
         "baseline_debt_at_risk_pct": float(market_row["baseline_debt_at_risk_pct"]),
         "stressed_debt_at_risk_pct": float(market_row["stressed_debt_at_risk_pct"]),
-        "newly_distressed_count": int(market_row["newly_distressed_count"]),
+        "newly_distressed_count": newly_count,
+        "total_newly_distressed": newly_count,
+        "issuer_icrs": build_stress_issuer_icrs(guarded_df),
         "sector_summary": [
             StressSectorSummaryItem(**row) for row in _frame_to_records(sector_df)
         ],
-        "newly_distressed_issuers": [
-            StressIssuerItem(**row) for row in _frame_to_records(newly_df)
-        ],
-        "top_stressed_issuers": [
-            StressIssuerItem(**row) for row in _frame_to_records(top_df)
-        ],
+        "newly_distressed_issuers": _to_issuer_items(newly_df),
+        "top_stressed_issuers": _to_issuer_items(top_df),
     }

@@ -14,7 +14,7 @@ Verified Sources:
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 import duckdb
 import polars as pl
@@ -39,10 +39,18 @@ from finintel.serving.queries._cache import (
     _validate_pagination,
     _wrap_cached_dicts_df,
 )
+from finintel.serving.queries._guards import (
+    apply_d8_ratio_guards,
+    guard_benchmark_frame_d8,
+    guard_ratio_by_denominator,
+    normalize_company_display_name_expr,
+)
 from finintel.serving.queries._helpers import (
     empty_industry_comparison,
+    opt_finite_float,
     read_ml_scores_slice,
     read_red_flag_counts_for_period,
+    resolve_benchmark_cohort_fallback,
     resolve_latest_ratio_period,
     validate_screener_filters,
 )
@@ -91,9 +99,10 @@ class ScreenerQueryMixin(_QueryServiceBase):
         period_type: str,
         statement_scope: str,
         icb_code_level2: str | None,
+        exchange: str | None,
         min_f_score: int | None,
         altman_zone: str | None,
-        risk_tier: str | None,
+        effective_risk_tiers: tuple[str, ...] | None,
         beneish_flag: str | None,
         max_distress_prob: float | None,
         min_distress_prob: float | None,
@@ -115,19 +124,20 @@ class ScreenerQueryMixin(_QueryServiceBase):
             "icb_code_level3",
             "icb_name_level3",
         ]
-        issuer_filters: dict[str, object] | None = (
-            {"icb_code_level2": icb_code_level2}
-            if icb_code_level2 is not None
-            else None
-        )
+        issuer_filter_map: dict[str, object] = {}
+        if icb_code_level2 is not None:
+            issuer_filter_map["icb_code_level2"] = icb_code_level2
+        if exchange is not None:
+            issuer_filter_map["exchange"] = exchange
         issuers = pinned.read_table(
             "issuers.parquet",
             columns=issuer_cols,
-            filters=issuer_filters,
+            filters=issuer_filter_map or None,
             connection=connection,
         )
         if issuers.is_empty():
             return pl.DataFrame(schema=SCREENER_SCHEMA)
+        issuers = issuers.with_columns(normalize_company_display_name_expr())
 
         ratio_desired = (
             "issuer_id",
@@ -135,6 +145,8 @@ class ScreenerQueryMixin(_QueryServiceBase):
             "period_type",
             "period_end_date",
             "taxonomy_version",
+            "net_revenue_ttm",
+            "borrowing_cost_ttm",
             "roe_total",
             "roa",
             "ebit_margin",
@@ -151,7 +163,7 @@ class ScreenerQueryMixin(_QueryServiceBase):
             "period_type": period_type,
             "period_end_date": resolved_date,
         }
-        if icb_code_level2 is not None:
+        if issuer_filter_map:
             ratio_filters["issuer_id"] = issuers["issuer_id"].unique().to_list()
         ratios = pinned.read_table(
             RATIOS_TABLE,
@@ -161,6 +173,7 @@ class ScreenerQueryMixin(_QueryServiceBase):
         )
         if ratios.is_empty():
             return pl.DataFrame(schema=SCREENER_SCHEMA)
+        ratios = apply_d8_ratio_guards(ratios)
 
         for forensic_col in (
             "core_operating_margin",
@@ -237,8 +250,13 @@ class ScreenerQueryMixin(_QueryServiceBase):
             )
         if altman_zone is not None:
             joined = joined.filter(pl.col("altman_zone") == altman_zone)
-        if risk_tier is not None:
-            joined = joined.filter(pl.col("risk_tier") == risk_tier)
+        if effective_risk_tiers is not None:
+            if len(effective_risk_tiers) == 1:
+                joined = joined.filter(pl.col("risk_tier") == effective_risk_tiers[0])
+            else:
+                joined = joined.filter(
+                    pl.col("risk_tier").is_in(list(effective_risk_tiers))
+                )
         if beneish_flag is not None:
             joined = joined.filter(pl.col("beneish_flag") == beneish_flag)
         if max_distress_prob is not None:
@@ -288,9 +306,11 @@ class ScreenerQueryMixin(_QueryServiceBase):
         period_end_date: date | None = None,
         statement_scope: str = "CONSOLIDATED",
         icb_code_level2: str | None = None,
+        exchange: str | None = None,
         min_f_score: int | None = None,
         altman_zone: str | None = None,
         risk_tier: str | None = None,
+        risk_tiers: str | None = None,
         beneish_flag: str | None = None,
         max_distress_prob: float | None = None,
         min_distress_prob: float | None = None,
@@ -309,12 +329,14 @@ class ScreenerQueryMixin(_QueryServiceBase):
         so screening degrades cleanly when a snapshot has no ML or red-flag tables.
         """
         _validate_pagination(limit, offset, max_limit=200)
-        clean_q = validate_screener_filters(
+        clean_q, effective_risk_tiers = validate_screener_filters(
             period_type=period_type,
             statement_scope=statement_scope,
+            exchange=exchange,
             min_f_score=min_f_score,
             altman_zone=altman_zone,
             risk_tier=risk_tier,
+            risk_tiers=risk_tiers,
             beneish_flag=beneish_flag,
             max_distress_prob=max_distress_prob,
             min_distress_prob=min_distress_prob,
@@ -351,9 +373,10 @@ class ScreenerQueryMixin(_QueryServiceBase):
                     resolved_date,
                     statement_scope,
                     icb_code_level2,
+                    exchange,
                     min_f_score,
                     altman_zone,
-                    risk_tier,
+                    effective_risk_tiers,
                     beneish_flag,
                     float(max_distress_prob) if max_distress_prob is not None else None,
                     float(min_distress_prob) if min_distress_prob is not None else None,
@@ -383,9 +406,10 @@ class ScreenerQueryMixin(_QueryServiceBase):
                 period_type=period_type,
                 statement_scope=statement_scope,
                 icb_code_level2=icb_code_level2,
+                exchange=exchange,
                 min_f_score=min_f_score,
                 altman_zone=altman_zone,
-                risk_tier=risk_tier,
+                effective_risk_tiers=effective_risk_tiers,
                 beneish_flag=beneish_flag,
                 max_distress_prob=max_distress_prob,
                 min_distress_prob=min_distress_prob,
@@ -413,9 +437,11 @@ class ScreenerQueryMixin(_QueryServiceBase):
         period_end_date: date | None = None,
         statement_scope: str = "CONSOLIDATED",
         icb_code_level2: str | None = None,
+        exchange: str | None = None,
         min_f_score: int | None = None,
         altman_zone: str | None = None,
         risk_tier: str | None = None,
+        risk_tiers: str | None = None,
         beneish_flag: str | None = None,
         max_distress_prob: float | None = None,
         min_distress_prob: float | None = None,
@@ -427,12 +453,14 @@ class ScreenerQueryMixin(_QueryServiceBase):
         connection: duckdb.DuckDBPyConnection | None = None,
     ) -> pl.DataFrame:
         """Return 100% of filtered & sorted screener rows without pagination cap (UI-05a)."""
-        clean_q = validate_screener_filters(
+        clean_q, effective_risk_tiers = validate_screener_filters(
             period_type=period_type,
             statement_scope=statement_scope,
+            exchange=exchange,
             min_f_score=min_f_score,
             altman_zone=altman_zone,
             risk_tier=risk_tier,
+            risk_tiers=risk_tiers,
             beneish_flag=beneish_flag,
             max_distress_prob=max_distress_prob,
             min_distress_prob=min_distress_prob,
@@ -469,9 +497,10 @@ class ScreenerQueryMixin(_QueryServiceBase):
                 period_type=period_type,
                 statement_scope=statement_scope,
                 icb_code_level2=icb_code_level2,
+                exchange=exchange,
                 min_f_score=min_f_score,
                 altman_zone=altman_zone,
-                risk_tier=risk_tier,
+                effective_risk_tiers=effective_risk_tiers,
                 beneish_flag=beneish_flag,
                 max_distress_prob=max_distress_prob,
                 min_distress_prob=min_distress_prob,
@@ -521,201 +550,339 @@ class ScreenerQueryMixin(_QueryServiceBase):
                         _INDUSTRY_COMPARISON_CACHE.move_to_end(comp_cache_key)
                         return cached_comp
 
-            issuer_row = _resolve_issuer_row(
-                pinned,
-                clean_ticker,
-                columns=("issuer_id", "ticker", "industry_snapshot_date"),
-                connection=connection,
-            )
-            issuer_id = str(issuer_row["issuer_id"])
-            snapshot_date = issuer_row.get("industry_snapshot_date")
-            resolved_snapshot_date = (
-                snapshot_date if isinstance(snapshot_date, date) else None
-            )
-
-            avail_bench_cols = _available_table_columns(
-                pinned, BENCHMARKS_TABLE, connection=connection
-            )
-            if not avail_bench_cols:
-                return empty_industry_comparison(
-                    ticker=clean_ticker,
-                    issuer_id=issuer_id,
-                    statement_scope=statement_scope,
-                    period_type=period_type,
-                    period_end_date=period_end_date or date.today(),
-                    metric_name=metric_name,
-                    industry_snapshot_date=resolved_snapshot_date,
+            with self._parquet_cursor(pinned, connection) as q_conn:
+                issuer_row = _resolve_issuer_row(
+                    pinned,
+                    clean_ticker,
+                    columns=(
+                        "issuer_id",
+                        "ticker",
+                        "industry_snapshot_date",
+                        "accounting_regime",
+                        "icb_code_level2",
+                        "icb_code_level3",
+                    ),
+                    connection=q_conn,
+                )
+                issuer_id = str(issuer_row["issuer_id"])
+                snapshot_date = issuer_row.get("industry_snapshot_date")
+                resolved_snapshot_date = (
+                    snapshot_date if isinstance(snapshot_date, date) else None
                 )
 
-            target_cols = _select_existing_columns(
-                (
-                    "issuer_id",
-                    "accounting_regime",
-                    "statement_scope",
-                    "period_type",
-                    "period_end_date",
-                    "metric_or_ratio_name",
-                    "icb_code_used",
-                    "peer_group_level",
-                    "peer_count",
-                    "value",
-                    "peer_median",
-                    "peer_p25",
-                    "peer_p75",
-                    "peer_iqr",
-                    "percentile_rank",
-                    "robust_z_score",
-                ),
-                avail_bench_cols,
-            )
-            target_filters: dict[str, object] = {
-                "issuer_id": issuer_id,
-                "statement_scope": statement_scope,
-                "period_type": period_type,
-                "metric_or_ratio_name": metric_name,
-            }
-            if period_end_date is not None:
-                target_filters["period_end_date"] = period_end_date
+                avail_bench_cols = _available_table_columns(
+                    pinned, BENCHMARKS_TABLE, connection=q_conn
+                )
+                if not avail_bench_cols:
+                    return empty_industry_comparison(
+                        ticker=clean_ticker,
+                        issuer_id=issuer_id,
+                        statement_scope=statement_scope,
+                        period_type=period_type,
+                        period_end_date=period_end_date or date.today(),
+                        metric_name=metric_name,
+                        industry_snapshot_date=resolved_snapshot_date,
+                    )
 
-            target_rows = pinned.read_table(
-                BENCHMARKS_TABLE,
-                columns=target_cols,
-                filters=target_filters,
-                connection=connection,
-            )
-            if period_end_date is None and not target_rows.is_empty():
-                target_rows = target_rows.sort("period_end_date").tail(1)
+                target_cols = _select_existing_columns(
+                    (
+                        "issuer_id",
+                        "accounting_regime",
+                        "statement_scope",
+                        "period_type",
+                        "period_end_date",
+                        "metric_or_ratio_name",
+                        "icb_code_used",
+                        "peer_group_level",
+                        "peer_count",
+                        "value",
+                        "peer_median",
+                        "peer_p25",
+                        "peer_p75",
+                        "peer_iqr",
+                        "percentile_rank",
+                        "robust_z_score",
+                    ),
+                    avail_bench_cols,
+                )
+                target_filters: dict[str, object] = {
+                    "issuer_id": issuer_id,
+                    "statement_scope": statement_scope,
+                    "period_type": period_type,
+                    "metric_or_ratio_name": metric_name,
+                }
+                if period_end_date is not None:
+                    target_filters["period_end_date"] = period_end_date
 
-            if target_rows.is_empty():
-                resolved_end = period_end_date or date.today()
-                return empty_industry_comparison(
+                target_rows = pinned.read_table(
+                    BENCHMARKS_TABLE,
+                    columns=target_cols,
+                    filters=target_filters,
+                    connection=q_conn,
+                )
+                if period_end_date is None and not target_rows.is_empty():
+                    target_rows = target_rows.sort("period_end_date").tail(1)
+
+                if target_rows.is_empty():
+                    resolved_end_opt: date | None = period_end_date
+                    if resolved_end_opt is None:
+                        avail_ratio = _available_table_columns(
+                            pinned, RATIOS_TABLE, connection=q_conn
+                        )
+                        if avail_ratio and "period_end_date" in avail_ratio:
+                            r_dates = pinned.read_table(
+                                RATIOS_TABLE,
+                                columns=["period_end_date"],
+                                filters={
+                                    "issuer_id": issuer_id,
+                                    "statement_scope": statement_scope,
+                                    "period_type": period_type,
+                                },
+                                connection=q_conn,
+                            )
+                            if not r_dates.is_empty():
+                                raw_d = r_dates.get_column("period_end_date").max()
+                                if isinstance(raw_d, date):
+                                    resolved_end_opt = raw_d
+                        if resolved_end_opt is None:
+                            resolved_end_opt, _ = resolve_latest_ratio_period(
+                                pinned,
+                                statement_scope=statement_scope,
+                                period_type=period_type,
+                                snap_key=snap_key,
+                                connection=q_conn,
+                            )
+                    acc_regime = str(issuer_row.get("accounting_regime") or "CORPORATE")
+                    raw_l3 = issuer_row.get("icb_code_level3")
+                    raw_l2 = issuer_row.get("icb_code_level2")
+                    fb = (
+                        resolve_benchmark_cohort_fallback(
+                            pinned,
+                            avail_bench_cols=avail_bench_cols,
+                            accounting_regime=acc_regime,
+                            icb_code_level3=(
+                                str(raw_l3) if raw_l3 is not None else None
+                            ),
+                            icb_code_level2=(
+                                str(raw_l2) if raw_l2 is not None else None
+                            ),
+                            statement_scope=statement_scope,
+                            period_type=period_type,
+                            period_end_date=resolved_end_opt,
+                            metric_names=[metric_name],
+                            connection=q_conn,
+                        )
+                        if isinstance(resolved_end_opt, date)
+                        else {}
+                    )
+                    if metric_name not in fb:
+                        return empty_industry_comparison(
+                            ticker=clean_ticker,
+                            issuer_id=issuer_id,
+                            statement_scope=statement_scope,
+                            period_type=period_type,
+                            period_end_date=resolved_end_opt or date.today(),
+                            metric_name=metric_name,
+                            industry_snapshot_date=resolved_snapshot_date,
+                        )
+                    selected: dict[str, Any] = {
+                        **fb[metric_name],
+                        "accounting_regime": acc_regime,
+                        "period_end_date": resolved_end_opt,
+                        "value": None,
+                        "percentile_rank": None,
+                        "robust_z_score": None,
+                    }
+                else:
+                    selected = target_rows.row(0, named=True)
+                raw_resolved_end = selected["period_end_date"]
+                resolved_end = (
+                    raw_resolved_end
+                    if isinstance(raw_resolved_end, date)
+                    else (period_end_date or date.today())
+                )
+                peer_level = str(selected["peer_group_level"])
+                icb_used = selected.get("icb_code_used")
+                accounting_regime = str(selected["accounting_regime"])
+                raw_peer_count = selected.get("peer_count")
+                peer_count = (
+                    int(raw_peer_count)
+                    if isinstance(raw_peer_count, int)
+                    and not isinstance(raw_peer_count, bool)
+                    else 0
+                )
+                company_val = opt_finite_float(selected.get("value"))
+                if company_val is not None and metric_name in (
+                    "ebit_margin",
+                    "interest_coverage",
+                ):
+                    denom_col = (
+                        "net_revenue_ttm"
+                        if metric_name == "ebit_margin"
+                        else "borrowing_cost_ttm"
+                    )
+                    avail_r_cols = _available_table_columns(
+                        pinned, RATIOS_TABLE, connection=q_conn
+                    )
+                    if avail_r_cols and denom_col in avail_r_cols:
+                        denom_df = pinned.read_table(
+                            RATIOS_TABLE,
+                            columns=[denom_col],
+                            filters={
+                                "issuer_id": issuer_id,
+                                "statement_scope": statement_scope,
+                                "period_type": period_type,
+                                "period_end_date": resolved_end,
+                            },
+                            connection=q_conn,
+                        )
+                        if not denom_df.is_empty():
+                            denom_val = opt_finite_float(
+                                denom_df.get_column(denom_col)[0]
+                            )
+                            company_val, _ = guard_ratio_by_denominator(
+                                metric_name,
+                                company_val,
+                                net_revenue_ttm=(
+                                    denom_val if metric_name == "ebit_margin" else None
+                                ),
+                                borrowing_cost_ttm=(
+                                    denom_val
+                                    if metric_name == "interest_coverage"
+                                    else None
+                                ),
+                            )
+
+                cohort_cache_key = (
+                    (
+                        *snap_key,
+                        accounting_regime,
+                        statement_scope,
+                        period_type,
+                        resolved_end,
+                        metric_name,
+                        peer_level,
+                        icb_used,
+                    )
+                    if snap_key is not None
+                    else None
+                )
+                peer_ranking: pl.DataFrame | None = None
+                if cohort_cache_key is not None:
+                    with _QUERY_CACHE_LOCK:
+                        _evict_stale_l1b_caches_locked(snap_key)
+                        peer_ranking = _COHORT_PEER_RANKING_CACHE.get(cohort_cache_key)
+                        if peer_ranking is not None:
+                            _COHORT_PEER_RANKING_CACHE.move_to_end(cohort_cache_key)
+
+                if peer_ranking is None:
+                    cohort_cols = _select_existing_columns(
+                        (
+                            "issuer_id",
+                            "value",
+                            "percentile_rank",
+                            "robust_z_score",
+                            "peer_group_level",
+                            "icb_code_used",
+                        ),
+                        avail_bench_cols,
+                    )
+                    cohort_filters: dict[str, object] = {
+                        "accounting_regime": accounting_regime,
+                        "statement_scope": statement_scope,
+                        "period_type": period_type,
+                        "period_end_date": resolved_end,
+                        "metric_or_ratio_name": metric_name,
+                        "peer_group_level": peer_level,
+                        "icb_code_used": icb_used,
+                    }
+                    cohort = pinned.read_table(
+                        BENCHMARKS_TABLE,
+                        columns=cohort_cols,
+                        filters=cohort_filters,
+                        connection=q_conn,
+                    )
+                    cohort_issuer_ids = cohort["issuer_id"].unique().to_list()
+                    if not cohort.is_empty():
+                        cohort = guard_benchmark_frame_d8(
+                            cohort,
+                            pinned=pinned,
+                            metric_name=metric_name,
+                            statement_scope=statement_scope,
+                            period_type=period_type,
+                            join_on="issuer_id",
+                            issuer_ids=cohort_issuer_ids,
+                            period_end_date=resolved_end,
+                            connection=q_conn,
+                        )
+                    peer_issuers = pinned.read_table(
+                        "issuers.parquet",
+                        columns=[
+                            "issuer_id",
+                            "ticker",
+                            "company_name_vn",
+                            "icb_name_level2",
+                            "icb_name_level3",
+                        ],
+                        filters={"issuer_id": cohort_issuer_ids},
+                        connection=q_conn,
+                    )
+                    if not peer_issuers.is_empty():
+                        peer_issuers = peer_issuers.with_columns(
+                            normalize_company_display_name_expr()
+                        )
+
+                    peer_ranking = _wrap_cached_dicts_df(
+                        cohort.join(peer_issuers, on="issuer_id", how="left")
+                        .select(
+                            "ticker",
+                            "company_name_vn",
+                            "value",
+                            "percentile_rank",
+                            "robust_z_score",
+                            "peer_group_level",
+                            "icb_code_used",
+                            "icb_name_level3",
+                            "icb_name_level2",
+                        )
+                        .sort("value", descending=True, nulls_last=True)
+                    )
+                    if cohort_cache_key is not None:
+                        with _QUERY_CACHE_LOCK:
+                            _evict_stale_l1b_caches_locked(snap_key)
+                            _COHORT_PEER_RANKING_CACHE[cohort_cache_key] = peer_ranking
+                            while (
+                                len(_COHORT_PEER_RANKING_CACHE) > _MAX_QUERY_CACHE_SIZE
+                            ):
+                                _COHORT_PEER_RANKING_CACHE.popitem(last=False)
+
+                comp_result = IndustryComparisonData(
                     ticker=clean_ticker,
                     issuer_id=issuer_id,
                     statement_scope=statement_scope,
                     period_type=period_type,
                     period_end_date=resolved_end,
                     metric_name=metric_name,
+                    peer_group_level=peer_level,
+                    icb_code_used=str(icb_used) if icb_used is not None else None,
+                    peer_count=peer_count,
+                    company_value=company_val,
+                    peer_median=opt_finite_float(selected.get("peer_median")),
+                    peer_p25=opt_finite_float(selected.get("peer_p25")),
+                    peer_p75=opt_finite_float(selected.get("peer_p75")),
+                    peer_iqr=opt_finite_float(selected.get("peer_iqr")),
+                    percentile_rank=opt_finite_float(selected.get("percentile_rank")),
+                    robust_z_score=opt_finite_float(selected.get("robust_z_score")),
                     industry_snapshot_date=resolved_snapshot_date,
+                    peer_ranking=peer_ranking,
                 )
-
-            selected = target_rows.row(0, named=True)
-            resolved_end = selected["period_end_date"]
-            peer_level = str(selected["peer_group_level"])
-            icb_used = selected.get("icb_code_used")
-            accounting_regime = str(selected["accounting_regime"])
-
-            cohort_cache_key = (
-                (
-                    *snap_key,
-                    accounting_regime,
-                    statement_scope,
-                    period_type,
-                    resolved_end,
-                    metric_name,
-                    peer_level,
-                    icb_used,
-                )
-                if snap_key is not None
-                else None
-            )
-            peer_ranking: pl.DataFrame | None = None
-            if cohort_cache_key is not None:
-                with _QUERY_CACHE_LOCK:
-                    _evict_stale_l1b_caches_locked(snap_key)
-                    peer_ranking = _COHORT_PEER_RANKING_CACHE.get(cohort_cache_key)
-                    if peer_ranking is not None:
-                        _COHORT_PEER_RANKING_CACHE.move_to_end(cohort_cache_key)
-
-            if peer_ranking is None:
-                cohort_cols = _select_existing_columns(
-                    (
-                        "issuer_id",
-                        "value",
-                        "percentile_rank",
-                        "robust_z_score",
-                        "peer_group_level",
-                        "icb_code_used",
-                    ),
-                    avail_bench_cols,
-                )
-                cohort_filters: dict[str, object] = {
-                    "accounting_regime": accounting_regime,
-                    "statement_scope": statement_scope,
-                    "period_type": period_type,
-                    "period_end_date": resolved_end,
-                    "metric_or_ratio_name": metric_name,
-                    "peer_group_level": peer_level,
-                    "icb_code_used": icb_used,
-                }
-                cohort = pinned.read_table(
-                    BENCHMARKS_TABLE,
-                    columns=cohort_cols,
-                    filters=cohort_filters,
-                    connection=connection,
-                )
-                cohort_issuer_ids = cohort["issuer_id"].unique().to_list()
-                peer_issuers = pinned.read_table(
-                    "issuers.parquet",
-                    columns=[
-                        "issuer_id",
-                        "ticker",
-                        "company_name_vn",
-                        "icb_name_level2",
-                        "icb_name_level3",
-                    ],
-                    filters={"issuer_id": cohort_issuer_ids},
-                    connection=connection,
-                )
-
-                peer_ranking = _wrap_cached_dicts_df(
-                    cohort.join(peer_issuers, on="issuer_id", how="left")
-                    .select(
-                        "ticker",
-                        "company_name_vn",
-                        "value",
-                        "percentile_rank",
-                        "robust_z_score",
-                        "peer_group_level",
-                        "icb_code_used",
-                        "icb_name_level3",
-                        "icb_name_level2",
-                    )
-                    .sort("value", descending=True)
-                )
-                if cohort_cache_key is not None:
+                if comp_cache_key is not None:
                     with _QUERY_CACHE_LOCK:
                         _evict_stale_l1b_caches_locked(snap_key)
-                        _COHORT_PEER_RANKING_CACHE[cohort_cache_key] = peer_ranking
-                        while len(_COHORT_PEER_RANKING_CACHE) > _MAX_QUERY_CACHE_SIZE:
-                            _COHORT_PEER_RANKING_CACHE.popitem(last=False)
-
-            comp_result = IndustryComparisonData(
-                ticker=clean_ticker,
-                issuer_id=issuer_id,
-                statement_scope=statement_scope,
-                period_type=period_type,
-                period_end_date=resolved_end,
-                metric_name=metric_name,
-                peer_group_level=peer_level,
-                icb_code_used=str(icb_used) if icb_used is not None else None,
-                peer_count=int(selected["peer_count"]),
-                company_value=selected.get("value"),
-                peer_median=selected.get("peer_median"),
-                peer_p25=selected.get("peer_p25"),
-                peer_p75=selected.get("peer_p75"),
-                peer_iqr=selected.get("peer_iqr"),
-                percentile_rank=selected.get("percentile_rank"),
-                robust_z_score=selected.get("robust_z_score"),
-                industry_snapshot_date=resolved_snapshot_date,
-                peer_ranking=peer_ranking,
-            )
-            if comp_cache_key is not None:
-                with _QUERY_CACHE_LOCK:
-                    _evict_stale_l1b_caches_locked(snap_key)
-                    _INDUSTRY_COMPARISON_CACHE[comp_cache_key] = comp_result
-                    while len(_INDUSTRY_COMPARISON_CACHE) > _MAX_QUERY_CACHE_SIZE:
-                        _INDUSTRY_COMPARISON_CACHE.popitem(last=False)
-            return comp_result
+                        _INDUSTRY_COMPARISON_CACHE[comp_cache_key] = comp_result
+                        while len(_INDUSTRY_COMPARISON_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                            _INDUSTRY_COMPARISON_CACHE.popitem(last=False)
+                return comp_result
 
     def get_quality_summary_page(
         self,

@@ -15,8 +15,6 @@ Verified Sources:
 
 from __future__ import annotations
 
-import json
-import math
 import re
 from datetime import date
 from typing import Any, Literal
@@ -51,6 +49,12 @@ from finintel.serving._schema_extensions import (
     ShapDriverItem as ShapDriverItem,
 )
 from finintel.serving._schema_extensions import (
+    ShapExplanationItem as ShapExplanationItem,
+)
+from finintel.serving._schema_extensions import (
+    parse_shap_top_drivers as parse_shap_top_drivers,
+)
+from finintel.serving._schema_extensions import (
     TaxonomyDriftPSIItem as TaxonomyDriftPSIItem,
 )
 from finintel.serving._schema_extensions import (
@@ -65,6 +69,7 @@ from finintel.serving._schema_extensions import (
 from finintel.serving._schema_extensions import (
     WalkForwardYearItem as WalkForwardYearItem,
 )
+from finintel.serving._schema_extensions import normalize_reference_icrs_map
 from finintel.serving.dictionary import (
     RatioCategory,
     RatioDirection,
@@ -92,6 +97,8 @@ ScreenerSortField = Literal[
     "red_flag_count",
     "roe_total",
     "debt_to_equity",
+    "ebit_margin",
+    "interest_coverage",
 ]
 SortDirection = Literal["asc", "desc"]
 _TICKER_ITEM_RE = re.compile(r"^[A-Z0-9]{1,10}$")
@@ -138,21 +145,13 @@ RatioName = Literal[
 ]
 
 
-def _finite_float_or_none(raw: object) -> float | None:
-    if raw is None or isinstance(raw, bool):
-        return None
-    if isinstance(raw, (int, float)):
-        val = float(raw)
-        return val if math.isfinite(val) else None
-    return None
-
-
 class HealthResponse(BaseModel):
     """Route 1 response: service readiness and active snapshot binding."""
 
     status: Literal["ok", "degraded"]
     active_snapshot_id: str | None
     storage_backend: str
+    rag_available: bool = False
 
 
 class LivenessResponse(BaseModel):
@@ -221,77 +220,6 @@ class IssuersPageResponse(BaseModel):
     items: list[IssuerItem]
 
 
-class ShapExplanationItem(BaseModel):
-    """Parsed TreeSHAP local explanation with additive ``other_features_delta``."""
-
-    base_value: float
-    prediction_score: float
-    other_features_delta: float
-    top_risk_increasing: list[ShapDriverItem]
-    top_risk_decreasing: list[ShapDriverItem]
-
-
-def parse_shap_top_drivers(raw_json: str | None) -> ShapExplanationItem | None:
-    """Parse ``shap_top_drivers_json`` with graceful fallback for legacy snapshots."""
-    if not raw_json or not isinstance(raw_json, str):
-        return None
-    try:
-        parsed = json.loads(raw_json)
-    except ValueError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-
-    base_value = _finite_float_or_none(parsed.get("base_value"))
-    prediction_score = _finite_float_or_none(parsed.get("prediction_score"))
-    if base_value is None or prediction_score is None:
-        return None
-
-    def _parse_drivers(raw_items: object) -> list[ShapDriverItem]:
-        if not isinstance(raw_items, list):
-            return []
-        drivers: list[ShapDriverItem] = []
-        for entry in raw_items:
-            if not isinstance(entry, dict):
-                continue
-            feature = entry.get("feature")
-            shap_delta = _finite_float_or_none(entry.get("shap_delta"))
-            if not isinstance(feature, str) or not feature or shap_delta is None:
-                continue
-            raw_vn = entry.get("display_name_vn")
-            display_name_vn = (
-                str(raw_vn) if isinstance(raw_vn, str) and raw_vn.strip() else feature
-            )
-            drivers.append(
-                ShapDriverItem(
-                    feature=feature,
-                    display_name_vn=display_name_vn,
-                    value=_finite_float_or_none(entry.get("value")),
-                    peer_median=_finite_float_or_none(entry.get("peer_median")),
-                    shap_delta=shap_delta,
-                )
-            )
-        return drivers
-
-    inc = _parse_drivers(parsed.get("top_risk_increasing"))
-    dec = _parse_drivers(parsed.get("top_risk_decreasing"))
-    other = _finite_float_or_none(parsed.get("other_features_delta"))
-    if other is None:
-        other = (
-            prediction_score
-            - base_value
-            - sum(item.shap_delta for item in inc)
-            - sum(item.shap_delta for item in dec)
-        )
-    return ShapExplanationItem(
-        base_value=base_value,
-        prediction_score=prediction_score,
-        other_features_delta=other,
-        top_risk_increasing=inc,
-        top_risk_decreasing=dec,
-    )
-
-
 class MLScoreItem(BaseModel):
     """Single period Layer 4B classical + unsupervised + supervised ML score record."""
 
@@ -306,6 +234,8 @@ class MLScoreItem(BaseModel):
     altman_zone: str | None = None
     piotroski_f_score: int | None = None
     piotroski_valid_components_count: int | None = None
+    piotroski_missing_criteria: list[str] = Field(default_factory=list)
+    piotroski_na_reason: str | None = None
     beneish_m8_score: float | None = None
     beneish_flag: str | None = None
     pca_pc1: float | None = None
@@ -595,6 +525,7 @@ class StressScenarioRequest(BaseModel):
     top_n: int = Field(50, ge=1, le=200)
     include_all_newly_distressed: bool | None = None
     tickers: list[str] | None = Field(default=None, max_length=200)
+    reference_icrs: dict[str, float | None] | None = None
 
     @field_validator("scenario_name")
     @classmethod
@@ -622,6 +553,11 @@ class StressScenarioRequest(BaseModel):
                 normalized.append(tok)
         return normalized
 
+    @field_validator("reference_icrs", mode="before")
+    @classmethod
+    def _normalize_reference_icrs(cls, value: object) -> dict[str, float | None] | None:
+        return normalize_reference_icrs_map(value)
+
 
 class StressSectorSummaryItem(BaseModel):
     """Single ICB Level 2 sector row from ``summarize_stress_by_sector()``."""
@@ -646,6 +582,7 @@ class StressIssuerItem(BaseModel):
     total_debt: float | None = None
     interest_coverage: float | None = None
     stressed_interest_coverage: float | None = None
+    scenario_a_icr: float | None = None
     stressed_interest_coverage_flag: str | None = None
     ebit_ttm: float | None = None
     stressed_ebit_ttm: float | None = None
@@ -671,6 +608,8 @@ class StressTestResponse(BaseModel):
     baseline_debt_at_risk_pct: float
     stressed_debt_at_risk_pct: float
     newly_distressed_count: int
+    total_newly_distressed: int | None = None
+    issuer_icrs: dict[str, float | None] = Field(default_factory=dict)
     sector_summary: list[StressSectorSummaryItem]
     newly_distressed_issuers: list[StressIssuerItem]
     top_stressed_issuers: list[StressIssuerItem]
@@ -806,7 +745,7 @@ class CompanyBenchmarksSummaryResponse(BaseModel):
     issuer_id: str
     statement_scope: StatementScope
     period_type: PeriodType
-    period_end_date: date
+    period_end_date: date | None = None
     items: list[BenchmarkSummaryItem]
 
 

@@ -272,6 +272,7 @@ def test_build_lifespan_wires_finintel_ducklake_pg_dsn_into_repository(
             "status": "ok",
             "active_snapshot_id": "snap_pg_001",
             "storage_backend": "ducklake",
+            "rag_available": False,
         }
         assert attach_seen
         assert all(

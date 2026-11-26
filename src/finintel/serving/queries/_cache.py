@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import os
 import threading
+import weakref
 from collections import OrderedDict
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -40,6 +41,7 @@ DenominatorMode = Literal[
 PeriodView = Literal["TTM", "Quarterly", "Annual"]
 StatementScope = Literal["CONSOLIDATED", "SEPARATE"]
 PeriodType = Literal["QUARTER", "ANNUAL"]
+Exchange = Literal["HOSE", "HNX", "UPCOM"]
 AltmanZone = Literal["SAFE_ZONE", "GREY_ZONE", "DISTRESS_ZONE"]
 RiskTier = Literal["R1", "R2", "R3", "R4", "R5"]
 BeneishFlag = Literal[
@@ -54,6 +56,7 @@ PeerGroupLevel = Literal["ICB_LEVEL_3", "ICB_LEVEL_2", "REGIME_FALLBACK"]
 
 STATEMENT_SCOPES: tuple[str, ...] = ("CONSOLIDATED", "SEPARATE")
 PERIOD_TYPES: tuple[str, ...] = ("QUARTER", "ANNUAL")
+EXCHANGES: tuple[str, ...] = ("HOSE", "HNX", "UPCOM")
 PERIOD_VIEWS: tuple[str, ...] = ("TTM", "Quarterly", "Annual")
 ALTMAN_ZONES: tuple[str, ...] = ("SAFE_ZONE", "GREY_ZONE", "DISTRESS_ZONE")
 RISK_TIERS_ORDERED: tuple[str, ...] = ("R1", "R2", "R3", "R4", "R5")
@@ -84,6 +87,8 @@ SCREENER_SORT_FIELDS: tuple[str, ...] = (
     "red_flag_count",
     "roe_total",
     "debt_to_equity",
+    "ebit_margin",
+    "interest_coverage",
 )
 
 
@@ -905,7 +910,89 @@ def _wrap_cached_dicts_df(df: pl.DataFrame) -> _CachedDictsDataFrame:
     return wrapped
 
 
+_PARQUET_CONN_INIT_LOCK = threading.Lock()
+
+
+def _close_duckdb_conn(conn: duckdb.DuckDBPyConnection) -> None:
+    try:
+        conn.close()
+    except duckdb.Error:
+        pass
+
+
 class _QueryServiceBase:
     """Shared typed repository holder inherited by all domain query mixins."""
 
     repository: ParquetRepository
+    _parquet_conn: duckdb.DuckDBPyConnection | None = None
+    _parquet_conn_cond: threading.Condition | None = None
+    _parquet_conn_finalizer: Any = None
+    _parquet_active_cursors: dict[int, int] | None = None
+
+    def _get_parquet_conn_cond(self) -> tuple[threading.Condition, dict[int, int]]:
+        cond, active = self._parquet_conn_cond, self._parquet_active_cursors
+        if cond is None or active is None:
+            with _PARQUET_CONN_INIT_LOCK:
+                cond, active = self._parquet_conn_cond, self._parquet_active_cursors
+                if cond is None or active is None:
+                    active = {}
+                    cond = threading.Condition()
+                    self._parquet_active_cursors = active
+                    self._parquet_conn_cond = cond
+        return cond, active
+
+    def close(self) -> None:
+        """Close any lazily initialized Parquet-only ``:memory:`` DuckDB connection."""
+        cond, active = self._parquet_conn_cond, self._parquet_active_cursors
+        if cond is None or active is None:
+            return
+        with cond:
+            conn, finalizer = self._parquet_conn, self._parquet_conn_finalizer
+            self._parquet_conn = self._parquet_conn_finalizer = None
+            if finalizer is not None:
+                finalizer.detach()
+            if conn is None:
+                return
+            while active.get(id(conn), 0) > 0:
+                cond.wait()
+        _close_duckdb_conn(conn)
+
+    @contextmanager
+    def _parquet_cursor(
+        self,
+        pinned: ParquetRepository,
+        connection: duckdb.DuckDBPyConnection | None,
+    ) -> Iterator[duckdb.DuckDBPyConnection | None]:
+        """Yield a thread-safe ``.cursor()`` for pure Parquet mode when ``connection is None``."""
+        if (
+            connection is not None
+            or pinned._session_connection is not None
+            or pinned._pinned_binding is not None
+        ):
+            yield connection
+            return
+        cond, active = self._get_parquet_conn_cond()
+        with cond:
+            conn = self._parquet_conn
+            if conn is None:
+                conn = duckdb.connect(":memory:")
+                self._parquet_conn = conn
+                self._parquet_conn_finalizer = weakref.finalize(
+                    self, _close_duckdb_conn, conn
+                )
+            cur = conn.cursor()
+            conn_id = id(conn)
+            active[conn_id] = active.get(conn_id, 0) + 1
+        try:
+            yield cur
+        finally:
+            try:
+                cur.close()
+            finally:
+                with cond:
+                    rem = active.get(conn_id, 0) - 1
+                    if rem > 0:
+                        active[conn_id] = rem
+                    else:
+                        active.pop(conn_id, None)
+                        cond.notify_all()

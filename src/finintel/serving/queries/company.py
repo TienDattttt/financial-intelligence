@@ -35,9 +35,14 @@ from finintel.serving.queries._cache import (
     _resolve_issuer_row,
     _select_existing_columns,
 )
+from finintel.serving.queries._guards import (
+    apply_d8_ratio_guards,
+    guard_ratio_by_denominator,
+)
 from finintel.serving.queries._helpers import (
     extract_lineage_components,
     opt_finite_float,
+    resolve_benchmark_cohort_fallback,
 )
 from finintel.storage.schemas import (
     BENCHMARKS_TABLE,
@@ -429,7 +434,7 @@ class CompanyQueryMixin(_QueryServiceBase):
         period_end_date: date | None = None,
         metrics: Sequence[str] | None = None,
         connection: duckdb.DuckDBPyConnection | None = None,
-    ) -> tuple[str, date, list[dict[str, object]]]:
+    ) -> tuple[str, date | None, list[dict[str, object]]]:
         """Fetch multi-metric peer benchmarks and 8-period sparklines in a single snapshot read."""
         if statement_scope not in STATEMENT_SCOPES:
             raise ValueError(f"Unsupported statement_scope: {statement_scope!r}")
@@ -445,7 +450,13 @@ class CompanyQueryMixin(_QueryServiceBase):
             issuer_row = _resolve_issuer_row(
                 pinned,
                 clean_ticker,
-                columns=("issuer_id", "ticker"),
+                columns=(
+                    "issuer_id",
+                    "ticker",
+                    "accounting_regime",
+                    "icb_code_level2",
+                    "icb_code_level3",
+                ),
                 connection=connection,
             )
             issuer_id = str(issuer_row["issuer_id"])
@@ -454,11 +465,17 @@ class CompanyQueryMixin(_QueryServiceBase):
                 pinned, RATIOS_TABLE, connection=connection
             )
             if not avail_ratio_cols:
-                raise ValueError(
-                    f"No ratio periods found for {clean_ticker} {statement_scope} {period_type}."
+                return issuer_id, period_end_date, []
+            denom_cols = [
+                c
+                for c, needed in (
+                    ("net_revenue_ttm", "ebit_margin" in selected_metrics),
+                    ("borrowing_cost_ttm", "interest_coverage" in selected_metrics),
                 )
+                if needed
+            ]
             ratio_cols = _select_existing_columns(
-                ("period_end_date", *selected_metrics), avail_ratio_cols
+                ("period_end_date", *selected_metrics, *denom_cols), avail_ratio_cols
             )
             ratios = pinned.read_table(
                 RATIOS_TABLE,
@@ -471,17 +488,14 @@ class CompanyQueryMixin(_QueryServiceBase):
                 connection=connection,
             ).sort("period_end_date")
             if ratios.is_empty():
-                raise ValueError(
-                    f"No ratio periods found for {clean_ticker} {statement_scope} {period_type}."
-                )
+                return issuer_id, period_end_date, []
+            ratios = apply_d8_ratio_guards(ratios)
 
             resolved_date = period_end_date
             if resolved_date is None:
                 raw_latest = ratios.get_column("period_end_date").max()
                 if not isinstance(raw_latest, date):
-                    raise ValueError(
-                        f"No valid period_end_date found for {clean_ticker}."
-                    )
+                    return issuer_id, period_end_date, []
                 resolved_date = raw_latest
 
             hist_window = ratios.filter(
@@ -533,6 +547,28 @@ class CompanyQueryMixin(_QueryServiceBase):
                         "metric_or_ratio_name", as_dict=True
                     ).items():
                         bench_by_metric[str(key_tuple[0])] = sub.row(0, named=True)
+                missing_metrics = [
+                    m for m in selected_metrics if m not in bench_by_metric
+                ]
+                if missing_metrics:
+                    raw_l3 = issuer_row.get("icb_code_level3")
+                    raw_l2 = issuer_row.get("icb_code_level2")
+                    bench_by_metric.update(
+                        resolve_benchmark_cohort_fallback(
+                            pinned,
+                            avail_bench_cols=avail_bench_cols,
+                            accounting_regime=str(
+                                issuer_row.get("accounting_regime") or "CORPORATE"
+                            ),
+                            icb_code_level3=str(raw_l3) if raw_l3 is not None else None,
+                            icb_code_level2=str(raw_l2) if raw_l2 is not None else None,
+                            statement_scope=statement_scope,
+                            period_type=period_type,
+                            period_end_date=resolved_date,
+                            metric_names=missing_metrics,
+                            connection=connection,
+                        )
+                    )
 
             spark_cols = [m for m in selected_metrics if m in hist_window.columns]
             cleaned_hist = (
@@ -557,7 +593,16 @@ class CompanyQueryMixin(_QueryServiceBase):
                     if metric_name in cleaned_hist.columns
                     else []
                 )
-                company_val = opt_finite_float(b_row.get("value"))
+                company_val, _ = guard_ratio_by_denominator(
+                    metric_name,
+                    opt_finite_float(b_row.get("value")),
+                    net_revenue_ttm=opt_finite_float(
+                        latest_ratio_row.get("net_revenue_ttm")
+                    ),
+                    borrowing_cost_ttm=opt_finite_float(
+                        latest_ratio_row.get("borrowing_cost_ttm")
+                    ),
+                )
                 if company_val is None:
                     company_val = opt_finite_float(latest_ratio_row.get(metric_name))
                 raw_peer_count = b_row.get("peer_count")
@@ -651,6 +696,13 @@ class CompanyQueryMixin(_QueryServiceBase):
             avail_ratio_cols = _available_table_columns(
                 pinned, RATIOS_TABLE, connection=connection
             )
+            extra_denom = (
+                ("net_revenue_ttm",)
+                if ratio_name == "ebit_margin"
+                else (
+                    ("borrowing_cost_ttm",) if ratio_name == "interest_coverage" else ()
+                )
+            )
             desired_ratio_cols = (
                 "issuer_id",
                 "fiscal_year",
@@ -660,6 +712,7 @@ class CompanyQueryMixin(_QueryServiceBase):
                 "source_filing_ids",
                 ratio_name,
                 f"{ratio_name}_flag",
+                *extra_denom,
             )
             ratio_cols = _select_existing_columns(desired_ratio_cols, avail_ratio_cols)
             ratios = pinned.read_table(
@@ -757,6 +810,22 @@ class CompanyQueryMixin(_QueryServiceBase):
                 for row in matched_manifest.to_dicts():
                     manifest_lookup[str(row["filing_id"])] = row
 
+            raw_ratio_val = opt_finite_float(ratio_row.get(ratio_name))
+            raw_status_flag = (
+                str(ratio_row[f"{ratio_name}_flag"])
+                if ratio_row.get(f"{ratio_name}_flag") is not None
+                else None
+            )
+            guarded_ratio_val, guarded_status_flag = guard_ratio_by_denominator(
+                ratio_name,
+                raw_ratio_val,
+                net_revenue_ttm=opt_finite_float(ratio_row.get("net_revenue_ttm")),
+                borrowing_cost_ttm=opt_finite_float(
+                    ratio_row.get("borrowing_cost_ttm")
+                ),
+                status_flag=raw_status_flag,
+            )
+
             lineage_result = RatioLineageCard(
                 ticker=clean_ticker,
                 issuer_id=issuer_id,
@@ -772,16 +841,8 @@ class CompanyQueryMixin(_QueryServiceBase):
                 ratio_name=ratio_name,
                 display_name_vn=spec.display_name_vn,
                 formula=spec.formula,
-                ratio_value=(
-                    float(ratio_row[ratio_name])
-                    if ratio_row.get(ratio_name) is not None
-                    else None
-                ),
-                status_flag=(
-                    str(ratio_row[f"{ratio_name}_flag"])
-                    if ratio_row.get(f"{ratio_name}_flag") is not None
-                    else None
-                ),
+                ratio_value=guarded_ratio_val,
+                status_flag=guarded_status_flag,
                 taxonomy_version=str(ratio_row["taxonomy_version"]),
                 denominator_mode=spec.denominator_mode,
                 anchor_filing_id=anchor_filing_id,

@@ -41,8 +41,10 @@ from finintel.serving.queries._cache import (
     _resolve_issuer_row,
     _select_existing_columns,
 )
+from finintel.serving.queries._guards import normalize_company_display_name_expr
 from finintel.serving.queries._helpers import (
     build_port_candidate_roots,
+    filter_broad_coverage_annual_dates,
     load_port_parquet_for_issuer,
     read_overlay_dtd_facts,
     read_overlay_ml_scores,
@@ -185,7 +187,11 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                 filters={"issuer_id": ratios["issuer_id"].unique().to_list()},
                 connection=connection,
             )
-            result = ratios.join(issuers, on="issuer_id", how="left").sort("ticker")
+            result = (
+                ratios.join(issuers, on="issuer_id", how="left")
+                .with_columns(normalize_company_display_name_expr())
+                .sort("ticker")
+            )
             if stress_cache_key is not None:
                 with _QUERY_CACHE_LOCK:
                     _evict_stale_l1b_caches_locked(snap_key)
@@ -214,10 +220,16 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                 "period_type",
                 "period_end_date",
             }.issubset(avail_ratio):
+                has_issuer_id = "issuer_id" in avail_ratio
+                period_cols = (
+                    ["issuer_id", "statement_scope", "period_type", "period_end_date"]
+                    if has_issuer_id
+                    else ["statement_scope", "period_type", "period_end_date"]
+                )
                 periods_df = (
                     pinned.read_table(
                         RATIOS_TABLE,
-                        columns=["statement_scope", "period_type", "period_end_date"],
+                        columns=period_cols,
                         connection=connection,
                     )
                     .drop_nulls(["statement_scope", "period_type", "period_end_date"])
@@ -225,8 +237,6 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                         pl.col("statement_scope").is_in(STATEMENT_SCOPES)
                         & pl.col("period_type").is_in(PERIOD_TYPES)
                     )
-                    .unique()
-                    .sort("period_end_date", descending=True)
                 )
                 if not periods_df.is_empty():
                     for key_tuple, sub in periods_df.partition_by(
@@ -240,11 +250,39 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                             scope in available_periods
                             and ptype in available_periods[scope]
                         ):
-                            available_periods[scope][ptype] = [
-                                pdate
-                                for pdate in sub.get_column("period_end_date").to_list()
-                                if isinstance(pdate, date)
-                            ]
+                            if ptype == "ANNUAL" and has_issuer_id:
+                                counts_df = sub.group_by("period_end_date").agg(
+                                    pl.col("issuer_id")
+                                    .n_unique()
+                                    .cast(pl.Int64)
+                                    .alias("n")
+                                )
+                                pairs = [
+                                    (pdate, int(cnt))
+                                    for pdate, cnt in zip(
+                                        counts_df.get_column(
+                                            "period_end_date"
+                                        ).to_list(),
+                                        counts_df.get_column("n").to_list(),
+                                        strict=True,
+                                    )
+                                    if isinstance(pdate, date)
+                                ]
+                                available_periods[scope][ptype] = (
+                                    filter_broad_coverage_annual_dates(pairs)
+                                )
+                            else:
+                                unique_dates = (
+                                    sub.get_column("period_end_date")
+                                    .unique()
+                                    .sort(descending=True)
+                                    .to_list()
+                                )
+                                available_periods[scope][ptype] = [
+                                    pdate
+                                    for pdate in unique_dates
+                                    if isinstance(pdate, date)
+                                ]
 
             avail_iss = _available_table_columns(
                 pinned, "issuers.parquet", connection=connection

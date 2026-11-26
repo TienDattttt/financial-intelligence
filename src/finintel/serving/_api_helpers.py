@@ -12,12 +12,18 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import importlib.util
 import io
 import logging
 import math
+import os
+import socket
 import threading
+import time
 from datetime import date
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import polars as pl
 from fastapi.responses import JSONResponse
@@ -27,6 +33,12 @@ from finintel.serving.dependencies import (
     DEFAULT_STRESS_MAX_CONCURRENCY,
     DEFAULT_STRESS_SEMAPHORE_TIMEOUT,
 )
+from finintel.serving.dictionary import (
+    RATIO_DICTIONARY_META,
+    RED_FLAG_DICTIONARY,
+)
+from finintel.serving.freshness import compose_etag_token
+from finintel.serving.queries import RATIO_LINEAGE_CATALOG
 
 logger = logging.getLogger("finintel.serving.api")
 
@@ -54,6 +66,115 @@ def _finite_scalar(value: float | None) -> float | None:
     if value is None:
         return None
     return value if math.isfinite(value) else None
+
+
+def _extract_snapshot_id(meta: dict[str, object]) -> str | None:
+    raw = meta.get("snapshot_id")
+    return str(raw) if isinstance(raw, str) and raw else None
+
+
+def _extract_storage_backend(meta: dict[str, object]) -> str:
+    raw = meta.get("storage_backend")
+    return str(raw) if isinstance(raw, str) and raw else "parquet"
+
+
+def build_screener_cache_params(
+    *,
+    period_type: str,
+    period_end_date: date | None,
+    statement_scope: str,
+    icb_code_level2: str | None,
+    exchange: str | None,
+    min_f_score: int | None,
+    altman_zone: str | None,
+    effective_tiers: tuple[str, ...] | None,
+    beneish_flag: str | None,
+    max_distress_prob: float | None,
+    min_distress_prob: float | None,
+    max_red_flags: int | None,
+    min_red_flags: int | None,
+    q: str | None,
+    sort_by: str,
+    sort_dir: str,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    """Assemble canonical Valkey L2 cache parameter dict for ``GET /api/v1/screener``."""
+    return {
+        "period_type": period_type,
+        "period_end_date": period_end_date.isoformat() if period_end_date else None,
+        "statement_scope": statement_scope,
+        "icb_code_level2": icb_code_level2,
+        "exchange": exchange,
+        "min_f_score": min_f_score,
+        "altman_zone": altman_zone,
+        "risk_tiers": list(effective_tiers) if effective_tiers is not None else None,
+        "beneish_flag": beneish_flag,
+        "max_distress_prob": max_distress_prob,
+        "min_distress_prob": min_distress_prob,
+        "max_red_flags": max_red_flags,
+        "min_red_flags": min_red_flags,
+        "q": q,
+        "sort_by": sort_by,
+        "sort_dir": sort_dir,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def probe_rag_available(app_state: Any, *, ttl_seconds: float = 5.0) -> bool:
+    """Fast, bounded probe for whether Port 2 Document RAG is ready to serve."""
+    if not getattr(app_state, "_rag_router_mounted", False):
+        return False
+    if getattr(app_state, "_rag_injected", False):
+        return getattr(app_state, "_rag_investigator", None) is not None
+    if (
+        os.getenv("PYTEST_CURRENT_TEST")
+        and not os.getenv("FININTEL_RAG_PREWARM_IN_TEST")
+        and not os.getenv("FININTEL_RAG_PG_DSN", "").strip()
+    ):
+        return False
+    now = time.monotonic()
+    cached = getattr(app_state, "_rag_probe_cache", None)
+    if (
+        isinstance(cached, tuple)
+        and len(cached) == 2
+        and (now - float(cached[0])) < ttl_seconds
+    ):
+        return bool(cached[1])
+    if (
+        importlib.util.find_spec("psycopg") is None
+        or importlib.util.find_spec("pgvector") is None
+    ):
+        app_state._rag_probe_cache = (now, False)
+        return False
+    ok = False
+    try:
+        from finintel.rag.store import resolve_rag_pg_dsn
+
+        dsn = resolve_rag_pg_dsn()
+        if dsn:
+            parsed = urlparse(dsn)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or 5432
+            with socket.create_connection((host, port), timeout=0.15):
+                ok = True
+    except (ImportError, OSError, ValueError):
+        ok = False
+    app_state._rag_probe_cache = (now, ok)
+    return ok
+
+
+def health_etag_source(
+    snap_id: str | None, data_root: Path | None, rag_available: bool
+) -> str | None:
+    """Rotate health ETag when ``rag_available`` flips while preserving legacy ETag when False."""
+    if snap_id is None:
+        return None
+    if not rag_available:
+        return snap_id
+    base = compose_etag_token(snap_id, data_root) or snap_id
+    return f"{base}:rag1"
 
 
 def _frame_to_records(df: pl.DataFrame) -> list[dict[str, Any]]:
@@ -240,3 +361,32 @@ class RagAvailabilityMiddleware:
             )
             resp = _rag_unavailable_response()
             await resp(scope, receive, send)
+
+
+def build_meta_dictionary_kwargs() -> dict[str, Any]:
+    """Build ``MetaDictionaryResponse`` constructor payload from dictionary metadata."""
+    ratios = [
+        {
+            "ratio_name": name,
+            "display_name_vn": RATIO_LINEAGE_CATALOG[name].display_name_vn,
+            "category": entry.category,
+            "unit": entry.unit,
+            "format_type": entry.format_type,
+            "direction": entry.direction,
+            "formula_display": RATIO_LINEAGE_CATALOG[name].formula,
+            "description_vn": entry.description_vn,
+            "is_overview_core": entry.is_overview_core,
+        }
+        for name, entry in RATIO_DICTIONARY_META.items()
+    ]
+    red_flags = [
+        {
+            "flag_code": rf.flag_code,
+            "title_vn": rf.title_vn,
+            "default_severity": rf.default_severity,
+            "methodology_ref": rf.methodology_ref,
+            "description_vn": rf.description_vn,
+        }
+        for rf in RED_FLAG_DICTIONARY
+    ]
+    return {"ratios": ratios, "red_flags": red_flags}

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 import finintel.serving.queries as queries_mod
 import finintel.storage.repository as repo_mod
 from finintel.analytics.tables import build_analytics_tables
+from finintel.exceptions import ContractViolationError
 from finintel.pipeline.state_store import StateStore
 from finintel.serving.queries import (
     DashboardQueryService,
@@ -648,3 +651,226 @@ def test_arch02_benchmark_rollover_latency_and_bounded_cache_growth(
     assert len(repo_mod._SNAPSHOT_TABLE_DATA_CACHE) <= len(
         repo_mod._IN_MEMORY_CACHEABLE_TABLES
     )
+
+
+def test_parquet_cursor_reuses_memory_conn_skips_cache_hits_and_skips_ducklake(
+    tmp_path: Path,
+) -> None:
+    clear_repository_caches()
+    clear_query_caches()
+
+    pq_root = tmp_path / "pq_root"
+    _publish_minimal_v2_snapshot(pq_root, "snap_cursor_pq_1", revenue_scale=1.0)
+    svc_warm = DashboardQueryService(ParquetRepository(data_root=pq_root))
+    comp = svc_warm.get_industry_comparison(
+        "FPT",
+        statement_scope="CONSOLIDATED",
+        period_type="ANNUAL",
+        period_end_date=date(2025, 12, 31),
+        metric_name="roe_total",
+    )
+    assert comp.peer_count == 2
+    first_conn = svc_warm._parquet_conn
+    assert first_conn is not None
+
+    hist = svc_warm.get_peer_band_history(
+        "FPT",
+        statement_scope="CONSOLIDATED",
+        period_type="QUARTER",
+        metric_name="roe_total",
+    )
+    assert not hist.is_empty()
+    assert svc_warm._parquet_conn is first_conn
+
+    # L1B cache hits must return before opening a lazy DuckDB connection.
+    svc_hit = DashboardQueryService(ParquetRepository(data_root=pq_root))
+    _ = svc_hit.get_industry_comparison(
+        "FPT",
+        statement_scope="CONSOLIDATED",
+        period_type="ANNUAL",
+        period_end_date=date(2025, 12, 31),
+        metric_name="roe_total",
+    )
+    _ = svc_hit.get_peer_band_history(
+        "FPT",
+        statement_scope="CONSOLIDATED",
+        period_type="QUARTER",
+        metric_name="roe_total",
+    )
+    assert svc_hit._parquet_conn is None
+
+    svc_warm.close()
+    assert svc_warm._parquet_conn is None
+
+    # DuckLake mode must never attach SQLite catalogs onto a persistent _parquet_conn.
+    dl_root = tmp_path / "dl_root"
+    _publish_minimal_v2_ducklake_snapshot(
+        dl_root, "snap_cursor_dl_1", revenue_scale=1.0
+    )
+    svc_dl = DashboardQueryService(
+        ParquetRepository(data_root=dl_root, backend="ducklake")
+    )
+    dl_comp = svc_dl.get_industry_comparison(
+        "FPT",
+        statement_scope="CONSOLIDATED",
+        period_type="ANNUAL",
+        period_end_date=date(2025, 12, 31),
+        metric_name="roe_total",
+    )
+    assert dl_comp.peer_count == 2
+    dl_hist = svc_dl.get_peer_band_history(
+        "FPT",
+        statement_scope="CONSOLIDATED",
+        period_type="QUARTER",
+        metric_name="roe_total",
+    )
+    assert not dl_hist.is_empty()
+    assert svc_dl._parquet_conn is None
+
+
+def test_inspect_parquet_columns_polars_schema_and_corrupt_error(
+    tmp_path: Path,
+) -> None:
+    clear_repository_caches()
+    snap_dir = _publish_minimal_v2_snapshot(
+        tmp_path / "pq_schema_root", "snap_schema_001", revenue_scale=1.0
+    )
+    repo = ParquetRepository(data_root=snap_dir)
+    cols_no_conn = repo.get_table_columns(BENCHMARKS_TABLE)
+    assert cols_no_conn is not None
+    assert "issuer_id" in cols_no_conn
+    assert "metric_or_ratio_name" in cols_no_conn
+
+    corrupt_path = tmp_path / "corrupt.parquet"
+    corrupt_path.write_bytes(b"not-a-valid-parquet-file")
+    with pytest.raises(ContractViolationError):
+        repo._inspect_parquet_columns(
+            corrupt_path,
+            ("corrupt", 1, 24),
+            "corrupt.parquet",
+            connection=None,
+        )
+
+
+def test_parquet_cursor_close_waits_for_active_cursor(tmp_path: Path) -> None:
+    clear_repository_caches()
+    clear_query_caches()
+    pq_root = tmp_path / "pq_race"
+    _publish_minimal_v2_snapshot(pq_root, "snap_close_race_1", revenue_scale=1.0)
+    svc = DashboardQueryService(ParquetRepository(data_root=pq_root))
+
+    cur_ready = threading.Event()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+    errors: list[BaseException] = []
+    rows_read: list[int] = []
+
+    def _query_worker() -> None:
+        try:
+            with svc.repository.snapshot_session() as pinned:
+                with svc._parquet_cursor(pinned, None) as cur:
+                    assert cur is not None
+                    cur_ready.set()
+                    assert close_started.wait(timeout=5.0)
+                    time.sleep(0.05)
+                    assert not close_finished.is_set()
+                    frame = pinned.read_table(
+                        BENCHMARKS_TABLE,
+                        columns=[
+                            "issuer_id",
+                            "metric_or_ratio_name",
+                            "period_end_date",
+                        ],
+                        filters={"metric_or_ratio_name": "roe_total"},
+                        connection=cur,
+                    )
+                    rows_read.append(frame.height)
+        except BaseException as exc:  # pragma: no cover - assertion captures failure
+            errors.append(exc)
+
+    def _close_worker() -> None:
+        try:
+            assert cur_ready.wait(timeout=5.0)
+            close_started.set()
+            svc.close()
+            close_finished.set()
+        except BaseException as exc:  # pragma: no cover - assertion captures failure
+            errors.append(exc)
+
+    t_query = threading.Thread(target=_query_worker, name="parquet-cursor-holder")
+    t_close = threading.Thread(target=_close_worker, name="parquet-cursor-closer")
+    t_query.start()
+    t_close.start()
+    t_query.join(timeout=10.0)
+    t_close.join(timeout=10.0)
+
+    assert not t_query.is_alive()
+    assert not t_close.is_alive()
+    assert not errors, f"Unexpected close race errors: {errors!r}"
+    assert close_finished.is_set()
+    assert len(rows_read) == 1 and rows_read[0] > 0
+    assert svc._parquet_conn is None
+    assert svc._parquet_active_cursors == {}
+
+    # Subsequent query after close() cleanly re-initializes a fresh connection.
+    comp = svc.get_industry_comparison(
+        "FPT",
+        statement_scope="CONSOLIDATED",
+        period_type="ANNUAL",
+        period_end_date=date(2025, 12, 31),
+        metric_name="roe_total",
+    )
+    assert comp.peer_count == 2
+    svc.close()
+    assert svc._parquet_conn is None
+
+
+def test_parquet_cursor_concurrent_queries_with_interleaved_close(
+    tmp_path: Path,
+) -> None:
+    clear_repository_caches()
+    clear_query_caches()
+    pq_root = tmp_path / "pq_stress"
+    _publish_minimal_v2_snapshot(pq_root, "snap_close_stress_1", revenue_scale=1.0)
+    svc = DashboardQueryService(ParquetRepository(data_root=pq_root))
+
+    stop = threading.Event()
+    errors: list[BaseException] = []
+
+    def _reader(worker_idx: int) -> None:
+        try:
+            for step in range(12):
+                with svc.repository.snapshot_session() as pinned:
+                    with svc._parquet_cursor(pinned, None) as cur:
+                        frame = pinned.read_table(
+                            BENCHMARKS_TABLE,
+                            columns=["issuer_id", "metric_or_ratio_name"],
+                            filters={"metric_or_ratio_name": "roe_total"},
+                            connection=cur,
+                        )
+                        assert frame.height > 0, f"worker={worker_idx} step={step}"
+        except BaseException as exc:  # pragma: no cover - assertion captures failure
+            errors.append(exc)
+
+    def _closer() -> None:
+        try:
+            while not stop.is_set():
+                svc.close()
+                time.sleep(0.005)
+        except BaseException as exc:  # pragma: no cover - assertion captures failure
+            errors.append(exc)
+
+    readers = [threading.Thread(target=_reader, args=(i,)) for i in range(8)]
+    closer = threading.Thread(target=_closer)
+    closer.start()
+    for t in readers:
+        t.start()
+    for t in readers:
+        t.join(timeout=20.0)
+    stop.set()
+    closer.join(timeout=10.0)
+
+    assert not errors, f"Concurrent close stress errors: {errors!r}"
+    svc.close()
+    assert svc._parquet_conn is None
+    assert svc._parquet_active_cursors == {}

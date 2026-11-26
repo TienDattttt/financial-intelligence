@@ -145,44 +145,45 @@ def _build_period_rows(
 
     is_annual = quarter is None
     flow_factor = 4.0 if is_annual else 1.0
+    vnd_scale = scale * 10_000.0
 
-    assets = 1_000_000.0 * scale
+    assets = 1_000_000.0 * vnd_scale
     if negative_equity:
-        equity = -50_000.0 * scale
+        equity = -50_000.0 * vnd_scale
         liabilities = assets - equity
     elif bs_mismatch:
-        equity = 400_000.0 * scale
-        liabilities = 450_000.0 * scale  # 150k mismatch (15%)
+        equity = 400_000.0 * vnd_scale
+        liabilities = 450_000.0 * vnd_scale  # 150k*1e4 mismatch (15%)
     else:
-        equity = 600_000.0 * scale
-        liabilities = 400_000.0 * scale
+        equity = 600_000.0 * vnd_scale
+        liabilities = 400_000.0 * vnd_scale
 
-    minority_interest = 30_000.0 * scale if not negative_equity else 0.0
-    current_assets = 520_000.0 * scale
+    minority_interest = 30_000.0 * vnd_scale if not negative_equity else 0.0
+    current_assets = 520_000.0 * vnd_scale
     noncurrent_assets = assets - current_assets
-    current_liabilities = 250_000.0 * scale
-    cash = 110_000.0 * scale
-    st_debt = 120_000.0 * scale
-    lt_debt = 80_000.0 * scale
-    inventory = 90_000.0 * scale
-    receivables_st = 115_000.0 * scale
-    payables_st = 75_000.0 * scale
-    tangible_assets = 320_000.0 * scale
-    retained_earnings = 180_000.0 * scale
+    current_liabilities = 250_000.0 * vnd_scale
+    cash = 110_000.0 * vnd_scale
+    st_debt = 120_000.0 * vnd_scale
+    lt_debt = 80_000.0 * vnd_scale
+    inventory = 90_000.0 * vnd_scale
+    receivables_st = 115_000.0 * vnd_scale
+    payables_st = 75_000.0 * vnd_scale
+    tangible_assets = 320_000.0 * vnd_scale
+    retained_earnings = 180_000.0 * vnd_scale
 
-    revenue = 250_000.0 * scale * flow_factor * revenue_boost
-    cogs = 150_000.0 * scale * flow_factor
+    revenue = 250_000.0 * vnd_scale * flow_factor * revenue_boost
+    cogs = 150_000.0 * vnd_scale * flow_factor
     gross_profit = revenue - cogs
-    selling = 18_000.0 * scale * flow_factor
-    admin = 22_000.0 * scale * flow_factor
+    selling = 18_000.0 * vnd_scale * flow_factor
+    admin = 22_000.0 * vnd_scale * flow_factor
     operating_profit = gross_profit - selling - admin
-    interest = 6_000.0 * scale * flow_factor
+    interest = 6_000.0 * vnd_scale * flow_factor
     if negative_income:
-        ebt = -25_000.0 * scale * flow_factor
+        ebt = -25_000.0 * vnd_scale * flow_factor
         current_tax = 0.0
         deferred_tax = 0.0
-        net_income = -25_000.0 * scale * flow_factor
-        net_income_parent = -24_000.0 * scale * flow_factor
+        net_income = -25_000.0 * vnd_scale * flow_factor
+        net_income_parent = -24_000.0 * vnd_scale * flow_factor
     else:
         ebt = operating_profit - interest
         current_tax = 0.20 * ebt
@@ -190,9 +191,9 @@ def _build_period_rows(
         net_income = ebt - current_tax
         net_income_parent = 0.94 * net_income
 
-    cfo = 42_000.0 * scale * flow_factor
-    capex = -12_000.0 * scale * flow_factor
-    depreciation = 10_000.0 * scale * flow_factor
+    cfo = 42_000.0 * vnd_scale * flow_factor
+    capex = -12_000.0 * vnd_scale * flow_factor
+    depreciation = 10_000.0 * vnd_scale * flow_factor
     cf_ending_cash = cash
 
     prefix = f"{issuer_id}-{statement_scope}-{year}-{'FY' if is_annual else f'Q{quarter}'}-r{revision_no}{filing_suffix}"
@@ -212,7 +213,7 @@ def _build_period_rows(
         ("BS_TRADE_PAYABLES_ST", payables_st, f"{prefix}-bs"),
         ("BS_TANGIBLE_FIXED_ASSETS", tangible_assets, f"{prefix}-bs"),
         ("BS_RETAINED_EARNINGS", retained_earnings, f"{prefix}-bs"),
-        ("BS_ORDINARY_SHARES_CAPITAL", 200_000.0 * scale, f"{prefix}-bs"),
+        ("BS_ORDINARY_SHARES_CAPITAL", 200_000.0 * vnd_scale, f"{prefix}-bs"),
         ("BS_TREASURY_SHARES", 0.0, f"{prefix}-bs"),
         ("IS_NET_REVENUE", revenue, f"{prefix}-is"),
         ("IS_COST_OF_GOODS_SOLD", cogs, f"{prefix}-is"),

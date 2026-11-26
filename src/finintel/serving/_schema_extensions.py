@@ -9,11 +9,45 @@ Verified Sources:
 
 from __future__ import annotations
 
+import json
+import math
+import re
 from datetime import date
 
 from pydantic import BaseModel, Field
 
 from finintel.serving.queries import RiskTier
+
+_EXT_TICKER_RE = re.compile(r"^[A-Z0-9]{1,10}$")
+
+
+def normalize_reference_icrs_map(
+    value: object,
+) -> dict[str, float | None] | None:
+    """Validate and uppercase-normalize ``StressScenarioRequest.reference_icrs``."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(
+            "reference_icrs must be a mapping of ticker strings to float or null."
+        )
+    normalized: dict[str, float | None] = {}
+    for raw_key, raw_val in value.items():
+        if not isinstance(raw_key, str):
+            raise ValueError("reference_icrs keys must be ticker strings.")
+        tok = raw_key.strip().upper()
+        if not tok or not _EXT_TICKER_RE.fullmatch(tok):
+            raise ValueError(f"Invalid ticker format in reference_icrs: {raw_key!r}")
+        if raw_val is None:
+            normalized[tok] = None
+        elif isinstance(raw_val, bool) or not isinstance(raw_val, (int, float)):
+            raise ValueError(
+                f"Invalid ICR value in reference_icrs for {tok!r}: {raw_val!r}"
+            )
+        else:
+            fval = float(raw_val)
+            normalized[tok] = fval if math.isfinite(fval) else None
+    return normalized
 
 
 class ShapDriverItem(BaseModel):
@@ -219,3 +253,83 @@ class ModelCardResponse(BaseModel):
     taxonomy_drift_psi: TaxonomyDriftPSIItem
     case_studies: list[HistoricalCaseStudyItem]
     limitations: list[str]
+
+
+class ShapExplanationItem(BaseModel):
+    """Parsed TreeSHAP local explanation with additive ``other_features_delta``."""
+
+    base_value: float
+    prediction_score: float
+    other_features_delta: float
+    top_risk_increasing: list[ShapDriverItem]
+    top_risk_decreasing: list[ShapDriverItem]
+
+
+def _finite_float_or_none(raw: object) -> float | None:
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        val = float(raw)
+        return val if math.isfinite(val) else None
+    return None
+
+
+def parse_shap_top_drivers(raw_json: str | None) -> ShapExplanationItem | None:
+    """Parse ``shap_top_drivers_json`` with graceful fallback for legacy snapshots."""
+    if not raw_json or not isinstance(raw_json, str):
+        return None
+    try:
+        parsed = json.loads(raw_json)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    base_value = _finite_float_or_none(parsed.get("base_value"))
+    prediction_score = _finite_float_or_none(parsed.get("prediction_score"))
+    if base_value is None or prediction_score is None:
+        return None
+
+    def _parse_drivers(raw_items: object) -> list[ShapDriverItem]:
+        if not isinstance(raw_items, list):
+            return []
+        drivers: list[ShapDriverItem] = []
+        for entry in raw_items:
+            if not isinstance(entry, dict):
+                continue
+            feature = entry.get("feature")
+            shap_delta = _finite_float_or_none(entry.get("shap_delta"))
+            if not isinstance(feature, str) or not feature or shap_delta is None:
+                continue
+            raw_vn = entry.get("display_name_vn")
+            display_name_vn = (
+                str(raw_vn) if isinstance(raw_vn, str) and raw_vn.strip() else feature
+            )
+            drivers.append(
+                ShapDriverItem(
+                    feature=feature,
+                    display_name_vn=display_name_vn,
+                    value=_finite_float_or_none(entry.get("value")),
+                    peer_median=_finite_float_or_none(entry.get("peer_median")),
+                    shap_delta=shap_delta,
+                )
+            )
+        return drivers
+
+    inc = _parse_drivers(parsed.get("top_risk_increasing"))
+    dec = _parse_drivers(parsed.get("top_risk_decreasing"))
+    other = _finite_float_or_none(parsed.get("other_features_delta"))
+    if other is None:
+        other = (
+            prediction_score
+            - base_value
+            - sum(item.shap_delta for item in inc)
+            - sum(item.shap_delta for item in dec)
+        )
+    return ShapExplanationItem(
+        base_value=base_value,
+        prediction_score=prediction_score,
+        other_features_delta=other,
+        top_risk_increasing=inc,
+        top_risk_decreasing=dec,
+    )
