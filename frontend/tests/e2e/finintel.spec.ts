@@ -13,7 +13,7 @@ const FORBIDDEN_TECHNICAL_LEAKS: readonly RegExp[] = [
   /\bBS_IDENTITY_MISMATCH\b/,
   /\bValkey\b/i,
   /look-ahead/i,
-  /\bRF_0[1-9]\b/,
+  /\bRF_(?:0[1-9]|10)\b/,
   /\.parquet\b/i,
   /\.sqlite\b/i,
   /\bTraceback\b/,
@@ -610,10 +610,10 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
       for (const pattern of FORBIDDEN_TECHNICAL_LEAKS) {
         expect(pattern.test(bodyText)).toBe(false);
       }
-      // Verify Dictionary tab still renders real 38 ratios & 9 red flags
-      await page.getByRole("button", { name: "Từ điển chỉ số & Cờ đỏ" }).click();
+      // Verify Dictionary tab still renders real 38 ratios & 10 red flags
+      await page.getByRole("tab", { name: "Từ điển chỉ số & Cờ đỏ" }).click();
       await expect(page.getByText(/38 tỷ số tài chính chuẩn hóa/i)).toBeVisible();
-      await expect(page.getByText(/9 quy tắc phát hiện bất thường kế toán/i)).toBeVisible();
+      await expect(page.getByText(/10 quy tắc phát hiện bất thường kế toán/i)).toBeVisible();
     }
   });
 
@@ -652,6 +652,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
           res.request().method() === "POST",
         { timeout: 45_000 },
       );
+      void invPromise.catch(() => null);
       await jumpBtn.click();
       await expect(page).toHaveURL(/tab=documents/);
     } else {

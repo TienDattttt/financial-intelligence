@@ -24,7 +24,7 @@
 | `TASK-09` | Behavior-Changing | `cap-04`: Con trỏ tiến SQLite/Postgres + Composite `ETag` + API Freshness/DTD + OTel spans + Sanitizer | `6` tệp | Hoàn tất (Đợt 4) |
 | `TASK-10` | Behavior-Changing | `cap-05`: Frontend đồng bộ `X-Snapshot-ID`, tích hợp thẻ `Merton DTD` + bằng chứng `RF_10` & mã nhãn VN | `6` tệp | Hoàn tất (Đợt 4) |
 | `TASK-11` | Behavior-Changing | `cap-05`: Nâng cấp WAI-ARIA `frontend/src/components/ui/segmented-control.tsx`, thanh Freshness 3 mốc `200%` zoom & chuẩn hóa `SourceDrawer` | `6` tệp | Hoàn tất (Đợt 4) |
-| `TASK-12` | Behavior-Changing | `cap-05`: Tab/vùng cuộn `/methodology` A11y + Vitest JSDOM `.tsx` + Cổng `wcag22aa` & CWV + Sidecar `/automation` | `5` tệp | Đợt 4 |
+| `TASK-12` | Behavior-Changing | `cap-05`: Tab/vùng cuộn `/methodology` A11y + Vitest JSDOM `.tsx` + Cổng `wcag22aa` & CWV + Sidecar `/automation` | `5` tệp | Hoàn tất (Đợt 4) |
 
 ---
 
@@ -100,6 +100,11 @@
 - **Loại commit:** `feat(frontend)` (`Behavior-Changing`).
 - **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `frontend/src/components/ui/segmented-control.tsx`, `frontend/src/components/ui/info-tooltip.tsx`, `frontend/src/components/layout/AppShell.tsx`, `frontend/src/components/layout/SourceDrawer.tsx`, `frontend/src/components/company/OverviewTab.tsx`, `frontend/src/components/financial/RedFlagChecklist.tsx` (+ `frontend/tests/unit/task11_a11y_freshness_drawer.test.ts`).
 - **Chi tiết:** Nâng cấp `segmented-control.tsx` đạt chuẩn WAI-ARIA Tabs / Radiogroup với roving `tabIndex`, điều hướng bàn phím (`ArrowRight`/`ArrowDown`, `ArrowLeft`/`ArrowUp`, `Home`, `End`), liên kết `aria-controls` và kích thước vùng bấm tối thiểu `>= 24x24px` (`WCAG 2.2 AA SC 2.5.8`, đồng bộ trên cả `InfoTooltip` và nút hành động nội dòng); bổ sung thanh độ tươi dữ liệu 3 tầng (`BCTC`, `Giá EOD`, `Pháp lý`) co giãn không tràn ngang ở `1440x900`, `720x450` (`200%` zoom) và `320x800`; chuẩn hóa `SourceDrawer` (`formatFilingReference` khử đuôi tệp và mã nội bộ, nhãn dự phòng an toàn cho `taxonomy_version`) và cập nhật bộ đếm `10` quy tắc cờ đỏ trên `OverviewTab` / `RedFlagChecklist`.
+
+### `TASK-12` — Tab/Vùng Cuộn `/methodology` A11y, Vitest JSDOM `.tsx`, Cổng `wcag22aa` + CWV & Tự Động Hóa Định Kỳ (`cap-05`)
+- **Loại commit:** `feat(frontend,e2e)` (`Behavior-Changing`).
+- **Phạm vi (`6` tệp trong kho + sidecar cấu hình ngoài kho):** `frontend/src/app/methodology/page.tsx`, `frontend/src/app/screener/page.tsx`, `frontend/vitest.config.ts`, `frontend/tests/unit/methodology_and_a11y.test.tsx` *(mới)*, `frontend/tests/e2e/a11y-light-dark.spec.ts`, `frontend/tests/e2e/finintel.spec.ts`.
+- **Chi tiết:** Chuyển thanh tab `/methodology` sang `SegmentedControl` chuẩn WAI-ARIA (`role="tablist"` / `role="tab"` liên kết `aria-controls` tới `role="tabpanel"`), cập nhật `10` quy tắc phát hiện bất thường kế toán (`Quy tắc 01 – 10`) và gắn `tabIndex={0} role="region"` cho toàn bộ bảng cuộn ngang; kích hoạt `@vitejs/plugin-react` + kiểm thử đơn vị JSDOM `.tsx` trong `vitest.config.ts`; nâng cấp cổng Playwright `axe-core` với thẻ `wcag22aa` (`0` `critical` và `0` `serious`, không tràn ngang ở `1440x900`, `720x450` `200%` zoom, `320x800` cho cả Light & Dark) cùng bộ đo `CWV` thực tế (`LCP <= 2500ms`, `INP <= 200ms`, `CLS <= 0.10`); cấu hình tác vụ kiểm toán tự động hằng ngày `08:00 Asia/Ho_Chi_Minh`.
 
 ---
 

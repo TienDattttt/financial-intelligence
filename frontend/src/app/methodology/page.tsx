@@ -13,6 +13,7 @@ import { useAppState } from "@/components/providers/app-providers";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/primitives";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import {
   useAllIssuers,
   useMetaDictionary,
@@ -50,6 +51,13 @@ import {
 import { cn } from "@/lib/utils";
 
 type MethodTab = "dictionary" | "models" | "quality";
+const SCROLL_REGION_CLS =
+  "overflow-x-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const METHOD_TABS: readonly { value: MethodTab; label: string }[] = [
+  { value: "dictionary", label: "Từ điển chỉ số & Cờ đỏ" },
+  { value: "models", label: "Phương pháp mô hình" },
+  { value: "quality", label: "Chất lượng dữ liệu" },
+];
 
 const DIRECTION_LABELS: Record<string, string> = {
   HIGHER_IS_BETTER: "Cao hơn tích cực hơn",
@@ -120,34 +128,25 @@ function MethodologyContent() {
           Dữ liệu, Từ điển chỉ số &amp; Phương pháp mô hình
         </h1>
         <p className="mt-0.5 text-xs text-ink-muted">
-          Tài liệu minh bạch công thức 38 tỷ số tài chính, 9 quy tắc kế toán điều tra, mô hình định lượng và kiểm tra chất lượng dữ liệu
+          Tài liệu minh bạch công thức 38 tỷ số tài chính, 10 quy tắc kế toán điều tra, mô hình định lượng và kiểm tra chất lượng dữ liệu
         </p>
       </div>
 
-      <div className="flex flex-wrap gap-1 border-b border-border">
-        {(
-          [
-            ["dictionary", "Từ điển chỉ số & Cờ đỏ"],
-            ["models", "Phương pháp mô hình"],
-            ["quality", "Chất lượng dữ liệu"],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setTab(key)}
-            className={cn(
-              "-mb-px border-b-2 px-3.5 py-2 text-[13px] font-medium transition-colors",
-              activeTab === key
-                ? "border-accent-ink font-semibold text-accent-ink"
-                : "border-transparent text-ink-muted hover:text-ink",
-            )}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <SegmentedControl<MethodTab>
+        ariaLabel="Các mục tài liệu phương pháp"
+        variant="underline"
+        value={activeTab}
+        onChange={setTab}
+        idPrefix="methodology"
+        controlsPanelId={(t) => `methodology-panel-${t}`}
+        options={METHOD_TABS}
+      />
 
+      <div
+        id={`methodology-panel-${activeTab}`}
+        role="tabpanel"
+        aria-labelledby={`methodology-tab-${activeTab}`}
+      >
       {activeTab === "dictionary" ? (
         dictQuery.isLoading ? (
           <PageSkeleton />
@@ -160,18 +159,18 @@ function MethodologyContent() {
                 <CardTitle className="text-[14px]">
                   38 tỷ số tài chính chuẩn hóa ({filteredRatios.length})
                 </CardTitle>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                   <Input
                     value={dictSearch}
                     onChange={(e) => setDictSearch(e.target.value)}
                     placeholder="Tìm tên chỉ số hoặc công thức..."
-                    className="h-7 w-56 text-xs"
+                    className="h-8 w-full text-xs sm:w-56"
                     aria-label="Tìm trong từ điển chỉ số"
                   />
                   <Select
                     value={catFilter}
                     onChange={(e) => setCatFilter(e.target.value)}
-                    className="h-7 text-xs"
+                    className="h-8 text-xs"
                     aria-label="Lọc theo nhóm chỉ số"
                   >
                     <option value="">Tất cả nhóm</option>
@@ -184,7 +183,7 @@ function MethodologyContent() {
                 </div>
               </CardHeader>
               <CardContent className="p-0">
-                <div className="overflow-x-auto">
+                <div tabIndex={0} role="region" aria-label="Bảng từ điển 38 tỷ số tài chính" className={SCROLL_REGION_CLS}>
                   <table className="w-full border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
@@ -237,11 +236,11 @@ function MethodologyContent() {
             <Card>
               <CardHeader className="py-2.5">
                 <CardTitle className="text-[14px]">
-                  9 quy tắc phát hiện bất thường kế toán (Quy tắc 01 – 09)
+                  10 quy tắc phát hiện bất thường kế toán (Quy tắc 01 – 10)
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-0">
-                <div className="overflow-x-auto">
+                <div tabIndex={0} role="region" aria-label="Bảng 10 quy tắc phát hiện bất thường kế toán" className={SCROLL_REGION_CLS}>
                   <table className="w-full border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
@@ -406,7 +405,7 @@ function MethodologyContent() {
                         Chưa ghi nhận hồ sơ Case Study trong lát cắt dữ liệu hiện tại.
                       </p>
                     ) : (
-                      <div className="overflow-x-auto">
+                      <div tabIndex={0} role="region" aria-label="Bảng Case Studies cảnh báo sớm lịch sử" className={SCROLL_REGION_CLS}>
                         <table className="w-full border-collapse text-xs">
                           <thead>
                             <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
@@ -807,7 +806,7 @@ function MethodologyContent() {
                 </div>
               ) : (
                 <>
-                  <div className="overflow-x-auto">
+                  <div tabIndex={0} role="region" aria-label="Bảng nhật ký kiểm tra chất lượng theo kỳ" className={SCROLL_REGION_CLS}>
                     <table className="w-full border-collapse text-xs">
                       <thead>
                         <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
@@ -906,7 +905,7 @@ function MethodologyContent() {
                 </div>
               ) : (
                 <>
-                  <div className="overflow-x-auto">
+                  <div tabIndex={0} role="region" aria-label="Bảng nhật ký kiểm tra chất lượng theo kỳ" className={SCROLL_REGION_CLS}>
                     <table className="w-full border-collapse text-xs">
                       <thead>
                         <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
@@ -977,6 +976,7 @@ function MethodologyContent() {
           </Card>
         </div>
       )}
+      </div>
     </div>
   );
 }

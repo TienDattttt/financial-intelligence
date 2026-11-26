@@ -783,14 +783,22 @@ function ScreenerContent() {
           const watched = watchlistSet.has(item.ticker);
           return (
             <div className="flex items-center gap-1">
-              <input
-                type="checkbox"
-                checked={checked}
-                disabled={!checked && selectedTickers.length >= 5}
-                onChange={() => toggleTickerCompare(item.ticker)}
-                aria-label={`Chọn ${item.ticker} để so sánh`}
-                className="size-3.5 rounded border-border accent-accent-ink"
-              />
+              <span className="relative inline-flex size-6 shrink-0 items-center justify-center">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={!checked && selectedTickers.length >= 5}
+                  onChange={() => toggleTickerCompare(item.ticker)}
+                  aria-label={`Chọn ${item.ticker} để so sánh`}
+                  className="peer absolute inset-0 size-6 cursor-pointer opacity-0 disabled:cursor-not-allowed"
+                />
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none inline-flex size-4 items-center justify-center rounded border border-border-strong bg-surface text-[10px] font-bold leading-none peer-checked:border-primary peer-checked:bg-primary peer-checked:text-primary-foreground peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-disabled:opacity-45"
+                >
+                  {checked ? "✓" : null}
+                </span>
+              </span>
               <button
                 type="button"
                 aria-label={
@@ -800,7 +808,7 @@ function ScreenerContent() {
                 }
                 onClick={() => toggleWatchlistTicker(item.ticker)}
                 className={cn(
-                  "rounded p-0.5 hover:bg-surface-muted",
+                  "inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-surface-muted",
                   watched ? "text-accent-ink" : "text-ink-subtle",
                 )}
               >
@@ -810,7 +818,7 @@ function ScreenerContent() {
               </button>
               <Link
                 href={`/companies/${item.ticker}`}
-                className="font-mono font-semibold text-accent-ink hover:underline"
+                className="inline-flex min-h-6 min-w-6 items-center px-0.5 font-mono font-semibold text-accent-ink hover:underline"
               >
                 {item.ticker}
               </Link>
