@@ -32,7 +32,7 @@ export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
     tone: "low",
     rankOrder: 1,
     description:
-      "Bậc tín nhiệm R1 (chuẩn toàn chu kỳ TTC): xác suất kiệt quệ 1 năm nằm ở vùng an toàn nhất.",
+      "Nhóm cảnh báo rủi ro định lượng R1 (chuẩn toàn chu kỳ TTC): xác suất kiệt quệ 1 năm nằm ở vùng an toàn nhất.",
   },
   R2: {
     tier: "R2",
@@ -42,7 +42,7 @@ export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
     tone: "low",
     rankOrder: 2,
     description:
-      "Bậc tín nhiệm R2 (chuẩn toàn chu kỳ TTC): rủi ro thấp, cấu trúc tài chính duy trì ổn định.",
+      "Nhóm cảnh báo rủi ro định lượng R2 (chuẩn toàn chu kỳ TTC): rủi ro thấp, cấu trúc tài chính duy trì ổn định.",
   },
   R3: {
     tier: "R3",
@@ -52,7 +52,7 @@ export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
     tone: "mid",
     rankOrder: 3,
     description:
-      "Bậc tín nhiệm R3 (chuẩn toàn chu kỳ TTC): mức trung bình, cần theo dõi xu hướng đòn bẩy và dòng tiền.",
+      "Nhóm cảnh báo rủi ro định lượng R3 (chuẩn toàn chu kỳ TTC): mức trung bình, cần theo dõi xu hướng đòn bẩy và dòng tiền.",
   },
   R4: {
     tier: "R4",
@@ -62,7 +62,7 @@ export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
     tone: "high",
     rankOrder: 4,
     description:
-      "Bậc tín nhiệm R4 (chuẩn toàn chu kỳ TTC): cảnh báo sớm rủi ro cao, cần rà soát cờ đỏ kế toán và thanh khoản.",
+      "Nhóm cảnh báo rủi ro định lượng R4 (chuẩn toàn chu kỳ TTC): cảnh báo sớm rủi ro cao, cần rà soát cờ đỏ kế toán và thanh khoản.",
   },
   R5: {
     tier: "R5",
@@ -72,7 +72,7 @@ export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
     tone: "high",
     rankOrder: 5,
     description:
-      "Bậc tín nhiệm R5 (chuẩn toàn chu kỳ TTC): vùng căng thẳng tài chính nghiêm trọng, rủi ro kiệt quệ rất cao.",
+      "Nhóm cảnh báo rủi ro định lượng R5 (chuẩn toàn chu kỳ TTC): vùng căng thẳng tài chính nghiêm trọng, rủi ro kiệt quệ rất cao.",
   },
 };
 
@@ -91,11 +91,11 @@ export function getRiskTierMeta(tier: string | null | undefined): EnumDisplayMet
   return {
     tier: null,
     badgeText: "N/A",
-    label: "Chưa xếp bậc",
-    shortLabel: "Chưa xếp bậc",
+    label: "Chưa phân nhóm",
+    shortLabel: "Chưa phân nhóm",
     tone: "neutral",
     rankOrder: 0,
-    description: "Chưa có dữ liệu xếp bậc tín nhiệm R1–R5 cho kỳ hoặc phạm vi báo cáo này.",
+    description: "Chưa có dữ liệu phân nhóm cảnh báo rủi ro định lượng R1–R5 cho kỳ hoặc phạm vi báo cáo này.",
   };
 }
 
@@ -406,7 +406,7 @@ export function getDistressRiskBadge(
     label: `1Y PD ${formatPercent(prob)}`,
     shortLabel: formatPercent(prob),
     tone: "neutral",
-    description: "Xác suất kiệt quệ 1 năm đã hiệu chỉnh theo mô hình; xem bậc tín nhiệm R1–R5.",
+    description: "Xác suất kiệt quệ 1 năm đã hiệu chỉnh theo mô hình; xem nhóm cảnh báo rủi ro định lượng R1–R5.",
   };
 }
 

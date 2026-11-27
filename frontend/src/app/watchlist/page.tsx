@@ -309,7 +309,7 @@ export default function WatchlistPage() {
                         Kỳ so sánh
                       </th>
                       <th scope="col" className="px-3 py-2 text-left font-semibold">
-                        Bậc tín nhiệm &amp; Vị thế
+                        Nhóm rủi ro &amp; Vị thế
                       </th>
                       <th scope="col" className="px-3 py-2 text-left font-semibold">
                         Chuyển vùng Altman

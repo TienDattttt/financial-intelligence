@@ -10,6 +10,7 @@ import { MethodologyFormulaCards } from "@/components/financial/MethodologyFormu
 import { RiskBadge, RiskTierBadge } from "@/components/financial/RiskBadge";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getTt99GateVerdictMeta } from "@/lib/compliance";
 import {
   formatCreditTrio,
   formatPeerStandardizationMode,
@@ -52,7 +53,7 @@ export function MethodologyModelsTab({
     return (
       <EmptyState
         title="Chưa có Hồ sơ kiểm định mô hình trong bản phát hành dữ liệu"
-        description="Bản phát hành hiện tại chưa kèm báo cáo Walk-Forward và phân tầng tín nhiệm."
+        description="Bản phát hành hiện tại chưa kèm báo cáo Walk-Forward và phân tầng cảnh báo rủi ro định lượng."
       />
     );
   }
@@ -60,6 +61,18 @@ export function MethodologyModelsTab({
   const card = modelCardQuery.data;
   const drift = card.taxonomy_drift_psi;
   const cutoffs = card.risk_tier_cutoffs;
+  const tt99Gate = (
+    card as ModelCardResponse & {
+      tt99_mrm_gate?: {
+        verdict: string;
+        shadow_mode_active: boolean;
+        tt99_sample_count: number;
+        min_ga_samples: number;
+        summary_vi: string;
+      } | null;
+    }
+  ).tt99_mrm_gate;
+  const tt99GateMeta = getTt99GateVerdictMeta(tt99Gate?.verdict);
 
   return (
     <div className="space-y-5">
@@ -349,7 +362,7 @@ export function MethodologyModelsTab({
       </Card>
 
       <Card>
-        <CardHeader className="py-2.5">
+        <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-2 py-2.5">
           <div>
             <CardTitle className="text-[14px]">
               Bảng chuyển đổi chuẩn mực{" "}
@@ -357,9 +370,10 @@ export function MethodologyModelsTab({
               {TAXONOMY_LABELS[drift.target_taxonomy] ?? "TT99/2025"} &amp; Độ ổn định PSI
             </CardTitle>
             <p className="mt-0.5 text-xs text-ink-muted">
-              Đánh giá mức dịch chuyển phân bố biến đầu vào và tỷ lệ thiếu dữ liệu giữa hai chuẩn mực VAS
+              {tt99Gate?.summary_vi ?? tt99GateMeta.description}
             </p>
           </div>
+          <RiskBadge tone={tt99GateMeta.tone} label={tt99GateMeta.label} />
         </CardHeader>
         <CardContent className="space-y-3 p-3.5">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

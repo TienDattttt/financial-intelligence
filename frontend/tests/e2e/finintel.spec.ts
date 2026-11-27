@@ -592,7 +592,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
         page.getByText(/Kiểm định cuốn chiếu Walk-Forward/i),
       ).toBeVisible();
       await expect(
-        page.getByText(/Độ tin cậy phân tầng tín nhiệm R1 → R5/i),
+        page.getByText(/Độ tin cậy phân tầng cảnh báo rủi ro R1 → R5/i),
       ).toBeVisible();
 
       // Case Studies table & clicking a Case Study navigates to its Company Profile

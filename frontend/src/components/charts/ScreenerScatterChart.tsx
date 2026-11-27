@@ -373,7 +373,7 @@ export function getRiskTierSeriesStyles(
     },
     {
       tier: "UNRATED",
-      seriesName: "Chưa xếp bậc",
+      seriesName: "Chưa phân nhóm",
       color: palette.neutral,
       symbol: "circle",
       symbolSize: 7,
@@ -406,7 +406,7 @@ export function buildScreenerScatterOption(
     if (!d) return "";
     const tierBadge =
       d.riskTier === "UNRATED"
-        ? "Chưa xếp bậc"
+        ? "Chưa phân nhóm"
         : [d.riskTierLabel, d.topRiskLabel, d.liftLabel]
             .filter(Boolean)
             .join(" · ");
@@ -415,7 +415,7 @@ export function buildScreenerScatterOption(
       `<div style="color:${palette.inkMuted};font-size:11px;margin-bottom:4px">${d.sector}</div>`,
       `<div>X · ${xMetric.label}: <b>${formatScatterMetricValue(d.rawX, xMetric)}</b></div>`,
       `<div>Y · ${yMetric.label}: <b>${formatScatterMetricValue(d.rawY, yMetric)}</b></div>`,
-      `<div>Tín nhiệm: <b>${tierBadge}</b></div>`,
+      `<div>Nhóm rủi ro: <b>${tierBadge}</b></div>`,
       `<div>Cờ đỏ kế toán: <b>${d.redFlags}</b></div>`,
       `<div style="color:${palette.company};font-size:11px;margin-top:3px">Nhấp để mở hồ sơ ${d.ticker} →</div>`,
     ].join("");
@@ -640,8 +640,8 @@ export function ScreenerScatterChart({
 
   return (
     <EChartBox
-      title={`Phân tán ${xMetric.label} vs ${yMetric.label} theo bậc R1–R5 (${plottable.length} DN trên trang)`}
-      subtitle="Màu sắc và hình dạng điểm phân theo bậc tín nhiệm R1–R5 · Giá trị Altman Z″ ngoài [−6; 12] được neo tại biên · Nhấp vào điểm để mở hồ sơ doanh nghiệp"
+      title={`Phân tán ${xMetric.label} vs ${yMetric.label} theo nhóm R1–R5 (${plottable.length} DN trên trang)`}
+      subtitle="Màu sắc và hình dạng điểm phân theo nhóm cảnh báo rủi ro định lượng R1–R5 · Giá trị Altman Z″ ngoài [−6; 12] được neo tại biên · Nhấp vào điểm để mở hồ sơ doanh nghiệp"
       option={option}
       height={400}
       headerRight={axisSelectors}

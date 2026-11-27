@@ -71,7 +71,7 @@ Khi có xung đột thiết kế, **ưu tiên persona chính** nhưng không đ�
 | Backend | Hiển thị trên UI |
 |---|---|
 | `SAFE_ZONE` / `GREY_ZONE` / `DISTRESS_ZONE` | An toàn / Vùng xám / Nguy cơ kiệt quệ |
-| `risk_tier` (`R1`..`R5`, lộ trình `UI-07`) | Bậc tín nhiệm `R1` (Thấp nhất) → `R5` (Rất cao) |
+| `risk_tier` (`R1`..`R5`, lộ trình `UI-07`) | Nhóm cảnh báo rủi ro tài chính định lượng (R1–R5): `R1` (Rất thấp) → `R5` (Rất cao) |
 | `calibrated_distress_prob` | Xác suất kiệt quệ tài chính (mô hình) |
 | `beneish_flag` | Dấu hiệu điều chỉnh lợi nhuận (Beneish) |
 | `piotroski_f_score` | Điểm sức khỏe Piotroski (0–9) |
