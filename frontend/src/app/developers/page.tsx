@@ -61,8 +61,10 @@ export default function DevelopersPortalPage() {
   const [snippetLang, setSnippetLang] = React.useState<SnippetLang>("python");
   const [copiedSnippet, setCopiedSnippet] = React.useState(false);
   const [feedback, setFeedback] = React.useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [nowMs] = React.useState<number>(() => Date.now());
 
   const keysQuery = useQuery({ queryKey: ["b2b", "keys"], queryFn: ({ signal }) => b2bApi.listKeys(signal), enabled: canUseOpenApi });
+  const refNowMs = keysQuery.dataUpdatedAt > 0 ? keysQuery.dataUpdatedAt : nowMs;
   const usageQuery = useQuery({ queryKey: ["b2b", "usage"], queryFn: ({ signal }) => b2bApi.getUsage(undefined, undefined, signal), enabled: canUseOpenApi });
   const webhooksQuery = useQuery({ queryKey: ["b2b", "webhooks"], queryFn: ({ signal }) => b2bApi.listWebhooks(signal), enabled: canUseOpenApi });
 
@@ -168,7 +170,11 @@ export default function DevelopersPortalPage() {
   }
 
   const keys: readonly ApiKeyMetadataItem[] = keysQuery.data?.items ?? [];
-  const activeKeyCount = keys.filter((k) => k.is_active && !k.revoked_at).length;
+  const isKeyExpired = (k: ApiKeyMetadataItem): boolean =>
+    Boolean(k.expires_at && Date.parse(k.expires_at) <= refNowMs);
+  const isKeyActive = (k: ApiKeyMetadataItem): boolean =>
+    k.is_active && !k.revoked_at && !isKeyExpired(k);
+  const activeKeyCount = keys.filter(isKeyActive).length;
   const dailySummary = summarizeDailyUsage(usageQuery.data?.daily ?? []);
   const maxDayReq = Math.max(1, ...dailySummary.map((d) => d.requests));
   const totalReq = usageQuery.data?.total_requests ?? 0;
@@ -238,7 +244,7 @@ export default function DevelopersPortalPage() {
         <KpiCell>
           <span className="text-[11px] text-ink-muted">Ngưỡng bảo vệ miễn phí</span>
           <span className="num text-sm font-semibold text-ink">
-            {(keysQuery.data?.default_rate_limit_per_min ?? 30).toLocaleString("vi-VN")} req/phút · {(keysQuery.data?.default_daily_limit ?? 1000).toLocaleString("vi-VN")}/ngày
+            {(keysQuery.data?.default_rate_limit_per_min ?? 30).toLocaleString("vi-VN")} lần/phút · {(keysQuery.data?.default_daily_limit ?? 1000).toLocaleString("vi-VN")} lần/ngày
           </span>
         </KpiCell>
       </KpiStrip>
@@ -277,7 +283,9 @@ export default function DevelopersPortalPage() {
                   </thead>
                   <tbody>
                     {keys.map((k) => {
-                      const active = k.is_active && !k.revoked_at;
+                      const expired = isKeyExpired(k);
+                      const active = isKeyActive(k);
+                      const statusLabel = active ? "Đang hoạt động" : expired && !k.revoked_at ? "Đã hết hạn" : "Đã thu hồi";
                       return (
                         <tr key={k.key_id} className="border-b border-border last:border-b-0">
                           <td className="px-2.5 py-2">
@@ -286,10 +294,10 @@ export default function DevelopersPortalPage() {
                           </td>
                           <td className="px-2.5 py-2">
                             <Badge className={active ? "bg-risk-low-soft text-risk-low" : "bg-surface-muted text-ink-subtle"}>
-                              {active ? "Đang hoạt động" : "Đã thu hồi"}
+                              {statusLabel}
                             </Badge>
                           </td>
-                          <td className="num px-2.5 py-2 text-right text-ink-muted">{k.rate_limit_per_min}/p · {k.daily_limit.toLocaleString("vi-VN")}/n</td>
+                          <td className="num px-2.5 py-2 text-right text-ink-muted">{k.rate_limit_per_min} lần/phút · {k.daily_limit.toLocaleString("vi-VN")} lần/ngày</td>
                           <td className="px-2.5 py-2 text-right">
                             {active ? (
                               <div className="inline-flex gap-1.5">

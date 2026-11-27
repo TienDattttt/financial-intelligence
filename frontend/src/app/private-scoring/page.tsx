@@ -19,6 +19,22 @@ import type { PrivateDossierPreviewResponse, PrivateScoreResponse, RedFlagItem }
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
+const MISSING_FEATURE_LABELS_VI: Record<string, string> = {
+  overdue_or_late_count_4q: "Lịch sử chậm nộp BCTC 4 quý (TT96)",
+  cross_sectional_asset_size_pct: "Phân vị quy mô tài sản toàn thị trường",
+  sector_z_asset_turnover: "Z-score ngành — Vòng quay tài sản",
+  sector_z_cash_conversion_cycle: "Z-score ngành — Chu kỳ tiền mặt",
+  sector_z_debt_to_equity: "Z-score ngành — Nợ / VCSH",
+  sector_z_ebit_margin: "Z-score ngành — Biên EBIT",
+  merton_dtd: "Khoảng cách vỡ nợ thị trường (Merton DTD)",
+  equity_volatility_1y: "Biến động giá cổ phiếu 1 năm",
+  naive_edf: "Xác suất vỡ nợ kỳ vọng thị trường (EDF)",
+};
+
+function formatMissingFeatureLabel(code: string): string {
+  return MISSING_FEATURE_LABELS_VI[code] ?? code;
+}
+
 function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -211,7 +227,7 @@ export default function PrivateScoringPage() {
         <div>
           <h1 className="text-xl font-bold tracking-tight text-ink">Chấm điểm BCTC Doanh nghiệp chưa niêm yết</h1>
           <p className="mt-1 text-xs text-ink-muted">
-            Xử lý cục bộ chuẩn VAS (TT200/2014 &amp; TT99/2025) · Kiểm định cân bằng QG1 · Chế độ kế toán thuần túy (không ghi vào DuckLake hay dữ liệu ML).
+            Xử lý cục bộ chuẩn VAS (TT200/2014 &amp; TT99/2025) · Kiểm định cân bằng QG1 · Chế độ kế toán thuần túy (cô lập hoàn toàn khỏi kho dữ liệu thị trường công khai).
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -362,8 +378,8 @@ export default function PrivateScoringPage() {
             <p className="font-semibold text-risk-mid">Chế độ đánh giá: {scoreResult.ml_assessment.ml_mode} (Chỉ sử dụng dữ liệu kế toán)</p>
             <p className="mt-1 text-ink-muted">{scoreResult.ml_assessment.coverage_warning_vi}</p>
             <p className="mt-1 text-[11px] text-ink-subtle">
-              Độ phủ đặc trưng kế toán: <strong className="num">{formatPercent(scoreResult.ml_assessment.accounting_feature_coverage, { decimals: 0 })}</strong> · Các biến đặt NULL tường minh:{" "}
-              {scoreResult.ml_assessment.missing_market_tt96_features.join(", ")}
+              Độ phủ đặc trưng kế toán: <strong className="num">{formatPercent(scoreResult.ml_assessment.accounting_feature_coverage, { decimals: 0 })}</strong> · Nhóm chỉ báo thị trường/TT96 không áp dụng:{" "}
+              {scoreResult.ml_assessment.missing_market_tt96_features.map(formatMissingFeatureLabel).join(", ")}
             </p>
           </div>
 

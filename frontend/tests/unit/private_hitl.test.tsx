@@ -317,7 +317,9 @@ describe("V3-30 Private Scoring Workbench & HITL Triage", () => {
     });
 
     expect(await screen.findByText(/Chế độ đánh giá: ACCOUNTING_ONLY_MODE/i)).toBeTruthy();
-    expect(screen.getByText(/merton_dtd, overdue_or_late_count_4q/i)).toBeTruthy();
+    expect(screen.getByText(/Khoảng cách vỡ nợ thị trường \(Merton DTD\)/i)).toBeTruthy();
+    expect(screen.getByText(/Lịch sử chậm nộp BCTC 4 quý \(TT96\)/i)).toBeTruthy();
+    expect(screen.queryByText(/merton_dtd/i)).toBeNull();
     expect(screen.getByText(/R2 · Rủi ro thấp/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: /Phản hồi chuyên gia/i })).toBeTruthy();
   });

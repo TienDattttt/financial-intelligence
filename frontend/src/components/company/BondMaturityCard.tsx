@@ -48,6 +48,10 @@ export function BondMaturityCard({
   const providerLabel =
     (data?.source_provider && PROVIDER_LABELS[data.source_provider]) ||
     "HNX Cbonds";
+  const safeSourceUrl =
+    data?.source_url && data.source_url.startsWith("https://")
+      ? data.source_url
+      : null;
 
   return (
     <Card>
@@ -142,9 +146,9 @@ export function BondMaturityCard({
                 Cập nhật:{" "}
                 {data.as_of_date ? formatDateVi(data.as_of_date) : "Chưa rõ"}
               </span>
-              {data.source_url ? (
+              {safeSourceUrl ? (
                 <a
-                  href={data.source_url}
+                  href={safeSourceUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 font-medium text-accent-ink hover:underline"
