@@ -4,6 +4,7 @@ import type {
   AuditQuarantinePageResponse,
   CompanyBenchmarksResponse,
   CompanyBenchmarksSummaryResponse,
+  CompanyBondSignalsResponse,
   CompanyFilingsResponse,
   CompanyProfileResponse,
   CompanyStatementsResponse,
@@ -329,6 +330,19 @@ export const apiClient = {
       buildUrl(`/api/v2/companies/${encodeURIComponent(ticker.toUpperCase())}/market-overlay`, {
         statement_scope: statementScope,
         as_of: asOf,
+      }),
+      { signal },
+    ),
+
+  getCompanyBondSignals: (
+    ticker: string,
+    opts?: { statement_scope?: StatementScope; as_of?: string | null },
+    signal?: AbortSignal,
+  ) =>
+    requestJson<CompanyBondSignalsResponse>(
+      buildUrl(`/api/v3/companies/${encodeURIComponent(ticker.trim().toUpperCase())}/bond-signals`, {
+        statement_scope: opts?.statement_scope ?? "CONSOLIDATED",
+        as_of: opts?.as_of,
       }),
       { signal },
     ),

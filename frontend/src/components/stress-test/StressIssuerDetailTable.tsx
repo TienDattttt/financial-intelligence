@@ -119,6 +119,9 @@ export function StressIssuerDetailTable({
                   <th scope="col" className="px-3 py-2 text-right font-semibold">
                     CFO TTM (tỷ)
                   </th>
+                  <th scope="col" className="px-3 py-2 text-right font-semibold">
+                    Tác động tỷ giá (tỷ)
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -183,6 +186,24 @@ export function StressIssuerDetailTable({
                           accountingNegative: true,
                         })}
                       </span>
+                    </td>
+                    <td className="num px-3 py-2 text-right">
+                      {it.fx_coverage_status === "REPORTED" ? (
+                        <span
+                          className={
+                            (it.fx_revaluation_loss_vnd ?? 0) > 0
+                              ? "font-medium text-risk-high"
+                              : "text-ink"
+                          }
+                        >
+                          {formatVndBillions(it.fx_revaluation_loss_vnd, {
+                            accountingNegative: true,
+                            zeroAsZero: true,
+                          })}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-ink-subtle">Chưa công bố</span>
+                      )}
                     </td>
                   </tr>
                 ))}

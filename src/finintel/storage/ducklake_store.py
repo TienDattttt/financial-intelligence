@@ -42,6 +42,7 @@ import polars as pl
 
 from finintel.exceptions import ContractViolationError
 from finintel.pipeline.state_store import StateStore
+from finintel.ports.bonds import BOND_PORT_TABLES
 from finintel.storage._v3_schemas import (
     OPTIONAL_MANAGED_MART_TABLES as OPTIONAL_MANAGED_MART_TABLES,
 )
@@ -97,7 +98,7 @@ MANAGED_MART_CATALOG_TABLES: frozenset[str] = frozenset(
     for name in (MANAGED_MART_TABLES | OPTIONAL_MANAGED_MART_TABLES)
 )
 EXTENSION_PORT_CATALOG_TABLES: frozenset[str] = frozenset(
-    name.removesuffix(".parquet") for name in EXTENSION_PORT_TABLES
+    name.removesuffix(".parquet") for name in (EXTENSION_PORT_TABLES | BOND_PORT_TABLES)
 )
 
 StorageBackend = Literal["parquet", "ducklake"]

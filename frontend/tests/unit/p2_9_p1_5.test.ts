@@ -244,6 +244,21 @@ vi.mock("@/hooks/use-finintel-queries", () => ({
     data: { items: [] },
     isLoading: false,
   }),
+  useCompanyBondSignals: (ticker: string) => ({
+    data: {
+      snapshot_id: "snap-test",
+      issuer_id: `iss-${ticker.toLowerCase()}`,
+      ticker,
+      has_bond_data: false,
+      has_outstanding_bonds: false,
+      liquidity_pressure_status: "NO_BONDS",
+      bond_payment_delay_flag: false,
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  }),
   useCompanyMarketOverlay: (ticker: string) => ({
     data: {
       snapshot_id: "snap-test",

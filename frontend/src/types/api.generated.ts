@@ -897,6 +897,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/companies/{ticker}/bond-signals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Company Bond Signals */
+        get: operations["get_company_bond_signals_api_v3_companies__ticker__bond_signals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/quota/me": {
         parameters: {
             query?: never;
@@ -2000,6 +2017,57 @@ export interface components {
             period_end_date?: string | null;
             /** Items */
             items: components["schemas"]["BenchmarkSummaryItem"][];
+        };
+        /**
+         * CompanyBondSignalsResponse
+         * @description V3 Company route response: Extension Port 4 corporate bond maturity & delay signals.
+         */
+        CompanyBondSignalsResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /**
+             * Has Bond Data
+             * @default false
+             */
+            has_bond_data: boolean;
+            /**
+             * Has Outstanding Bonds
+             * @default false
+             */
+            has_outstanding_bonds: boolean;
+            /** As Of Date */
+            as_of_date?: string | null;
+            /** Outstanding Bond Vnd */
+            outstanding_bond_vnd?: number | null;
+            /** Bond Maturity 12M Vnd */
+            bond_maturity_12m_vnd?: number | null;
+            /** Total Cash And St Investments Vnd */
+            total_cash_and_st_investments_vnd?: number | null;
+            /** Cash Period End Date */
+            cash_period_end_date?: string | null;
+            /** Bond Maturity To Cash Ratio */
+            bond_maturity_to_cash_ratio?: number | null;
+            /**
+             * Bond Payment Delay Flag
+             * @default false
+             */
+            bond_payment_delay_flag: boolean;
+            /**
+             * Liquidity Pressure Status
+             * @default NO_BONDS
+             * @enum {string}
+             */
+            liquidity_pressure_status: "NO_BONDS" | "COVERED" | "WATCH" | "HIGH_PRESSURE" | "PAYMENT_DELAY" | "MISSING_CASH_DATA";
+            /** Source Provider */
+            source_provider?: string | null;
+            /** Source Url */
+            source_url?: string | null;
+            /** Payload Sha256 */
+            payload_sha256?: string | null;
         };
         /**
          * CompanyFilingItem
@@ -4418,6 +4486,16 @@ export interface components {
             stressed_debt_at_risk?: boolean | null;
             /** Newly Distressed Under Shock */
             newly_distressed_under_shock?: boolean | null;
+            /** Net Fx Debt Vnd */
+            net_fx_debt_vnd?: number | null;
+            /** Fx Revaluation Loss Vnd */
+            fx_revaluation_loss_vnd?: number | null;
+            /**
+             * Fx Coverage Status
+             * @default NOT_DISCLOSED
+             * @enum {string}
+             */
+            fx_coverage_status: "REPORTED" | "NOT_DISCLOSED";
         };
         /**
          * StressScenarioRequest
@@ -4468,6 +4546,11 @@ export interface components {
              * @default 0
              */
             dio_shock_days: number;
+            /**
+             * Fx Depreciation Pct
+             * @default 0
+             */
+            fx_depreciation_pct: number;
             /**
              * Top N
              * @default 50
@@ -4523,6 +4606,16 @@ export interface components {
             period_type: "QUARTER" | "ANNUAL";
             /** Period End Date */
             period_end_date?: string | null;
+            /**
+             * Fx Depreciation Pct
+             * @default 0
+             */
+            fx_depreciation_pct: number;
+            /**
+             * Fx Disclosed Issuers Count
+             * @default 0
+             */
+            fx_disclosed_issuers_count: number;
             /** Total Issuers Evaluated */
             total_issuers_evaluated: number;
             /** Total Debt Sum */
@@ -6985,6 +7078,42 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_company_bond_signals_api_v3_companies__ticker__bond_signals_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                as_of?: string | null;
+            };
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyBondSignalsResponse"];
                 };
             };
             /** @description Validation Error */

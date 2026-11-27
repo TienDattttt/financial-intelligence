@@ -26,8 +26,13 @@ from finintel.analytics.market_valuation import (
     build_price_risk_overlay,
     compute_pit_valuation_series,
 )
+from finintel.analytics.stress_fx import (
+    attach_fx_debt_exposure_pit,
+    load_fx_debt_exposure_from_roots,
+)
 from finintel.analytics.stress_test import REQUIRED_STRESS_COLUMNS
 from finintel.exceptions import ContractViolationError
+from finintel.ports.bonds import CORPORATE_BOND_SIGNALS_TABLE
 from finintel.serving.queries._cache import (
     _MAX_QUERY_CACHE_SIZE,
     _QUERY_CACHE_LOCK,
@@ -46,6 +51,7 @@ from finintel.serving.queries._helpers import (
     build_port_candidate_roots,
     filter_broad_coverage_annual_dates,
     load_port_parquet_for_issuer,
+    opt_finite_float,
     read_overlay_dtd_facts,
     read_overlay_ml_scores,
     resolve_latest_ratio_period,
@@ -134,6 +140,7 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                             "company_name_vn": pl.String,
                             "icb_code_level2": pl.String,
                             "icb_name_level2": pl.String,
+                            "net_fx_debt_vnd": pl.Float64,
                         }
                     )
                 if resolved_date is None:
@@ -173,6 +180,7 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                         pl.lit(None, dtype=pl.String).alias("company_name_vn"),
                         pl.lit(None, dtype=pl.String).alias("icb_code_level2"),
                         pl.lit(None, dtype=pl.String).alias("icb_name_level2"),
+                        pl.lit(None, dtype=pl.Float64).alias("net_fx_debt_vnd"),
                     )
                 )
 
@@ -187,8 +195,22 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                 filters={"issuer_id": ratios["issuer_id"].unique().to_list()},
                 connection=connection,
             )
+            candidate_roots = build_port_candidate_roots(
+                self.repository._source, pinned._source
+            )
+            fx_df = load_fx_debt_exposure_from_roots(
+                candidate_roots,
+                issuer_ids=ratios["issuer_id"].unique().to_list(),
+            )
             result = (
                 ratios.join(issuers, on="issuer_id", how="left")
+                .pipe(
+                    attach_fx_debt_exposure_pit,
+                    fx_df,
+                    as_of=resolved_date,
+                    statement_scope=statement_scope,
+                    period_type=period_type,
+                )
                 .with_columns(normalize_company_display_name_expr())
                 .sort("ticker")
             )
@@ -882,3 +904,87 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                 **payload,
                 "latest_valuation": latest_valuation,
             }
+
+    def get_company_bond_signals_context(
+        self,
+        ticker: str,
+        *,
+        statement_scope: str = "CONSOLIDATED",
+        as_of: date | None = None,
+        connection: duckdb.DuckDBPyConnection | None = None,
+    ) -> tuple[str, str, float | None, date | None, dict[str, object] | None]:
+        """Resolve issuer, latest cash position, and latest Port 4 bond signal row."""
+        clean_ticker = ticker.strip().upper()
+        with self.repository.snapshot_session(connection=connection) as pinned:
+            issuer_row = _resolve_issuer_row(
+                pinned,
+                clean_ticker,
+                columns=("issuer_id", "ticker"),
+                connection=connection,
+            )
+            issuer_id = str(issuer_row["issuer_id"])
+            resolved_ticker = str(issuer_row["ticker"])
+
+            cash_vnd: float | None = None
+            cash_period_end: date | None = None
+            avail = _available_table_columns(
+                pinned, RATIOS_TABLE, connection=connection
+            )
+            if avail and "total_cash_and_st_investments" in avail:
+                cols = _select_existing_columns(
+                    (
+                        "period_type",
+                        "period_end_date",
+                        "filing_id",
+                        "total_cash_and_st_investments",
+                    ),
+                    avail,
+                )
+                frame = pinned.read_table(
+                    RATIOS_TABLE,
+                    columns=cols,
+                    filters={
+                        "issuer_id": issuer_id,
+                        "statement_scope": statement_scope,
+                    },
+                    connection=connection,
+                )
+                if as_of is not None and "period_end_date" in frame.columns:
+                    frame = frame.filter(pl.col("period_end_date") <= as_of)
+                if not frame.is_empty():
+                    if "period_type" in frame.columns:
+                        q_only = frame.filter(pl.col("period_type") == "QUARTER")
+                        if not q_only.is_empty():
+                            frame = q_only
+                    sort_cols = [
+                        c
+                        for c in ("period_end_date", "filing_id")
+                        if c in frame.columns
+                    ]
+                    latest = frame.sort(sort_cols).tail(1).row(0, named=True)
+                    cash_vnd = opt_finite_float(
+                        latest.get("total_cash_and_st_investments")
+                    )
+                    p_end = latest.get("period_end_date")
+                    cash_period_end = p_end if isinstance(p_end, date) else None
+
+            roots = build_port_candidate_roots(self.repository._source, pinned._source)
+            bond_row: dict[str, object] | None = None
+            for rel_path in (
+                Path("bonds") / CORPORATE_BOND_SIGNALS_TABLE,
+                Path(CORPORATE_BOND_SIGNALS_TABLE),
+            ):
+                bframe = load_port_parquet_for_issuer(
+                    rel_parquet_path=rel_path,
+                    issuer_id=issuer_id,
+                    candidate_roots=roots,
+                )
+                if bframe is None or bframe.is_empty():
+                    continue
+                if as_of is not None and "as_of_date" in bframe.columns:
+                    bframe = bframe.filter(pl.col("as_of_date") <= as_of)
+                    if bframe.is_empty():
+                        continue
+                bond_row = bframe.sort("as_of_date").tail(1).row(0, named=True)
+                break
+        return issuer_id, resolved_ticker, cash_vnd, cash_period_end, bond_row

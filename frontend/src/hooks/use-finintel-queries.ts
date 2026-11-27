@@ -578,3 +578,30 @@ export function useAnomalyDrivers(
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
+
+export function useCompanyBondSignals(
+  ticker: string,
+  statementScope: StatementScope = "CONSOLIDATED",
+  snapshotId?: string | null,
+  asOf?: string | null,
+) {
+  const cleanTicker = ticker.trim().toUpperCase();
+  return useQuery({
+    queryKey: [
+      "company-bond-signals",
+      snapshotId ?? "latest",
+      cleanTicker,
+      statementScope,
+      asOf ?? "latest",
+    ],
+    queryFn: ({ signal }) =>
+      apiClient.getCompanyBondSignals(
+        cleanTicker,
+        { statement_scope: statementScope, as_of: asOf },
+        signal,
+      ),
+    enabled: cleanTicker.length > 0,
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}

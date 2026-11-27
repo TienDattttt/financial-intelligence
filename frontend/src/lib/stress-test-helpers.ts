@@ -13,6 +13,7 @@ export interface ShockUiState {
   rateBps: number; // [-500..1500]
   dsoDays: number; // [-90..180]
   dioDays: number; // [-90..180]
+  fxPct: number; // [-30..50]
 }
 
 export interface StressUrlState {
@@ -28,6 +29,7 @@ export const SHOCK_BOUNDS = {
   rateBps: { min: -500, max: 1500, step: 25, defaultValue: 0 },
   dsoDays: { min: -90, max: 180, step: 5, defaultValue: 0 },
   dioDays: { min: -90, max: 180, step: 5, defaultValue: 0 },
+  fxPct: { min: -30, max: 50, step: 1, defaultValue: 0 },
 } as const;
 
 export const DEFAULT_SHOCKS: ShockUiState = {
@@ -37,6 +39,7 @@ export const DEFAULT_SHOCKS: ShockUiState = {
   rateBps: 0,
   dsoDays: 0,
   dioDays: 0,
+  fxPct: 0,
 };
 
 export const STRESS_PRESETS: { label: string; values: ShockUiState }[] = [
@@ -50,6 +53,7 @@ export const STRESS_PRESETS: { label: string; values: ShockUiState }[] = [
       rateBps: 200,
       dsoDays: 0,
       dioDays: 0,
+      fxPct: 0,
     },
   },
   {
@@ -61,6 +65,7 @@ export const STRESS_PRESETS: { label: string; values: ShockUiState }[] = [
       rateBps: 0,
       dsoDays: 0,
       dioDays: 0,
+      fxPct: 0,
     },
   },
   {
@@ -72,6 +77,7 @@ export const STRESS_PRESETS: { label: string; values: ShockUiState }[] = [
       rateBps: 300,
       dsoDays: 30,
       dioDays: 15,
+      fxPct: 0,
     },
   },
 ];
@@ -134,7 +140,8 @@ export function inferScenarioName(shocks: Omit<ShockUiState, "scenarioName">): s
       p.values.gmPp === shocks.gmPp &&
       p.values.rateBps === shocks.rateBps &&
       p.values.dsoDays === shocks.dsoDays &&
-      p.values.dioDays === shocks.dioDays,
+      p.values.dioDays === shocks.dioDays &&
+      p.values.fxPct === shocks.fxPct,
   );
   return match ? match.values.scenarioName : "Tùy chỉnh";
 }
@@ -147,7 +154,7 @@ export function parseStressUrlParams(
   searchParams: SearchParamsLike,
   fallbackShocks: ShockUiState = STRESS_PRESETS[1].values,
 ): { hasStressParams: boolean; state: StressUrlState } {
-  const keys = ["scope", "tickers", "ticker", "rev", "gm", "rate", "dso", "dio", "name"];
+  const keys = ["scope", "tickers", "ticker", "rev", "gm", "rate", "dso", "dio", "fx", "name"];
   const hasStressParams = keys.some((k) => searchParams.get(k) !== null);
 
   if (!hasStressParams) {
@@ -199,12 +206,18 @@ export function parseStressUrlParams(
     SHOCK_BOUNDS.dioDays.max,
     0,
   );
+  const fxPct = clampShockValue(
+    searchParams.get("fx"),
+    SHOCK_BOUNDS.fxPct.min,
+    SHOCK_BOUNDS.fxPct.max,
+    0,
+  );
 
   const rawName = searchParams.get("name")?.trim().slice(0, 60);
   const scenarioName =
     rawName && rawName.length > 0
       ? rawName
-      : inferScenarioName({ revPct, gmPp, rateBps, dsoDays, dioDays });
+      : inferScenarioName({ revPct, gmPp, rateBps, dsoDays, dioDays, fxPct });
 
   return {
     hasStressParams: true,
@@ -219,6 +232,7 @@ export function parseStressUrlParams(
         rateBps,
         dsoDays,
         dioDays,
+        fxPct,
       },
     },
   };
@@ -287,6 +301,17 @@ export function serializeStressUrlParams(state: StressUrlState): URLSearchParams
         state.shocks.dioDays,
         SHOCK_BOUNDS.dioDays.min,
         SHOCK_BOUNDS.dioDays.max,
+        0,
+      ),
+    ),
+  );
+  params.set(
+    "fx",
+    String(
+      clampShockValue(
+        state.shocks.fxPct,
+        SHOCK_BOUNDS.fxPct.min,
+        SHOCK_BOUNDS.fxPct.max,
         0,
       ),
     ),

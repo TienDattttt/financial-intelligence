@@ -161,7 +161,6 @@ export type IssuerLifecycleItem = Schema["IssuerLifecycleItem"];
 export type OpsIssuerLifecycleResponse = Schema["OpsIssuerLifecycleResponse"];
 export type OpsIssuerSyncRequest = Schema["OpsIssuerSyncRequest"];
 export type OpsIssuerSyncResponse = Schema["OpsIssuerSyncResponse"];
-
 export type ApiKeyCreateRequest = Schema["ApiKeyCreateRequest"];
 export type ApiKeyMetadataItem = Schema["ApiKeyMetadataItem"];
 export type ApiKeyCreateResponse = Schema["ApiKeyCreateResponse"];
@@ -204,3 +203,5 @@ export type HitlFeedbackRequest = Schema["HitlFeedbackRequest"];
 export type HitlFeedbackItem = Schema["HitlFeedbackItem"];
 export type HitlSummaryCell = Schema["HitlSummaryCell"];
 export type HitlSummaryResponse = Schema["HitlSummaryResponse"];
+
+export type CompanyBondSignalsResponse = Schema["CompanyBondSignalsResponse"];
