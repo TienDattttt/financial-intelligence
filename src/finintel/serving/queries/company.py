@@ -51,6 +51,7 @@ from finintel.storage.schemas import (
     FILINGS_MANIFEST_TABLE,
     FORENSIC_RATIOS,
     RATIOS_TABLE,
+    V3_RATIOS,
 )
 
 RATIO_LINEAGE_CATALOG: dict[str, RatioLineageSpec] = {
@@ -178,6 +179,14 @@ RATIO_LINEAGE_CATALOG: dict[str, RatioLineageSpec] = {
         ("CF_OPERATING_CASH_FLOW",),
         ("BS_CURRENT_LIABILITIES",),
         "AVERAGE_STOCK",
+    ),
+    "ocf_to_total_liabilities": RatioLineageSpec(
+        "ocf_to_total_liabilities",
+        "CFO / Tổng nợ phải trả",
+        "CF_OPERATING_CASH_FLOW / BS_TOTAL_LIABILITIES",
+        ("CF_OPERATING_CASH_FLOW",),
+        ("BS_TOTAL_LIABILITIES",),
+        "POINT_IN_TIME_STOCK",
     ),
     "liabilities_to_assets": RatioLineageSpec(
         "liabilities_to_assets",
@@ -419,7 +428,12 @@ RATIO_LINEAGE_CATALOG: dict[str, RatioLineageSpec] = {
     ),
 }
 
-ALL_RATIOS: tuple[str, ...] = (*CORE_RATIOS, *EXTRA_RATIOS, *FORENSIC_RATIOS)
+ALL_RATIOS: tuple[str, ...] = (
+    *CORE_RATIOS,
+    *EXTRA_RATIOS,
+    *FORENSIC_RATIOS,
+    *V3_RATIOS,
+)
 
 
 class CompanyQueryMixin(_QueryServiceBase):

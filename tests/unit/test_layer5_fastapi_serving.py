@@ -695,8 +695,8 @@ def test_all_10_routes_etag_304_and_38_lineage_cards(
         assert r_bench_no_hist.status_code == 200
         assert r_bench_no_hist.json()["history"] == []
 
-        # Route 6: GET /api/v1/companies/{ticker}/lineage — ALL 38/38 ALL_RATIOS!
-        assert len(ALL_RATIOS) == 38
+        # Route 6: GET /api/v1/companies/{ticker}/lineage — ALL 39/39 ALL_RATIOS!
+        assert len(ALL_RATIOS) == 39
         assert set(ALL_RATIOS) == set(RATIO_LINEAGE_CATALOG)
         for ratio_name in ALL_RATIOS:
             r_lin = client.get(
@@ -1179,8 +1179,8 @@ def test_pushdown_and_overview_efficiency_spy(
 
 def test_serving_queries_helpers_and_zero_anti_patterns() -> None:
     # Canonical catalog and UI conversion/pagination helpers exposed via serving.queries.
-    assert len(ALL_RATIOS) == 38
-    assert len(RATIO_LINEAGE_CATALOG) == 38
+    assert len(ALL_RATIOS) == 39
+    assert len(RATIO_LINEAGE_CATALOG) == 39
     assert DashboardQueryService is not None
     assert StressScenario is not None
     assert simulate_financial_stress is not None

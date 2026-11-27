@@ -339,7 +339,7 @@ def test_full_end_to_end_6_stage_pipeline_and_lineage_traceability(
     assert comparison.peer_ranking.height == 2
 
     # Ensure ALL_RATIOS catalog is 100% consistent.
-    assert len(ALL_RATIOS) == 38
+    assert len(ALL_RATIOS) == 39
 
 
 def test_end_to_end_cli_circuit_breaker_preserves_prior_active_snapshot(

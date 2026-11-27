@@ -324,7 +324,7 @@ def test_all_7_v2_routes_etag_304_and_screener_extensions(
         r_dict = client.get("/api/v2/meta/dictionary")
         assert r_dict.status_code == 200
         d_json = r_dict.json()
-        assert len(d_json["ratios"]) == 38
+        assert len(d_json["ratios"]) == 39
         assert len(d_json["red_flags"]) == 10
         dte = next(r for r in d_json["ratios"] if r["ratio_name"] == "debt_to_equity")
         assert dte["direction"] == "LOWER_IS_BETTER"

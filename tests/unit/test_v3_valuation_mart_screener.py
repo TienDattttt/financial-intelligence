@@ -498,6 +498,510 @@ def test_incremental_transform_populates_pit_valuation_mart() -> None:
     assert row_2025["pb_ratio"] == pytest.approx(2.0)
 
 
+def _publish_v3_serving_snapshot(tmp_path: Path) -> tuple[Path, str]:
+    from finintel.analytics.tables import build_analytics_tables
+    from finintel.pipeline.state_store import StateStore
+    from finintel.storage.schemas import (
+        AUDIT_QUARANTINE_SCHEMA,
+        AUDIT_QUARANTINE_TABLE,
+        BENCHMARKS_TABLE,
+        FILINGS_MANIFEST_TABLE,
+        ML_SCORES_SCHEMA,
+        ML_SCORES_TABLE,
+        PIT_VALUATION_MART_TABLE,
+        QUALITY_SUMMARY_SCHEMA,
+        QUALITY_SUMMARY_TABLE,
+        RATIOS_TABLE,
+        RED_FLAGS_TABLE,
+    )
+    from finintel.storage.snapshot_publisher import SnapshotPublisher
+
+    data_root = tmp_path / "serving_data"
+    issuers = _make_issuers(
+        [
+            {
+                "issuer_id": "VN_FPT",
+                "ticker": "FPT",
+                "exchange": "HOSE",
+                "company_name_vn": "CTCP FPT",
+                "icb_code": "9530",
+                "icb_code_level2": "9500",
+                "icb_name_level2": "Technology",
+                "icb_code_level3": "9530",
+                "icb_name_level3": "Software",
+                "accounting_regime": "CORPORATE",
+                "is_listed": True,
+                "industry_snapshot_date": date(2026, 6, 1),
+                "delisted_date": None,
+            },
+            {
+                "issuer_id": "VN_HPG",
+                "ticker": "HPG",
+                "exchange": "HOSE",
+                "company_name_vn": "CTCP Tap doan Hoa Phat",
+                "icb_code": "1750",
+                "icb_code_level2": "1700",
+                "icb_name_level2": "Basic Resources",
+                "icb_code_level3": "1750",
+                "icb_name_level3": "Industrial Metals",
+                "accounting_regime": "CORPORATE",
+                "is_listed": True,
+                "industry_snapshot_date": date(2026, 6, 1),
+                "delisted_date": None,
+            },
+            {
+                "issuer_id": "VN_DGC",
+                "ticker": "DGC",
+                "exchange": "HNX",
+                "company_name_vn": "CTCP Duc Giang",
+                "icb_code": "1350",
+                "icb_code_level2": "1300",
+                "icb_name_level2": "Chemicals",
+                "icb_code_level3": "1350",
+                "icb_name_level3": "Specialty Chemicals",
+                "accounting_regime": "CORPORATE",
+                "is_listed": True,
+                "industry_snapshot_date": date(2026, 6, 1),
+                "delisted_date": None,
+            },
+        ]
+    )
+
+    def _base_metrics(
+        *,
+        rev_24: float,
+        rev_25: float,
+        ni_25: float,
+        cfo_25: float,
+        liab_25: float,
+        eq_25: float,
+        debt_25: float,
+        shares_cap: float,
+    ) -> dict[tuple[int, int | None], dict[str, float | None]]:
+        return {
+            (2024, None): {
+                "BS_TOTAL_ASSETS": eq_25 + liab_25,
+                "BS_CURRENT_ASSETS": 400_000_000_000.0,
+                "BS_CURRENT_LIABILITIES": 200_000_000_000.0,
+                "BS_TOTAL_LIABILITIES": liab_25,
+                "BS_TOTAL_EQUITY": eq_25,
+                "BS_MINORITY_INTEREST": 0.0,
+                "BS_SHORT_TERM_BORROWINGS": debt_25,
+                "BS_LONG_TERM_BORROWINGS": 0.0,
+                "BS_ORDINARY_SHARES_CAPITAL": shares_cap,
+                "BS_TREASURY_SHARES": 0.0,
+                "IS_NET_REVENUE": rev_24,
+                "IS_GROSS_PROFIT": rev_24 * 0.3,
+                "IS_OPERATING_PROFIT": rev_24 * 0.2,
+                "IS_PROFIT_BEFORE_TAX": rev_24 * 0.18,
+                "IS_INTEREST_EXPENSE": 5_000_000_000.0,
+                "IS_NET_INCOME": ni_25,
+                "IS_NET_INCOME_PARENT": ni_25,
+                "CF_OPERATING_CASH_FLOW": cfo_25,
+                "CF_CAPITAL_EXPENDITURE": -20_000_000_000.0,
+            },
+            (2025, None): {
+                "BS_TOTAL_ASSETS": eq_25 + liab_25,
+                "BS_CURRENT_ASSETS": 450_000_000_000.0,
+                "BS_CURRENT_LIABILITIES": 220_000_000_000.0,
+                "BS_TOTAL_LIABILITIES": liab_25,
+                "BS_TOTAL_EQUITY": eq_25,
+                "BS_MINORITY_INTEREST": 0.0,
+                "BS_SHORT_TERM_BORROWINGS": debt_25,
+                "BS_LONG_TERM_BORROWINGS": 0.0,
+                "BS_ORDINARY_SHARES_CAPITAL": shares_cap,
+                "BS_TREASURY_SHARES": 0.0,
+                "IS_NET_REVENUE": rev_25,
+                "IS_GROSS_PROFIT": rev_25 * 0.35,
+                "IS_OPERATING_PROFIT": rev_25 * 0.25,
+                "IS_PROFIT_BEFORE_TAX": rev_25 * 0.22,
+                "IS_INTEREST_EXPENSE": 5_000_000_000.0,
+                "IS_NET_INCOME": ni_25,
+                "IS_NET_INCOME_PARENT": ni_25,
+                "CF_OPERATING_CASH_FLOW": cfo_25,
+                "CF_CAPITAL_EXPENDITURE": -25_000_000_000.0,
+            },
+        }
+
+    # FPT: ROE=12%, ROA=6%, EPS=6,000, liab/assets=0.5, D/E=0.4, CFO=90B, OCF/Liab=0.15, rev_growth=+25%, PE=15, PB=1.8, MCap=900B
+    # HPG: ROE=30%, ROA=20%, EPS=15,000, liab/assets=0.333, D/E=0.1, CFO=350B, OCF/Liab=0.70, rev_growth=+50%, PE=10, PB=3.0, MCap=3,000B
+    # DGC: ROE=-10%, ROA=-5%, EPS=-2,000, liab/assets=0.5, D/E=0.8, CFO=-20B, OCF/Liab=-0.10, rev_growth=-10%, PE=None, PB=0.8, MCap=160B
+    facts = pl.concat(
+        [
+            _make_facts(
+                _base_metrics(
+                    rev_24=800_000_000_000.0,
+                    rev_25=1_000_000_000_000.0,
+                    ni_25=60_000_000_000.0,
+                    cfo_25=90_000_000_000.0,
+                    liab_25=600_000_000_000.0,
+                    eq_25=500_000_000_000.0,
+                    debt_25=200_000_000_000.0,
+                    shares_cap=100_000_000_000.0,
+                ),
+                issuer_id="VN_FPT",
+                available_overrides={
+                    (2024, None): date(2025, 3, 20),
+                    (2025, None): date(2026, 3, 20),
+                },
+            ),
+            _make_facts(
+                _base_metrics(
+                    rev_24=1_000_000_000_000.0,
+                    rev_25=1_500_000_000_000.0,
+                    ni_25=300_000_000_000.0,
+                    cfo_25=350_000_000_000.0,
+                    liab_25=500_000_000_000.0,
+                    eq_25=1_000_000_000_000.0,
+                    debt_25=100_000_000_000.0,
+                    shares_cap=200_000_000_000.0,
+                ),
+                issuer_id="VN_HPG",
+                available_overrides={
+                    (2024, None): date(2025, 3, 20),
+                    (2025, None): date(2026, 3, 20),
+                },
+            ),
+            _make_facts(
+                _base_metrics(
+                    rev_24=500_000_000_000.0,
+                    rev_25=450_000_000_000.0,
+                    ni_25=-20_000_000_000.0,
+                    cfo_25=-20_000_000_000.0,
+                    liab_25=200_000_000_000.0,
+                    eq_25=200_000_000_000.0,
+                    debt_25=160_000_000_000.0,
+                    shares_cap=100_000_000_000.0,
+                ),
+                issuer_id="VN_DGC",
+                available_overrides={
+                    (2024, None): date(2025, 3, 20),
+                    (2025, None): date(2026, 3, 20),
+                },
+            ),
+        ]
+    )
+    prices = pl.DataFrame(
+        {
+            "issuer_id": ["VN_FPT", "VN_HPG", "VN_DGC"],
+            "ticker": ["FPT", "HPG", "DGC"],
+            "trade_date": [date(2026, 3, 20), date(2026, 3, 20), date(2026, 3, 20)],
+            "close_raw": [90_000.0, 150_000.0, 16_000.0],
+            "close_adj": [70_000.0, 120_000.0, 16_000.0],
+            "volume": [1_000_000.0, 2_000_000.0, 500_000.0],
+            "shares_outstanding_market": [10_000_000.0, 20_000_000.0, 10_000_000.0],
+            "source_provider": ["test", "test", "test"],
+        }
+    )
+
+    analytics = build_analytics_tables(facts, issuers, as_of=date(2026, 6, 1))
+    ratios_df = analytics[RATIOS_TABLE]
+    benchmarks_df = analytics[BENCHMARKS_TABLE]
+    red_flags_df = analytics[RED_FLAGS_TABLE]
+    mart_df = build_pit_valuation_mart(
+        ratios_df, prices, facts=facts, as_of=date(2026, 6, 1)
+    )
+
+    ml_rows: list[dict[str, object]] = []
+    for row in ratios_df.filter(
+        pl.col("period_end_date") == date(2025, 12, 31)
+    ).iter_rows(named=True):
+        iid = str(row["issuer_id"])
+        tkr = str(row["ticker"])
+        ml_rows.append(
+            {
+                "issuer_id": iid,
+                "ticker": tkr,
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "ANNUAL",
+                "period_end_date": date(2025, 12, 31),
+                "filing_id": f"{iid}-2025-None",
+                "altman_z_double_prime": 5.0 if iid != "VN_DGC" else 1.0,
+                "altman_em_score": 5.0 if iid != "VN_DGC" else 1.0,
+                "altman_zone": "SAFE_ZONE" if iid != "VN_DGC" else "DISTRESS_ZONE",
+                "piotroski_f_score": 8
+                if iid == "VN_HPG"
+                else (6 if iid == "VN_FPT" else 3),
+                "beneish_m8_score": -2.5,
+                "beneish_flag": "LOW_RISK",
+                "pca_pc1": 0.1,
+                "pca_pc2": 0.2,
+                "pca_pc3": 0.0,
+                "cluster_id": 0 if iid == "VN_FPT" else 1,
+                "cluster_archetype_name": "Balanced" if iid == "VN_FPT" else "Growth",
+                "anomaly_score_raw": 0.1 if iid == "VN_FPT" else 0.9,
+                "anomaly_percentile_rank": 0.2 if iid == "VN_FPT" else 0.95,
+                "statistical_outlier_flag": iid != "VN_FPT",
+                "anomaly_flag": (
+                    None
+                    if iid == "VN_FPT"
+                    else (
+                        "ATYPICAL_POSITIVE" if iid == "VN_HPG" else "ATYPICAL_NEGATIVE"
+                    )
+                ),
+                "distress_risk_score": 0.05 if iid != "VN_DGC" else 0.45,
+                "calibrated_distress_prob": 0.02
+                if iid == "VN_HPG"
+                else (0.04 if iid == "VN_FPT" else 0.40),
+                "risk_tier": "R1" if iid != "VN_DGC" else "R4",
+                "risk_market_percentile": 0.1 if iid != "VN_DGC" else 0.9,
+                "market_base_rate": 0.05,
+                "relative_risk_lift": 0.8 if iid != "VN_DGC" else 8.0,
+                "calibrated_distress_prob_ci_lower": 0.01,
+                "calibrated_distress_prob_ci_upper": 0.08,
+                "top_risk_drivers_json": "[]",
+                "top_protective_drivers_json": "[]",
+                "explainability_method": "SHAP_TREE",
+                "explainability_available": True,
+                "model_role": "PRIMARY",
+                "model_version": "v3_test",
+                "is_out_of_sample": True,
+                "feature_set_version": "v3",
+                "score_basis": "CALIBRATED",
+            }
+        )
+    ml_df = pl.DataFrame(ml_rows, schema=ML_SCORES_SCHEMA)
+
+    manifest_rows = [
+        {
+            "issuer_id": iid,
+            "filing_id": f"{iid}-2025-None",
+            "ticker_at_filing": iid.removeprefix("VN_"),
+            "source_provider": "fhsc",
+            "connector_name": "test",
+            "statement_type": "CONSOLIDATED_PACK",
+            "statement_scope": "CONSOLIDATED",
+            "period_type": "ANNUAL",
+            "period_end_date": date(2025, 12, 31),
+            "published_at": date(2026, 3, 20),
+            "published_at_basis": "EXACT_FILING",
+            "effective_available_at": date(2026, 3, 20),
+            "audit_status": "AUDITED",
+            "audit_opinion": "UNMODIFIED",
+            "revision_no": 1,
+            "revision_reason": "ORIGINAL",
+            "canonical_content_sha256": "a" * 64,
+            "payload_file_sha256": "b" * 64,
+        }
+        for iid in ("VN_FPT", "VN_HPG", "VN_DGC")
+    ]
+    manifest_df = pl.DataFrame(manifest_rows)
+
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    snap_id = "snap_v3_screener_001"
+    run_id = "run_v3_screener_001"
+    state.start_run(run_id, "MANUAL", {"source": "test"}, None)
+    publisher = SnapshotPublisher(
+        data_root / "published" / "snapshots", state_store=state
+    )
+    publisher.publish(
+        snap_id,
+        {
+            "issuers.parquet": issuers,
+            "financial_facts.parquet": facts,
+            "latest_facts.parquet": facts,
+            RATIOS_TABLE: ratios_df,
+            BENCHMARKS_TABLE: benchmarks_df,
+            RED_FLAGS_TABLE: red_flags_df,
+            ML_SCORES_TABLE: ml_df,
+            PIT_VALUATION_MART_TABLE: mart_df,
+            QUALITY_SUMMARY_TABLE: pl.DataFrame(schema=QUALITY_SUMMARY_SCHEMA),
+            AUDIT_QUARANTINE_TABLE: pl.DataFrame(schema=AUDIT_QUARANTINE_SCHEMA),
+            FILINGS_MANIFEST_TABLE: manifest_df,
+        },
+        run_id=run_id,
+    )
+    state.finish_run(run_id, "SUCCEEDED", snap_id)
+    return data_root, snap_id
+
+
+def test_v3_dictionary_and_lineage_include_ocf_to_total_liabilities(
+    tmp_path: Path,
+) -> None:
+    """/api/v2/meta/dictionary and /api/v1/companies/{ticker}/lineage expose ocf_to_total_liabilities."""
+    from fastapi.testclient import TestClient
+
+    from finintel.serving.api import create_app
+
+    data_root, _ = _publish_v3_serving_snapshot(tmp_path)
+    with TestClient(create_app(data_root=data_root)) as client:
+        r_dict = client.get("/api/v2/meta/dictionary")
+        assert r_dict.status_code == 200
+        ratios_meta = r_dict.json()["ratios"]
+        assert len(ratios_meta) == 39
+        ocf_entry = next(
+            (r for r in ratios_meta if r["ratio_name"] == "ocf_to_total_liabilities"),
+            None,
+        )
+        assert ocf_entry is not None
+        assert ocf_entry["direction"] == "HIGHER_IS_BETTER"
+
+        r_lin = client.get(
+            "/api/v1/companies/FPT/lineage",
+            params={
+                "ratio_name": "ocf_to_total_liabilities",
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "ANNUAL",
+                "period_end_date": "2025-12-31",
+            },
+        )
+        assert r_lin.status_code == 200
+        lin_json = r_lin.json()
+        assert lin_json["ratio_name"] == "ocf_to_total_liabilities"
+        assert lin_json["ratio_value"] == pytest.approx(
+            90_000_000_000.0 / 600_000_000_000.0
+        )
+
+
+def test_screener_v3_filters_projections_export_and_cache_keys(
+    tmp_path: Path,
+) -> None:
+    """GET /api/v1/screener and /export support all 14 V3 filter/column groups and unique Valkey cache keys."""
+    from fastapi.testclient import TestClient
+
+    from finintel.serving._api_helpers import build_screener_cache_params
+    from finintel.serving.api import create_app
+    from finintel.serving.cache import build_snapshot_cache_key
+
+    data_root, snap_id = _publish_v3_serving_snapshot(tmp_path)
+    with TestClient(create_app(data_root=data_root)) as client:
+        base = client.get("/api/v1/screener", params={"period_type": "ANNUAL"})
+        assert base.status_code == 200
+        items = {row["ticker"]: row for row in base.json()["items"]}
+        assert set(items) == {"FPT", "HPG", "DGC"}
+        assert items["FPT"]["pe_ttm"] == pytest.approx(15.0)
+        assert items["FPT"]["pb_ratio"] == pytest.approx(1.8)
+        assert items["FPT"]["market_cap_vnd"] == pytest.approx(900_000_000_000.0)
+        assert items["FPT"]["ocf_to_total_liabilities"] == pytest.approx(0.15)
+        assert items["FPT"]["eps_ttm_estimated"] == pytest.approx(6_000.0)
+        assert items["FPT"]["cfo_ttm"] == pytest.approx(90_000_000_000.0)
+        assert items["FPT"]["roe_parent"] == pytest.approx(0.12)
+        assert items["FPT"]["liabilities_to_assets"] == pytest.approx(600.0 / 1100.0)
+        assert items["FPT"]["revenue_growth_yoy"] == pytest.approx(0.25)
+        assert items["DGC"]["pe_ttm"] is None
+        assert items["DGC"]["pe_flag"] == "NEGATIVE_DENOMINATOR"
+
+        filter_expectations: list[
+            tuple[dict[str, float | int | bool | str], set[str]]
+        ] = [
+            ({"min_roe_parent": 0.25}, {"HPG"}),
+            ({"min_roa": 0.15}, {"HPG"}),
+            ({"min_eps_ttm_estimated": 10_000.0}, {"HPG"}),
+            ({"max_liabilities_to_assets": 0.40}, {"HPG"}),
+            ({"max_debt_to_equity": 0.20}, {"HPG"}),
+            ({"min_cfo_ttm": 200_000_000_000.0}, {"HPG"}),
+            ({"min_ocf_to_total_liabilities": 0.50}, {"HPG"}),
+            ({"min_revenue_growth_yoy": 0.40}, {"HPG"}),
+            ({"min_pe_ttm": 12.0, "max_pe_ttm": 20.0}, {"FPT"}),
+            ({"min_pb_ratio": 2.5}, {"HPG"}),
+            ({"min_market_cap_bn_vnd": 2_000.0}, {"HPG"}),
+            ({"exchange": "HNX"}, {"DGC"}),
+            ({"cluster_id": 0}, {"FPT"}),
+            ({"anomaly_flag": True}, {"HPG", "DGC"}),
+            ({"anomaly_flag": False}, {"FPT"}),
+        ]
+        for f_params, expected_tickers in filter_expectations:
+            resp = client.get(
+                "/api/v1/screener",
+                params={"period_type": "ANNUAL", **f_params},
+            )
+            assert resp.status_code == 200, f"Failed for {f_params}: {resp.text}"
+            got = {row["ticker"] for row in resp.json()["items"]}
+            assert got == expected_tickers, f"Mismatch for {f_params}: {got}"
+
+        sorted_resp = client.get(
+            "/api/v1/screener",
+            params={
+                "period_type": "ANNUAL",
+                "sort_by": "market_cap_vnd",
+                "sort_dir": "desc",
+            },
+        )
+        assert sorted_resp.status_code == 200
+        assert [row["ticker"] for row in sorted_resp.json()["items"]] == [
+            "HPG",
+            "FPT",
+            "DGC",
+        ]
+
+        csv_resp = client.get(
+            "/api/v1/screener/export",
+            params={"period_type": "ANNUAL", "min_ocf_to_total_liabilities": 0.10},
+        )
+        assert csv_resp.status_code == 200
+        csv_text = csv_resp.content.decode("utf-8-sig")
+        header_line = csv_text.splitlines()[0]
+        for col in (
+            "pe_ttm",
+            "pb_ratio",
+            "market_cap_vnd",
+            "ocf_to_total_liabilities",
+            "eps_ttm_estimated",
+            "cfo_ttm",
+        ):
+            assert col in header_line
+        assert "HPG" in csv_text and "FPT" in csv_text and "DGC" not in csv_text
+
+    # Valkey L2 cache key differentiation across all extended filter keys
+    base_params = build_screener_cache_params(
+        period_type="ANNUAL",
+        period_end_date=None,
+        statement_scope="CONSOLIDATED",
+        icb_code_level2=None,
+        exchange=None,
+        min_f_score=None,
+        altman_zone=None,
+        effective_tiers=None,
+        beneish_flag=None,
+        max_distress_prob=None,
+        min_distress_prob=None,
+        max_red_flags=None,
+        min_red_flags=None,
+        q=None,
+        sort_by="calibrated_distress_prob",
+        sort_dir="desc",
+        limit=50,
+        offset=0,
+    )
+    base_key = build_snapshot_cache_key(snap_id, "v1/screener", base_params)
+    seen_keys = {base_key}
+    for extra in (
+        {"cluster_id": 1},
+        {"anomaly_flag": True},
+        {"min_roe_parent": 0.1},
+        {"min_pe_ttm": 5.0},
+        {"max_pb_ratio": 3.0},
+        {"min_market_cap_bn_vnd": 500.0},
+        {"min_ocf_to_total_liabilities": 0.2},
+        {"min_cfo_ttm": 100.0},
+    ):
+        alt_params = build_screener_cache_params(
+            period_type="ANNUAL",
+            period_end_date=None,
+            statement_scope="CONSOLIDATED",
+            icb_code_level2=None,
+            exchange=None,
+            min_f_score=None,
+            altman_zone=None,
+            effective_tiers=None,
+            beneish_flag=None,
+            max_distress_prob=None,
+            min_distress_prob=None,
+            max_red_flags=None,
+            min_red_flags=None,
+            q=None,
+            sort_by="calibrated_distress_prob",
+            sort_dir="desc",
+            limit=50,
+            offset=0,
+            extra_params=extra,
+        )
+        alt_key = build_snapshot_cache_key(snap_id, "v1/screener", alt_params)
+        assert alt_key not in seen_keys
+        seen_keys.add(alt_key)
+
+
 def test_pit_valuation_mart_empty_prices_returns_empty_schema() -> None:
     empty_mart = build_pit_valuation_mart(
         pl.DataFrame(),
