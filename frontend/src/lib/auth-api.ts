@@ -4,8 +4,18 @@ import type {
   AnalystNoteItem,
   AnalystNotesListResponse,
   AnalystNoteUpdateRequest,
+  ApiKeyCreateRequest,
+  ApiKeyCreateResponse,
+  ApiKeyListResponse,
+  ApiKeyRevokeResponse,
+  ApiUsageSummaryResponse,
   AuditLogsPageResponse,
   AuthActionMessageResponse,
+  B2BWebhookCreateRequest,
+  B2BWebhookCreateResponse,
+  B2BWebhookDeleteResponse,
+  B2BWebhookListResponse,
+  B2BWebhookTestResponse,
   DataDeletionReceiptResponse,
   DeleteAccountRequest,
   ImportLocalWatchlistResponse,
@@ -339,4 +349,65 @@ export const opsApi = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+};
+
+export const b2bApi = {
+  listKeys: (signal?: AbortSignal) =>
+    authFetchJson<ApiKeyListResponse>("/api/v3/b2b/keys", {
+      signal,
+      mutating: false,
+    }),
+
+  createKey: (payload: ApiKeyCreateRequest) =>
+    authFetchJson<ApiKeyCreateResponse>("/api/v3/b2b/keys", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  rotateKey: (keyId: string) =>
+    authFetchJson<ApiKeyCreateResponse>(
+      `/api/v3/b2b/keys/${encodeURIComponent(keyId)}/rotate`,
+      { method: "POST" },
+    ),
+
+  revokeKey: (keyId: string) =>
+    authFetchJson<ApiKeyRevokeResponse>(
+      `/api/v3/b2b/keys/${encodeURIComponent(keyId)}`,
+      { method: "DELETE" },
+    ),
+
+  getUsage: (fromDate?: string, toDate?: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (fromDate) params.set("from", fromDate);
+    if (toDate) params.set("to", toDate);
+    const qs = params.toString();
+    return authFetchJson<ApiUsageSummaryResponse>(
+      `/api/v3/b2b/usage${qs ? `?${qs}` : ""}`,
+      { signal, mutating: false },
+    );
+  },
+
+  listWebhooks: (signal?: AbortSignal) =>
+    authFetchJson<B2BWebhookListResponse>("/api/v3/b2b/webhooks", {
+      signal,
+      mutating: false,
+    }),
+
+  createWebhook: (payload: B2BWebhookCreateRequest) =>
+    authFetchJson<B2BWebhookCreateResponse>("/api/v3/b2b/webhooks", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteWebhook: (endpointId: string) =>
+    authFetchJson<B2BWebhookDeleteResponse>(
+      `/api/v3/b2b/webhooks/${encodeURIComponent(endpointId)}`,
+      { method: "DELETE" },
+    ),
+
+  testWebhook: (endpointId: string) =>
+    authFetchJson<B2BWebhookTestResponse>(
+      `/api/v3/b2b/webhooks/${encodeURIComponent(endpointId)}/test`,
+      { method: "POST" },
+    ),
 };
