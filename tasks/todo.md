@@ -638,12 +638,12 @@
 **Description:** Tạo migration `app_v3_005_b2b_api.sql` và gói `src/finintel/api_gateway/` quản lý API Key `fi_res_*` (lưu `SHA-256`, `hmac.compare_digest`), khóa mặc định `FININTEL_ENABLE_RAW_REDISTRIBUTION=False` (chỉ mở `read:derived_risk`), và Valkey sliding-window rate limiter (`30 req/phút`, `1.000 req/ngày/key`).
 
 **Acceptance criteria:**
-- [ ] Key hợp lệ truy cập được `read:derived_risk` (`200`), bị chặn `403` khi gọi raw BCTC nếu cờ redistribution là `False`, thu hồi key lập tức trả `401`.
-- [ ] Vượt ngưỡng rate limit trả `429` kèm `Retry-After` dương và `X-RateLimit-*` headers; `0` log plaintext API key.
+- [x] Key hợp lệ truy cập được `read:derived_risk` (`200`), bị chặn `403` khi gọi raw BCTC nếu cờ redistribution là `False`, thu hồi key lập tức trả `401`.
+- [x] Vượt ngưỡng rate limit trả `429` kèm `Retry-After` dương và `X-RateLimit-*` headers; `0` log plaintext API key.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_b2b_api.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/api_gateway tests/unit/test_v3_b2b_api.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_b2b_api.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/api_gateway tests/unit/test_v3_b2b_api.py`
 
 **Dependencies:** `V3-18`, `V3-19`  
 **Commit type:** `feat(api-gateway)`  
@@ -662,11 +662,11 @@
 **Description:** Tạo gói độc lập `sdk/python/` (`finintel-sdk`) chỉ phụ thuộc `httpx` & `pydantic`, cung cấp client đồng bộ/bất đồng bộ hỗ trợ `If-None-Match` (`304`), retry `429/5xx` theo `Retry-After`, và helper `verify_webhook_signature()`.
 
 **Acceptance criteria:**
-- [ ] Unit tests với `httpx.MockTransport` xác nhận ETag caching, retry backoff và phát hiện payload webhook bị chỉnh sửa.
-- [ ] `mypy --strict sdk/python/src` và `ruff check sdk` đạt `0` lỗi.
+- [x] Unit tests với `httpx.MockTransport` xác nhận ETag caching, retry backoff và phát hiện payload webhook bị chỉnh sửa.
+- [x] `mypy --strict sdk/python/src` và `ruff check sdk` đạt `0` lỗi.
 
 **Verification:**
-- [ ] Tests & lint: `.\.venv\Scripts\python.exe -m ruff check sdk && .\.venv\Scripts\python.exe -m mypy --strict sdk/python/src && .\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_b2b_api.py -q`
+- [x] Tests & lint: `.\.venv\Scripts\python.exe -m ruff check sdk && .\.venv\Scripts\python.exe -m mypy --strict sdk/python/src && .\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_b2b_api.py -q`
 
 **Dependencies:** `V3-25`  
 **Commit type:** `feat(sdk)`  
@@ -684,11 +684,11 @@
 **Description:** Tạo trang `/developers` cho vai trò `RESEARCHER` & `INTERNAL_OPS` tạo/xoay/thu hồi API Key (hiện secret đúng 1 lần kèm nút copy), xem biểu đồ usage ngày, đăng ký webhook và đoạn mã mẫu Python SDK / cURL.
 
 **Acceptance criteria:**
-- [ ] Secret key chỉ hiển thị duy nhất 1 lần ngay sau khi tạo và không thể đọc lại sau refresh trang.
-- [ ] Trang `/developers` chặn gọn người dùng chưa có vai trò `RESEARCHER` với hướng dẫn đăng ký duyệt nghiên cứu; `0` lỗi `check` & `vitest`.
+- [x] Secret key chỉ hiển thị duy nhất 1 lần ngay sau khi tạo và không thể đọc lại sau refresh trang.
+- [x] Trang `/developers` chặn gọn người dùng chưa có vai trò `RESEARCHER` với hướng dẫn đăng ký duyệt nghiên cứu; `0` lỗi `check` & `vitest`.
 
 **Verification:**
-- [ ] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
+- [x] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
 
 **Dependencies:** `V3-25`, `V3-26`  
 **Commit type:** `feat(frontend)`  
@@ -700,7 +700,7 @@
 **Estimated scope:** Small (3 files)
 
 ### Checkpoint 3-1: After Tasks `V3-25..V3-27` (`v3-b2b-commercial-api`)
-- [ ] API gateway, SDK và `/developers` pass 100% tests; `FININTEL_ENABLE_RAW_REDISTRIBUTION` xác nhận mặc định `False`.
+- [x] API gateway, SDK và `/developers` pass 100% tests; `FININTEL_ENABLE_RAW_REDISTRIBUTION` xác nhận mặc định `False`.
 
 ---
 
@@ -710,12 +710,12 @@
 **Description:** Ghim `openpyxl==3.1.5` trong group `platform` (lazy-import), tạo migration `app_v3_006_private_hitl.sql` và xây dựng `src/finintel/private_credit/vas_excel_parser.py` cung cấp file mẫu Excel VAS chuẩn TT200/TT99 và parse bảng BS/IS/CF đa kỳ kèm phòng thủ file upload (`<= 15 MB`, giải nén `<= 50 MB`, chặn `.xlsm`/macro/symlink).
 
 **Acceptance criteria:**
-- [ ] Parse chính xác 100% mã số VAS chuẩn từ fixture `.xlsx` 3 bảng 2 năm trong `tmp_path`.
-- [ ] Từ chối file `.xlsm`, ZIP-bomb, vượt `15 MB` hoặc bảng lệch cân bằng QG1 kèm thông báo dòng lệch cụ thể.
+- [x] Parse chính xác 100% mã số VAS chuẩn từ fixture `.xlsx` 3 bảng 2 năm trong `tmp_path`.
+- [x] Từ chối file `.xlsm`, ZIP-bomb, vượt `15 MB` hoặc bảng lệch cân bằng QG1 kèm thông báo dòng lệch cụ thể.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_private_hitl.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/private_credit/vas_excel_parser.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_private_hitl.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/private_credit/vas_excel_parser.py`
 
 **Dependencies:** `V3-11`, `V3-23`  
 **Commit type:** `feat(private-credit)`  
@@ -733,13 +733,13 @@
 **Description:** Xây dựng `src/finintel/private_credit/scorer.py` + `router.py` tái sử dụng 100% Polars analytics/QG1 hiện có để chấm điểm DN tư nhân ở chế độ `ACCOUNTING_ONLY_MODE` (cô lập hoàn toàn khỏi DuckLake công khai), cùng `src/finintel/hitl/` ghi nhận & thống kê phản hồi chuyên gia False Positive (không bao giờ ghi đè nhãn ML).
 
 **Acceptance criteria:**
-- [ ] Chấm điểm DN tư nhân chạy `< 3s`, xuất đầy đủ 38 chỉ số + DuPont + Cờ đỏ + Stress Test + gắn cờ `ACCOUNTING_ONLY_MODE`, và `0` ghi vào DuckLake / `data/`.
-- [ ] `POST /api/v3/hitl/feedback` và `GET /api/v3/hitl/summary` (`INTERNAL_OPS`) hoạt động độc lập, không chạm bảng ML training labels.
+- [x] Chấm điểm DN tư nhân chạy `< 3s`, xuất đầy đủ 38 chỉ số + DuPont + Cờ đỏ + Stress Test + gắn cờ `ACCOUNTING_ONLY_MODE`, và `0` ghi vào DuckLake / `data/`.
+- [x] `POST /api/v3/hitl/feedback` và `GET /api/v3/hitl/summary` (`INTERNAL_OPS`) hoạt động độc lập, không chạm bảng ML training labels.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_private_hitl.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/private_credit src/finintel/hitl`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_private_hitl.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/private_credit src/finintel/hitl`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-28`  
 **Commit type:** `feat(private-credit,hitl)`  
@@ -758,11 +758,11 @@
 **Description:** Xây dựng trang `/private-scoring` (`RESEARCHER` / `INTERNAL_OPS`: tải mẫu VAS → upload → xem trước số liệu & kiểm tra QG1 → xem kết quả rủi ro + xóa hồ sơ) và nút *"Phản hồi chuyên gia"* gọn trên `RedFlagChecklist.tsx`.
 
 **Acceptance criteria:**
-- [ ] Luồng Upload → Preview QG1 → Score → Delete dossier hoạt động mượt, hiển thị rõ cảnh báo `ACCOUNTING_ONLY_MODE` bằng tiếng Việt sạch.
-- [ ] Chuyên gia gửi được phản hồi HITL ngay trên từng cờ đỏ trong `RedFlagChecklist.tsx`; `0` lỗi `check` & `vitest`.
+- [x] Luồng Upload → Preview QG1 → Score → Delete dossier hoạt động mượt, hiển thị rõ cảnh báo `ACCOUNTING_ONLY_MODE` bằng tiếng Việt sạch.
+- [x] Chuyên gia gửi được phản hồi HITL ngay trên từng cờ đỏ trong `RedFlagChecklist.tsx`; `0` lỗi `check` & `vitest`.
 
 **Verification:**
-- [ ] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
+- [x] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
 
 **Dependencies:** `V3-29`  
 **Commit type:** `feat(frontend)`  
@@ -775,7 +775,7 @@
 **Estimated scope:** Medium (4 files)
 
 ### Checkpoint 3-2: After Tasks `V3-28..V3-30` (`v3-private-issuer-and-hitl`)
-- [ ] Parser bảo mật, chấm điểm cô lập và HITL triage xanh 100%; xác nhận `0` ô nhiễm dữ liệu công khai.
+- [x] Parser bảo mật, chấm điểm cô lập và HITL triage xanh 100%; xác nhận `0` ô nhiễm dữ liệu công khai.
 
 ---
 
@@ -785,12 +785,12 @@
 **Description:** Tạo `src/finintel/ports/bonds.py` (Extension Port 4 nằm ngoài `MANAGED_MART_TABLES` để `publish_snapshot()` không bao giờ `DROP TABLE` theo `B-03`) và `src/finintel/ingestion/bond_signals_collector.py` thu thập dữ liệu trái phiếu doanh nghiệp thật (HNX Cbonds) kèm `source_url`, `payload_sha256` và `ssrf_guard`.
 
 **Acceptance criteria:**
-- [ ] Schema `corporate_bond_signals` & `fx_debt_exposure` validate chặt `source_url` + `payload_sha256` (Zero-Mock).
-- [ ] Test xác nhận `DuckLakeStore.publish_snapshot()` bảo toàn nguyên vẹn bảng Port 4 sau khi xoay snapshot.
+- [x] Schema `corporate_bond_signals` & `fx_debt_exposure` validate chặt `source_url` + `payload_sha256` (Zero-Mock).
+- [x] Test xác nhận `DuckLakeStore.publish_snapshot()` bảo toàn nguyên vẹn bảng Port 4 sau khi xoay snapshot.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_fx_stress_bonds.py tests/unit/test_layer3_ducklake_storage.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/ports/bonds.py src/finintel/ingestion/bond_signals_collector.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_fx_stress_bonds.py tests/unit/test_layer3_ducklake_storage.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/ports/bonds.py src/finintel/ingestion/bond_signals_collector.py`
 
 **Dependencies:** `V3-01`, `V3-05`  
 **Commit type:** `feat(ports,ingestion)`  
@@ -807,12 +807,12 @@
 **Description:** Xây dựng `src/finintel/analytics/stress_fx.py` và thêm trường optional `fx_depreciation_pct: float = 0.0` vào `StressScenario` (tính lỗ chênh lệch tỷ giá chỉ khi có `net_fx_debt_vnd` thật, trả `NOT_DISCLOSED` khi thiếu — tuyệt đối không bịa tỷ lệ USD), cùng `src/finintel/serving/routers/bonds_v3.py` (`GET /api/v3/companies/{ticker}/bond-signals`).
 
 **Acceptance criteria:**
-- [ ] `fx_depreciation_pct = 0.0` cho kết quả giống hệt 100% Stress Test IMF V2.0 (`0` regression).
-- [ ] `fx_depreciation_pct = 0.10` tính đúng `fx_revaluation_loss_vnd` cho DN có công bố nợ ngoại tệ và trả `fx_coverage_status = "NOT_DISCLOSED"` (không `NaN`) cho DN chưa công bố.
+- [x] `fx_depreciation_pct = 0.0` cho kết quả giống hệt 100% Stress Test IMF V2.0 (`0` regression).
+- [x] `fx_depreciation_pct = 0.10` tính đúng `fx_revaluation_loss_vnd` cho DN có công bố nợ ngoại tệ và trả `fx_coverage_status = "NOT_DISCLOSED"` (không `NaN`) cho DN chưa công bố.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_fx_stress_bonds.py tests/unit/test_layer4_forensic_and_stress.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/analytics/stress_fx.py src/finintel/serving/routers/bonds_v3.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_fx_stress_bonds.py tests/unit/test_layer4_forensic_and_stress.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/analytics/stress_fx.py src/finintel/serving/routers/bonds_v3.py`
 
 **Dependencies:** `V3-31`  
 **Commit type:** `feat(analytics,serving)`  
@@ -831,12 +831,12 @@
 **Description:** Bổ sung thanh trượt cú sốc tỷ giá `fx_depreciation_pct` (đồng bộ URL chia sẻ, kèm chú thích phạm vi công bố nợ ngoại tệ) trên `/stress-test` và tạo `BondMaturityCard.tsx` hiển thị áp lực đáo hạn trái phiếu 12 tháng so với tiền mặt trên hồ sơ doanh nghiệp.
 
 **Acceptance criteria:**
-- [ ] Thay đổi `fx_depreciation_pct` trên `/stress-test` đồng bộ vào URL và so sánh song song được giữa kịch bản A vs B.
-- [ ] `BondMaturityCard.tsx` hiển thị rõ dư nợ, đáo hạn 12T/tiền mặt, cờ chậm trả (hoặc trạng thái sạch *"Không có dư nợ trái phiếu lưu hành"*), `0` lỗi WCAG 2.2 AA & `vi-VN` formatting.
+- [x] Thay đổi `fx_depreciation_pct` trên `/stress-test` đồng bộ vào URL và so sánh song song được giữa kịch bản A vs B.
+- [x] `BondMaturityCard.tsx` hiển thị rõ dư nợ, đáo hạn 12T/tiền mặt, cờ chậm trả (hoặc trạng thái sạch *"Không có dư nợ trái phiếu lưu hành"*), `0` lỗi WCAG 2.2 AA & `vi-VN` formatting.
 
 **Verification:**
-- [ ] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-32`  
 **Commit type:** `feat(frontend)`  
@@ -849,6 +849,6 @@
 **Estimated scope:** Medium (4 files)
 
 ### Checkpoint 3-3 & FINAL RELEASE GATE (`v3.1.0`)
-- [ ] Toàn bộ 11/11 module (`33/33` tasks) đã hoàn thành, merge xanh và xóa toàn bộ nhánh/worktree tạm.
-- [ ] Toàn bộ bộ kiểm chứng `AGENTS.md` §3 + `frontend run test:e2e` (`wcag22aa` + `CWV`) PASS 100%.
-- [ ] Cập nhật `CHANGELOG.md` và gắn tag bất biến `v3.1.0`.
+- [x] Toàn bộ 11/11 module (`33/33` tasks) đã hoàn thành, merge xanh và xóa toàn bộ nhánh/worktree tạm.
+- [x] Toàn bộ bộ kiểm chứng `AGENTS.md` §3 + `frontend run test:e2e` (`wcag22aa` + `CWV`) PASS 100%.
+- [x] Cập nhật `CHANGELOG.md` và gắn tag bất biến `v3.1.0`.

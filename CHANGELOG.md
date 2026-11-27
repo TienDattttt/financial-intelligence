@@ -4,6 +4,31 @@ All notable changes to FinIntel are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-11-27
+
+Phase 3 Enterprise & B2B Platform release adding the Open Research API & Python SDK, isolated Private-Issuer VAS Excel scoring & HITL false-positive triage, and Extension Port 4 Corporate Bond signals & FX depreciation stress testing (`V3-25..V3-33`).
+
+### Added
+- **Open Research API, Webhooks & Python SDK (`V3-25..V3-27`)**:
+  - Added PostgreSQL B2B gateway schema (`config/migrations/app_v3_005_b2b_api.sql`) and `src/finintel/api_gateway/` managing SHA-256 `fi_res_*` / `fi_live_*` API keys with constant-time `hmac.compare_digest` verification, one-time plaintext reveal, fail-closed `FININTEL_ENABLE_RAW_REDISTRIBUTION=False` data-redistribution gate (`read:derived_risk` default), and Valkey Lua sliding-window rate limiting (`30 req/min`, `1,000 req/day`).
+  - Wired `b2b_webhook_endpoints` into `AlertDispatcher.dispatch_events()` (`src/finintel/alerts/dispatcher.py`) with SSRF and HMAC-SHA256 signing.
+  - Added standalone `sdk/python/` (`finintel-sdk`, strict `httpx` + `pydantic` dependencies) providing sync/async clients with `If-None-Match` ETag `304` caching, `429`/`5xx` `Retry-After` backoff, and `verify_webhook_signature()`.
+  - Built `/developers` developer portal (`frontend/src/app/developers/page.tsx`) gated to `RESEARCHER` / `INTERNAL_OPS` with one-time key/HMAC reveal, daily usage breakdown, webhook management, and Python SDK / cURL snippets.
+- **Isolated Private-Issuer Credit Scoring & HITL False-Positive Triage (`V3-28..V3-30`)**:
+  - Added `config/migrations/app_v3_006_private_hitl.sql`, `src/finintel/private_credit/`, and `src/finintel/hitl/` supporting multi-year VAS `TT200/2014` & `TT99/2025` `.xlsx` template generation and hardened upload parsing (`<= 15 MB` upload, `<= 50 MB` uncompressed ZIP-bomb guard, macro/symlink rejection, `<= 5,000` rows/sheet, and QG1 accounting balance validation).
+  - Reused Layer 4A/4B Polars analytics & IMF stress testing in isolated `ACCOUNTING_ONLY_MODE` (explicit `NULL` on 9 market/TT96 features, zero DuckLake or ML training label mutation, optional verified `TrainingResult` artifact loading), plus expert HITL triage (`POST /api/v3/hitl/feedback`, `INTERNAL_OPS`-only `GET /api/v3/hitl/summary`).
+  - Built `/private-scoring` workbench (`frontend/src/app/private-scoring/page.tsx`) and integrated expert HITL feedback dialogs onto `RedFlagChecklist.tsx`.
+- **Extension Port 4 Corporate Bond Signals & FX Depreciation Stress Testing (`V3-31..V3-33`)**:
+  - Registered Extension Port 4 (`corporate_bond_signals`, `fx_debt_exposure`) in `src/finintel/ports/bonds.py` & `EXTENSION_PORT_CATALOG_TABLES` (preserved across `DuckLakeStore.publish_snapshot()` per `B-03`) and implemented `HnxCbondsCollector` (`src/finintel/ingestion/bond_signals_collector.py`) with `ssrf_guard`, `payload_sha256`, and PIT `issue_date <= as_of_date` filtering.
+  - Added `src/finintel/analytics/stress_fx.py` and `fx_depreciation_pct: float = 0.0` on `StressScenario` preserving exact V2 parity at `0.0%` and computing deterministic FX revaluation losses only for issuers with disclosed `net_fx_debt_vnd` (explicit `NOT_DISCLOSED` / `NULL` otherwise, zero `NaN`/zero-fill), exposed via `GET /api/v3/companies/{ticker}/bond-signals` (`src/finintel/serving/routers/bonds_v3.py`).
+  - Added URL-synchronized `fx_depreciation_pct` shock slider and honest FX disclosure table columns on `/stress-test`, plus `BondMaturityCard.tsx` on company overview profiles.
+
+### Fixed
+- Added `sdk/python/src` to `[tool.pytest.ini_options].pythonpath` and `[tool.mypy].mypy_path` in `pyproject.toml` so standard `pytest -q` and `mypy --strict` pass without environment overrides.
+- Included Port 4 Parquet files in `src/finintel/serving/freshness.py` and `_STRESS_INPUTS_CACHE` keys, scoped Open API ETags by ASCII SHA-256 resource/query digest after verifying ticker existence (`404` before `304`), and added `os.getpid()` to Valkey rate-limiter ZSET members.
+- Added explicit `https://` protocol validation on `BondMaturityCard.tsx` external source links, `expires_at` status checks and clean Vietnamese rate labels on `/developers`, Vietnamese feature labels on `/private-scoring`, and persistent underline on `/watchlist` inline login link for WCAG 2.2 AA (`link-in-text-block`).
+- Added explicit `default=0.0` on `StressScenarioRequest.fx_depreciation_pct`, `pytest.importorskip` guards for `platform`/`openpyxl` dependencies in V3 unit tests for offline `mvp-checks` CI compatibility, and synchronized combined Wave 3 OpenAPI schemas into `frontend/src/types/api.generated.ts`.
+
 ## [3.0.0] - 2026-11-27
 
 Phase 2 Free Cloud General Availability (GA) release adding deterministic early warning alerts, non-commercial fair-use quota & text-first scaled PDF RAG, and analyst depth & immutable Ops QA (`V3-16..V3-24`).
