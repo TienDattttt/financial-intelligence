@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import os
 import re
+import socket
 import subprocess
 import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import httpx
 import polars as pl
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _FORBIDDEN_ND88_RE = re.compile(
@@ -184,6 +190,9 @@ def test_alerts_lazy_imports_without_platform_packages() -> None:
         "for mod_name in (\n"
         "    'finintel.alerts',\n"
         "    'finintel.alerts.detector',\n"
+        "    'finintel.alerts._store',\n"
+        "    'finintel.alerts._pg_store',\n"
+        "    'finintel.alerts.dispatcher',\n"
         "):\n"
         "    importlib.import_module(mod_name)\n"
     )
@@ -436,3 +445,324 @@ def test_detector_emits_all_five_event_types_and_zero_for_unchanged(
         )
         == []
     )
+
+
+def test_dispatcher_ssrf_blocks_private_loopback_metadata_and_redirects() -> None:
+    """V3-17: Outgoing Webhook SSRF guard rejects private IPs, metadata IPs, and 3xx redirects."""
+    from finintel.alerts.dispatcher import (
+        WebhookSSRFError,
+        send_signed_webhook,
+        validate_webhook_url,
+    )
+
+    def _public_resolver(
+        host: str, port: int, **kwargs: object
+    ) -> list[tuple[object, ...]]:
+        _ = (host, port, kwargs)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    def _private_dns_resolver(
+        host: str, port: int, **kwargs: object
+    ) -> list[tuple[object, ...]]:
+        _ = (host, port, kwargs)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+
+    for bad_url in (
+        "http://hooks.example.com/alert",
+        "https://127.0.0.1/hook",
+        "https://169.254.169.254/latest/meta-data/",
+        "https://10.0.0.5/hook",
+        "https://localhost/hook",
+        "https://hooks.example.com:8443/hook",
+        "https://user:pass@hooks.example.com/hook",
+    ):
+        with pytest.raises(WebhookSSRFError):
+            validate_webhook_url(bad_url, resolver=_public_resolver)
+
+    with pytest.raises(WebhookSSRFError):
+        validate_webhook_url(
+            "https://rebind.example.com/hook", resolver=_private_dns_resolver
+        )
+
+    redirect_transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            302, headers={"Location": "http://169.254.169.254/latest/meta-data/"}
+        )
+    )
+    with httpx.Client(transport=redirect_transport, follow_redirects=False) as client:
+        with pytest.raises(WebhookSSRFError):
+            send_signed_webhook(
+                url="https://hooks.example.com/alert",
+                payload={"event": "test"},
+                secret="my-hmac-secret",
+                client=client,
+                resolver=_public_resolver,
+            )
+
+
+def test_dispatcher_hmac_signature_matches_raw_payload_bytes() -> None:
+    """V3-17: X-FinIntel-Signature sha256=... matches HMAC-SHA256 over raw HTTP bytes."""
+    from finintel.alerts.dispatcher import (
+        send_signed_webhook,
+        verify_webhook_signature,
+    )
+
+    captured_body: list[bytes] = []
+    captured_sig: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured_body.append(request.content)
+        captured_sig.append(request.headers.get("X-FinIntel-Signature", ""))
+        return httpx.Response(200, json={"ok": True})
+
+    def _public_resolver(
+        host: str, port: int, **kwargs: object
+    ) -> list[tuple[object, ...]]:
+        _ = (host, port, kwargs)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    secret = "whsec_finintel_test_secret_123"
+    with httpx.Client(
+        transport=httpx.MockTransport(_handler), follow_redirects=False
+    ) as client:
+        res = send_signed_webhook(
+            url="https://hooks.example.com/finintel",
+            payload={"ticker": "HPG", "severity": "HIGH", "title_vi": "Cảnh báo"},
+            secret=secret,
+            client=client,
+            resolver=_public_resolver,
+        )
+
+    assert res.delivered is True
+    assert res.http_status == 200
+    assert len(captured_body) == 1
+    expected_hex = hmac.new(
+        secret.encode("utf-8"), captured_body[0], hashlib.sha256
+    ).hexdigest()
+    assert captured_sig[0] == f"sha256={expected_hex}"
+    assert verify_webhook_signature(captured_body[0], secret, captured_sig[0]) is True
+    assert (
+        verify_webhook_signature(captured_body[0] + b" ", secret, captured_sig[0])
+        is False
+    )
+
+
+def test_dispatcher_consent_idempotency_retry_dead_letter_and_daily_digest(
+    tmp_path: Path,
+) -> None:
+    """V3-17: Enforce PDPL consent, idempotent fan-out, Telegram, Daily Digest cap, and dead-letter."""
+    _ = tmp_path
+    from finintel.alerts._store import AlertSubscriptionUpsert, InMemoryAlertStore
+    from finintel.alerts.detector import AlertEvent, AlertEventType
+    from finintel.alerts.dispatcher import AlertDispatcher
+    from finintel.auth._store import InMemoryAppStore
+    from finintel.auth.rate_limit import AuthRateLimiter
+    from finintel.auth.service import AuthService
+    from finintel.domain.compliance import CURRENT_CONSENT_POLICY_VERSION
+    from finintel.workspace.service import WorkspaceService
+
+    app_store = InMemoryAppStore()
+    auth_svc = AuthService(app_store, rate_limiter=AuthRateLimiter())
+    ws_svc = WorkspaceService(app_store)
+    alert_store = InMemoryAlertStore(app_store=app_store)
+
+    # User 1: has ALERT_NOTIFICATIONS consent + HPG in watchlist + In-App, Telegram, Email Digest, Webhook
+    u1 = auth_svc.register(
+        email="u1@finintel.local",
+        password="StrongPassword!123",
+        display_name="Analyst 1",
+        accepted_consent_version=CURRENT_CONSENT_POLICY_VERSION.version,
+        accept_account_core=True,
+        accept_alert_notifications=True,
+    )
+    login_u1 = auth_svc.login(email="u1@finintel.local", password="StrongPassword!123")
+    auth_u1 = auth_svc.authenticate_session_token(login_u1.session_token)
+    assert auth_u1 is not None
+    wl_u1 = ws_svc.create_watchlist(user=auth_u1, name="Danh mục chính")
+    ws_svc.add_ticker(user=auth_u1, watchlist_id=wl_u1.watchlist_id, ticker="HPG")
+    alert_store.upsert_subscription(
+        AlertSubscriptionUpsert(
+            user_id=u1.user_id,
+            watchlist_id=None,
+            event_types=(
+                AlertEventType.RISK_TIER_UPGRADE,
+                AlertEventType.NEW_RED_FLAG_TRIGGERED,
+            ),
+            in_app_enabled=True,
+            email_digest_enabled=True,
+            email_frequency="DAILY_DIGEST",
+            telegram_enabled=True,
+            telegram_chat_id="99887766",
+            webhook_enabled=True,
+            webhook_url="https://hooks.example.com/u1",
+            webhook_secret_hmac="sec_u1",
+        )
+    )
+
+    # User 2: watches HPG, but lacks ConsentPurpose.ALERT_NOTIFICATIONS
+    u2 = auth_svc.register(
+        email="u2@finintel.local",
+        password="StrongPassword!123",
+        display_name="Analyst 2",
+        accepted_consent_version=CURRENT_CONSENT_POLICY_VERSION.version,
+        accept_account_core=True,
+        accept_alert_notifications=False,
+    )
+    login_u2 = auth_svc.login(email="u2@finintel.local", password="StrongPassword!123")
+    auth_u2 = auth_svc.authenticate_session_token(login_u2.session_token)
+    assert auth_u2 is not None
+    wl_u2 = ws_svc.create_watchlist(user=auth_u2, name="Danh mục chính")
+    ws_svc.add_ticker(user=auth_u2, watchlist_id=wl_u2.watchlist_id, ticker="HPG")
+    alert_store.upsert_subscription(
+        AlertSubscriptionUpsert(
+            user_id=u2.user_id,
+            watchlist_id=None,
+            event_types=(AlertEventType.RISK_TIER_UPGRADE,),
+            in_app_enabled=True,
+            email_digest_enabled=True,
+            telegram_enabled=True,
+            telegram_chat_id="112233",
+        )
+    )
+
+    ev1 = AlertEvent(
+        dedup_key="1" * 64,
+        snapshot_id="snap_2",
+        ticker="HPG",
+        event_type=AlertEventType.RISK_TIER_UPGRADE,
+        severity="HIGH",
+        title_vi="HPG: Nhóm cảnh báo rủi ro định lượng chuyển từ R2 lên R4",
+        evidence={
+            "previous_tier": "R2",
+            "current_tier": "R4",
+            "company_url": "/companies/HPG",
+        },
+        detected_at=datetime(2026, 4, 22, 8, 0, tzinfo=UTC),
+    )
+    ev2 = AlertEvent(
+        dedup_key="2" * 64,
+        snapshot_id="snap_2",
+        ticker="HPG",
+        event_type=AlertEventType.NEW_RED_FLAG_TRIGGERED,
+        severity="CRITICAL",
+        title_vi="HPG: Phát sinh dấu hiệu cảnh báo kế toán mới",
+        evidence={
+            "flag_code": "RF_10_POST_AUDIT_PROFIT_DOWNGRADE",
+            "company_url": "/companies/HPG",
+        },
+        detected_at=datetime(2026, 4, 22, 8, 0, tzinfo=UTC),
+    )
+
+    telegram_calls: list[tuple[str, str]] = []
+    email_calls: list[tuple[str, str, str]] = []
+    webhook_attempts = 0
+    sleep_delays: list[float] = []
+
+    def _public_resolver(
+        host: str, port: int, **kwargs: object
+    ) -> list[tuple[object, ...]]:
+        _ = (host, port, kwargs)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    def _webhook_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal webhook_attempts
+        webhook_attempts += 1
+        # Fail ev1 all 3 attempts (dead-letter); succeed ev2 on 2nd attempt!
+        body = json.loads(request.content.decode("utf-8"))
+        if body["dedup_key"] == ev1.dedup_key:
+            return httpx.Response(503, text="upstream down")
+        if webhook_attempts == 4:
+            return httpx.Response(502, text="transient")
+        return httpx.Response(200, json={"ok": True})
+
+    with httpx.Client(
+        transport=httpx.MockTransport(_webhook_handler), follow_redirects=False
+    ) as client:
+        dispatcher = AlertDispatcher(
+            alert_store=alert_store,
+            http_client=client,
+            dns_resolver=_public_resolver,
+            telegram_sender=lambda chat_id, text: telegram_calls.append(
+                (chat_id, text)
+            ),
+            email_sender=lambda to_email, subject, body: email_calls.append(
+                (to_email, subject, body)
+            ),
+            telegram_bot_token="tg-token",
+            resend_api_key="re-key",
+            sleep_fn=sleep_delays.append,
+            max_daily_emails=80,
+        )
+        summary_1 = dispatcher.dispatch_events([ev1, ev2])
+        # Second dispatch with exact same events must emit 0 duplicates across all channels.
+        summary_2 = dispatcher.dispatch_events([ev1, ev2])
+
+    assert summary_1.in_app_created == 2
+    assert summary_1.telegram_sent == 2
+    assert summary_1.email_digests_sent == 1  # Aggregated 2 events into 1 daily digest!
+    assert summary_1.webhooks_sent == 1
+    assert summary_1.webhooks_dead_letter == 1
+    assert summary_1.skipped_no_consent >= 1
+
+    assert summary_2.in_app_created == 0
+    assert summary_2.telegram_sent == 0
+    assert summary_2.email_digests_sent == 0
+    assert summary_2.webhooks_sent == 0
+
+    # U2 has zero notifications because ALERT_NOTIFICATIONS consent was not granted.
+    u1_notifs, u1_total, u1_unread = alert_store.list_notifications(u1.user_id)
+    u2_notifs, u2_total, _ = alert_store.list_notifications(u2.user_id)
+    assert u1_total == 2 and u1_unread == 2 and len(u1_notifs) == 2
+    assert u2_total == 0 and len(u2_notifs) == 0
+
+    # Verify Daily Digest aggregated both alerts + legal disclaimer.
+    assert len(email_calls) == 1
+    assert email_calls[0][0] == "u1@finintel.local"
+    assert "/companies/HPG" in email_calls[0][2]
+    assert "Nghị định 88/2014/NĐ-CP" in email_calls[0][2]
+
+    # Verify Telegram received both alerts.
+    assert len(telegram_calls) == 2
+    assert all(chat == "99887766" for chat, _ in telegram_calls)
+
+    # Verify retry backoff occurred and dead-letter status was recorded.
+    assert len(sleep_delays) >= 2
+    deliveries = alert_store.list_deliveries(u1.user_id)
+    dl_statuses = {d.dedup_key: d.status for d in deliveries if d.channel == "WEBHOOK"}
+    assert dl_statuses[ev1.dedup_key] == "DEAD_LETTER"
+    assert dl_statuses[ev2.dedup_key] == "SENT"
+
+    # Verify daily email quota (< 80/day) protection stops outbound email once cap is reached.
+    ev3 = AlertEvent(
+        dedup_key="3" * 64,
+        snapshot_id="snap_3",
+        ticker="HPG",
+        event_type=AlertEventType.RISK_TIER_UPGRADE,
+        severity="HIGH",
+        title_vi="HPG: Nhóm cảnh báo rủi ro định lượng chuyển từ R4 lên R5",
+        evidence={"company_url": "/companies/HPG"},
+        detected_at=datetime(2026, 4, 22, 9, 0, tzinfo=UTC),
+    )
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda req: httpx.Response(200)),
+        follow_redirects=False,
+    ) as client_ok:
+        capped_dispatcher = AlertDispatcher(
+            alert_store=alert_store,
+            http_client=client_ok,
+            dns_resolver=_public_resolver,
+            telegram_sender=lambda chat_id, text: telegram_calls.append(
+                (chat_id, text)
+            ),
+            email_sender=lambda to_email, subject, body: email_calls.append(
+                (to_email, subject, body)
+            ),
+            telegram_bot_token="tg-token",
+            resend_api_key="re-key",
+            sleep_fn=sleep_delays.append,
+            max_daily_emails=1,  # Already sent 1 digest today!
+        )
+        capped_summary = capped_dispatcher.dispatch_events([ev3])
+    assert capped_summary.email_digests_sent == 0
+    assert capped_summary.email_skipped_quota == 1
+    assert len(email_calls) == 1
