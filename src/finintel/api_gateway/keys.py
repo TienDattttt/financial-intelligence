@@ -201,6 +201,10 @@ class ApiGatewayStoreProtocol(Protocol):
 
     def list_webhooks(self, user_id: UUID) -> list[B2BWebhookRecord]: ...
 
+    def list_active_webhooks_for_event(
+        self, event_type: str
+    ) -> list[B2BWebhookRecord]: ...
+
     def get_webhook(
         self, user_id: UUID, endpoint_id: UUID
     ) -> B2BWebhookRecord | None: ...

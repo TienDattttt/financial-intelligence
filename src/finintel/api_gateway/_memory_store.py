@@ -209,6 +209,15 @@ class InMemoryApiGatewayStore:
             items = [w for w in self._webhooks.values() if w.user_id == user_id]
         return sorted(items, key=lambda w: w.created_at, reverse=True)
 
+    def list_active_webhooks_for_event(self, event_type: str) -> list[B2BWebhookRecord]:
+        with self._lock:
+            items = [
+                w
+                for w in self._webhooks.values()
+                if w.is_active and (not w.event_types or event_type in w.event_types)
+            ]
+        return sorted(items, key=lambda w: w.created_at)
+
     def get_webhook(self, user_id: UUID, endpoint_id: UUID) -> B2BWebhookRecord | None:
         with self._lock:
             rec = self._webhooks.get(endpoint_id)

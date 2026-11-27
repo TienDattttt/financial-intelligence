@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -36,6 +36,35 @@ from finintel.ingestion.ssrf_guard import AddrInfoResolver, validate_global_ip
 
 if TYPE_CHECKING:
     import httpx
+
+
+class B2BWebhookRecordLike(Protocol):
+    @property
+    def endpoint_id(self) -> UUID: ...
+    @property
+    def user_id(self) -> UUID: ...
+    @property
+    def url(self) -> str: ...
+    @property
+    def secret_hmac(self) -> str: ...
+    @property
+    def is_active(self) -> bool: ...
+
+
+class B2BWebhookStoreProtocol(Protocol):
+    def list_active_webhooks_for_event(
+        self, event_type: str
+    ) -> Sequence[B2BWebhookRecordLike]: ...
+
+    def update_webhook_delivery(
+        self,
+        endpoint_id: UUID,
+        *,
+        http_status: int | None,
+        error: str | None,
+        delivered_at: datetime | None,
+    ) -> None: ...
+
 
 logger = logging.getLogger("finintel.alerts.dispatcher")
 
@@ -270,6 +299,7 @@ class AlertDispatcher:
         self,
         *,
         alert_store: AlertStoreProtocol,
+        b2b_webhook_store: B2BWebhookStoreProtocol | None = None,
         http_client: httpx.Client | None = None,
         dns_resolver: AddrInfoResolver | None = None,
         telegram_sender: TelegramSenderFn | None = None,
@@ -284,6 +314,7 @@ class AlertDispatcher:
         sleep_fn: SleepFn | None = None,
     ) -> None:
         self._store = alert_store
+        self._b2b_webhook_store = b2b_webhook_store
         self._http_client = http_client
         self._dns_resolver = dns_resolver
         self._telegram_sender = telegram_sender
@@ -372,25 +403,16 @@ class AlertDispatcher:
             if owns:
                 client.close()
 
-    def _deliver_webhook_with_retry(
+    def _deliver_signed_payload_with_retry(
         self,
         *,
-        subscriber: MatchedSubscriber,
+        owner_user_id: UUID,
+        delivery_id: UUID,
+        url: str,
+        secret: str,
         event: AlertEvent,
         event_id: UUID,
-    ) -> tuple[bool, bool]:
-        sub = subscriber.subscription
-        if not sub.webhook_enabled or not sub.webhook_url:
-            return False, False
-        delivery_id, claimed = self._store.claim_delivery(
-            user_id=subscriber.user_id,
-            event_id=event_id,
-            channel="WEBHOOK",
-            dedup_key=event.dedup_key,
-        )
-        if not claimed:
-            return False, False
-
+    ) -> tuple[bool, bool, int | None, str | None, datetime | None]:
         payload: dict[str, Any] = {
             "event_id": str(event_id),
             "dedup_key": event.dedup_key,
@@ -402,7 +424,6 @@ class AlertDispatcher:
             "evidence": event.evidence,
             "detected_at": event.detected_at.isoformat(),
         }
-        secret = sub.webhook_secret_hmac or ""
         last_err: str | None = None
         last_code: str | None = None
         last_status: int | None = None
@@ -410,7 +431,7 @@ class AlertDispatcher:
         for attempt in range(1, self._max_webhook_attempts + 1):
             try:
                 res = send_signed_webhook(
-                    url=sub.webhook_url,
+                    url=url,
                     payload=payload,
                     secret=secret,
                     client=self._http_client,
@@ -424,20 +445,21 @@ class AlertDispatcher:
                     error_code="SSRF_BLOCKED",
                     last_error=str(exc),
                 )
-                return False, True
+                return False, True, None, str(exc), None
 
             last_status = res.http_status
             last_code = res.error_code
             last_err = res.error_detail
             if res.delivered:
+                sent_at = datetime.now(UTC)
                 self._store.update_delivery_status(
                     delivery_id,
                     status="SENT",
                     attempts=attempt,
                     http_status=res.http_status,
-                    delivered_at=datetime.now(UTC),
+                    delivered_at=sent_at,
                 )
-                return True, False
+                return True, False, res.http_status, None, sent_at
 
             retryable = (
                 res.http_status is None
@@ -458,24 +480,98 @@ class AlertDispatcher:
             )
             self._sleep(delay)
 
+        final_err = last_err or "Webhook exhausted retry attempts."
         self._store.update_delivery_status(
             delivery_id,
             status="DEAD_LETTER",
             attempts=self._max_webhook_attempts,
             http_status=last_status,
             error_code=last_code or "DELIVERY_FAILED",
-            last_error=last_err or "Webhook exhausted retry attempts.",
+            last_error=final_err,
         )
         logger.warning(
             "alert_webhook_dead_letter",
             extra={
                 "event": "alert_webhook_dead_letter",
-                "user_hash": sha256_hex(str(subscriber.user_id))[:12],
+                "user_hash": sha256_hex(str(owner_user_id))[:12],
                 "error_code": last_code or "DELIVERY_FAILED",
                 "http_status": last_status,
             },
         )
-        return False, True
+        return False, True, last_status, final_err, None
+
+    def _deliver_webhook_with_retry(
+        self,
+        *,
+        subscriber: MatchedSubscriber,
+        event: AlertEvent,
+        event_id: UUID,
+    ) -> tuple[bool, bool]:
+        sub = subscriber.subscription
+        if not sub.webhook_enabled or not sub.webhook_url:
+            return False, False
+        delivery_id, claimed = self._store.claim_delivery(
+            user_id=subscriber.user_id,
+            event_id=event_id,
+            channel="WEBHOOK",
+            dedup_key=event.dedup_key,
+        )
+        if not claimed:
+            return False, False
+        ok, dl, _, _, _ = self._deliver_signed_payload_with_retry(
+            owner_user_id=subscriber.user_id,
+            delivery_id=delivery_id,
+            url=sub.webhook_url,
+            secret=sub.webhook_secret_hmac or "",
+            event=event,
+            event_id=event_id,
+        )
+        return ok, dl
+
+    def _deliver_b2b_webhooks(
+        self,
+        persisted: Sequence[tuple[AlertEvent, UUID]],
+    ) -> tuple[int, int]:
+        if self._b2b_webhook_store is None:
+            return 0, 0
+        sent = 0
+        dead_letter = 0
+        for ev, eid in persisted:
+            endpoints = self._b2b_webhook_store.list_active_webhooks_for_event(
+                ev.event_type.value
+            )
+            for wh in endpoints:
+                if not wh.is_active or not wh.url or not wh.secret_hmac:
+                    continue
+                delivery_id, claimed = self._store.claim_delivery(
+                    user_id=wh.user_id,
+                    event_id=eid,
+                    channel="WEBHOOK",
+                    dedup_key=f"b2b:{wh.endpoint_id}:{ev.dedup_key}",
+                )
+                if not claimed:
+                    continue
+                ok, dl, status, err, delivered_at = (
+                    self._deliver_signed_payload_with_retry(
+                        owner_user_id=wh.user_id,
+                        delivery_id=delivery_id,
+                        url=wh.url,
+                        secret=wh.secret_hmac,
+                        event=ev,
+                        event_id=eid,
+                    )
+                )
+                self._b2b_webhook_store.update_webhook_delivery(
+                    wh.endpoint_id,
+                    http_status=status,
+                    error=err,
+                    delivered_at=delivered_at,
+                )
+                if ok:
+                    sent += 1
+                elif dl:
+                    dead_letter += 1
+        return sent, dead_letter
 
     def dispatch_events(
         self,
@@ -659,6 +755,10 @@ class AlertDispatcher:
                         error_code=type(exc).__name__,
                         last_error="Resend email delivery failed.",
                     )
+
+        b2b_sent, b2b_dl = self._deliver_b2b_webhooks(persisted)
+        webhooks_sent += b2b_sent
+        webhooks_dead_letter += b2b_dl
 
         logger.info(
             "alerts_dispatch_completed",

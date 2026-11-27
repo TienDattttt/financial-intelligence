@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -177,7 +178,7 @@ class SlidingWindowRateLimiter:
             window_ms = self._window_seconds * 1000
             min_key = f"finintel:b2b:rl:min:{key_id}"
             day_key = f"finintel:b2b:rl:day:{day_str}:{key_id}"
-            member = f"{now_ms}:{seq}"
+            member = f"{os.getpid()}:{now_ms}:{seq}"
             try:
                 raw = client.eval(
                     _SLIDING_WINDOW_LUA,

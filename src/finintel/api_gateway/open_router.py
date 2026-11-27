@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from datetime import date
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 from finintel.api_gateway.keys import ApiGatewayStoreProtocol
@@ -29,6 +30,13 @@ def _extract_snap_id(meta: dict[str, Any] | Any) -> str | None:
         val = meta.get("snapshot_id")
         return str(val) if isinstance(val, str) and val else None
     return None
+
+
+def _build_resource_etag(snap_id: str | None, resource_key: str) -> str | None:
+    if not snap_id:
+        return None
+    digest = hashlib.sha256(resource_key.encode("utf-8")).hexdigest()[:12]
+    return build_snapshot_etag(f"{snap_id}:{digest}")
 
 
 def create_open_research_router(
@@ -96,7 +104,19 @@ def create_open_research_router(
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
             snap_id = _extract_snap_id(meta)
-            etag = build_snapshot_etag(snap_id)
+            try:
+                profile = DashboardQueryService(pinned).get_company_profile(
+                    clean_ticker,
+                    statement_scope=statement_scope,
+                    period_view=period_view,
+                    connection=cursor,
+                )
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from None
+            etag = _build_resource_etag(
+                snap_id,
+                f"risk:{clean_ticker}:{statement_scope}:{period_view}",
+            )
             if matches_if_none_match(if_none_match, etag):
                 record_open_api_hit(
                     get_store(),
@@ -109,15 +129,6 @@ def create_open_research_router(
                     status_code=304,
                     headers=ctx.headers(snapshot_id=snap_id, etag=etag),
                 )
-            try:
-                profile = DashboardQueryService(pinned).get_company_profile(
-                    clean_ticker,
-                    statement_scope=statement_scope,
-                    period_view=period_view,
-                    connection=cursor,
-                )
-            except LookupError as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from None
 
         apply_api_headers(response, ctx, snapshot_id=snap_id, etag=etag)
         record_open_api_hit(
@@ -160,7 +171,10 @@ def create_open_research_router(
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
             snap_id = _extract_snap_id(meta)
-            etag = build_snapshot_etag(snap_id)
+            etag = _build_resource_etag(
+                snap_id,
+                f"screener:{statement_scope}:{period_type}:{period_end_date}:{exchange}:{risk_tier}:{limit}:{offset}",
+            )
             if matches_if_none_match(if_none_match, etag):
                 record_open_api_hit(
                     get_store(),
@@ -220,7 +234,10 @@ def create_open_research_router(
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
             snap_id = _extract_snap_id(meta)
-            etag = build_snapshot_etag(snap_id)
+            etag = _build_resource_etag(
+                snap_id,
+                f"stress:{body.scenario_name}:{body.statement_scope}:{body.period_type}",
+            )
             inputs_df = DashboardQueryService(pinned).get_stress_test_snapshot_inputs(
                 statement_scope=body.statement_scope,
                 period_type=body.period_type,
@@ -300,7 +317,10 @@ def create_open_research_router(
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
             snap_id = _extract_snap_id(meta)
-            etag = build_snapshot_etag(snap_id)
+            etag = _build_resource_etag(
+                snap_id,
+                f"statements:{clean_ticker}:{statement_type}:{statement_scope}:{period_type}:{periods_limit}",
+            )
             try:
                 issuer_id, periods, rows = DashboardQueryService(
                     pinned

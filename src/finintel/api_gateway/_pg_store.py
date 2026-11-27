@@ -275,6 +275,18 @@ class PostgresApiGatewayStore:
                 rows = cur.fetchall()
         return [self._row_to_webhook(r) for r in rows]
 
+    def list_active_webhooks_for_event(self, event_type: str) -> list[B2BWebhookRecord]:
+        sql = (
+            f"SELECT {_WH_COLS} FROM b2b_webhook_endpoints "
+            f"WHERE is_active = TRUE AND (jsonb_array_length(event_types) = 0 OR event_types ? %s) "
+            f"ORDER BY created_at ASC"
+        )
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (event_type,))
+                rows = cur.fetchall()
+        return [self._row_to_webhook(r) for r in rows]
+
     def get_webhook(self, user_id: UUID, endpoint_id: UUID) -> B2BWebhookRecord | None:
         sql = f"SELECT {_WH_COLS} FROM b2b_webhook_endpoints WHERE user_id = %s AND endpoint_id = %s"
         with self._connect() as conn:

@@ -538,6 +538,12 @@ def test_b2b_api_lifecycle_raw_gate_revoke_and_rate_limit(
         )
         assert cached_resp.status_code == 304
 
+        missing_cached_resp = client.get(
+            "/api/v3/open/companies/NOPE/risk",
+            headers={"X-API-Key": plaintext, "If-None-Match": etag},
+        )
+        assert missing_cached_resp.status_code == 404
+
         scr_resp = client.get(
             "/api/v3/open/screener",
             headers={"X-API-Key": plaintext},
@@ -565,7 +571,7 @@ def test_b2b_api_lifecycle_raw_gate_revoke_and_rate_limit(
         assert usage_data["total_requests"] >= 5
         assert usage_data["total_cache_hits"] >= 1
 
-        for _ in range(25):
+        for _ in range(24):
             r = client.get(
                 "/api/v3/open/screener",
                 headers={"X-API-Key": plaintext},
@@ -838,6 +844,103 @@ def test_python_sdk_sync_and_async_with_mock_transport() -> None:
         is False
     )
     assert verify_webhook_signature(raw, "wrong_secret", sig) is False
+
+
+def test_b2b_webhooks_receive_live_alert_events_via_dispatcher() -> None:
+    """Major #2: AlertDispatcher fans out matching AlertEvent records to active b2b_webhook_endpoints."""
+    pytest.importorskip("httpx")
+    import socket
+    from uuid import uuid4
+
+    import httpx as httpx_mod
+
+    from finintel.alerts._store import InMemoryAlertStore
+    from finintel.alerts.detector import AlertEvent, AlertEventType
+    from finintel.alerts.dispatcher import AlertDispatcher
+    from finintel.api_gateway._memory_store import InMemoryApiGatewayStore
+    from finintel_sdk import verify_webhook_signature
+
+    alert_store = InMemoryAlertStore()
+    gw_store = InMemoryApiGatewayStore()
+    owner_id = uuid4()
+    secret_match = "whsec_b2b_match_secret_123456"
+    ep_match = gw_store.create_webhook(
+        user_id=owner_id,
+        label="Matching Risk Tier Hook",
+        url="https://hooks.example.com/b2b-risk",
+        secret_hmac=secret_match,
+        event_types=("RISK_TIER_UPGRADE",),
+    )
+    gw_store.create_webhook(
+        user_id=owner_id,
+        label="Other Event Hook",
+        url="https://hooks.example.com/b2b-other",
+        secret_hmac="whsec_other_secret_123456",
+        event_types=("MERTON_DTD_BREACH",),
+    )
+
+    deliveries: list[tuple[str, bytes, str]] = []
+
+    def _mock_handler(request: httpx.Request) -> httpx.Response:
+        deliveries.append(
+            (
+                str(request.url),
+                request.content,
+                request.headers.get("X-FinIntel-Signature", ""),
+            )
+        )
+        return httpx_mod.Response(200, json={"received": True})
+
+    def _global_dns(host: str, port: int, **kwargs: object) -> list[tuple[Any, ...]]:
+        _ = (host, port, kwargs)
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", 443),
+            )
+        ]
+
+    client = httpx_mod.Client(
+        transport=httpx_mod.MockTransport(_mock_handler),
+        follow_redirects=False,
+    )
+    dispatcher = AlertDispatcher(
+        alert_store=alert_store,
+        b2b_webhook_store=gw_store,
+        http_client=client,
+        dns_resolver=_global_dns,
+    )
+    event = AlertEvent(
+        dedup_key="a" * 64,
+        snapshot_id="snap_b2b_disp_01",
+        ticker="HPG",
+        event_type=AlertEventType.RISK_TIER_UPGRADE,
+        severity="HIGH",
+        title_vi="HPG chuyển nhóm rủi ro từ R2 sang R3",
+        evidence={"prev_tier": "R2", "new_tier": "R3"},
+        detected_at=datetime(2026, 11, 27, 4, 0, tzinfo=UTC),
+    )
+
+    summary1 = dispatcher.dispatch_events([event])
+    assert summary1.webhooks_sent == 1
+    assert summary1.webhooks_dead_letter == 0
+    assert len(deliveries) == 1
+    assert deliveries[0][0] == "https://hooks.example.com/b2b-risk"
+    assert verify_webhook_signature(deliveries[0][1], secret_match, deliveries[0][2])
+
+    updated = gw_store.get_webhook(owner_id, ep_match.endpoint_id)
+    assert updated is not None
+    assert updated.last_status == 200
+    assert updated.last_error is None
+    assert updated.last_delivered_at is not None
+
+    # Idempotent re-dispatch does not double-deliver
+    summary2 = dispatcher.dispatch_events([event])
+    assert summary2.webhooks_sent == 0
+    assert len(deliveries) == 1
 
 
 def test_unused_timedelta_import_guard() -> None:
