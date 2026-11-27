@@ -2,7 +2,11 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Bookmark, GitCompare, Printer } from "lucide-react";
+import { Bookmark, GitCompare } from "lucide-react";
+import {
+  ExportActionMenu,
+  buildCompanyXlsxExportUrl,
+} from "@/components/export/ExportActionMenu";
 import { RiskTierBadge } from "@/components/financial/RiskBadge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/primitives";
@@ -128,16 +132,16 @@ export function CompanyHeader({
             <GitCompare className="size-3.5" />
             <span>So sánh</span>
           </Link>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            aria-label="In báo cáo"
-            onClick={() => window.print()}
-          >
-            <Printer className="size-3.5" />
-            <span className="hidden sm:inline">In báo cáo</span>
-          </Button>
+          <ExportActionMenu
+            xlsxUrl={buildCompanyXlsxExportUrl(ticker, {
+              statementScope,
+              periodType,
+              periodsLimit: 20,
+            })}
+            xlsxFallbackFilename={`finintel-${ticker}.xlsx`}
+            tearSheetHref={`/companies/${ticker}/tear-sheet`}
+            onPrintReport={() => window.print()}
+          />
         </div>
       </div>
 
