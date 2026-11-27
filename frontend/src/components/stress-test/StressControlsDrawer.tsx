@@ -261,6 +261,25 @@ export function StressControlsDrawer({
               setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", dioDays: v }))
             }
           />
+          <DualShockControl
+            id="shock-fx"
+            label="Mất giá tỷ giá VND (USD/VND)"
+            unit="%"
+            min={SHOCK_BOUNDS.fxPct.min}
+            max={SHOCK_BOUNDS.fxPct.max}
+            step={SHOCK_BOUNDS.fxPct.step}
+            value={shocks.fxPct}
+            tooltip={{
+              label: "Giải thích cú sốc tỷ giá FX",
+              text: "Mức mất giá của VND so với USD (ví dụ +10% làm tăng giá trị quy đổi VND của nợ vay ngoại tệ ròng). Chỉ áp dụng cho doanh nghiệp có công bố nợ ngoại tệ ròng.",
+            }}
+            onChange={(v) =>
+              setShocks((s) => ({ ...s, scenarioName: "Tùy chỉnh", fxPct: v }))
+            }
+          />
+          <p className="rounded border border-border bg-surface-muted/60 px-2.5 py-1.5 text-[11px] leading-4 text-ink-muted">
+            Cú sốc tỷ giá chỉ áp dụng cho doanh nghiệp có công bố nợ ngoại tệ ròng trong thuyết minh; các doanh nghiệp khác giữ nguyên trạng thái chưa công bố.
+          </p>
 
           {isExtreme ? (
             <div className="flex items-start gap-1.5 rounded border border-risk-mid/35 bg-risk-mid-soft p-2 text-[11px] text-risk-mid">

@@ -34,6 +34,7 @@ function makeIssuer(
     baseline_debt_at_risk: false,
     stressed_debt_at_risk: true,
     newly_distressed_under_shock: true,
+    fx_coverage_status: "NOT_DISCLOSED",
     ...overrides,
   };
 }
@@ -47,6 +48,8 @@ function makeStressResponse(
     statement_scope: "CONSOLIDATED",
     period_type: "QUARTER",
     period_end_date: "2026-03-31",
+    fx_depreciation_pct: 0,
+    fx_disclosed_issuers_count: 0,
     total_issuers_evaluated: 100,
     total_debt_sum: 100_000_000_000_000,
     baseline_debt_at_risk_pct: 0.12,
@@ -103,6 +106,7 @@ describe("UI-06 Stress Test helpers, URL sync, portfolio aggregation, and A vs B
           rateBps: 250,
           dsoDays: 30,
           dioDays: 15,
+          fxPct: 0,
         },
       },
       {
@@ -116,6 +120,7 @@ describe("UI-06 Stress Test helpers, URL sync, portfolio aggregation, and A vs B
           rateBps: 150,
           dsoDays: 20,
           dioDays: 10,
+          fxPct: 0,
         },
       },
       {
@@ -129,6 +134,7 @@ describe("UI-06 Stress Test helpers, URL sync, portfolio aggregation, and A vs B
           rateBps: 300,
           dsoDays: 15,
           dioDays: 5,
+          fxPct: 0,
         },
       },
     ];
@@ -162,6 +168,7 @@ describe("UI-06 Stress Test helpers, URL sync, portfolio aggregation, and A vs B
       rateBps: 0,
       dsoDays: -90,
       dioDays: 180,
+      fxPct: 0,
     });
 
     expect(

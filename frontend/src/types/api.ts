@@ -161,3 +161,4 @@ export type IssuerLifecycleItem = Schema["IssuerLifecycleItem"];
 export type OpsIssuerLifecycleResponse = Schema["OpsIssuerLifecycleResponse"];
 export type OpsIssuerSyncRequest = Schema["OpsIssuerSyncRequest"];
 export type OpsIssuerSyncResponse = Schema["OpsIssuerSyncResponse"];
+export type CompanyBondSignalsResponse = Schema["CompanyBondSignalsResponse"];

@@ -38,6 +38,7 @@ import {
   useAllIssuers,
   useCompanyBenchmarks,
   useCompanyBenchmarksSummary,
+  useCompanyBondSignals,
   useCompanyFilings,
   useCompanyMarketOverlay,
   useCompanyProfile,
@@ -164,6 +165,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
   const issuersQuery = useAllIssuers(querySnapshotKey);
   const filingsQuery = useCompanyFilings(ticker, { statementScope }, querySnapshotKey);
   const overlayQuery = useCompanyMarketOverlay(ticker, statementScope, querySnapshotKey);
+  const bondSignalsQuery = useCompanyBondSignals(ticker, statementScope, querySnapshotKey);
 
   const loadedTicker = profileQuery.data?.ticker;
   React.useEffect(() => {
@@ -711,6 +713,11 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
           onNavigateTab={setTabAndParams}
           onInvestigateRedFlag={handleInvestigateRedFlag}
           onOpenSourceDrawer={openSourceDrawer}
+          bondSignals={bondSignalsQuery.data}
+          bondLoading={bondSignalsQuery.isLoading}
+          bondError={bondSignalsQuery.isError}
+          bondErrorMessage={bondSignalsQuery.error?.message}
+          onRetryBond={() => bondSignalsQuery.refetch()}
         />
       ) : activeTab === "statements" ? (
         <FinancialsTab

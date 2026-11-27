@@ -16,6 +16,7 @@ import {
   PitValuationStrip,
   PriceRiskOverlayChart,
 } from "@/components/charts/PriceRiskOverlayChart";
+import { BondMaturityCard } from "@/components/company/BondMaturityCard";
 import { PercentileBar } from "@/components/financial/PercentileBar";
 import { RiskBadge } from "@/components/financial/RiskBadge";
 import { ScoreDots } from "@/components/financial/ScoreDots";
@@ -49,6 +50,7 @@ import {
 import type { CompanyMarketOverlayResponse } from "@/lib/market-overlay-types";
 import type {
   CompanyBenchmarksSummaryResponse,
+  CompanyBondSignalsResponse,
   CompanyProfileResponse,
   CompanyFilingItem,
   MLScoreItem,
@@ -109,6 +111,11 @@ export function OverviewTab({
   onNavigateTab,
   onInvestigateRedFlag,
   onOpenSourceDrawer,
+  bondSignals,
+  bondLoading = false,
+  bondError = false,
+  bondErrorMessage,
+  onRetryBond,
 }: {
   profile: CompanyProfileResponse;
   sortedMl: readonly MLScoreItem[];
@@ -158,6 +165,11 @@ export function OverviewTab({
     periodType: PeriodType;
     periodEndDate: string | null;
   }) => void;
+  bondSignals?: CompanyBondSignalsResponse;
+  bondLoading?: boolean;
+  bondError?: boolean;
+  bondErrorMessage?: string;
+  onRetryBond?: () => void;
 }) {
   const altmanMeta =
     (latestMl?.altman_zone && ALTMAN_ZONE_META[latestMl.altman_zone]) || {
@@ -534,6 +546,14 @@ export function OverviewTab({
               )}
             </CardContent>
           </Card>
+
+          <BondMaturityCard
+            data={bondSignals}
+            isLoading={bondLoading}
+            isError={bondError}
+            errorMessage={bondErrorMessage}
+            onRetry={onRetryBond ?? (() => undefined)}
+          />
         </div>
       </section>
 

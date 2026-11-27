@@ -190,6 +190,7 @@ function StressTestContent() {
       interest_rate_shock_bps: shocks.rateBps,
       dso_shock_days: shocks.dsoDays,
       dio_shock_days: shocks.dioDays,
+      fx_depreciation_pct: Number((shocks.fxPct / 100).toFixed(4)),
       top_n: 100,
     };
     if (scope !== "MARKET" && activeTickers && activeTickers.length > 0) {
@@ -788,6 +789,11 @@ function StressTestContent() {
               ) : null}
 
               {activeErrorMsg ? <ErrorState message={activeErrorMsg} /> : null}
+              {shocks.fxPct !== 0 ? (
+                <p className="rounded border border-border bg-surface-muted/60 px-3 py-1.5 text-xs text-ink-muted">
+                  Cú sốc tỷ giá ({formatPercent(shocks.fxPct / 100, { signed: true, decimals: 0 })}) chỉ áp dụng cho {formatNumber(activeResult.fx_disclosed_issuers_count, 0)}/{formatNumber(activeResult.total_issuers_evaluated, 0)} DN có công bố nợ ngoại tệ ròng.
+                </p>
+              ) : null}
 
               {/* Top KPI Strip */}
               {scope === "WATCHLIST" && portfolioMetrics ? (
