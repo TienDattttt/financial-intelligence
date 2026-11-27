@@ -19,7 +19,7 @@ export function Badge({
 export function Input({
   className,
   ...props
-}: React.InputHTMLAttributes<HTMLInputElement>) {
+}: React.ComponentPropsWithRef<"input">) {
   return (
     <input
       className={cn(

@@ -12,18 +12,21 @@ import {
   Filter,
   GitCompare,
   LayoutDashboard,
+  LogIn,
   Menu,
   Monitor,
   Moon,
   Search,
   SlidersHorizontal,
   Sun,
+  UserCheck,
   X,
 } from "lucide-react";
 import { CommandSearch } from "@/components/layout/CommandSearch";
 import { SourceDrawer } from "@/components/layout/SourceDrawer";
 import { useAppState } from "@/components/providers/app-providers";
 import { Select } from "@/components/ui/primitives";
+import { useAuthSession, useServerWatchlists } from "@/hooks/use-auth-workspace";
 import { useAllIssuers } from "@/hooks/use-finintel-queries";
 import type { DataFreshnessItem } from "@/lib/api-client";
 import {
@@ -125,6 +128,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     getWatchlistSnapshot,
     getWatchlistServerSnapshot,
   );
+  const authSession = useAuthSession();
+  const isAuthenticated = authSession.data?.authenticated === true;
+  const authUser = authSession.data?.user ?? null;
+  const serverWatchlists = useServerWatchlists(isAuthenticated);
+  const effectiveWatchlistCount = React.useMemo(() => {
+    if (isAuthenticated && serverWatchlists.data) {
+      const unique = new Set<string>();
+      for (const wl of serverWatchlists.data.watchlists) {
+        for (const t of wl.items) unique.add(t);
+      }
+      return unique.size;
+    }
+    return watchlist.length;
+  }, [isAuthenticated, serverWatchlists.data, watchlist.length]);
   const lastViewedTicker = React.useSyncExternalStore(
     subscribePreferences,
     getLastViewedTickerSnapshot,
@@ -162,14 +179,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {
         id: "watchlist",
         href: "/watchlist",
-        label: `Theo dõi (${watchlist.length})`,
+        label: `Theo dõi (${effectiveWatchlistCount})`,
         icon: Bookmark,
       },
       { id: "compare", href: "/compare", label: "So sánh", icon: GitCompare },
       { id: "stress-test", href: "/stress-test", label: "Kịch bản sốc", icon: Activity },
       { id: "methodology", href: "/methodology", label: "Dữ liệu & Phương pháp", icon: BookOpen },
     ],
-    [companyProfileHref, watchlist.length],
+    [companyProfileHref, effectiveWatchlistCount],
   );
 
   const isActive = (href: string, matchPrefix?: string) => {
@@ -513,6 +530,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 );
               })}
             </div>
+
+            {isAuthenticated && authUser ? (
+              <Link
+                href="/profile"
+                aria-label="Hồ sơ cá nhân"
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border bg-surface px-2 text-xs font-medium text-ink transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <UserCheck className="size-3.5 shrink-0 text-accent-ink" aria-hidden="true" />
+                <span className="hidden max-w-[110px] truncate sm:inline">
+                  {authUser.display_name || authUser.email.split("@")[0]}
+                </span>
+              </Link>
+            ) : (
+              <Link
+                href="/auth/login"
+                aria-label="Đăng nhập"
+                className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-border bg-surface px-2 text-xs font-medium text-ink transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <LogIn className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+                <span className="hidden sm:inline">Đăng nhập</span>
+              </Link>
+            )}
           </div>
         </div>
 

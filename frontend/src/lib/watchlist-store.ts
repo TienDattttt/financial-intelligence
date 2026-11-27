@@ -185,3 +185,36 @@ export function setLastViewedTicker(ticker: string): void {
   }
   notify();
 }
+
+export function getPendingLocalImportTickers(
+  serverItems: readonly string[],
+): string[] {
+  const local = getWatchlistSnapshot();
+  if (local.length === 0) return [];
+  const serverSet = new Set(serverItems.map((t) => t.trim().toUpperCase()));
+  return local.filter((t) => !serverSet.has(t.trim().toUpperCase()));
+}
+
+export function clearLocalWatchlist(): void {
+  saveWatchlist([]);
+}
+
+export function validateSafeNextPath(rawNext: string | null | undefined): string {
+  if (!rawNext) return "/watchlist";
+  const trimmed = rawNext.trim();
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//") || trimmed.includes("\\")) {
+    return "/watchlist";
+  }
+  return trimmed;
+}
+
+export function formatUserRoleLabel(role: string | null | undefined): string {
+  switch (role) {
+    case "RESEARCHER":
+      return "Nhà nghiên cứu";
+    case "INTERNAL_OPS":
+      return "Vận hành nội bộ";
+    default:
+      return "Tài khoản tiêu chuẩn";
+  }
+}
