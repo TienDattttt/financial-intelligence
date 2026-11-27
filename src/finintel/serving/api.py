@@ -2032,6 +2032,7 @@ def create_app(
         rag_store=rag_store,
         rag_investigator=rag_investigator,
     )
+    from finintel.api_gateway.router import mount_api_gateway_router
     from finintel.auth.router import mount_identity_workspace_routers
     from finintel.ops.router import mount_ops_routers
     from finintel.quota.router import mount_quota_router
@@ -2041,6 +2042,7 @@ def create_app(
     api.include_router(create_exports_router())
     mount_quota_router(api, valkey_url=valkey_url)
     mount_ops_routers(api)
+    mount_api_gateway_router(api, valkey_url=valkey_url)
 
     return api
 
