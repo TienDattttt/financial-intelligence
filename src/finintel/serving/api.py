@@ -78,11 +78,13 @@ from finintel.serving.dependencies import (
     DEFAULT_API_PORT,
     DEFAULT_STRESS_MAX_CONCURRENCY,
     DEFAULT_STRESS_SEMAPHORE_TIMEOUT,
+    SecurityHeadersMiddleware,
     build_lifespan,
     get_db_cursor,
     get_query_service,
     get_response_cache,
     get_stress_semaphore,
+    resolve_cors_allow_credentials,
     resolve_cors_origins,
 )
 from finintel.serving.observability import (
@@ -448,7 +450,10 @@ def create_app(
     rag_investigator: Any | None = None,
 ) -> FastAPI:
     """Create a configured read-only analytical FastAPI application."""
-    allowed_origins = resolve_cors_origins(cors_origins)
+    allow_cors_credentials = resolve_cors_allow_credentials()
+    allowed_origins = resolve_cors_origins(
+        cors_origins, allow_credentials=allow_cors_credentials
+    )
     base_lifespan = build_lifespan(
         data_root=data_root,
         repository=repository,
@@ -477,6 +482,7 @@ def create_app(
         lifespan=app_lifespan,
     )
 
+    api.add_middleware(SecurityHeadersMiddleware)
     api.add_middleware(StressBulkheadMiddleware)
     api.add_middleware(RagAvailabilityMiddleware)
     attach_observability(api)
@@ -486,7 +492,7 @@ def create_app(
         api.add_middleware(
             CORSMiddleware,
             allow_origins=list(allowed_origins),
-            allow_credentials=False,
+            allow_credentials=allow_cors_credentials,
             allow_methods=["GET", "POST"],
             allow_headers=["If-None-Match", "Content-Type", "X-Request-ID"],
             expose_headers=[
