@@ -13,14 +13,14 @@
 **Description:** Tạo tài liệu ma trận tuân thủ pháp lý VN 2025–2026 (NĐ 88/2014, Luật CK 56/2024, Luật 91/2025 kèm mẫu TIA Điều 20) và module contract `ConsentPurpose` / `ComplianceNotice` trong tầng domain để các module downstream (`v3-identity-and-workspace`, `v3-export-and-tearsheet`, `v3-scaled-rag-and-billing`) dùng chung.
 
 **Acceptance criteria:**
-- [ ] `src/finintel/domain/compliance.py` định nghĩa rõ `ConsentPurpose` (`ACCOUNT_CORE`, `ALERT_NOTIFICATIONS`, `CROSS_BORDER_LLM_RAG`), `ConsentPolicyVersion`, `ComplianceNotice` đạt `mypy --strict`.
-- [ ] `docs/compliance/VN_REGULATORY_COMPLIANCE.md` ghi đầy đủ checklist NĐ 88/2014, Luật CK 56/2024 và quy trình TIA Điều 20 Luật 91/2025.
-- [ ] Unit tests kiểm tra serialization và validate phiên bản consent pass 100% không cần Postgres/Valkey.
+- [x] `src/finintel/domain/compliance.py` định nghĩa rõ `ConsentPurpose` (`ACCOUNT_CORE`, `ALERT_NOTIFICATIONS`, `CROSS_BORDER_LLM_RAG`), `ConsentPolicyVersion`, `ComplianceNotice` đạt `mypy --strict`.
+- [x] `docs/compliance/VN_REGULATORY_COMPLIANCE.md` ghi đầy đủ checklist NĐ 88/2014, Luật CK 56/2024 và quy trình TIA Điều 20 Luật 91/2025.
+- [x] Unit tests kiểm tra serialization và validate phiên bản consent pass 100% không cần Postgres/Valkey.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_compliance_mrm.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m ruff check src tests && .\.venv\Scripts\python.exe -m mypy --strict src/finintel/domain/compliance.py tests/unit/test_v3_compliance_mrm.py`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_compliance_mrm.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m ruff check src tests && .\.venv\Scripts\python.exe -m mypy --strict src/finintel/domain/compliance.py tests/unit/test_v3_compliance_mrm.py`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** None  
 **Commit type:** `feat(domain,docs)`  
@@ -37,14 +37,14 @@
 **Description:** Xây dựng module `src/finintel/ml/mrm_tt99.py` đánh giá cổng drift `TT200 → TT99` theo 4 trạng thái `TT99GateVerdict` (`INSUFFICIENT_TT99_SAMPLES`, `SHADOW_MONITORING`, `READY_FOR_GA`, `DRIFT_BREACH`) và nối kết quả vào `model_card_meta` (không làm tăng quá `+10` dòng ở `train.py`).
 
 **Acceptance criteria:**
-- [ ] `evaluate_tt99_mrm_gate()` phân loại chính xác biên `n < 30`, `30 <= n < 150`, `n >= 150`, `max_psi >= 0.25`, `max_missing_jump >= 0.15` và xử lý an toàn `NaN`/`inf`.
-- [ ] `model_card_meta` và `GET /api/v2/meta/model-card` xuất tường minh trường `tt99_mrm_gate` (thay vì `taxonomy_drift = null` mờ nhạt) mà vẫn tương thích ngược schema cũ.
-- [ ] Không bịa dữ liệu TT99 giả; snapshot chưa đủ mẫu TT99 trả trung thực `INSUFFICIENT_TT99_SAMPLES`.
+- [x] `evaluate_tt99_mrm_gate()` phân loại chính xác biên `n < 30`, `30 <= n < 150`, `n >= 150`, `max_psi >= 0.25`, `max_missing_jump >= 0.15` và xử lý an toàn `NaN`/`inf`.
+- [x] `model_card_meta` và `GET /api/v2/meta/model-card` xuất tường minh trường `tt99_mrm_gate` (thay vì `taxonomy_drift = null` mờ nhạt) mà vẫn tương thích ngược schema cũ.
+- [x] Không bịa dữ liệu TT99 giả; snapshot chưa đủ mẫu TT99 trả trung thực `INSUFFICIENT_TT99_SAMPLES`.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_compliance_mrm.py tests/unit/test_layer4_ml*.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/ml/mrm_tt99.py tests/unit/test_v3_compliance_mrm.py`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_compliance_mrm.py tests/unit/test_layer4_ml*.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/ml/mrm_tt99.py tests/unit/test_v3_compliance_mrm.py`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-01`  
 **Commit type:** `feat(ml)`  
@@ -62,13 +62,13 @@
 **Description:** Chuẩn hóa hằng số miễn trừ pháp lý tại `frontend/src/lib/compliance.ts`, xóa sạch các chuỗi *"Bậc tín nhiệm" / "Xếp hạng tín nhiệm"* còn sót trong `frontend/src/lib/domain-labels.ts` & `frontend/PRODUCT.md`, và thêm quy tắc kiểm soát tĩnh vào `scripts/check_constraints.py`.
 
 **Acceptance criteria:**
-- [ ] `scripts/check_constraints.py --selftest` và `scripts/check_constraints.py` pass với quy tắc mới cấm *"Xếp hạng tín nhiệm"*, *"Bậc tín nhiệm"*, *"Khuyến nghị mua/bán"* trong `frontend/src/`.
-- [ ] `frontend/src/lib/compliance.ts` xuất `COMPLIANCE_DISCLAIMER_VI` và `RISK_TIER_LEGAL_LABEL_VI` dùng chung cho UI & Export.
-- [ ] `frontend/tests/unit/compliance_labels.test.ts` xác nhận `0` chuỗi bị cấm trên toàn bộ `domain-labels.ts`.
+- [x] `scripts/check_constraints.py --selftest` và `scripts/check_constraints.py` pass với quy tắc mới cấm *"Xếp hạng tín nhiệm"*, *"Bậc tín nhiệm"*, *"Khuyến nghị mua/bán"* trong `frontend/src/`.
+- [x] `frontend/src/lib/compliance.ts` xuất `COMPLIANCE_DISCLAIMER_VI` và `RISK_TIER_LEGAL_LABEL_VI` dùng chung cho UI & Export.
+- [x] `frontend/tests/unit/compliance_labels.test.ts` xác nhận `0` chuỗi bị cấm trên toàn bộ `domain-labels.ts`.
 
 **Verification:**
-- [ ] Backend/CI guard: `.\.venv\Scripts\python.exe scripts/check_constraints.py --selftest && .\.venv\Scripts\python.exe scripts/check_constraints.py`
-- [ ] Frontend build & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
+- [x] Backend/CI guard: `.\.venv\Scripts\python.exe scripts/check_constraints.py --selftest && .\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Frontend build & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
 
 **Dependencies:** `V3-01`  
 **Commit type:** `feat(frontend,ci)`  
@@ -82,8 +82,8 @@
 **Estimated scope:** Medium (5 files)
 
 ### Checkpoint 1A-1: After Tasks `V3-01..V3-03` (`v3-compliance-and-mrm`)
-- [ ] Toàn bộ `pytest` liên quan + `check_constraints.py` + `npm --prefix frontend run check` + `test:unit` xanh 100%.
-- [ ] Nhánh `feat/v3-compliance-and-mrm` sẵn sàng merge & unblock `v3-identity-and-workspace`, `v3-export-and-tearsheet`.
+- [x] Toàn bộ `pytest` liên quan + `check_constraints.py` + `npm --prefix frontend run check` + `test:unit` xanh 100%.
+- [x] Nhánh `feat/v3-compliance-and-mrm` sẵn sàng merge & unblock `v3-identity-and-workspace`, `v3-export-and-tearsheet`.
 
 ---
 
@@ -93,14 +93,14 @@
 **Description:** Bổ sung chỉ số dòng tiền `ocf_to_total_liabilities` vào Layer 4A (`ratios.py` + `metric_definitions.yaml`) và xây dựng module `src/finintel/analytics/valuation_mart.py` tính bảng `pit_valuation_mart` toàn thị trường bằng Polars vectorized (dùng `close_raw` + `join_asof(..., strategy="forward")`, tuyệt đối không dùng `close_adj`).
 
 **Acceptance criteria:**
-- [ ] `ocf_to_total_liabilities` trả `NULL` + `RatioStatusFlag` khi `BS_TOTAL_LIABILITIES <= 0` hoặc thiếu dữ liệu (0 `.fill_null(0)`).
-- [ ] `valuation_mart.py` chứng minh `0%` look-ahead cuối tuần và tính đúng `market_cap_vnd`, `pe_ttm`, `pb_ratio` theo `close_raw` trên fixture chia tách 2:1.
-- [ ] `EPS <= 0` hoặc `parent_equity <= 0` trả `NULL` kèm `pe_flag`/`pb_flag = "NEGATIVE_DENOMINATOR"`.
+- [x] `ocf_to_total_liabilities` trả `NULL` + `RatioStatusFlag` khi `BS_TOTAL_LIABILITIES <= 0` hoặc thiếu dữ liệu (0 `.fill_null(0)`).
+- [x] `valuation_mart.py` chứng minh `0%` look-ahead cuối tuần và tính đúng `market_cap_vnd`, `pe_ttm`, `pb_ratio` theo `close_raw` trên fixture chia tách 2:1.
+- [x] `EPS <= 0` hoặc `parent_equity <= 0` trả `NULL` kèm `pe_flag`/`pb_flag = "NEGATIVE_DENOMINATOR"`.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_valuation_mart_screener.py tests/unit/test_layer4_analytics.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/analytics/valuation_mart.py src/finintel/analytics/ratios.py`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_valuation_mart_screener.py tests/unit/test_layer4_analytics.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/analytics/valuation_mart.py src/finintel/analytics/ratios.py`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** None  
 **Commit type:** `feat(analytics)`  
@@ -118,13 +118,13 @@
 **Description:** Đăng ký `pit_valuation_mart` vào `MANAGED_MART_TABLES` trong `storage/schemas.py` và bước publish, sau đó mở rộng `serving/queries/screener.py` (tách helper lọc nếu gần 1.000 LOC) + `ScreenerItem` + Valkey cache keys để hỗ trợ lọc/trả về 14 nhóm tiêu chí mới (`ROE/ROA/EPS/Debt Ratio/D/E/CFO/OCF-Nợ/DT YoY/P/E/P/B/Vốn hóa/Sàn/Cụm/Ngoại lai`).
 
 **Acceptance criteria:**
-- [ ] `DuckLakeStore.publish_snapshot()` quản lý `pit_valuation_mart` an toàn mà không chạm `regulatory_events` hoặc `market_prices` (`B-03`).
-- [ ] `GET /api/v1/screener` và `GET /api/v1/screener/export` giữ tương thích ngược 100%, hỗ trợ đầy đủ 14 bộ lọc mới bằng DuckDB parameterized query.
-- [ ] `test_serving_latency_budget.py` đạt `p95 <= 50ms` (Valkey ấm) và `<= 200ms` (DuckLake lạnh); mọi file trong `serving/queries/` giữ `< 1.000` LOC.
+- [x] `DuckLakeStore.publish_snapshot()` quản lý `pit_valuation_mart` an toàn mà không chạm `regulatory_events` hoặc `market_prices` (`B-03`).
+- [x] `GET /api/v1/screener` và `GET /api/v1/screener/export` giữ tương thích ngược 100%, hỗ trợ đầy đủ 14 bộ lọc mới bằng DuckDB parameterized query.
+- [x] `test_serving_latency_budget.py` đạt `p95 <= 50ms` (Valkey ấm) và `<= 200ms` (DuckLake lạnh); mọi file trong `serving/queries/` giữ `< 1.000` LOC.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_valuation_mart_screener.py tests/unit/test_layer3_ducklake_storage.py tests/unit/test_layer5_fastapi_serving.py tests/unit/test_serving_latency_budget.py -q`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_valuation_mart_screener.py tests/unit/test_layer3_ducklake_storage.py tests/unit/test_layer5_fastapi_serving.py tests/unit/test_serving_latency_budget.py -q`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-04`  
 **Commit type:** `feat(storage,serving)`  
@@ -143,14 +143,14 @@
 **Description:** Đồng bộ `gen:api-types`, bổ sung nhóm bộ lọc tỷ số tài chính, định giá (`P/E`, `P/B`, `Vốn hóa` tỷ VND), sàn (`HOSE/HNX/UPCOM`), cụm và ngoại lai cùng các cột bảng (`EPS`, `Debt Ratio`, `CFO`, `P/E`, `P/B`, `Vốn hóa`) trên `/screener`, đồng bộ URL & Saved Screens.
 
 **Acceptance criteria:**
-- [ ] Người dùng lọc kết hợp được đồng thời điều kiện rủi ro ML + tỷ số cơ bản + định giá + sàn mà không nhấp nháy bảng (`keepPreviousData`).
-- [ ] Xuất CSV từ `/screener` chứa đủ các cột mới; Saved Screens cũ vẫn đọc bình thường.
-- [ ] Đạt WCAG 2.2 AA (`0` tràn ngang ở `375px` & `1366px`, Light & Dark Mode).
+- [x] Người dùng lọc kết hợp được đồng thời điều kiện rủi ro ML + tỷ số cơ bản + định giá + sàn mà không nhấp nháy bảng (`keepPreviousData`).
+- [x] Xuất CSV từ `/screener` chứa đủ các cột mới; Saved Screens cũ vẫn đọc bình thường.
+- [x] Đạt WCAG 2.2 AA (`0` tràn ngang ở `375px` & `1366px`, Light & Dark Mode).
 
 **Verification:**
-- [ ] API types & FE build: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check`
-- [ ] Unit tests: `fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] API types & FE build: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check`
+- [x] Unit tests: `fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-05`  
 **Commit type:** `feat(frontend)`  
@@ -163,8 +163,8 @@
 **Estimated scope:** Medium (4 files)
 
 ### Checkpoint 1A-2: After Tasks `V3-04..V3-06` (`v3-valuation-mart-and-screener`)
-- [ ] Backend + Frontend checks & unit tests xanh 100%, `check_constraints.py` = `0` lỗi.
-- [ ] Nhánh `feat/v3-valuation-mart-and-screener` sẵn sàng merge.
+- [x] Backend + Frontend checks & unit tests xanh 100%, `check_constraints.py` = `0` lỗi.
+- [x] Nhánh `feat/v3-valuation-mart-and-screener` sẵn sàng merge.
 
 ---
 
@@ -174,13 +174,13 @@
 **Description:** Xây dựng `src/finintel/storage/object_store.py` hỗ trợ đọc/ghi Parquet snapshots trên **Cloudflare R2 (`region="auto"`, `s3://`, `$0` egress)** với mặc định fallback `local` disk cho dev/tests, không bao giờ ghi log secret keys.
 
 **Acceptance criteria:**
-- [ ] `ObjectStoreConfig` validate đầy đủ cấu hình `local | r2 | s3`, sinh câu lệnh DuckDB `CREATE SECRET` đúng cú pháp và ẩn 100% credentials trong `repr`/`log`.
-- [ ] `DuckLakeStore` giữ nguyên 100% hành vi `local` mặc định khi không bật R2.
-- [ ] Unit tests offline pass 100% không cần truy cập mạng hay cài `boto3`.
+- [x] `ObjectStoreConfig` validate đầy đủ cấu hình `local | r2 | s3`, sinh câu lệnh DuckDB `CREATE SECRET` đúng cú pháp và ẩn 100% credentials trong `repr`/`log`.
+- [x] `DuckLakeStore` giữ nguyên 100% hành vi `local` mặc định khi không bật R2.
+- [x] Unit tests offline pass 100% không cần truy cập mạng hay cài `boto3`.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_infra_ha_storage.py tests/unit/test_layer3_ducklake_storage.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/storage/object_store.py tests/unit/test_v3_infra_ha_storage.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_infra_ha_storage.py tests/unit/test_layer3_ducklake_storage.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/storage/object_store.py tests/unit/test_v3_infra_ha_storage.py`
 
 **Dependencies:** None  
 **Commit type:** `feat(storage)`  
@@ -197,12 +197,12 @@
 **Description:** Bổ sung cơ chế tự kiểm tra active snapshot pointer từ PostgreSQL (`finintel_active_snapshot`) để tự evict L1B cache khi rollover, đồng thời gắn middleware Security Headers (CSP, HSTS, `X-Content-Type-Options`, `Referrer-Policy`) và CORS khóa theo domain Vercel cụ thể.
 
 **Acceptance criteria:**
-- [ ] Giả lập 2 instance `DashboardQueryService` cùng trỏ 1 pointer: khi xoay `snap_1 → snap_2`, cả 2 instance đều evict L1B và trả `X-Snapshot-ID: snap_2`.
-- [ ] Response trả đủ security headers chuẩn OWASP; CORS từ chối wildcard `*` khi có credentials/cookies.
+- [x] Giả lập 2 instance `DashboardQueryService` cùng trỏ 1 pointer: khi xoay `snap_1 → snap_2`, cả 2 instance đều evict L1B và trả `X-Snapshot-ID: snap_2`.
+- [x] Response trả đủ security headers chuẩn OWASP; CORS từ chối wildcard `*` khi có credentials/cookies.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_infra_ha_storage.py tests/unit/test_layer5_fastapi_serving.py -q`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_infra_ha_storage.py tests/unit/test_layer5_fastapi_serving.py -q`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-07`  
 **Commit type:** `feat(serving)`  
@@ -218,14 +218,14 @@
 **Description:** Tạo `docker-compose.free.yml` khóa `mem_limit` tổng `< 8 GB` cho **OCI Always Free (`2 ARM OCPU / 12 GB RAM`)**, `config/gateway/Caddyfile.free` (auto-HTTPS, khóa port nội bộ), `scripts/backup_to_r2.py` (xoay vòng giữ `< 8 GB / 10 GB` R2), workflow dự phòng `.github/workflows/free-etl-fallback.yml` và sổ tay `docs/runbooks/free_cloud_deploy.md`.
 
 **Acceptance criteria:**
-- [ ] `docker compose -f docker-compose.free.yml config -q` hợp lệ, chỉ mở cổng `80/443` qua Caddy, khóa Postgres/Valkey/Dagster trong `internal_net`, dùng `pgvector/pgvector:pg16` (ARM64 compatible).
-- [ ] `scripts/backup_to_r2.py --dry-run` tính đúng vòng quay retention dưới ngưỡng `8 GB` và pass unit test.
-- [ ] `docs/runbooks/free_cloud_deploy.md` hướng dẫn đầy đủ deploy `$0/tháng` cho Phương án 1 (OCI + Vercel + R2) và dự phòng Phương án 2.
+- [x] `docker compose -f docker-compose.free.yml config -q` hợp lệ, chỉ mở cổng `80/443` qua Caddy, khóa Postgres/Valkey/Dagster trong `internal_net`, dùng `pgvector/pgvector:pg16` (ARM64 compatible).
+- [x] `scripts/backup_to_r2.py --dry-run` tính đúng vòng quay retention dưới ngưỡng `8 GB` và pass unit test.
+- [x] `docs/runbooks/free_cloud_deploy.md` hướng dẫn đầy đủ deploy `$0/tháng` cho Phương án 1 (OCI + Vercel + R2) và dự phòng Phương án 2.
 
 **Verification:**
-- [ ] Compose syntax: `docker compose -f docker-compose.free.yml config -q`
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_infra_ha_storage.py -q`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Compose syntax: `docker compose -f docker-compose.free.yml config -q`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_infra_ha_storage.py -q`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-07`, `V3-08`  
 **Commit type:** `chore(infra)`  
@@ -239,8 +239,8 @@
 **Estimated scope:** Medium (5 files)
 
 ### Checkpoint 1A-3 & WAVE 1A GATE: After Tasks `V3-01..V3-09`
-- [ ] Cả 3 nhánh Wave 1A (`v3-compliance-and-mrm`, `v3-valuation-mart-and-screener`, `v3-infra-ha-storage`) merge sạch vào nhánh tích hợp.
-- [ ] Toàn bộ bộ lệnh `AGENTS.md` §3 (`check_constraints`, `ruff`, `mypy --strict`, `pytest -q`, `frontend check`, `frontend test:unit`) PASS 100%.
+- [x] Cả 3 nhánh Wave 1A (`v3-compliance-and-mrm`, `v3-valuation-mart-and-screener`, `v3-infra-ha-storage`) merge sạch vào nhánh tích hợp.
+- [x] Toàn bộ bộ lệnh `AGENTS.md` §3 (`check_constraints`, `ruff`, `mypy --strict`, `pytest -q`, `frontend check`, `frontend test:unit`) PASS 100%.
 
 ---
 
