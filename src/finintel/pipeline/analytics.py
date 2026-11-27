@@ -250,7 +250,10 @@ class AnalyticsHandler:
             tables[ML_SCORES_TABLE] = bundle.ml_scores
         if bundle.model_card_meta is not None:
             tables[MODEL_CARD_META_TABLE] = bundle.model_card_meta
-        if bundle.pit_valuation_mart is not None:
+        if (
+            bundle.pit_valuation_mart is not None
+            and not bundle.pit_valuation_mart.is_empty()
+        ):
             tables[PIT_VALUATION_MART_TABLE] = bundle.pit_valuation_mart
 
         ratios = tables[RATIOS_TABLE]
