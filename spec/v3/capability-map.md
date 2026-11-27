@@ -83,9 +83,9 @@ Wave 3  (3 parallel agents): v3-b2b-commercial-api || v3-private-issuer-and-hitl
 ```
 
 ### Quy Ước Git Bắt Buộc Cho Mọi Coding Agent (`git-workflow-and-versioning`)
-1. **Worktree cô lập theo module (không sửa chung working copy):**
+1. **Worktree cô lập theo module (không sửa chung working copy — tách từ nhánh tích hợp `refactor/64-feature`):**
    ```powershell
-   git worktree add ../finintel-<module-id> -b feat/<module-id> main
+   git worktree add ../finintel-<module-id> -b feat/<module-id> refactor/64-feature
    ```
 2. **Tách commit Behavior-Preserving vs Behavior-Changing:**
    - Cấm gộp `refactor:` với `feat:` trong cùng 1 commit (`CONSTRAINTS.md`).

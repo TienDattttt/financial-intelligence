@@ -29,7 +29,8 @@ FinIntel V3.0 nâng cấp nền tảng FinIntel V2.0 (Lakehouse đọc-chỉ cho
    - Giữ `api.py` và các file legacy `> 1.000` LOC tăng ròng `<= +10` dòng bằng cách tách 100% logic mới thành `APIRouter` độc lập (`src/finintel/auth/`, `workspace/`, `alerts/`, `quota/`, `ops/`, `api_gateway/`, `private_credit/`, `hitl/`, `serving/exports/`, `serving/routers/`).
    - Giữ **lazy-import** mọi thư viện thuộc group `platform` (`psycopg`, `redis`, `argon2`, `xlsxwriter`, `openpyxl`, `dagster`, `opentelemetry`) để CI `mvp-checks` (`--group ml --dev`) luôn xanh.
 4. **Cơ Chế Thực Thi Song Song Cho Coding Agents (`git-workflow-and-versioning`):**
-   - Mỗi module chạy trên `git worktree` cô lập (`git worktree add ../finintel-<module-id> -b feat/<module-id> refactor/64-feature` hoặc `main` sau khi merge chuẩn).
+   - **Nhánh tích hợp chung (Đã khóa):** `refactor/64-feature`. Toàn bộ các worktree/branch của 4 Wave (`Wave 1A → Wave 1B → Wave 2 → Wave 3`) tách từ và merge ngược về `refactor/64-feature`; chỉ merge 1 lần duy nhất về `main` sau khi qua Final Release Gate (`v3.1.0`).
+   - Mỗi module chạy trên `git worktree` cô lập (`git worktree add ../finintel-<module-id> -b feat/<module-id> refactor/64-feature`) hoặc `workspace: "share"` khi chạy qua `/teamwork`.
    - Tách bạch tuyệt đối commit `refactor:` (*Behavior-Preserving*) với `feat:` (*Behavior-Changing*).
    - Mỗi task giới hạn kích thước `S` hoặc `M` (`<= 5` tệp), hoàn tất trong 1 phiên tập trung và chạy đủ bộ lệnh kiểm chứng của module trước khi commit.
 
@@ -132,7 +133,7 @@ flowchart LR
 
 ---
 
-## 7. Open Questions (Non-Blocking cho Wave 1A)
+## 7. Locked Execution Decisions
 
-1. Nhánh tích hợp chính cho V3: merge các commit hiện tại của `refactor/64-feature` về `main` trước khi mở các worktree Wave 1A, hay dùng `refactor/64-feature` làm nhánh tích hợp chung cho toàn bộ V3 rồi mới merge 1 lần về `main`? *(Khuyến nghị theo `git-workflow-and-versioning`: **merge `refactor/64-feature` về `main` trước** để `main` luôn có code & spec mới nhất, rồi tách short-lived worktrees `feat/v3-*` trực tiếp từ `main`.)*
-2. Xác nhận khởi chạy **Wave 1A** tuần tự từng module hay chạy song song **3 agent worktree cùng lúc** (bằng `/teamwork` hoặc `swarm`) sau khi bạn duyệt plan này.
+1. **Nhánh tích hợp chung:** Giữ `refactor/64-feature` làm nhánh tích hợp duy nhất cho cả 4 Wave (`Wave 1A → Wave 1B → Wave 2 → Wave 3`); chỉ merge 1 lần về `main` sau khi hoàn tất toàn bộ và pass đủ cổng kiểm chứng.
+2. **Chế độ thực thi:** Chạy song song theo từng Wave bằng `/teamwork` (tối đa 3 coding worker chạy trên 3 workspace/worktree cô lập + 1 Coordinator/Reviewer kiểm chứng & merge từng Wave về `refactor/64-feature`).
