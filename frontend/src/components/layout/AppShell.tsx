@@ -17,6 +17,7 @@ import {
   Monitor,
   Moon,
   Search,
+  ShieldCheck,
   SlidersHorizontal,
   Sun,
   UserCheck,
@@ -185,8 +186,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       { id: "compare", href: "/compare", label: "So sánh", icon: GitCompare },
       { id: "stress-test", href: "/stress-test", label: "Kịch bản sốc", icon: Activity },
       { id: "methodology", href: "/methodology", label: "Dữ liệu & Phương pháp", icon: BookOpen },
+      ...(authUser?.role === "INTERNAL_OPS"
+        ? [{ id: "ops-qa", href: "/ops/qa", label: "Ops QA", icon: ShieldCheck }]
+        : []),
     ],
-    [companyProfileHref, effectiveWatchlistCount],
+    [authUser?.role, companyProfileHref, effectiveWatchlistCount],
   );
 
   const isActive = (href: string, matchPrefix?: string) => {

@@ -518,3 +518,63 @@ export function useQualityQuarantine(limit = 50, offset = 0, snapshotId?: string
     staleTime: SNAPSHOT_STALE_MS,
   });
 }
+
+export function useSuggestedPeers(
+  ticker: string,
+  opts: {
+    statement_scope?: StatementScope;
+    period_type?: PeriodType;
+    period_end_date?: string | null;
+    limit?: number;
+    enabled?: boolean;
+  } = {},
+  snapshotId?: string | null,
+) {
+  const cleanTicker = ticker.trim().toUpperCase();
+  return useQuery({
+    queryKey: [
+      "suggested-peers",
+      snapshotId ?? "latest",
+      cleanTicker,
+      opts.statement_scope ?? "CONSOLIDATED",
+      opts.period_type ?? "QUARTER",
+      opts.period_end_date ?? "latest",
+      opts.limit ?? 4,
+    ],
+    queryFn: ({ signal }) =>
+      apiClient.getSuggestedPeers(cleanTicker, opts, signal),
+    enabled: (opts.enabled ?? true) && Boolean(cleanTicker),
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}
+
+export function useAnomalyDrivers(
+  ticker: string,
+  opts: {
+    statement_scope?: StatementScope;
+    period_type?: PeriodType;
+    period_end_date?: string | null;
+    top_k?: number;
+    enabled?: boolean;
+  } = {},
+  snapshotId?: string | null,
+) {
+  const cleanTicker = ticker.trim().toUpperCase();
+  return useQuery({
+    queryKey: [
+      "anomaly-drivers",
+      snapshotId ?? "latest",
+      cleanTicker,
+      opts.statement_scope ?? "CONSOLIDATED",
+      opts.period_type ?? "QUARTER",
+      opts.period_end_date ?? "latest",
+      opts.top_k ?? 3,
+    ],
+    queryFn: ({ signal }) =>
+      apiClient.getAnomalyDrivers(cleanTicker, opts, signal),
+    enabled: (opts.enabled ?? true) && Boolean(cleanTicker),
+    retry: (failureCount, error) => shouldRetryFinintelQuery(failureCount, error),
+    staleTime: SNAPSHOT_STALE_MS,
+  });
+}

@@ -759,6 +759,8 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
         />
       ) : activeTab === "model" ? (
         <ModelShapTab
+          ticker={profile.ticker}
+          statementScope={statementScope}
           sortedMl={sortedMl}
           mlDistressItems={pdSeries}
           activeMl={activeMl}

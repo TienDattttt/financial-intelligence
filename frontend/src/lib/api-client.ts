@@ -1,5 +1,6 @@
 import type { CompanyMarketOverlayResponse } from "@/lib/market-overlay-types";
 import type {
+  AnomalyDriversResponse,
   AuditQuarantinePageResponse,
   CompanyBenchmarksResponse,
   CompanyBenchmarksSummaryResponse,
@@ -28,6 +29,7 @@ import type {
   StatementType,
   StressScenarioRequest,
   StressTestResponse,
+  SuggestedPeersResponse,
 } from "@/types/api";
 
 export interface DataFreshnessItem {
@@ -448,6 +450,46 @@ export const apiClient = {
   getQualityQuarantine: (limit = 50, offset = 0, signal?: AbortSignal) =>
     requestJson<AuditQuarantinePageResponse>(
       buildUrl("/api/v1/quality/quarantine", { limit, offset }),
+      { signal },
+    ),
+
+  getSuggestedPeers: (
+    ticker: string,
+    opts?: {
+      statement_scope?: StatementScope;
+      period_type?: PeriodType;
+      period_end_date?: string | null;
+      limit?: number;
+    },
+    signal?: AbortSignal,
+  ) =>
+    requestJson<SuggestedPeersResponse>(
+      buildUrl(`/api/v3/companies/${encodeURIComponent(ticker.trim().toUpperCase())}/suggested-peers`, {
+        statement_scope: opts?.statement_scope ?? "CONSOLIDATED",
+        period_type: opts?.period_type ?? "QUARTER",
+        period_end_date: opts?.period_end_date ?? undefined,
+        limit: opts?.limit ?? 4,
+      }),
+      { signal },
+    ),
+
+  getAnomalyDrivers: (
+    ticker: string,
+    opts?: {
+      statement_scope?: StatementScope;
+      period_type?: PeriodType;
+      period_end_date?: string | null;
+      top_k?: number;
+    },
+    signal?: AbortSignal,
+  ) =>
+    requestJson<AnomalyDriversResponse>(
+      buildUrl(`/api/v3/companies/${encodeURIComponent(ticker.trim().toUpperCase())}/anomaly-drivers`, {
+        statement_scope: opts?.statement_scope ?? "CONSOLIDATED",
+        period_type: opts?.period_type ?? "QUARTER",
+        period_end_date: opts?.period_end_date ?? undefined,
+        top_k: opts?.top_k ?? 3,
+      }),
       { signal },
     ),
 

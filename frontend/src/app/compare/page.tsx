@@ -3,7 +3,8 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Download, Plus, X } from "lucide-react";
+import { Download, Plus, Users, X } from "lucide-react";
+import { apiClient } from "@/lib/api-client";
 import { CompareFivePillarChart } from "@/components/charts/CompareFivePillarChart";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
 import { CompareMatrixCard } from "@/components/compare/CompareMatrixCard";
@@ -115,9 +116,58 @@ function CompareContent() {
 
   const removeTicker = (t: string) => {
     setTickerError(null);
+    setPeerSuggestInfo(null);
     setDismissedErrors((prev) => prev.filter((x) => x !== t));
     setTickersUrl(tickers.filter((x) => x !== t));
   };
+
+  const [peerSuggestLoading, setPeerSuggestLoading] = React.useState(false);
+  const [peerSuggestInfo, setPeerSuggestInfo] = React.useState<string | null>(null);
+
+  const suggestAnchorTicker = React.useMemo(() => {
+    if (tickers.length > 0) return tickers[0];
+    const clean = tickerInput.trim().toUpperCase();
+    return /^[A-Z0-9]{1,10}$/.test(clean) ? clean : null;
+  }, [tickerInput, tickers]);
+
+  const handleSuggestPeers = React.useCallback(async () => {
+    if (!suggestAnchorTicker) {
+      setTickerError("Chọn hoặc nhập ít nhất 1 mã cổ phiếu để gợi ý 4 đối thủ cùng ngành.");
+      return;
+    }
+    setTickerError(null);
+    setPeerSuggestLoading(true);
+    try {
+      const res = await apiClient.getSuggestedPeers(suggestAnchorTicker, {
+        statement_scope: statementScope,
+        period_type: periodType,
+        period_end_date: queryPeriodEndDate,
+        limit: 4,
+      });
+      if (res.peers.length === 0) {
+        setPeerSuggestInfo(`Chưa tìm thấy doanh nghiệp cùng ngành phù hợp cho ${suggestAnchorTicker}.`);
+        return;
+      }
+      const nextTickers = [suggestAnchorTicker, ...res.peers.map((p) => p.ticker)];
+      setTickersUrl(nextTickers);
+      setTickerInput("");
+      const basisNote =
+        res.peer_basis === "ICB_LEVEL_3"
+          ? `Đã chọn ${res.peers.length} đối thủ gần quy mô nhất cùng phân ngành ICB cấp 3 với ${suggestAnchorTicker}.`
+          : res.peer_basis === "ICB_LEVEL_2"
+            ? `Đã mở rộng sang phân ngành ICB cấp 2 cho ${suggestAnchorTicker} (nhóm cấp 3 có dưới 5 doanh nghiệp).`
+            : `Đã chọn ${res.peers.length} đối thủ gần quy mô nhất trong phạm vi doanh nghiệp phi tài chính.`;
+      setPeerSuggestInfo(basisNote);
+    } catch (err) {
+      setTickerError(
+        err instanceof Error && err.message.trim()
+          ? err.message
+          : `Không thể gợi ý đối thủ cùng ngành cho ${suggestAnchorTicker}.`,
+      );
+    } finally {
+      setPeerSuggestLoading(false);
+    }
+  }, [periodType, queryPeriodEndDate, setTickersUrl, statementScope, suggestAnchorTicker]);
 
   const quickStartPairs = React.useMemo(() => {
     const available = new Set((issuersQuery.data ?? []).map((i) => i.ticker.toUpperCase()));
@@ -474,7 +524,29 @@ function CompareContent() {
                 Đã chọn tối đa 5/5 doanh nghiệp
               </span>
             )}
+
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              disabled={!suggestAnchorTicker || peerSuggestLoading}
+              onClick={handleSuggestPeers}
+              title={
+                suggestAnchorTicker
+                  ? `Tự động chọn 4 đối thủ gần quy mô nhất cùng ngành với ${suggestAnchorTicker}`
+                  : "Chọn trước 1 mã cổ phiếu để gợi ý đối thủ cùng ngành"
+              }
+            >
+              <Users className="size-3" aria-hidden="true" />
+              {peerSuggestLoading
+                ? "Đang tìm đối thủ..."
+                : "Gợi ý 4 đối thủ cùng ngành"}
+            </Button>
           </div>
+
+          {peerSuggestInfo ? (
+            <p className="text-xs text-ink-muted">{peerSuggestInfo}</p>
+          ) : null}
 
           {tickerError ? (
             <p role="alert" className="text-xs text-risk-high">
