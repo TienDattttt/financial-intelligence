@@ -244,6 +244,7 @@ def test_tt99_mrm_gate_verdicts_boundaries_and_nan_inf_guard() -> None:
 
 def test_tt99_mrm_gate_wires_into_psi_model_card_and_serving_schema() -> None:
     """V3-02: compute_taxonomy_drift_psi, ModelCardResponse, and mrm_tt99 work seamlessly."""
+    pytest.importorskip("pydantic")
     import polars as pl
 
     from finintel.ml.mrm_tt99 import evaluate_tt99_gate_from_psi_report

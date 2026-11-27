@@ -106,6 +106,7 @@ def _valid_tt99_fixture() -> bytes:
 
 def test_vas_template_and_parse_tt99_and_tt200(tmp_path: Path) -> None:
     """V3-28: Parse 3-sheet 2-year VAS TT99 and TT200 workbooks with QG1 PASS."""
+    pytest.importorskip("openpyxl")
     tt99_path = tmp_path / "private_tt99.xlsx"
     tt99_path.write_bytes(_valid_tt99_fixture())
 
@@ -172,6 +173,7 @@ def test_vas_excel_rejects_zip_bomb_xlsm_symlink_and_fake_extension(
     tmp_path: Path,
 ) -> None:
     """V3-28: Reject .xlsm, fake extensions, macros, >15MB uploads, and >50MB ZIP-bombs."""
+    pytest.importorskip("openpyxl")
     valid_bytes = _valid_tt99_fixture()
 
     with pytest.raises(PrivateCreditValidationError) as exc_xlsm:
@@ -232,6 +234,7 @@ def test_vas_excel_rejects_zip_bomb_xlsm_symlink_and_fake_extension(
 
 def test_vas_excel_qg1_imbalance_blocks_scoring() -> None:
     """V3-28: Balance sheet imbalance triggers QG1 FAIL with discrepancy detail and blocks scoring."""
+    pytest.importorskip("openpyxl")
     bad_bytes = _populate_template_bytes(
         taxonomy="VAS_TT99_2025",
         values_by_sheet_code={
@@ -649,8 +652,9 @@ def test_private_credit_and_hitl_offline_mvp_checks_import(
     parser_mod = importlib.import_module("finintel.private_credit.vas_excel_parser")
     assert hasattr(priv_pkg, "mount_private_hitl_routers")
     assert hasattr(hitl_pkg, "mount_hitl_router")
-    tpl = parser_mod.build_vas_template_xlsx("VAS_TT99_2025", years=(2024, 2025))
-    assert tpl.startswith(b"PK\x03\x04")
+    if "openpyxl" not in sys.modules or sys.modules["openpyxl"] is not None:
+        tpl = parser_mod.build_vas_template_xlsx("VAS_TT99_2025", years=(2024, 2025))
+        assert tpl.startswith(b"PK\x03\x04")
 
 
 def test_private_credit_scoring_with_real_training_result_handles_null_market_features() -> (

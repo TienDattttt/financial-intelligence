@@ -849,6 +849,7 @@ def test_python_sdk_sync_and_async_with_mock_transport() -> None:
 def test_b2b_webhooks_receive_live_alert_events_via_dispatcher() -> None:
     """Major #2: AlertDispatcher fans out matching AlertEvent records to active b2b_webhook_endpoints."""
     pytest.importorskip("httpx")
+    pytest.importorskip("pydantic")
     import socket
     from uuid import uuid4
 

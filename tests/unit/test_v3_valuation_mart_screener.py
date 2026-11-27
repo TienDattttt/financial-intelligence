@@ -820,6 +820,8 @@ def test_v3_dictionary_and_lineage_include_ocf_to_total_liabilities(
     tmp_path: Path,
 ) -> None:
     """/api/v2/meta/dictionary and /api/v1/companies/{ticker}/lineage expose ocf_to_total_liabilities."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("pydantic")
     from fastapi.testclient import TestClient
 
     from finintel.serving.api import create_app
@@ -858,6 +860,8 @@ def test_screener_v3_filters_projections_export_and_cache_keys(
     tmp_path: Path,
 ) -> None:
     """GET /api/v1/screener and /export support all 14 V3 filter/column groups and unique Valkey cache keys."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("pydantic")
     from fastapi.testclient import TestClient
 
     from finintel.serving._api_helpers import build_screener_cache_params
