@@ -40,6 +40,7 @@ from fastapi import Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from finintel.alerts.router import mount_alerts_router
 from finintel.analytics.stress_test import (
     StressScenario,
     simulate_financial_stress,
@@ -2034,6 +2035,7 @@ def create_app(
     from finintel.auth.router import mount_identity_workspace_routers
 
     mount_identity_workspace_routers(api, valkey_url=valkey_url)
+    mount_alerts_router(api)
     api.include_router(create_exports_router())
 
     return api

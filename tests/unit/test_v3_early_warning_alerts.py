@@ -766,3 +766,201 @@ def test_dispatcher_consent_idempotency_retry_dead_letter_and_daily_digest(
     assert capped_summary.email_digests_sent == 0
     assert capped_summary.email_skipped_quota == 1
     assert len(email_calls) == 1
+
+
+def test_alerts_router_endpoints_idor_ssrf_and_mark_read(tmp_path: Path) -> None:
+    """V3-18: Alerts HTTP router enforces auth, CSRF, zero IDOR, SSRF check, and mark-read."""
+    from fastapi.testclient import TestClient
+
+    from finintel.alerts._store import InMemoryAlertStore
+    from finintel.alerts.detector import AlertEvent, AlertEventType
+    from finintel.alerts.dispatcher import AlertDispatcher, verify_webhook_signature
+    from finintel.auth._store import InMemoryAppStore
+    from finintel.auth.rate_limit import AuthRateLimiter
+    from finintel.auth.service import AuthService
+    from finintel.domain.compliance import CURRENT_CONSENT_POLICY_VERSION
+    from finintel.pipeline.state_store import StateStore
+    from finintel.serving.api import create_app
+    from finintel.storage.snapshot_publisher import SnapshotPublisher
+    from finintel.workspace.service import WorkspaceService
+
+    data_root = tmp_path / "data_alerts_api"
+    issuers = _make_issuers(["HPG"])
+    snapshots_root = data_root / "published" / "snapshots"
+    st = StateStore(data_root / "metadata" / "state.sqlite")
+    st.initialize()
+    st.start_run("run-alerts", "CLI_MANUAL", {}, None)
+    SnapshotPublisher(snapshots_root, state_store=st).publish(
+        "snap_alerts_api", {"issuers.parquet": issuers}, run_id="run-alerts"
+    )
+
+    app_store = InMemoryAppStore()
+    alert_store = InMemoryAlertStore(app_store=app_store)
+    captured_webhooks: list[tuple[bytes, str]] = []
+
+    def _public_resolver(
+        host: str, port: int, **kwargs: object
+    ) -> list[tuple[object, ...]]:
+        _ = (host, port, kwargs)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    def _wh_handler(request: httpx.Request) -> httpx.Response:
+        captured_webhooks.append(
+            (request.content, request.headers.get("X-FinIntel-Signature", ""))
+        )
+        return httpx.Response(200, json={"received": True})
+
+    wh_client = httpx.Client(
+        transport=httpx.MockTransport(_wh_handler), follow_redirects=False
+    )
+
+    app = create_app(data_root=data_root)
+    app.state._app_store = app_store
+    app.state._alert_store = alert_store
+    app.state._alerts_http_client = wh_client
+    app.state._alerts_dns_resolver = _public_resolver
+
+    auth_svc = AuthService(app_store, rate_limiter=AuthRateLimiter())
+    ws_svc = WorkspaceService(app_store)
+
+    u1 = auth_svc.register(
+        email="alice@finintel.local",
+        password="StrongPassword!123",
+        display_name="Alice",
+        accepted_consent_version=CURRENT_CONSENT_POLICY_VERSION.version,
+        accept_account_core=True,
+        accept_alert_notifications=True,
+    )
+    u2 = auth_svc.register(
+        email="bob@finintel.local",
+        password="StrongPassword!123",
+        display_name="Bob",
+        accepted_consent_version=CURRENT_CONSENT_POLICY_VERSION.version,
+        accept_account_core=True,
+        accept_alert_notifications=True,
+    )
+    tok1 = auth_svc.login(
+        email="alice@finintel.local", password="StrongPassword!123"
+    ).session_token
+    tok2 = auth_svc.login(
+        email="bob@finintel.local", password="StrongPassword!123"
+    ).session_token
+    auth_u1 = auth_svc.authenticate_session_token(tok1)
+    assert auth_u1 is not None
+    wl1 = ws_svc.create_watchlist(user=auth_u1, name="Chính")
+    ws_svc.add_ticker(user=auth_u1, watchlist_id=wl1.watchlist_id, ticker="HPG")
+
+    dispatcher = AlertDispatcher(alert_store=alert_store)
+    dispatcher.dispatch_events(
+        [
+            AlertEvent(
+                dedup_key="a" * 64,
+                snapshot_id="snap_alerts_api",
+                ticker="HPG",
+                event_type=AlertEventType.RISK_TIER_UPGRADE,
+                severity="HIGH",
+                title_vi="HPG: Nhóm cảnh báo rủi ro định lượng chuyển từ R2 lên R4",
+                evidence={"company_url": "/companies/HPG"},
+                detected_at=datetime(2026, 4, 22, 8, 0, tzinfo=UTC),
+            )
+        ]
+    )
+
+    csrf = {"X-Requested-With": "FinIntel-Web"}
+    with TestClient(app) as client:
+        # Unauthenticated rejected cleanly
+        assert client.get("/api/v3/alerts/notifications").status_code == 401
+
+        # Alice sees 1 unread notification
+        client.cookies.set("finintel_sid", tok1)
+        res_list = client.get("/api/v3/alerts/notifications?unread_only=true")
+        assert res_list.status_code == 200
+        body = res_list.json()
+        assert body["unread_count"] == 1
+        assert body["total"] == 1
+        notif_id = body["items"][0]["notification_id"]
+
+        # Bob cannot read or mark Alice's notification (zero IDOR -> 404)
+        client.cookies.set("finintel_sid", tok2)
+        bob_list = client.get("/api/v3/alerts/notifications")
+        assert bob_list.status_code == 200
+        assert bob_list.json()["total"] == 0
+        bob_mark = client.post(
+            f"/api/v3/alerts/notifications/{notif_id}/read", headers=csrf
+        )
+        assert bob_mark.status_code == 404
+
+        # Alice updates subscription: SSRF URL rejected with 422
+        client.cookies.set("finintel_sid", tok1)
+        bad_sub = client.put(
+            "/api/v3/alerts/subscriptions",
+            headers=csrf,
+            json={
+                "webhook_enabled": True,
+                "webhook_url": "http://127.0.0.1:8080/hook",
+                "webhook_secret_hmac": "sec123456",
+            },
+        )
+        assert bad_sub.status_code == 422
+
+        # Valid HTTPS subscription saved without leaking secret back
+        good_sub = client.put(
+            "/api/v3/alerts/subscriptions",
+            headers=csrf,
+            json={
+                "in_app_enabled": True,
+                "telegram_enabled": True,
+                "telegram_chat_id": "554433",
+                "email_digest_enabled": True,
+                "email_frequency": "DAILY_DIGEST",
+                "webhook_enabled": True,
+                "webhook_url": "https://hooks.example.com/alice",
+                "webhook_secret_hmac": "alice_secret_key_99",
+                "merton_dtd_threshold": 1.4,
+            },
+        )
+        assert good_sub.status_code == 200
+        sub_json = good_sub.json()
+        assert sub_json["webhook_secret_configured"] is True
+        assert "alice_secret_key_99" not in json.dumps(sub_json)
+        assert sub_json["has_alert_consent"] is True
+
+        # Webhook test sends signed payload; SSRF blocked on test too
+        bad_test = client.post(
+            "/api/v3/alerts/webhooks/test",
+            headers=csrf,
+            json={"webhook_url": "https://169.254.169.254/latest"},
+        )
+        assert bad_test.status_code == 422
+
+        ok_test = client.post(
+            "/api/v3/alerts/webhooks/test",
+            headers=csrf,
+            json={},
+        )
+        assert ok_test.status_code == 200
+        assert ok_test.json()["delivered"] is True
+        assert len(captured_webhooks) == 1
+        raw_sent, sig_sent = captured_webhooks[0]
+        assert verify_webhook_signature(raw_sent, "alice_secret_key_99", sig_sent)
+
+        # Mark notification as read & verify unread_count drops to 0
+        mark_one = client.post(
+            f"/api/v3/alerts/notifications/{notif_id}/read", headers=csrf
+        )
+        assert mark_one.status_code == 200
+        assert mark_one.json()["is_read"] is True
+        assert (
+            client.get("/api/v3/alerts/notifications?unread_only=true").json()[
+                "unread_count"
+            ]
+            == 0
+        )
+
+        # Mark-all read works cleanly
+        mark_all = client.post("/api/v3/alerts/notifications/read-all", headers=csrf)
+        assert mark_all.status_code == 200
+        assert mark_all.json()["status"] == "OK"
+
+    wh_client.close()
+    _ = u1, u2

@@ -125,3 +125,18 @@ export type SavedScreenItem = Schema["SavedScreenItem"];
 export type SavedScreensListResponse = Schema["SavedScreensListResponse"];
 export type AuditLogItemResponse = Schema["AuditLogItemResponse"];
 export type AuditLogsPageResponse = Schema["AuditLogsPageResponse"];
+
+export type AlertEventType = Schema["AlertEventType"];
+export type AlertSeverity =
+  | "INFO"
+  | "MEDIUM"
+  | "HIGH"
+  | "CRITICAL";
+export type AlertNotificationItem = Schema["AlertNotificationItem"];
+export type NotificationsListResponse = Schema["NotificationsListResponse"];
+export type NotificationReadResponse = Schema["NotificationReadResponse"];
+export type MarkAllReadResponse = Schema["MarkAllReadResponse"];
+export type AlertSubscriptionResponse = Schema["AlertSubscriptionResponse"];
+export type AlertSubscriptionUpdateRequest = Schema["AlertSubscriptionUpdateRequest"];
+export type WebhookTestRequest = Schema["WebhookTestRequest"];
+export type WebhookTestResponse = Schema["WebhookTestResponse"];

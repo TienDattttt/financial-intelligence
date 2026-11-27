@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { Dialog } from "@base-ui/react/dialog";
 import {
   Activity,
+  Bell,
   Bookmark,
   BookOpen,
   Building2,
@@ -22,6 +23,7 @@ import {
   UserCheck,
   X,
 } from "lucide-react";
+import { NotificationBell } from "@/components/alerts/NotificationBell";
 import { CommandSearch } from "@/components/layout/CommandSearch";
 import { SourceDrawer } from "@/components/layout/SourceDrawer";
 import { useAppState } from "@/components/providers/app-providers";
@@ -182,6 +184,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         label: `Theo dõi (${effectiveWatchlistCount})`,
         icon: Bookmark,
       },
+      { id: "alerts", href: "/alerts", label: "Cảnh báo", icon: Bell },
       { id: "compare", href: "/compare", label: "So sánh", icon: GitCompare },
       { id: "stress-test", href: "/stress-test", label: "Kịch bản sốc", icon: Activity },
       { id: "methodology", href: "/methodology", label: "Dữ liệu & Phương pháp", icon: BookOpen },
@@ -530,6 +533,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 );
               })}
             </div>
+
+            <NotificationBell isAuthenticated={isAuthenticated} />
 
             {isAuthenticated && authUser ? (
               <Link
