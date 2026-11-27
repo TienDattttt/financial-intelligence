@@ -41,6 +41,7 @@ from sklearn.model_selection import (  # type: ignore[import-untyped]
 )
 
 from finintel.exceptions import ContractViolationError
+from finintel.ml.mrm_tt99 import evaluate_tt99_gate_from_psi_report
 from finintel.ml.supervised.temporal_split import (
     SECTOR_RAW_TO_Z,
     build_expanding_walk_forward_splits,
@@ -2159,7 +2160,7 @@ def compute_taxonomy_drift_psi(
             "tgt_share_above_p95": float(np.mean(tgt_p >= p95_cut)),
         }
 
-    return {
+    report: dict[str, Any] = {
         "reference_rows": int(reference_frame.height),
         "target_rows": int(target_frame.height),
         "mean_feature_psi": float(np.mean(psi_values)) if psi_values else None,
@@ -2176,6 +2177,8 @@ def compute_taxonomy_drift_psi(
         "feature_drift": feature_drift,
         "score_drift": score_drift,
     }
+    report["tt99_mrm_gate"] = evaluate_tt99_gate_from_psi_report(report)
+    return report
 
 
 def score_distress_model(

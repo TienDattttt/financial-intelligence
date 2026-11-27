@@ -587,14 +587,14 @@ export function TierReliabilityChart({
 
   return (
     <EChartBox
-      title={`Độ tin cậy phân tầng tín nhiệm R1 → R5 (${monotoneText})`}
+      title={`Độ tin cậy phân tầng cảnh báo rủi ro R1 → R5 (${monotoneText})`}
       subtitle={`Nguồn đánh giá: ${formatEvaluationSourceLabel(reliability.evaluation_source)} · Đơn vị: %`}
       sourceCaption="Nguồn: Báo cáo hiệu chuẩn phân tầng Model Card · FinIntel"
       option={option}
       height={300}
       isEmpty={rows.length === 0}
       tableHeaders={[
-        "Bậc tín nhiệm",
+        "Nhóm cảnh báo rủi ro",
         "Số quan sát",
         "Tỷ trọng",
         "Số biến cố thực tế",

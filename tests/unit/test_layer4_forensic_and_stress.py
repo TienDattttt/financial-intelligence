@@ -49,6 +49,7 @@ from finintel.normalization.mapper import FACT_SCHEMA
 from finintel.storage.schemas import (
     CORE_RATIOS,
     EXTRA_RATIOS,
+    V3_RATIOS,
 )
 
 
@@ -153,30 +154,31 @@ def test_gap02_blk09_tt99_continuity_and_ttm_exact_filing() -> None:
 
     def _q_metrics(year: int, scale: float) -> dict[str, float | None]:
         debt_key = "IS_INTEREST_EXPENSE" if year < 2026 else "IS_BORROWING_COSTS"
+        vnd = 10_000_000.0
         return {
-            "BS_TOTAL_ASSETS": 1000.0 * scale,
-            "BS_TOTAL_EQUITY": 600.0 * scale,
-            "BS_MINORITY_INTEREST": 50.0 * scale,
-            "BS_CASH_AND_EQUIVALENTS": 100.0 * scale,
-            "BS_SHORT_TERM_BORROWINGS": 200.0 * scale,
-            "BS_LONG_TERM_BORROWINGS": 100.0 * scale,
-            "BS_CURRENT_ASSETS": 400.0 * scale,
-            "BS_CURRENT_LIABILITIES": 200.0 * scale,
-            "IS_NET_REVENUE": 300.0 * scale,
-            "IS_COST_OF_GOODS_SOLD": 180.0 * scale,
-            "IS_GROSS_PROFIT": 120.0 * scale,
-            "IS_SELLING_EXPENSES": 20.0 * scale,
-            "IS_ADMINISTRATIVE_EXPENSES": 15.0 * scale,
-            "IS_OPERATING_PROFIT": 85.0 * scale,
-            "IS_PROFIT_BEFORE_TAX": 75.0 * scale,
-            debt_key: 10.0 * scale,
-            "IS_CURRENT_INCOME_TAX": 15.0 * scale,
+            "BS_TOTAL_ASSETS": 1000.0 * vnd * scale,
+            "BS_TOTAL_EQUITY": 600.0 * vnd * scale,
+            "BS_MINORITY_INTEREST": 50.0 * vnd * scale,
+            "BS_CASH_AND_EQUIVALENTS": 100.0 * vnd * scale,
+            "BS_SHORT_TERM_BORROWINGS": 200.0 * vnd * scale,
+            "BS_LONG_TERM_BORROWINGS": 100.0 * vnd * scale,
+            "BS_CURRENT_ASSETS": 400.0 * vnd * scale,
+            "BS_CURRENT_LIABILITIES": 200.0 * vnd * scale,
+            "IS_NET_REVENUE": 300.0 * vnd * scale,
+            "IS_COST_OF_GOODS_SOLD": 180.0 * vnd * scale,
+            "IS_GROSS_PROFIT": 120.0 * vnd * scale,
+            "IS_SELLING_EXPENSES": 20.0 * vnd * scale,
+            "IS_ADMINISTRATIVE_EXPENSES": 15.0 * vnd * scale,
+            "IS_OPERATING_PROFIT": 85.0 * vnd * scale,
+            "IS_PROFIT_BEFORE_TAX": 75.0 * vnd * scale,
+            debt_key: 10.0 * vnd * scale,
+            "IS_CURRENT_INCOME_TAX": 15.0 * vnd * scale,
             "IS_DEFERRED_INCOME_TAX": 0.0,
-            "IS_NET_INCOME": 60.0 * scale,
-            "IS_NET_INCOME_PARENT": 55.0 * scale,
-            "CF_OPERATING_CASH_FLOW": 70.0 * scale,
-            "CF_CAPITAL_EXPENDITURE": -20.0 * scale,
-            "CF_DEPRECIATION_AMORTIZATION": 12.0 * scale,
+            "IS_NET_INCOME": 60.0 * vnd * scale,
+            "IS_NET_INCOME_PARENT": 55.0 * vnd * scale,
+            "CF_OPERATING_CASH_FLOW": 70.0 * vnd * scale,
+            "CF_CAPITAL_EXPENDITURE": -20.0 * vnd * scale,
+            "CF_DEPRECIATION_AMORTIZATION": 12.0 * vnd * scale,
         }
 
     # Include 2024 Q2-Q4 + 2025 Q1-Q4 + 2026 Q1-Q2 so 2025 Q1/Q2 also have full 4Q TTM for YoY growth.
@@ -302,55 +304,56 @@ def test_hi11_disjoint_ml_inputs_no_duplicate_error_and_38_benchmark_ratios() ->
     assert len(EXTRA_RATIOS) == 7
     assert len(FORENSIC_RATIOS) == 3
 
+    vnd = 10_000_000.0
     sample_metrics: dict[str, float | None] = {
-        "BS_TOTAL_ASSETS": 1000.0,
-        "BS_TOTAL_EQUITY": 500.0,
+        "BS_TOTAL_ASSETS": 1000.0 * vnd,
+        "BS_TOTAL_EQUITY": 500.0 * vnd,
         "BS_MINORITY_INTEREST": 0.0,
-        "BS_CURRENT_ASSETS": 400.0,
-        "BS_CURRENT_LIABILITIES": 200.0,
-        "BS_TOTAL_LIABILITIES": 500.0,
-        "BS_CASH_AND_EQUIVALENTS": 100.0,
-        "BS_SHORT_TERM_INVESTMENTS": 50.0,
-        "BS_SHORT_TERM_BORROWINGS": 100.0,
-        "BS_LONG_TERM_BORROWINGS": 100.0,
+        "BS_CURRENT_ASSETS": 400.0 * vnd,
+        "BS_CURRENT_LIABILITIES": 200.0 * vnd,
+        "BS_TOTAL_LIABILITIES": 500.0 * vnd,
+        "BS_CASH_AND_EQUIVALENTS": 100.0 * vnd,
+        "BS_SHORT_TERM_INVESTMENTS": 50.0 * vnd,
+        "BS_SHORT_TERM_BORROWINGS": 100.0 * vnd,
+        "BS_LONG_TERM_BORROWINGS": 100.0 * vnd,
         "BS_CONVERTIBLE_BONDS": 0.0,
-        "BS_TRADE_RECEIVABLES_ST": 100.0,
-        "BS_INVENTORIES": 100.0,
-        "BS_TRADE_PAYABLES_ST": 80.0,
-        "BS_ORDINARY_SHARES_CAPITAL": 100_000.0,
+        "BS_TRADE_RECEIVABLES_ST": 100.0 * vnd,
+        "BS_INVENTORIES": 100.0 * vnd,
+        "BS_TRADE_PAYABLES_ST": 80.0 * vnd,
+        "BS_ORDINARY_SHARES_CAPITAL": 100_000.0 * vnd,
         "BS_TREASURY_SHARES": 0.0,
-        "BS_TANGIBLE_FIXED_ASSETS": 300.0,
-        "BS_CIP_LONG_TERM": 50.0,
-        "BS_RETAINED_EARNINGS": 200.0,
-        "BS_LT_FINANCIAL_INVESTMENTS": 50.0,
-        "IS_NET_REVENUE": 800.0,
-        "IS_COST_OF_GOODS_SOLD": 480.0,
-        "IS_GROSS_PROFIT": 320.0,
-        "IS_SELLING_EXPENSES": 60.0,
-        "IS_ADMINISTRATIVE_EXPENSES": 40.0,
-        "IS_OPERATING_PROFIT": 220.0,
-        "IS_PROFIT_BEFORE_TAX": 200.0,
-        "IS_INTEREST_EXPENSE": 20.0,
-        "IS_CURRENT_INCOME_TAX": 40.0,
+        "BS_TANGIBLE_FIXED_ASSETS": 300.0 * vnd,
+        "BS_CIP_LONG_TERM": 50.0 * vnd,
+        "BS_RETAINED_EARNINGS": 200.0 * vnd,
+        "BS_LT_FINANCIAL_INVESTMENTS": 50.0 * vnd,
+        "IS_NET_REVENUE": 800.0 * vnd,
+        "IS_COST_OF_GOODS_SOLD": 480.0 * vnd,
+        "IS_GROSS_PROFIT": 320.0 * vnd,
+        "IS_SELLING_EXPENSES": 60.0 * vnd,
+        "IS_ADMINISTRATIVE_EXPENSES": 40.0 * vnd,
+        "IS_OPERATING_PROFIT": 220.0 * vnd,
+        "IS_PROFIT_BEFORE_TAX": 200.0 * vnd,
+        "IS_INTEREST_EXPENSE": 20.0 * vnd,
+        "IS_CURRENT_INCOME_TAX": 40.0 * vnd,
         "IS_DEFERRED_INCOME_TAX": 0.0,
-        "IS_NET_INCOME": 160.0,
-        "IS_NET_INCOME_PARENT": 160.0,
+        "IS_NET_INCOME": 160.0 * vnd,
+        "IS_NET_INCOME_PARENT": 160.0 * vnd,
         "IS_EPS_BASIC_REPORTED": 16.0,
-        "CF_OPERATING_CASH_FLOW": 180.0,
-        "CF_CAPITAL_EXPENDITURE": -50.0,
-        "CF_DEPRECIATION_AMORTIZATION": 30.0,
+        "CF_OPERATING_CASH_FLOW": 180.0 * vnd,
+        "CF_CAPITAL_EXPENDITURE": -50.0 * vnd,
+        "CF_DEPRECIATION_AMORTIZATION": 30.0 * vnd,
     }
     history = _build_facts(
         {
             (2024, None): sample_metrics,
             (2025, None): {
                 **sample_metrics,
-                "IS_NET_REVENUE": 960.0,
-                "IS_GROSS_PROFIT": 384.0,
-                "IS_OPERATING_PROFIT": 264.0,
-                "IS_PROFIT_BEFORE_TAX": 240.0,
-                "IS_NET_INCOME": 192.0,
-                "IS_NET_INCOME_PARENT": 192.0,
+                "IS_NET_REVENUE": 960.0 * vnd,
+                "IS_GROSS_PROFIT": 384.0 * vnd,
+                "IS_OPERATING_PROFIT": 264.0 * vnd,
+                "IS_PROFIT_BEFORE_TAX": 240.0 * vnd,
+                "IS_NET_INCOME": 192.0 * vnd,
+                "IS_NET_INCOME_PARENT": 192.0 * vnd,
             },
         }
     )
@@ -368,9 +371,9 @@ def test_hi11_disjoint_ml_inputs_no_duplicate_error_and_38_benchmark_ratios() ->
     benchmarks = benchmark_ratios(ratios)
     bench_2025 = benchmarks.filter(pl.col("period_end_date") == date(2025, 12, 31))
     observed_metrics = set(bench_2025["metric_or_ratio_name"].to_list())
-    expected_38 = set((*CORE_RATIOS, *EXTRA_RATIOS, *FORENSIC_RATIOS))
-    assert len(expected_38) == 38
-    assert observed_metrics == expected_38
+    expected_39 = set((*CORE_RATIOS, *EXTRA_RATIOS, *FORENSIC_RATIOS, *V3_RATIOS))
+    assert len(expected_39) == 39
+    assert observed_metrics == expected_39
 
 
 def test_core_earnings_signed_expense_reversal_and_pre_ttm_missing_selling_rule() -> (
@@ -686,61 +689,62 @@ def test_stress_test_zero_shock_identity_monotonicity_and_edge_cases() -> None:
             _issuer("LOSS", icb2="2000", icb2_name="Industrials"),
         ]
     )
+    vnd = 10_000_000.0
     facts = pl.concat(
         [
             # Firm A: healthy borrower with positive interest expense.
             _build_facts(
                 {
                     (2025, None): {
-                        "BS_TOTAL_ASSETS": 1000.0,
-                        "BS_TOTAL_EQUITY": 500.0,
-                        "BS_SHORT_TERM_BORROWINGS": 300.0,
-                        "IS_NET_REVENUE": 1000.0,
-                        "IS_COST_OF_GOODS_SOLD": 700.0,
-                        "IS_GROSS_PROFIT": 300.0,
-                        "IS_PROFIT_BEFORE_TAX": 90.0,
-                        "IS_INTEREST_EXPENSE": 10.0,
-                        "IS_CURRENT_INCOME_TAX": 18.0,
+                        "BS_TOTAL_ASSETS": 1000.0 * vnd,
+                        "BS_TOTAL_EQUITY": 500.0 * vnd,
+                        "BS_SHORT_TERM_BORROWINGS": 300.0 * vnd,
+                        "IS_NET_REVENUE": 1000.0 * vnd,
+                        "IS_COST_OF_GOODS_SOLD": 700.0 * vnd,
+                        "IS_GROSS_PROFIT": 300.0 * vnd,
+                        "IS_PROFIT_BEFORE_TAX": 90.0 * vnd,
+                        "IS_INTEREST_EXPENSE": 10.0 * vnd,
+                        "IS_CURRENT_INCOME_TAX": 18.0 * vnd,
                         "IS_DEFERRED_INCOME_TAX": 0.0,
-                        "CF_OPERATING_CASH_FLOW": 120.0,
+                        "CF_OPERATING_CASH_FLOW": 120.0 * vnd,
                     }
                 },
                 issuer_id="A",
             ),
-            # Firm B: zero baseline interest expense (NO_INTEREST_EXPENSE) but has debt = 400.
+            # Firm B: zero baseline interest expense (NO_INTEREST_EXPENSE) but has debt = 4B.
             _build_facts(
                 {
                     (2025, None): {
-                        "BS_TOTAL_ASSETS": 1000.0,
-                        "BS_TOTAL_EQUITY": 400.0,
-                        "BS_SHORT_TERM_BORROWINGS": 400.0,
-                        "IS_NET_REVENUE": 500.0,
-                        "IS_COST_OF_GOODS_SOLD": 400.0,
-                        "IS_GROSS_PROFIT": 100.0,
-                        "IS_PROFIT_BEFORE_TAX": 10.0,
+                        "BS_TOTAL_ASSETS": 1000.0 * vnd,
+                        "BS_TOTAL_EQUITY": 400.0 * vnd,
+                        "BS_SHORT_TERM_BORROWINGS": 400.0 * vnd,
+                        "IS_NET_REVENUE": 500.0 * vnd,
+                        "IS_COST_OF_GOODS_SOLD": 400.0 * vnd,
+                        "IS_GROSS_PROFIT": 100.0 * vnd,
+                        "IS_PROFIT_BEFORE_TAX": 10.0 * vnd,
                         "IS_INTEREST_EXPENSE": 0.0,
-                        "IS_CURRENT_INCOME_TAX": 2.0,
+                        "IS_CURRENT_INCOME_TAX": 2.0 * vnd,
                         "IS_DEFERRED_INCOME_TAX": 0.0,
-                        "CF_OPERATING_CASH_FLOW": 40.0,
+                        "CF_OPERATING_CASH_FLOW": 40.0 * vnd,
                     }
                 },
                 issuer_id="B",
             ),
-            # Firm LOSS: negative baseline EBT (-50), must not receive synthetic 20% tax refund on deepening loss.
+            # Firm LOSS: negative baseline EBT (-500M), must not receive synthetic 20% tax refund on deepening loss.
             _build_facts(
                 {
                     (2025, None): {
-                        "BS_TOTAL_ASSETS": 1000.0,
-                        "BS_TOTAL_EQUITY": 300.0,
-                        "BS_SHORT_TERM_BORROWINGS": 500.0,
-                        "IS_NET_REVENUE": 400.0,
-                        "IS_COST_OF_GOODS_SOLD": 360.0,
-                        "IS_GROSS_PROFIT": 40.0,
-                        "IS_PROFIT_BEFORE_TAX": -50.0,
-                        "IS_INTEREST_EXPENSE": 30.0,
+                        "BS_TOTAL_ASSETS": 1000.0 * vnd,
+                        "BS_TOTAL_EQUITY": 300.0 * vnd,
+                        "BS_SHORT_TERM_BORROWINGS": 500.0 * vnd,
+                        "IS_NET_REVENUE": 400.0 * vnd,
+                        "IS_COST_OF_GOODS_SOLD": 360.0 * vnd,
+                        "IS_GROSS_PROFIT": 40.0 * vnd,
+                        "IS_PROFIT_BEFORE_TAX": -50.0 * vnd,
+                        "IS_INTEREST_EXPENSE": 30.0 * vnd,
                         "IS_CURRENT_INCOME_TAX": 0.0,
                         "IS_DEFERRED_INCOME_TAX": 0.0,
-                        "CF_OPERATING_CASH_FLOW": -10.0,
+                        "CF_OPERATING_CASH_FLOW": -10.0 * vnd,
                     }
                 },
                 issuer_id="LOSS",
@@ -810,9 +814,9 @@ def test_stress_test_zero_shock_identity_monotonicity_and_edge_cases() -> None:
         StressScenario(name="loss_rev_drop", revenue_shock_pct=-0.25),
     )
     row_loss = loss_shock.filter(pl.col("issuer_id") == "LOSS").row(0, named=True)
-    expected_delta_gp = 400.0 * 0.75 * 0.10 - 40.0  # -10.0
+    expected_delta_gp = 400.0 * vnd * 0.75 * 0.10 - 40.0 * vnd  # -100M
     assert row_loss["stressed_cfo_ttm"] == pytest.approx(
-        row_loss["cfo_ttm"] + expected_delta_gp, abs=1e-12
+        row_loss["cfo_ttm"] + expected_delta_gp, abs=1e-4
     )
 
     # 5. Monotonicity check across progressively harsher shocks.
@@ -851,7 +855,7 @@ def test_stress_test_zero_shock_identity_monotonicity_and_edge_cases() -> None:
         0, named=True
     )
     assert tech_row["issuer_count"] == 2
-    assert tech_row["total_debt_sum"] == pytest.approx(700.0)
+    assert tech_row["total_debt_sum"] == pytest.approx(700.0 * vnd)
     assert tech_row["newly_distressed_count"] >= 1
 
     multi_period = pl.concat(
@@ -884,6 +888,7 @@ def test_stress_test_zero_shock_identity_monotonicity_and_edge_cases() -> None:
 
 def test_stress_test_def01_def05_risk01_dso_dio_cogs_clamp_and_regime_guards() -> None:
     """Verify DEF-01 (ebit_ttm=None), DEF-05 (accounting_regime=None), RISK-01, DSO/DIO shocks, and COGS'>=0."""
+    vnd = 10_000_000.0
     df = pl.DataFrame(
         {
             "issuer_id": [
@@ -897,13 +902,37 @@ def test_stress_test_def01_def05_risk01_dso_dio_cogs_clamp_and_regime_guards() -
             "statement_scope": ["CONSOLIDATED"] * 5,
             "period_type": ["ANNUAL"] * 5,
             "period_end_date": [date(2025, 12, 31)] * 5,
-            "net_revenue_ttm": [365.0, 1000.0, 0.0, 500.0, 1000.0],
-            "gross_profit_ttm": [328.5, 300.0, 0.0, 200.0, 300.0],
-            "cogs_ttm": [36.5, 700.0, 0.0, 300.0, 700.0],
-            "cfo_ttm": [100.0, 120.0, 10.0, 50.0, 120.0],
-            "borrowing_cost_ttm": [10.0, 10.0, 5.0, 10.0, 10.0],
-            "total_debt": [100.0, 300.0, 50.0, 200.0, 100.0],
-            "ebit_ttm": [110.0, None, -5.0, 80.0, 5.0],
+            "net_revenue_ttm": [
+                365.0 * vnd,
+                1000.0 * vnd,
+                0.0,
+                500.0 * vnd,
+                1000.0 * vnd,
+            ],
+            "gross_profit_ttm": [
+                328.5 * vnd,
+                300.0 * vnd,
+                0.0,
+                200.0 * vnd,
+                300.0 * vnd,
+            ],
+            "cogs_ttm": [36.5 * vnd, 700.0 * vnd, 0.0, 300.0 * vnd, 700.0 * vnd],
+            "cfo_ttm": [100.0 * vnd, 120.0 * vnd, 10.0 * vnd, 50.0 * vnd, 120.0 * vnd],
+            "borrowing_cost_ttm": [
+                10.0 * vnd,
+                10.0 * vnd,
+                5.0 * vnd,
+                10.0 * vnd,
+                10.0 * vnd,
+            ],
+            "total_debt": [
+                100.0 * vnd,
+                300.0 * vnd,
+                50.0 * vnd,
+                200.0 * vnd,
+                100.0 * vnd,
+            ],
+            "ebit_ttm": [110.0 * vnd, None, -5.0 * vnd, 80.0 * vnd, 5.0 * vnd],
             "gross_margin": [0.90, 0.30, None, 0.40, 0.30],
             "effective_tax_rate": [0.20, 0.20, 0.20, 0.20, 0.20],
             "interest_coverage": [11.0, None, -1.0, None, 0.5],
@@ -929,14 +958,11 @@ def test_stress_test_def01_def05_risk01_dso_dio_cogs_clamp_and_regime_guards() -
     stressed = simulate_financial_stress(df, shock)
     rows = {r["issuer_id"]: r for r in stressed.to_dicts()}
 
-    # WC_FIRM: Rev'=365, GM'=1.10, GP'=401.5, COGS'=max(0, 365-401.5)=0.0.
-    # delta_GP = +73.0, Int' = 10 + 100*0.03 = 13.0 (delta_Int = +3.0).
-    # EBT_0 = 100.0, EBT' = (110+73) - 13 = 170.0 -> delta_tax = (170 - 100)*0.20 = 14.0.
-    # delta_wc_cash = -(365/365)*10 - (0/365)*20 = -10.0.
-    # CFO' = 100 + (73 - 3) - 14 - 10 = 146.0.
+    # WC_FIRM: Rev'=365*vnd, GM'=1.10, GP'=401.5*vnd, COGS'=0.0.
+    # CFO' = (100 + (73 - 3) - 14 - 10) * vnd = 146.0 * vnd.
     wc = rows["WC_FIRM"]
     assert wc["stressed_cogs_ttm"] == 0.0
-    assert wc["stressed_cfo_ttm"] == pytest.approx(146.0, abs=1e-12)
+    assert wc["stressed_cfo_ttm"] == pytest.approx(146.0 * vnd, abs=1e-4)
 
     # 2. [DEF-01] NULL_EBIT: when ebit_ttm is None, stressed_ebit_ttm AND stressed_cfo_ttm MUST be None.
     null_ebit = rows["NULL_EBIT"]
@@ -976,7 +1002,7 @@ def test_stress_test_def01_def05_risk01_dso_dio_cogs_clamp_and_regime_guards() -
     s_row = summary.row(0, named=True)
     assert s_row["icb_code_level2"] == "UNCLASSIFIED"
     assert s_row["icb_name_level2"] == "UNCLASSIFIED"
-    assert s_row["total_debt_sum"] == pytest.approx(100.0)
+    assert s_row["total_debt_sum"] == pytest.approx(100.0 * vnd)
 
 
 @pytest.mark.parametrize(

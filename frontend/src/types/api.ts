@@ -6,8 +6,13 @@ export type HealthResponse = Schema["HealthResponse"];
 export type SnapshotOverviewResponse = Schema["SnapshotOverviewResponse"];
 export type IssuerItem = Schema["IssuerItem"];
 export type IssuersPageResponse = Schema["IssuersPageResponse"];
-export type CompanyProfileResponse = Schema["CompanyProfileResponse"];
+export type PiotroskiNaReason =
+  | "TT200_TT99_TAXONOMY_GUARD"
+  | "MISSING_DILUTION_DATA"
+  | "MISSING_PRIOR_YEAR_BASE"
+  | "INSUFFICIENT_COMPONENTS";
 export type MLScoreItem = Schema["MLScoreItem"];
+export type CompanyProfileResponse = Schema["CompanyProfileResponse"];
 export type ShapDriverItem = Schema["ShapDriverItem"];
 export type ShapExplanationItem = Schema["ShapExplanationItem"];
 export type GrowthPoint = Schema["GrowthPoint"];
@@ -89,4 +94,114 @@ export type ScreenerQueryParams = NonNullable<
   operations["screen_market_api_v1_screener_get"]["parameters"]["query"]
 >;
 export type ScreenerSortField = NonNullable<ScreenerQueryParams["sort_by"]>;
+export type ExchangeCode = NonNullable<ScreenerQueryParams["exchange"]>;
 export type SortDirection = NonNullable<ScreenerQueryParams["sort_dir"]>;
+
+export type UserRole = Schema["UserRole"];
+export type ConsentPurpose = Schema["ConsentPurpose"];
+export type ConsentStatusItem = Schema["ConsentStatusItem"];
+export type UserProfileResponse = Schema["UserProfileResponse"];
+export type SessionStatusResponse = Schema["SessionStatusResponse"];
+export type SessionSummaryItem = Schema["SessionSummaryItem"];
+export type SessionsListResponse = Schema["SessionsListResponse"];
+export type AuthActionMessageResponse = Schema["AuthActionMessageResponse"];
+export type DataDeletionReceiptResponse = Schema["DataDeletionReceiptResponse"];
+export type RegisterRequest = Schema["RegisterRequest"];
+export type LoginRequest = Schema["LoginRequest"];
+export type PasswordResetRequestBody = Schema["PasswordResetRequestBody"];
+export type PasswordResetConfirmBody = Schema["PasswordResetConfirmBody"];
+export type PasswordChangeBody = Schema["PasswordChangeBody"];
+export type UpdateProfileRequest = Schema["UpdateProfileRequest"];
+export type DeleteAccountRequest = Schema["DeleteAccountRequest"];
+export type WatchlistResponseItem = Schema["WatchlistResponseItem"];
+export type WatchlistLimitsInfo = Schema["WatchlistLimitsInfo"];
+export type WatchlistsListResponse = Schema["WatchlistsListResponse"];
+export type ImportLocalWatchlistResponse = Schema["ImportLocalWatchlistResponse"];
+export type AnalystNoteItem = Schema["AnalystNoteItem"];
+export type AnalystNotesListResponse = Schema["AnalystNotesListResponse"];
+export type AnalystNoteCreateRequest = Schema["AnalystNoteCreateRequest"];
+export type AnalystNoteUpdateRequest = Schema["AnalystNoteUpdateRequest"];
+export type SavedScreenItem = Schema["SavedScreenItem"];
+export type SavedScreensListResponse = Schema["SavedScreensListResponse"];
+export type AuditLogItemResponse = Schema["AuditLogItemResponse"];
+export type AuditLogsPageResponse = Schema["AuditLogsPageResponse"];
+
+export type AlertEventType = Schema["AlertEventType"];
+export type AlertSeverity =
+  | "INFO"
+  | "MEDIUM"
+  | "HIGH"
+  | "CRITICAL";
+export type AlertNotificationItem = Schema["AlertNotificationItem"];
+export type NotificationsListResponse = Schema["NotificationsListResponse"];
+export type NotificationReadResponse = Schema["NotificationReadResponse"];
+export type MarkAllReadResponse = Schema["MarkAllReadResponse"];
+export type AlertSubscriptionResponse = Schema["AlertSubscriptionResponse"];
+export type AlertSubscriptionUpdateRequest = Schema["AlertSubscriptionUpdateRequest"];
+export type WebhookTestRequest = Schema["WebhookTestRequest"];
+export type WebhookTestResponse = Schema["WebhookTestResponse"];
+
+export type QuotaMeterStatus = Schema["QuotaMeterStatus"];
+export type MyQuotaResponse = Schema["MyQuotaResponse"];
+export type SystemBudgetResponse = Schema["SystemBudgetResponse"];
+
+export type SuggestedPeerItem = Schema["SuggestedPeerItem"];
+export type SuggestedPeersResponse = Schema["SuggestedPeersResponse"];
+export type AnomalyDriverItem = Schema["AnomalyDriverItem"];
+export type AnomalyDriversResponse = Schema["AnomalyDriversResponse"];
+export type OpsRevisionItem = Schema["OpsRevisionItem"];
+export type OpsQuarantineTicketItem = Schema["OpsQuarantineTicketItem"];
+export type OpsQaQueueResponse = Schema["OpsQaQueueResponse"];
+export type OpsAssignTicketRequest = Schema["OpsAssignTicketRequest"];
+export type OpsSubmitRevisionRequest = Schema["OpsSubmitRevisionRequest"];
+export type OpsDecisionRequest = Schema["OpsDecisionRequest"];
+export type OpsTicketMutationResponse = Schema["OpsTicketMutationResponse"];
+export type IssuerLifecycleEventItem = Schema["IssuerLifecycleEventItem"];
+export type IssuerLifecycleItem = Schema["IssuerLifecycleItem"];
+export type OpsIssuerLifecycleResponse = Schema["OpsIssuerLifecycleResponse"];
+export type OpsIssuerSyncRequest = Schema["OpsIssuerSyncRequest"];
+export type OpsIssuerSyncResponse = Schema["OpsIssuerSyncResponse"];
+export type ApiKeyCreateRequest = Schema["ApiKeyCreateRequest"];
+export type ApiKeyMetadataItem = Schema["ApiKeyMetadataItem"];
+export type ApiKeyCreateResponse = Schema["ApiKeyCreateResponse"];
+export type ApiKeyListResponse = Schema["ApiKeyListResponse"];
+export type ApiKeyRevokeResponse = Schema["ApiKeyRevokeResponse"];
+export type ApiUsageDailyPoint = Schema["ApiUsageDailyPoint"];
+export type ApiUsageSummaryResponse = Schema["ApiUsageSummaryResponse"];
+export type B2BWebhookCreateRequest = Schema["B2BWebhookCreateRequest"];
+export type B2BWebhookItem = Schema["B2BWebhookItem"];
+export type B2BWebhookCreateResponse = Schema["B2BWebhookCreateResponse"];
+export type B2BWebhookListResponse = Schema["B2BWebhookListResponse"];
+export type B2BWebhookDeleteResponse = Schema["B2BWebhookDeleteResponse"];
+export type B2BWebhookTestResponse = Schema["B2BWebhookTestResponse"];
+
+export type PrivateQg1Discrepancy = Schema["Qg1DiscrepancyItem"];
+export type PrivateQg1Report = Schema["Qg1ReportResponse"];
+export type PrivateParsedFactLine = Schema["PrivateParsedLineItem"];
+export type PrivateDossierPreviewResponse = Schema["PrivateDossierPreviewResponse"];
+export type PrivateDossierSummaryItem = Schema["PrivateDossierSummaryItem"];
+export type PrivateDossierListResponse = Schema["PrivateDossierListResponse"];
+export type PrivateScoreRequest = Schema["PrivateScoreRequest"];
+export type PrivateClassicalScores = Schema["PrivateClassicalScores"];
+export type PrivateDupontBreakdown = Schema["PrivateDupontBreakdown"];
+export type PrivateRedFlagItem = Schema["PrivateRedFlagItem"];
+export type PrivateStressResult = Schema["PrivateStressResult"];
+export type PrivateMlAccountingOnlyResult = Schema["PrivateMlAccountingOnlyResult"];
+export type PrivateScoreResponse = Schema["PrivateScoreResponse"];
+export type PrivateDossierDeleteResponse = Schema["PrivateDossierDeleteResponse"];
+
+export type HitlVerdict = "CONFIRMED_RISK" | "BENIGN_DOMAIN_EXCEPTION";
+export type HitlReasonCategory =
+  | "CONSTRUCTION_PROGRESS_BILLING"
+  | "HOLDING_ASSOCIATE_DIVIDENDS"
+  | "SEASONAL_WORKING_CAPITAL"
+  | "TRANSIENT_CAPEX_EXPANSION"
+  | "ACCOUNTING_RECLASSIFICATION"
+  | "CONFIRMED_FUNDAMENTAL_RISK"
+  | "OTHER";
+export type HitlFeedbackRequest = Schema["HitlFeedbackRequest"];
+export type HitlFeedbackItem = Schema["HitlFeedbackItem"];
+export type HitlSummaryCell = Schema["HitlSummaryCell"];
+export type HitlSummaryResponse = Schema["HitlSummaryResponse"];
+
+export type CompanyBondSignalsResponse = Schema["CompanyBondSignalsResponse"];

@@ -72,6 +72,9 @@ const METRIC_DIRECTIONS: Record<string, MetricDirection> = {
   delta_current_ratio_4q: "NEUTRAL",
   payables_turnover: "NEUTRAL",
   dpo: "NEUTRAL",
+  merton_dtd: "HIGHER_IS_BETTER",
+  equity_volatility_1y: "LOWER_IS_BETTER",
+  naive_edf: "LOWER_IS_BETTER",
 };
 
 function formatZScore(val: number): string {
@@ -89,11 +92,17 @@ function formatDriverValue(feature: string, val: number): string {
   if (lowered.startsWith("sector_z_")) {
     return formatZScore(val);
   }
+  if (lowered === "merton_dtd") {
+    return `${formatNumber(val, 2)} σ`;
+  }
   if (
     lowered === "overdue_or_late_count_4q" ||
     lowered === "consecutive_loss_quarters"
   ) {
     return `${formatNumber(Math.round(val), 0)} quý`;
+  }
+  if (lowered === "piotroski_f_score") {
+    return `${formatNumber(Math.round(val), 0)}/9`;
   }
   if (lowered === "cross_sectional_asset_size_pct" || lowered.endsWith("_pct")) {
     return `${new Intl.NumberFormat("vi-VN", {
@@ -118,7 +127,9 @@ function formatDriverValue(feature: string, val: number): string {
     lowered.includes("growth") ||
     (lowered.includes("ratio") && lowered.includes("core_to_ebt")) ||
     lowered.includes("fcf_to_revenue") ||
-    lowered.includes("distortion")
+    lowered.includes("distortion") ||
+    lowered === "equity_volatility_1y" ||
+    lowered === "naive_edf"
   ) {
     return `${formatNumber(val * 100, 1)}%`;
   }
@@ -133,40 +144,100 @@ function formatDriverValue(feature: string, val: number): string {
   return formatNumber(val, 2);
 }
 
+interface PeerComparisonResult {
+  relation: string;
+  isCounterIntuitive: boolean;
+  isEqual: boolean;
+  isNeutralDirection: boolean;
+}
+
 function describePeerComparison(
   feature: string,
   value: number,
   peerMedian: number,
   riskDirection: "increasing" | "decreasing",
-): string {
+): PeerComparisonResult {
   if (Math.abs(value - peerMedian) <= 1e-9) {
-    return "tương đương trung vị ngành";
+    return {
+      relation: "tương đương trung vị ngành",
+      isCounterIntuitive: false,
+      isEqual: true,
+      isNeutralDirection: false,
+    };
   }
   const direction = METRIC_DIRECTIONS[feature.toLowerCase()] ?? "NEUTRAL";
   const isHigher = value > peerMedian;
   if (direction === "HIGHER_IS_BETTER") {
     const isFavorable = isHigher;
     if (riskDirection === "increasing" && !isFavorable) {
-      return "bất lợi hơn so với trung vị ngành";
+      return {
+        relation: "bất lợi hơn so với trung vị ngành",
+        isCounterIntuitive: false,
+        isEqual: false,
+        isNeutralDirection: false,
+      };
     }
     if (riskDirection === "decreasing" && isFavorable) {
-      return "tích cực hơn trung vị ngành";
+      return {
+        relation: "tích cực hơn trung vị ngành",
+        isCounterIntuitive: false,
+        isEqual: false,
+        isNeutralDirection: false,
+      };
     }
-  } else if (direction === "LOWER_IS_BETTER") {
+    return {
+      relation: isHigher ? "cao hơn trung vị ngành" : "thấp hơn trung vị ngành",
+      isCounterIntuitive: true,
+      isEqual: false,
+      isNeutralDirection: false,
+    };
+  }
+  if (direction === "LOWER_IS_BETTER") {
     const isFavorable = !isHigher;
     if (riskDirection === "increasing" && !isFavorable) {
-      return "bất lợi hơn so với trung vị ngành";
+      return {
+        relation: "bất lợi hơn so với trung vị ngành",
+        isCounterIntuitive: false,
+        isEqual: false,
+        isNeutralDirection: false,
+      };
     }
     if (riskDirection === "decreasing" && isFavorable) {
-      return "tích cực hơn trung vị ngành";
+      return {
+        relation: "tích cực hơn trung vị ngành",
+        isCounterIntuitive: false,
+        isEqual: false,
+        isNeutralDirection: false,
+      };
     }
+    return {
+      relation: isHigher ? "cao hơn trung vị ngành" : "thấp hơn trung vị ngành",
+      isCounterIntuitive: true,
+      isEqual: false,
+      isNeutralDirection: false,
+    };
   }
-  return isHigher ? "cao hơn trung vị ngành" : "thấp hơn trung vị ngành";
+  return {
+    relation: isHigher ? "cao hơn trung vị ngành" : "thấp hơn trung vị ngành",
+    isCounterIntuitive: false,
+    isEqual: false,
+    isNeutralDirection: true,
+  };
 }
 
 function formatLogOddsDelta(delta: number): string {
   const absStr = formatNumber(Math.abs(delta), 2);
   return delta >= 0 ? `+${absStr}` : `${MINUS_SIGN}${absStr}`;
+}
+
+function isMaterialValidDriver(drv: ShapDriverInput): boolean {
+  return (
+    drv.value !== null &&
+    drv.value !== undefined &&
+    Number.isFinite(drv.value) &&
+    Number.isFinite(drv.shap_delta) &&
+    Math.abs(drv.shap_delta) >= 0.005
+  );
 }
 
 /**
@@ -179,68 +250,104 @@ export function buildShapNarrativeVi(
   if (!shap) return [];
   const sentences: string[] = [];
 
-  for (const drv of shap.top_risk_increasing.slice(0, 3)) {
-    const hasVal =
-      drv.value !== null && drv.value !== undefined && Number.isFinite(drv.value);
+  const validIncreasing = shap.top_risk_increasing
+    .filter(isMaterialValidDriver)
+    .slice(0, 3);
+  const validDecreasing = shap.top_risk_decreasing
+    .filter(isMaterialValidDriver)
+    .slice(0, 2);
+
+  for (const drv of validIncreasing) {
     const hasMed =
       drv.peer_median !== null &&
       drv.peer_median !== undefined &&
       Number.isFinite(drv.peer_median);
-    const valStr = hasVal ? formatDriverValue(drv.feature, drv.value as number) : null;
+    const valStr = formatDriverValue(drv.feature, drv.value as number);
     const medStr = hasMed
       ? formatDriverValue(drv.feature, drv.peer_median as number)
       : null;
     const deltaStr = formatLogOddsDelta(drv.shap_delta);
 
-    if (valStr && medStr) {
-      const relation = describePeerComparison(
+    if (medStr) {
+      const cmp = describePeerComparison(
         drv.feature,
         drv.value as number,
         drv.peer_median as number,
         "increasing",
       );
-      sentences.push(
-        `${drv.display_name_vn} (${valStr}) ${relation} (${medStr}), đóng góp làm tăng điểm rủi ro (${deltaStr} log-odds).`,
-      );
-    } else if (valStr) {
-      sentences.push(
-        `${drv.display_name_vn} (${valStr}) đóng góp làm tăng điểm rủi ro mô hình (${deltaStr} log-odds).`,
-      );
+      if (cmp.isCounterIntuitive) {
+        sentences.push(
+          `${drv.display_name_vn} (${valStr}) đang ở mức ${cmp.relation} (${medStr}), ghi nhận tác động tương tác trong mô hình (${deltaStr} log-odds).`,
+        );
+      } else if (cmp.isEqual) {
+        sentences.push(
+          `${drv.display_name_vn} (${valStr}) ${cmp.relation} (${medStr}), ghi nhận tác động tương tác trong mô hình (${deltaStr} log-odds).`,
+        );
+      } else if (cmp.isNeutralDirection) {
+        sentences.push(
+          `${drv.display_name_vn} (${valStr}) ${cmp.relation} (${medStr}), ghi nhận tác động trong mô hình (${deltaStr} log-odds).`,
+        );
+      } else {
+        sentences.push(
+          `${drv.display_name_vn} (${valStr}) ${cmp.relation} (${medStr}), đóng góp làm tăng điểm rủi ro (${deltaStr} log-odds).`,
+        );
+      }
     } else {
       sentences.push(
-        `${drv.display_name_vn} góp phần làm tăng điểm rủi ro mô hình (${deltaStr} log-odds).`,
+        `${drv.display_name_vn} (${valStr}) đóng góp làm tăng điểm rủi ro mô hình (${deltaStr} log-odds).`,
       );
     }
   }
 
-  for (const drv of shap.top_risk_decreasing.slice(0, 2)) {
-    const hasVal =
-      drv.value !== null && drv.value !== undefined && Number.isFinite(drv.value);
+  for (const drv of validDecreasing) {
     const hasMed =
       drv.peer_median !== null &&
       drv.peer_median !== undefined &&
       Number.isFinite(drv.peer_median);
-    const valStr = hasVal ? formatDriverValue(drv.feature, drv.value as number) : null;
+    const valStr = formatDriverValue(drv.feature, drv.value as number);
     const medStr = hasMed
       ? formatDriverValue(drv.feature, drv.peer_median as number)
       : null;
     const deltaStr = formatLogOddsDelta(drv.shap_delta);
 
-    if (valStr && medStr) {
-      const relation = describePeerComparison(
+    if (medStr) {
+      const cmp = describePeerComparison(
         drv.feature,
         drv.value as number,
         drv.peer_median as number,
         "decreasing",
       );
-      sentences.push(
-        `${drv.display_name_vn} (${valStr}) ${relation} (${medStr}), giúp giảm áp lực rủi ro (${deltaStr} log-odds).`,
-      );
-    } else if (valStr) {
+      if (cmp.isCounterIntuitive) {
+        sentences.push(
+          `${drv.display_name_vn} (${valStr}) đang ở mức ${cmp.relation} (${medStr}), ghi nhận tác động tương tác trong mô hình (${deltaStr} log-odds).`,
+        );
+      } else if (cmp.isEqual) {
+        sentences.push(
+          `${drv.display_name_vn} (${valStr}) ${cmp.relation} (${medStr}), ghi nhận tác động tương tác trong mô hình (${deltaStr} log-odds).`,
+        );
+      } else if (cmp.isNeutralDirection) {
+        sentences.push(
+          `${drv.display_name_vn} (${valStr}) ${cmp.relation} (${medStr}), ghi nhận tác động trong mô hình (${deltaStr} log-odds).`,
+        );
+      } else {
+        sentences.push(
+          `${drv.display_name_vn} (${valStr}) ${cmp.relation} (${medStr}), giúp giảm áp lực rủi ro (${deltaStr} log-odds).`,
+        );
+      }
+    } else {
       sentences.push(
         `${drv.display_name_vn} (${valStr}) giúp giảm điểm rủi ro mô hình (${deltaStr} log-odds).`,
       );
     }
+  }
+
+  if (
+    sentences.length === 0 &&
+    shap.top_risk_increasing.length + shap.top_risk_decreasing.length > 0
+  ) {
+    return [
+      "Không có chỉ số định lượng đơn lẻ nào có đóng góp đáng kể trong kỳ này (các yếu tố đều ở mức trung tính hoặc thiếu dữ liệu đầu vào).",
+    ];
   }
 
   return sentences;

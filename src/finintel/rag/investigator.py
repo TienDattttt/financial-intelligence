@@ -663,6 +663,53 @@ class GroundedDocumentInvestigator:
         verified, _ = self._reconcile_citations_with_chunks(raw_citations, hits)
         return verified
 
+    async def peek_cached_result(
+        self,
+        *,
+        ticker: str,
+        question: str,
+        statement_scope: str | None = "CONSOLIDATED",
+        fiscal_year: int | None = None,
+        top_k: int = 6,
+    ) -> InvestigationResult | None:
+        """Return cached ``InvestigationResult`` without calling retriever/LLM, or ``None``."""
+        started = time.perf_counter()
+        clean_ticker = ticker.strip().upper()
+        clean_question = sanitize_user_question(question)
+        cache_key = build_rag_cache_key(
+            ticker=clean_ticker,
+            question=clean_question,
+            statement_scope=statement_scope,
+            fiscal_year=fiscal_year,
+            top_k=top_k,
+        )
+        cached_payload = await asyncio.to_thread(self._cache.get, cache_key)
+        if cached_payload is None:
+            return None
+        elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+        citations = tuple(
+            CitationEvidence(**c) for c in cached_payload.get("citations", [])
+        )
+        raw_reason = cached_payload.get("abstention_reason")
+        cached_reason = (
+            sanitize_rag_output_text(str(raw_reason)) if raw_reason else None
+        )
+        return InvestigationResult(
+            ticker=str(cached_payload["ticker"]),
+            question=str(cached_payload["question"]),
+            answer=sanitize_rag_output_text(str(cached_payload["answer"])),
+            abstained=bool(cached_payload["abstained"]),
+            abstention_reason=cached_reason or None,
+            citations=citations,
+            retrieved_chunks_count=int(cached_payload.get("retrieved_chunks_count", 0)),
+            top_vector_similarity=float(
+                cached_payload.get("top_vector_similarity", 0.0)
+            ),
+            cached=True,
+            latency_ms=elapsed_ms,
+            model_used=cached_payload.get("model_used"),
+        )
+
     async def investigate(
         self,
         *,
@@ -696,36 +743,14 @@ class GroundedDocumentInvestigator:
                 top_k=top_k,
             )
             if use_cache:
-                cached_payload = await asyncio.to_thread(self._cache.get, cache_key)
-                if cached_payload is not None:
-                    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
-                    citations = tuple(
-                        CitationEvidence(**c)
-                        for c in cached_payload.get("citations", [])
-                    )
-                    raw_reason = cached_payload.get("abstention_reason")
-                    cached_reason = (
-                        sanitize_rag_output_text(str(raw_reason))
-                        if raw_reason
-                        else None
-                    )
-                    cached_result = InvestigationResult(
-                        ticker=str(cached_payload["ticker"]),
-                        question=str(cached_payload["question"]),
-                        answer=sanitize_rag_output_text(str(cached_payload["answer"])),
-                        abstained=bool(cached_payload["abstained"]),
-                        abstention_reason=cached_reason or None,
-                        citations=citations,
-                        retrieved_chunks_count=int(
-                            cached_payload.get("retrieved_chunks_count", 0)
-                        ),
-                        top_vector_similarity=float(
-                            cached_payload.get("top_vector_similarity", 0.0)
-                        ),
-                        cached=True,
-                        latency_ms=elapsed_ms,
-                        model_used=cached_payload.get("model_used"),
-                    )
+                cached_result = await self.peek_cached_result(
+                    ticker=clean_ticker,
+                    question=clean_question,
+                    statement_scope=statement_scope,
+                    fiscal_year=fiscal_year,
+                    top_k=top_k,
+                )
+                if cached_result is not None:
                     self._record_span_outcome(span, cached_result)
                     return cached_result
 

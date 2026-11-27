@@ -333,6 +333,13 @@ def detect_red_flags(ratios: pl.DataFrame) -> pl.DataFrame:
             CORPORATE
             & (
                 ((c("interest_coverage") < 1) & (c("total_debt") > 0))
+                | (
+                    (c("interest_coverage_flag") == "TINY_DENOMINATOR")
+                    & c("ebit_ttm").is_not_null()
+                    & c("borrowing_cost_ttm").is_not_null()
+                    & (c("ebit_ttm") < c("borrowing_cost_ttm"))
+                    & (c("total_debt") > 0)
+                )
                 | ((c("current_ratio") < 1) & (c(CFO) < 0) & (c("debt_to_equity") > 2))
             ),
             [

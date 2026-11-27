@@ -187,6 +187,15 @@
   font-variant-numeric: tabular-nums lining-nums;
 }
 
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 .striped-fallback {
   background-image: repeating-linear-gradient(
     -45deg,
@@ -219,10 +228,37 @@
 }
 
 @media print {
+  @page {
+    size: A4 portrait;
+    margin: 10mm 12mm;
+  }
   aside,
-  header,
+  header:not(.tear-sheet-header),
   .no-print {
     display: none !important;
+  }
+  :root,
+  .dark,
+  .tear-sheet-page {
+    color-scheme: light !important;
+    --canvas: #ffffff !important;
+    --surface: #ffffff !important;
+    --surface-muted: #f8fafc !important;
+    --border-color: #cbd5e1 !important;
+    --border-strong-color: #94a3b8 !important;
+    --ink: #0f172a !important;
+    --ink-muted: #475569 !important;
+    --ink-subtle: #475569 !important;
+    --accent-ink: #163a5f !important;
+    --primary: #163a5f !important;
+    --risk-low: #166534 !important;
+    --risk-low-soft: #eaf7ef !important;
+    --risk-mid: #92400e !important;
+    --risk-mid-soft: #fef3dc !important;
+    --risk-high: #991b1b !important;
+    --risk-high-soft: #fdecec !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
   html,
   body {

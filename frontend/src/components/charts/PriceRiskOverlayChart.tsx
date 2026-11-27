@@ -248,9 +248,52 @@ export function extractWarningDrawdownSummary(
   };
 }
 
+export type PriceOverlayRange = "1Y" | "3Y" | "5Y" | "ALL";
+
+const PRICE_OVERLAY_RANGE_OPTIONS: readonly {
+  id: PriceOverlayRange;
+  label: string;
+}[] = [
+  { id: "1Y", label: "1Y" },
+  { id: "3Y", label: "3Y" },
+  { id: "5Y", label: "5Y" },
+  { id: "ALL", label: "All" },
+];
+
+export function computePriceOverlayZoomRange(
+  dates: readonly string[],
+  range: PriceOverlayRange,
+): { start: number; end: number } {
+  if (range === "ALL" || dates.length <= 1) {
+    return { start: 0, end: 100 };
+  }
+  const latestStr = dates[dates.length - 1];
+  const parts = latestStr.slice(0, 10).split("-");
+  if (parts.length !== 3) {
+    return { start: 0, end: 100 };
+  }
+  const yearNum = Number(parts[0]);
+  const yearsBack = range === "1Y" ? 1 : range === "3Y" ? 3 : 5;
+  if (!Number.isFinite(yearNum)) {
+    return { start: 0, end: 100 };
+  }
+  const cutoffIso = `${String(yearNum - yearsBack).padStart(4, "0")}-${parts[1]}-${parts[2]}`;
+  const firstIdx = dates.findIndex((d) => d >= cutoffIso);
+  if (firstIdx <= 0) {
+    return { start: 0, end: 100 };
+  }
+  const pct = (firstIdx / (dates.length - 1)) * 100;
+  return {
+    start: Math.max(0, Math.min(98, Number(pct.toFixed(2)))),
+    end: 100,
+  };
+}
+
 export function buildPriceOverlayOption(
   overlay: CompanyMarketOverlayResponse | null | undefined,
   palette: ChartPalette,
+  range: PriceOverlayRange = "ALL",
+  isNarrow = false,
 ): EChartsOption {
   const seriesPoints = overlay?.price_series ?? [];
   if (!overlay || seriesPoints.length === 0) {
@@ -371,6 +414,8 @@ export function buildPriceOverlayOption(
       symbol: "diamond",
       symbolSize: 13,
       z: 8,
+      itemStyle: { color: palette.riskMid },
+      labelLayout: { hideOverlap: true },
       data: modelScatterData,
     });
   }
@@ -382,13 +427,30 @@ export function buildPriceOverlayOption(
       symbol: "triangle",
       symbolSize: 14,
       z: 9,
+      itemStyle: { color: palette.riskHigh },
+      labelLayout: { hideOverlap: true },
       data: regScatterData,
     });
   }
 
+  const zoomRange = computePriceOverlayZoomRange(dates, range);
+
   return {
-    grid: { left: 68, right: 24, top: 44, bottom: 72 },
-    legend: { top: 4, right: 8 },
+    grid: isNarrow
+      ? { left: 56, right: 16, top: 56, bottom: 72 }
+      : { left: 68, right: 24, top: 44, bottom: 72 },
+    legend: isNarrow
+      ? {
+          top: 4,
+          left: 4,
+          right: 4,
+          type: "plain",
+          itemGap: 8,
+          itemHeight: 10,
+          itemWidth: 16,
+          textStyle: { fontSize: 10 },
+        }
+      : { top: 4, right: 8 },
     tooltip: {
       trigger: "axis",
       formatter: (raw: unknown) => {
@@ -492,11 +554,13 @@ export function buildPriceOverlayOption(
       },
     },
     dataZoom: [
-      { type: "inside", start: 0, end: 100 },
+      { type: "inside", start: zoomRange.start, end: zoomRange.end },
       {
         type: "slider",
         height: 22,
         bottom: 8,
+        start: zoomRange.start,
+        end: zoomRange.end,
         borderColor: palette.border,
         textStyle: { color: palette.inkMuted, fontSize: 10 },
       },
@@ -689,10 +753,21 @@ export function PriceRiskOverlayChart({
   onRetry?: () => void;
 }) {
   const { palette } = useChartTheme();
+  const [range, setRange] = React.useState<PriceOverlayRange>("ALL");
+  const [isNarrow, setIsNarrow] = React.useState(false);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-width: 519px)");
+    const sync = () => setIsNarrow(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   const option = React.useMemo(
-    () => buildPriceOverlayOption(overlay, palette),
-    [overlay, palette],
+    () => buildPriceOverlayOption(overlay, palette, range, isNarrow),
+    [overlay, palette, range, isNarrow],
   );
   const warningSummary = React.useMemo(
     () => extractWarningDrawdownSummary(overlay),
@@ -734,7 +809,7 @@ export function PriceRiskOverlayChart({
         option={option}
         height={360}
         isEmpty={!hasSeries}
-        emptyMessage={`Chưa có dữ liệu giá giao dịch lịch sử (EOD) cho mã ${ticker} trong lát cắt hiện tại (thường gặp ở cổ phiếu UPCOM hoặc mã hạn chế dữ liệu thị trường). Hệ thống vẫn giữ nguyên đầy đủ BCTC, 38 tỷ số và 10 cờ đỏ VAS.`}
+        emptyMessage={`Chưa có dữ liệu giá giao dịch lịch sử (EOD) cho mã ${ticker} trong lát cắt hiện tại (thường gặp ở cổ phiếu UPCOM hoặc mã hạn chế dữ liệu thị trường). Hệ thống vẫn giữ nguyên đầy đủ BCTC, bộ tỷ số tài chính chuẩn hóa và 10 cờ đỏ VAS.`}
         tableHeaders={[
           "Ngày GD",
           "Giá ĐC (VND)",
@@ -747,27 +822,51 @@ export function PriceRiskOverlayChart({
         ]}
         tableRows={tableRows}
         headerRight={
-          overlay && (overlay.model_markers.length > 0 || overlay.regulatory_markers.length > 0) ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {overlay.model_markers.map((mm) => (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {hasSeries ? (
+              <div
+                role="group"
+                aria-label="Khoảng thời gian biểu đồ giá"
+                className="inline-flex items-center rounded-md border border-border bg-surface-muted p-0.5"
+              >
+                {PRICE_OVERLAY_RANGE_OPTIONS.map((item) => {
+                  const active = range === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => setRange(item.id)}
+                      className={
+                        active
+                          ? "rounded-sm bg-primary px-2 py-0.5 text-[11px] font-semibold text-primary-foreground shadow-xs"
+                          : "rounded-sm px-2 py-0.5 text-[11px] font-medium text-ink-muted hover:text-ink"
+                      }
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {overlay?.model_markers.map((mm) => (
+              <RiskBadge
+                key={`${mm.marker_kind}-${mm.period_end_date}`}
+                tone={mm.risk_tier === "R5" ? "high" : "mid"}
+                label={`Mô hình ${mm.risk_tier}: ${formatDateVi(mm.aligned_trade_date ?? mm.disclosure_date)}`}
+              />
+            ))}
+            {overlay?.regulatory_markers.slice(0, 2).map((rm, idx) => {
+              const ev = formatRegulatoryEventType(rm.event_type);
+              return (
                 <RiskBadge
-                  key={`${mm.marker_kind}-${mm.period_end_date}`}
-                  tone={mm.risk_tier === "R5" ? "high" : "mid"}
-                  label={`Mô hình ${mm.risk_tier}: ${formatDateVi(mm.aligned_trade_date ?? mm.disclosure_date)}`}
+                  key={`${rm.event_type}-${rm.event_date}-${idx}`}
+                  tone={ev.tone}
+                  label={`${ev.shortLabel}: ${formatDateVi(rm.event_date)}`}
                 />
-              ))}
-              {overlay.regulatory_markers.slice(0, 2).map((rm, idx) => {
-                const ev = formatRegulatoryEventType(rm.event_type);
-                return (
-                  <RiskBadge
-                    key={`${rm.event_type}-${rm.event_date}-${idx}`}
-                    tone={ev.tone}
-                    label={`${ev.shortLabel}: ${formatDateVi(rm.event_date)}`}
-                  />
-                );
-              })}
-            </div>
-          ) : null
+              );
+            })}
+          </div>
         }
       />
 

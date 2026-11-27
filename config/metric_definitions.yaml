@@ -160,6 +160,8 @@ metrics:
     tt200_code: "300"
     tt99_code: "300"
     comparable_across_taxonomy: true
+    # Derived V3 ratio metadata (src/finintel/serving/dictionary.py):
+    #   ocf_to_total_liabilities: "CFO / Tổng nợ phải trả" (CF_OPERATING_CASH_FLOW / BS_TOTAL_LIABILITIES, unit: x, HIGHER_IS_BETTER)
   BS_CURRENT_LIABILITIES:
     canonical_id: BS_CURRENT_LIABILITIES
     statement_type: BALANCE_SHEET

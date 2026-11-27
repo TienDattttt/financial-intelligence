@@ -26,7 +26,7 @@ function makeViFormatter(decimals: number): Intl.NumberFormat {
 }
 
 function normalizeZero(value: number, decimals: number): number {
-  const threshold = Math.pow(10, -(decimals + 1));
+  const threshold = 0.5 * Math.pow(10, -decimals);
   return Math.abs(value) < threshold ? 0 : value;
 }
 
@@ -43,12 +43,12 @@ export function formatNumber(
 
 export function formatVndBillions(
   value: number | null | undefined,
-  opts?: { accountingNegative?: boolean; decimals?: number },
+  opts?: { accountingNegative?: boolean; decimals?: number; zeroAsZero?: boolean },
 ): string {
   if (!isFiniteNum(value)) return "N/A";
   const decimals = opts?.decimals ?? 1;
   const billions = normalizeZero(value / 1_000_000_000, decimals);
-  if (billions === 0) return "–";
+  if (billions === 0) return opts?.zeroAsZero ? "0" : "–";
   const absFormatted = makeViFormatter(decimals).format(Math.abs(billions));
   if (billions < 0) {
     return opts?.accountingNegative
@@ -86,9 +86,9 @@ export function formatPercentPoints(
   if (!isFiniteNum(decimalDelta)) return "N/A";
   const pp = normalizeZero(decimalDelta * 100, decimals);
   const absFormatted = makeViFormatter(decimals).format(Math.abs(pp));
-  if (pp === 0) return `${absFormatted} đ%`;
-  if (pp < 0) return `${MINUS_SIGN}${absFormatted} đ%`;
-  return `+${absFormatted} đ%`;
+  if (pp === 0) return `${absFormatted} điểm %`;
+  if (pp < 0) return `${MINUS_SIGN}${absFormatted} điểm %`;
+  return `+${absFormatted} điểm %`;
 }
 
 export function formatMultiple(
@@ -127,6 +127,55 @@ export function formatRatioValue(
       return formatDays(value, 0);
     case "CURRENCY_PER_SHARE":
       return formatVndPerShare(value);
+    case "NUMBER":
+    default:
+      return formatNumber(value, 2);
+  }
+}
+
+export function formatRatioByType(
+  value: number | null | undefined,
+  formatType?: string | null,
+): string {
+  if (!isFiniteNum(value)) return "N/A";
+  const normalized = formatType?.trim().toUpperCase() ?? "NUMBER";
+  switch (normalized) {
+    case "PERCENT":
+    case "RATIO_PERCENT":
+      return formatPercent(value, { decimals: 1 });
+    case "PERCENT_POINTS":
+      return formatPercentPoints(value, 1);
+    case "PERCENTILE":
+    case "PERCENT_100":
+      return `${formatNumber(value, 1)}%`;
+    case "DAYS":
+      return formatDays(value, 0);
+    case "MULTIPLE":
+    case "RATIO_TIMES":
+    case "TIMES":
+      return formatMultiple(value, 2);
+    case "ZSCORE": {
+      const clean = normalizeZero(value, 2);
+      const absStr = makeViFormatter(2).format(Math.abs(clean));
+      if (clean === 0) return `${absStr} σ`;
+      return clean > 0 ? `+${absStr} σ` : `${MINUS_SIGN}${absStr} σ`;
+    }
+    case "STD":
+    case "SIGMA": {
+      const clean = normalizeZero(value, 2);
+      const absStr = makeViFormatter(2).format(Math.abs(clean));
+      if (clean === 0) return `${absStr} σ`;
+      return clean < 0 ? `${MINUS_SIGN}${absStr} σ` : `${absStr} σ`;
+    }
+    case "CURRENCY_PER_SHARE": {
+      const clean = normalizeZero(value, 0);
+      if (clean === 0) return "0 đ/cp";
+      return `${formatVndPerShare(clean)} đ/cp`;
+    }
+    case "QUARTERS":
+      return `${formatNumber(Math.round(value), 0)} quý`;
+    case "SCORE_9":
+      return `${formatNumber(Math.round(value), 0)}/9`;
     case "NUMBER":
     default:
       return formatNumber(value, 2);

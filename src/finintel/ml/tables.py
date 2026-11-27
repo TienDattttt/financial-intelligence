@@ -738,6 +738,7 @@ def build_model_card_payload(
         "walk_forward": walk_forward,
         "risk_tier_reliability": risk_tier_reliability,
         "taxonomy_drift_psi": taxonomy_drift_psi,
+        "tt99_mrm_gate": psi_raw.get("tt99_mrm_gate"),
         "case_studies": case_studies,
         "limitations": limitations,
     }

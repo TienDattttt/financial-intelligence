@@ -16,6 +16,7 @@ import {
   PitValuationStrip,
   PriceRiskOverlayChart,
 } from "@/components/charts/PriceRiskOverlayChart";
+import { BondMaturityCard } from "@/components/company/BondMaturityCard";
 import { PercentileBar } from "@/components/financial/PercentileBar";
 import { RiskBadge } from "@/components/financial/RiskBadge";
 import { ScoreDots } from "@/components/financial/ScoreDots";
@@ -49,6 +50,7 @@ import {
 import type { CompanyMarketOverlayResponse } from "@/lib/market-overlay-types";
 import type {
   CompanyBenchmarksSummaryResponse,
+  CompanyBondSignalsResponse,
   CompanyProfileResponse,
   CompanyFilingItem,
   MLScoreItem,
@@ -76,7 +78,9 @@ export function OverviewTab({
   isCustomMlPeriod,
   onResetMlPeriod,
   mlDistressProbOption,
+  mlDistressItems,
   onRiskPeriodClick,
+  onDistressPeriodClick,
   zStats,
   probStats,
   activeRedFlags,
@@ -107,6 +111,11 @@ export function OverviewTab({
   onNavigateTab,
   onInvestigateRedFlag,
   onOpenSourceDrawer,
+  bondSignals,
+  bondLoading = false,
+  bondError = false,
+  bondErrorMessage,
+  onRetryBond,
 }: {
   profile: CompanyProfileResponse;
   sortedMl: readonly MLScoreItem[];
@@ -117,7 +126,9 @@ export function OverviewTab({
   isCustomMlPeriod: boolean;
   onResetMlPeriod: () => void;
   mlDistressProbOption: EChartsOption;
+  mlDistressItems?: readonly MLScoreItem[];
   onRiskPeriodClick: (payload: { dataIndex?: number }) => void;
+  onDistressPeriodClick?: (payload: { dataIndex?: number }) => void;
   zStats: RangeStats | null;
   probStats: RangeStats | null;
   activeRedFlags: readonly RedFlagItem[];
@@ -154,6 +165,11 @@ export function OverviewTab({
     periodType: PeriodType;
     periodEndDate: string | null;
   }) => void;
+  bondSignals?: CompanyBondSignalsResponse;
+  bondLoading?: boolean;
+  bondError?: boolean;
+  bondErrorMessage?: string;
+  onRetryBond?: () => void;
 }) {
   const altmanMeta =
     (latestMl?.altman_zone && ALTMAN_ZONE_META[latestMl.altman_zone]) || {
@@ -283,6 +299,8 @@ export function OverviewTab({
           <ScoreDots
             score={fScore}
             validComponents={latestMl?.piotroski_valid_components_count}
+            naReason={latestMl?.piotroski_na_reason}
+            missingCriteria={latestMl?.piotroski_missing_criteria}
           />
         </VerdictCard>
 
@@ -356,6 +374,7 @@ export function OverviewTab({
             periodLabel={activeMlPeriodLabel}
             isCustomPeriod={isCustomMlPeriod}
             onResetToLatest={onResetMlPeriod}
+            ratioDictMap={ratioDictMap}
           />
 
           <EChartBox
@@ -363,10 +382,10 @@ export function OverviewTab({
             subtitle="Đơn vị: phần trăm (%) · Nhấp vào một điểm bất kỳ để cập nhật biểu đồ giải thích phía trên"
             option={mlDistressProbOption}
             height={190}
-            isEmpty={sortedMl.length === 0}
-            onChartClick={onRiskPeriodClick}
+            isEmpty={(mlDistressItems ?? sortedMl).length === 0}
+            onChartClick={onDistressPeriodClick ?? onRiskPeriodClick}
             tableHeaders={["Kỳ", "XS 1 năm", "Bậc", "Xếp hạng cùng kỳ", "Altman Z″"]}
-            tableRows={sortedMl.map((m) => {
+            tableRows={(mlDistressItems ?? sortedMl).map((m) => {
               const rowTrio = formatCreditTrio({
                 risk_tier: m.risk_tier,
                 risk_market_percentile: m.risk_market_percentile,
@@ -527,6 +546,14 @@ export function OverviewTab({
               )}
             </CardContent>
           </Card>
+
+          <BondMaturityCard
+            data={bondSignals}
+            isLoading={bondLoading}
+            isError={bondError}
+            errorMessage={bondErrorMessage}
+            onRetry={onRetryBond ?? (() => undefined)}
+          />
         </div>
       </section>
 
@@ -570,7 +597,10 @@ export function OverviewTab({
               onChange={(v) => onChangeShowAll38(v === "ALL_38")}
               options={[
                 { value: "CORE_12", label: "12 chỉ số cốt lõi" },
-                { value: "ALL_38", label: "Tất cả 38 chỉ số" },
+                {
+                  value: "ALL_38",
+                  label: `Tất cả ${ratioDictMap.size || 38} chỉ số`,
+                },
               ]}
             />
 
@@ -606,8 +636,12 @@ export function OverviewTab({
               />
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-xs">
+            <>
+              <p className="mb-1.5 px-3 pt-2 text-[11px] text-ink-subtle md:hidden">
+                Vuốt ngang để xem phân vị, xu hướng &amp; truy nguồn →
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                     <th scope="col" className="px-3 py-2 text-left font-semibold">
@@ -726,6 +760,7 @@ export function OverviewTab({
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </CardContent>
       </Card>

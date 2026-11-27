@@ -353,22 +353,23 @@ def test_dupont_reconciles_both_equity_definitions_and_rejects_loss_denominators
     from finintel.analytics.intermediates import prepare_periods
     from finintel.analytics.ratios import calculate_ratios
 
+    vnd = 1_000_000.0
     history = facts(
         {
             (2024, None): {
-                "BS_TOTAL_EQUITY": 300,
-                "BS_TOTAL_ASSETS": 800,
-                "BS_MINORITY_INTEREST": 20,
+                "BS_TOTAL_EQUITY": 300 * vnd,
+                "BS_TOTAL_ASSETS": 800 * vnd,
+                "BS_MINORITY_INTEREST": 20 * vnd,
             },
             (2025, None): {
-                "BS_TOTAL_ASSETS": 1000,
-                "BS_TOTAL_EQUITY": 400,
-                "BS_MINORITY_INTEREST": 40,
-                "IS_NET_INCOME": 100,
-                "IS_NET_INCOME_PARENT": 75,
-                "IS_NET_REVENUE": 1200,
-                "IS_PROFIT_BEFORE_TAX": 125,
-                "IS_INTEREST_EXPENSE": 25,
+                "BS_TOTAL_ASSETS": 1000 * vnd,
+                "BS_TOTAL_EQUITY": 400 * vnd,
+                "BS_MINORITY_INTEREST": 40 * vnd,
+                "IS_NET_INCOME": 100 * vnd,
+                "IS_NET_INCOME_PARENT": 75 * vnd,
+                "IS_NET_REVENUE": 1200 * vnd,
+                "IS_PROFIT_BEFORE_TAX": 125 * vnd,
+                "IS_INTEREST_EXPENSE": 25 * vnd,
             },
         }
     )
@@ -396,7 +397,7 @@ def test_dupont_reconciles_both_equity_definitions_and_rejects_loss_denominators
     assert row["dupont_valid_flag"] is True
     negative = history.with_columns(
         pl.when(pl.col("metric_id") == "IS_PROFIT_BEFORE_TAX")
-        .then(-125.0)
+        .then(-125.0 * vnd)
         .otherwise(pl.col("value"))
         .alias("value")
     )
@@ -928,25 +929,26 @@ def test_remaining_forensic_rules_and_audit_filing_provenance() -> None:
     from finintel.analytics.ratios import calculate_ratios
     from finintel.analytics.red_flags import detect_red_flags
 
+    vnd = 10_000_000.0
     base: dict[str, float | None] = {
-        "BS_TRADE_RECEIVABLES_ST": 10,
-        "BS_INVENTORIES": 10,
-        "BS_TOTAL_ASSETS": 1000,
-        "IS_NET_REVENUE": 100,
-        "IS_COST_OF_GOODS_SOLD": 50,
-        "IS_GROSS_PROFIT": 50,
+        "BS_TRADE_RECEIVABLES_ST": 10 * vnd,
+        "BS_INVENTORIES": 10 * vnd,
+        "BS_TOTAL_ASSETS": 1000 * vnd,
+        "IS_NET_REVENUE": 100 * vnd,
+        "IS_COST_OF_GOODS_SOLD": 50 * vnd,
+        "IS_GROSS_PROFIT": 50 * vnd,
     }
     current = {
         **base,
-        "BS_TRADE_RECEIVABLES_ST": 240,
-        "BS_INVENTORIES": 300,
-        "IS_NET_REVENUE": 110,
-        "IS_COST_OF_GOODS_SOLD": 60,
-        "IS_GROSS_PROFIT": 40,
-        "BS_SHORT_TERM_BORROWINGS": 100,
-        "BS_TOTAL_EQUITY": -5,
-        "IS_PROFIT_BEFORE_TAX": -20,
-        "IS_INTEREST_EXPENSE": 10,
+        "BS_TRADE_RECEIVABLES_ST": 240 * vnd,
+        "BS_INVENTORIES": 300 * vnd,
+        "IS_NET_REVENUE": 110 * vnd,
+        "IS_COST_OF_GOODS_SOLD": 60 * vnd,
+        "IS_GROSS_PROFIT": 40 * vnd,
+        "BS_SHORT_TERM_BORROWINGS": 100 * vnd,
+        "BS_TOTAL_EQUITY": -5 * vnd,
+        "IS_PROFIT_BEFORE_TAX": -20 * vnd,
+        "IS_INTEREST_EXPENSE": 10 * vnd,
     }
     history = facts({(2023, None): base, (2024, None): base, (2025, None): current})
     history = history.with_columns(
@@ -977,11 +979,12 @@ def test_missing_inputs_and_signed_tax_do_not_fabricate_financial_results() -> N
     from finintel.analytics.intermediates import prepare_periods
     from finintel.analytics.ratios import calculate_ratios
 
+    vnd = 10_000_000.0
     common: dict[str, float | None] = {
-        "IS_PROFIT_BEFORE_TAX": 100,
-        "IS_NET_REVENUE": 150,
-        "CF_OPERATING_CASH_FLOW": 40,
-        "BS_CONVERTIBLE_BONDS": 30,
+        "IS_PROFIT_BEFORE_TAX": 100 * vnd,
+        "IS_NET_REVENUE": 150 * vnd,
+        "CF_OPERATING_CASH_FLOW": 40 * vnd,
+        "BS_CONVERTIBLE_BONDS": 30 * vnd,
     }
     source = facts(
         {
@@ -989,16 +992,16 @@ def test_missing_inputs_and_signed_tax_do_not_fabricate_financial_results() -> N
             (2024, None): {
                 **common,
                 "IS_INTEREST_EXPENSE": 0,
-                "IS_CURRENT_INCOME_TAX": 25,
+                "IS_CURRENT_INCOME_TAX": 25 * vnd,
             },
             (2025, None): {
                 **common,
-                "IS_INTEREST_EXPENSE": 20,
-                "IS_CURRENT_INCOME_TAX": 25,
-                "IS_DEFERRED_INCOME_TAX": -5,
-                "CF_CAPITAL_EXPENDITURE": 8,
+                "IS_INTEREST_EXPENSE": 20 * vnd,
+                "IS_CURRENT_INCOME_TAX": 25 * vnd,
+                "IS_DEFERRED_INCOME_TAX": -5 * vnd,
+                "CF_CAPITAL_EXPENDITURE": 8 * vnd,
             },
-            (2026, None): {**common, "IS_BORROWING_COSTS": 10},
+            (2026, None): {**common, "IS_BORROWING_COSTS": 10 * vnd},
         }
     )
     source = source.with_columns(
@@ -1009,16 +1012,16 @@ def test_missing_inputs_and_signed_tax_do_not_fabricate_financial_results() -> N
     rows = calculate_ratios(
         prepare_periods(source, issuer(), as_of=date(2027, 6, 1))
     ).rows(named=True)
-    assert rows[0]["total_debt"] == 30
+    assert rows[0]["total_debt"] == 30 * vnd
     assert rows[0]["ebit_ttm"] is None
     assert rows[0]["fcf_to_revenue_flag"] == "MISSING_INPUT"
-    assert rows[1]["ebit_ttm"] == 100
+    assert rows[1]["ebit_ttm"] == 100 * vnd
     assert rows[1]["effective_tax_rate"] is None
     assert rows[1]["nopat_flag"] == "MISSING_INPUT"
     assert rows[2]["effective_tax_rate"] == 0.2
-    assert rows[2]["nopat_ttm"] == 96
-    assert rows[2]["fcf_ttm"] == 32
-    assert rows[3]["ebit_ttm"] == 110
+    assert rows[2]["nopat_ttm"] == 96 * vnd
+    assert rows[2]["fcf_ttm"] == 32 * vnd
+    assert rows[3]["ebit_ttm"] == 110 * vnd
     assert rows[3]["interest_coverage"] == 11
     assert rows[3]["ebit_growth_yoy_flag"] == "MIXED_TAXONOMY"
 
@@ -1410,16 +1413,17 @@ def test_dupont_five_step_populates_for_separate_scope() -> None:
     from finintel.analytics.intermediates import prepare_periods
     from finintel.analytics.ratios import calculate_ratios
 
+    vnd = 1_000_000.0
     separate_history = facts(
         {
-            (2024, None): {"BS_TOTAL_EQUITY": 300, "BS_TOTAL_ASSETS": 800},
+            (2024, None): {"BS_TOTAL_EQUITY": 300 * vnd, "BS_TOTAL_ASSETS": 800 * vnd},
             (2025, None): {
-                "BS_TOTAL_ASSETS": 1000,
-                "BS_TOTAL_EQUITY": 400,
-                "IS_NET_INCOME": 100,
-                "IS_NET_REVENUE": 1200,
-                "IS_PROFIT_BEFORE_TAX": 125,
-                "IS_INTEREST_EXPENSE": 25,
+                "BS_TOTAL_ASSETS": 1000 * vnd,
+                "BS_TOTAL_EQUITY": 400 * vnd,
+                "IS_NET_INCOME": 100 * vnd,
+                "IS_NET_REVENUE": 1200 * vnd,
+                "IS_PROFIT_BEFORE_TAX": 125 * vnd,
+                "IS_INTEREST_EXPENSE": 25 * vnd,
             },
         },
         scope="SEPARATE",

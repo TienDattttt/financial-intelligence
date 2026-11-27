@@ -134,47 +134,50 @@ def _build_synthetic_v2_tables() -> dict[str, pl.DataFrame]:
     ) in issuer_profiles:
         for year in (2024, 2025):
             growth = 1.15 if year == 2025 else 1.0
-            rev = 60_000.0 * scale * growth
+            vnd = 1_000_000.0
+            rev = 60_000.0 * vnd * scale * growth
             gp = rev * gm_ratio
             cogs = -(rev - gp)
             sell = -(rev * sell_r)
             admin = -(rev * admin_r)
-            interest = -(700.0 * scale * int_mult)
+            interest = -(700.0 * vnd * scale * int_mult)
             op_profit = gp + sell + admin + interest
-            ebt = op_profit + 500.0 * scale
+            ebt = op_profit + 500.0 * vnd * scale
             cur_tax = -(max(ebt, 0.0) * 0.18)
-            def_tax = 50.0 * scale
+            def_tax = 50.0 * vnd * scale
             ni = ebt + cur_tax + def_tax
             ni_parent = ni * 0.85
-            cfo = 10_500.0 * scale * growth
-            capex = -4_000.0 * scale
-            dep = 2_500.0 * scale
+            cfo = 10_500.0 * vnd * scale * growth
+            capex = -4_000.0 * vnd * scale
+            dep = 2_500.0 * vnd * scale
 
-            st_debt = 3_500.0 * scale * debt_mult
-            lt_debt = 4_000.0 * scale * debt_mult
-            total_assets = 80_000.0 * scale * (1.08 if year == 2025 else 1.0)
-            total_liab = min(total_assets * 0.65, 25_000.0 * scale + st_debt + lt_debt)
+            st_debt = 3_500.0 * vnd * scale * debt_mult
+            lt_debt = 4_000.0 * vnd * scale * debt_mult
+            total_assets = 80_000.0 * vnd * scale * (1.08 if year == 2025 else 1.0)
+            total_liab = min(
+                total_assets * 0.65, 25_000.0 * vnd * scale + st_debt + lt_debt
+            )
             total_eq = total_assets - total_liab
             cur_liab = total_liab * 0.65
             cur_assets = total_assets * 0.60
 
             annual_metrics = {
                 "BS_CURRENT_ASSETS": cur_assets,
-                "BS_CASH_AND_EQUIVALENTS": 10_000.0 * scale,
-                "BS_SHORT_TERM_INVESTMENTS": 5_000.0 * scale,
-                "BS_SHORT_TERM_RECEIVABLES": 14_000.0 * scale,
-                "BS_TRADE_RECEIVABLES_ST": 12_000.0 * scale,
-                "BS_BAD_DEBT_PROVISION_ST": -500.0 * scale,
-                "BS_INVENTORIES": 4_000.0 * scale,
+                "BS_CASH_AND_EQUIVALENTS": 10_000.0 * vnd * scale,
+                "BS_SHORT_TERM_INVESTMENTS": 5_000.0 * vnd * scale,
+                "BS_SHORT_TERM_RECEIVABLES": 14_000.0 * vnd * scale,
+                "BS_TRADE_RECEIVABLES_ST": 12_000.0 * vnd * scale,
+                "BS_BAD_DEBT_PROVISION_ST": -500.0 * vnd * scale,
+                "BS_INVENTORIES": 4_000.0 * vnd * scale,
                 "BS_TOTAL_ASSETS": total_assets,
                 "BS_TOTAL_LIABILITIES": total_liab,
                 "BS_CURRENT_LIABILITIES": cur_liab,
                 "BS_SHORT_TERM_BORROWINGS": st_debt,
-                "BS_TRADE_PAYABLES_ST": 8_000.0 * scale,
+                "BS_TRADE_PAYABLES_ST": 8_000.0 * vnd * scale,
                 "BS_LONG_TERM_BORROWINGS": lt_debt,
                 "BS_CONVERTIBLE_BONDS": 0.0,
                 "BS_TOTAL_EQUITY": total_eq,
-                "BS_ORDINARY_SHARES_CAPITAL": 17_000.0 * scale,
+                "BS_ORDINARY_SHARES_CAPITAL": 17_000.0 * vnd * scale,
                 "BS_TREASURY_SHARES": 0.0,
                 "BS_MINORITY_INTEREST": total_eq * 0.12,
                 "IS_NET_REVENUE": rev,
@@ -603,6 +606,7 @@ def test_all_10_routes_etag_304_and_38_lineage_cards(
             "status": "ok",
             "active_snapshot_id": snapshot_id,
             "storage_backend": "parquet",
+            "rag_available": False,
         }
 
         # Route 2: GET /api/v1/snapshot/overview
@@ -691,8 +695,8 @@ def test_all_10_routes_etag_304_and_38_lineage_cards(
         assert r_bench_no_hist.status_code == 200
         assert r_bench_no_hist.json()["history"] == []
 
-        # Route 6: GET /api/v1/companies/{ticker}/lineage — ALL 38/38 ALL_RATIOS!
-        assert len(ALL_RATIOS) == 38
+        # Route 6: GET /api/v1/companies/{ticker}/lineage — ALL 39/39 ALL_RATIOS!
+        assert len(ALL_RATIOS) == 39
         assert set(ALL_RATIOS) == set(RATIO_LINEAGE_CATALOG)
         for ratio_name in ALL_RATIOS:
             r_lin = client.get(
@@ -1062,6 +1066,7 @@ def test_ducklake_read_only_lifespan_attach_and_serve(
             "status": "ok",
             "active_snapshot_id": snapshot_id,
             "storage_backend": "ducklake",
+            "rag_available": False,
         }
         r_ov = client.get("/api/v1/snapshot/overview")
         assert r_ov.status_code == 200
@@ -1174,8 +1179,8 @@ def test_pushdown_and_overview_efficiency_spy(
 
 def test_serving_queries_helpers_and_zero_anti_patterns() -> None:
     # Canonical catalog and UI conversion/pagination helpers exposed via serving.queries.
-    assert len(ALL_RATIOS) == 38
-    assert len(RATIO_LINEAGE_CATALOG) == 38
+    assert len(ALL_RATIOS) == 39
+    assert len(RATIO_LINEAGE_CATALOG) == 39
     assert DashboardQueryService is not None
     assert StressScenario is not None
     assert simulate_financial_stress is not None

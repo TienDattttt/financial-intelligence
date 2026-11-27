@@ -50,6 +50,8 @@ _EXTENSION_PORT_REL_PATHS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("regulatory_events", ("regulatory_ledger", "regulatory_events.parquet")),
     ("curated_pdfs", ("curated_pdfs", "curated_pdfs_manifest.parquet")),
     ("market_prices", ("market_prices", "market_prices.parquet")),
+    ("corporate_bond_signals", ("bonds", "corporate_bond_signals.parquet")),
+    ("fx_debt_exposure", ("bonds", "fx_debt_exposure.parquet")),
 )
 
 _SERVER_LEAK_RE = re.compile(

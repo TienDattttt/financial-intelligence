@@ -134,7 +134,7 @@ function CommandSearchDialog({
         id: "screen-methodology",
         group: "screen",
         title: "Dữ liệu & Phương pháp",
-        subtitle: "Từ điển 38 tỷ số, 9 cờ đỏ VAS, kiểm định mô hình",
+        subtitle: "Từ điển 38 tỷ số, 10 cờ đỏ VAS, kiểm định mô hình",
         trailing: "/methodology",
         onSelect: () => onNavigatePath("/methodology"),
       },
@@ -185,21 +185,27 @@ function CommandSearchDialog({
       return [...recentItems, ...companyItems, ...screens, ...actions];
     }
 
+    const exactMatches: IssuerItem[] = [];
     const prefixMatches: IssuerItem[] = [];
     const subMatches: IssuerItem[] = [];
     for (const item of issuers) {
       const tNorm = normalizeSearchText(item.ticker);
       const nNorm = normalizeSearchText(item.company_name_vn ?? "");
       const iNorm = normalizeSearchText(item.icb_name_level2 ?? "");
-      if (tNorm.startsWith(norm)) {
+      if (tNorm === norm) {
+        exactMatches.push(item);
+      } else if (tNorm.startsWith(norm)) {
         prefixMatches.push(item);
       } else if (tNorm.includes(norm) || nNorm.includes(norm) || iNorm.includes(norm)) {
         subMatches.push(item);
       }
-      if (prefixMatches.length + subMatches.length >= 16) break;
     }
 
-    const matchedCompanies: PaletteItem[] = [...prefixMatches, ...subMatches]
+    const matchedCompanies: PaletteItem[] = [
+      ...exactMatches,
+      ...prefixMatches,
+      ...subMatches,
+    ]
       .slice(0, 12)
       .map((item) => ({
         id: `co-${item.issuer_id}`,
@@ -317,8 +323,13 @@ function CommandSearchDialog({
                   Đang tải danh sách doanh nghiệp...
                 </div>
               ) : grouped.length === 0 ? (
-                <div className="p-4 text-[13px] text-ink-muted">
-                  Không tìm thấy kết quả phù hợp với &ldquo;{query}&rdquo;.
+                <div className="space-y-1.5 p-4 text-[13px] text-ink-muted">
+                  <p className="font-medium text-ink">
+                    Không tìm thấy kết quả phù hợp với &ldquo;{query}&rdquo;.
+                  </p>
+                  <p className="text-xs leading-relaxed text-ink-muted">
+                    FinIntel chỉ phân tích doanh nghiệp phi tài chính niêm yết (HOSE, HNX, UPCOM) theo chuẩn kế toán VAS, không bao gồm Ngân hàng, Chứng khoán và Bảo hiểm.
+                  </p>
                 </div>
               ) : (
                 grouped.map((section) => (
@@ -384,8 +395,8 @@ function CommandSearchDialog({
 
 export function CommandSearch() {
   const router = useRouter();
-  const { commandOpen, setCommandOpen, snapshotId } = useAppState();
-  const { data: issuers = [], isLoading } = useAllIssuers(snapshotId);
+  const { commandOpen, setCommandOpen, snapshotId, cacheSnapshotKey } = useAppState();
+  const { data: issuers = [], isLoading } = useAllIssuers(cacheSnapshotKey ?? snapshotId);
 
   React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {

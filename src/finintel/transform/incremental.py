@@ -45,6 +45,7 @@ from finintel.analytics.dupont import add_dupont
 from finintel.analytics.intermediates import prepare_periods
 from finintel.analytics.ratios import calculate_ratios
 from finintel.analytics.red_flags import detect_red_flags
+from finintel.analytics.valuation_mart import build_pit_valuation_mart
 from finintel.exceptions import ContractViolationError
 from finintel.quality.gate import evaluate_quality_gate
 from finintel.quality.rules import QualityGateConfig
@@ -178,6 +179,7 @@ class TransformBundle:
     ml_run_manifest: dict[str, Any] | None = None
     ml_artifact_payload: PersistedMLArtifactBundle | None = None
     model_card_meta: pl.DataFrame | None = None
+    pit_valuation_mart: pl.DataFrame | None = None
 
 
 def _resolve_ml_mode(
@@ -1968,6 +1970,9 @@ def run_incremental_analytics_transform(
         },
     )
 
+    pit_valuation_mart = build_pit_valuation_mart(
+        financial_ratios, market_prices, facts=qg1.clean_facts, as_of=as_of
+    )
     return TransformBundle(
         as_of=as_of,
         run_id=run_id,
@@ -1989,4 +1994,5 @@ def run_incremental_analytics_transform(
         ml_run_manifest=ml_run_manifest,
         ml_artifact_payload=ml_artifact_payload,
         model_card_meta=model_card_meta,
+        pit_valuation_mart=pit_valuation_mart,
     )

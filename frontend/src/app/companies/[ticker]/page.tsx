@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import type { EChartsOption } from "@/components/charts/EChartBox";
 import { resolveCrossFilteredMlScore } from "@/components/charts/ExplainWaterfallChart";
@@ -31,10 +32,13 @@ import {
   DocumentInvestigationPanel,
   type DocumentInvestigationPreset,
 } from "@/components/rag/DocumentInvestigationPanel";
+import { buttonVariants } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   useAllIssuers,
   useCompanyBenchmarks,
   useCompanyBenchmarksSummary,
+  useCompanyBondSignals,
   useCompanyFilings,
   useCompanyMarketOverlay,
   useCompanyProfile,
@@ -90,11 +94,16 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
     statementScope,
     periodType,
     periodEndDate,
+    queryPeriodEndDate = null,
     periodView,
     snapshotId,
+    cacheSnapshotKey,
+    ragAvailable,
     openSourceDrawer,
     closeSourceDrawer,
   } = useAppState();
+  const querySnapshotKey = cacheSnapshotKey ?? snapshotId;
+  const isRagEnabled = ragAvailable ?? true;
   const { palette } = useChartTheme();
 
   const watchlist = React.useSyncExternalStore(
@@ -145,17 +154,18 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
 
   const effectiveGrowthView = periodType === "ANNUAL" ? "Annual" : growthLocalView;
 
-  const profileQuery = useCompanyProfile(ticker, statementScope, periodView, snapshotId);
+  const profileQuery = useCompanyProfile(ticker, statementScope, periodView, querySnapshotKey);
   const growthProfileQuery = useCompanyProfile(
     ticker,
     statementScope,
     effectiveGrowthView,
-    snapshotId,
+    querySnapshotKey,
   );
-  const dictQuery = useMetaDictionary(snapshotId);
-  const issuersQuery = useAllIssuers(snapshotId);
-  const filingsQuery = useCompanyFilings(ticker, { statementScope }, snapshotId);
-  const overlayQuery = useCompanyMarketOverlay(ticker, statementScope, snapshotId);
+  const dictQuery = useMetaDictionary(querySnapshotKey);
+  const issuersQuery = useAllIssuers(querySnapshotKey);
+  const filingsQuery = useCompanyFilings(ticker, { statementScope }, querySnapshotKey);
+  const overlayQuery = useCompanyMarketOverlay(ticker, statementScope, querySnapshotKey);
+  const bondSignalsQuery = useCompanyBondSignals(ticker, statementScope, querySnapshotKey);
 
   const loadedTicker = profileQuery.data?.ticker;
   React.useEffect(() => {
@@ -163,6 +173,18 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
       setLastViewedTicker(loadedTicker);
     }
   }, [loadedTicker]);
+
+  const tabPanelRef = React.useRef<HTMLDivElement | null>(null);
+  const prevTabRef = React.useRef<CompanyTab>(activeTab);
+  React.useEffect(() => {
+    if (prevTabRef.current !== activeTab) {
+      prevTabRef.current = activeTab;
+      const el = tabPanelRef.current;
+      if (el && typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
+  }, [activeTab]);
 
   const allMetricNames = React.useMemo(
     () => (dictQuery.data?.ratios ?? []).map((r) => r.ratio_name),
@@ -178,14 +200,14 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
     {
       statementScope,
       periodType,
-      periodEndDate,
+      periodEndDate: queryPeriodEndDate,
       metrics:
         shouldFetchAllSummary && allMetricNames.length > 0
           ? allMetricNames
           : undefined,
       enabled: activeTab === "overview" || activeTab === "ratios",
     },
-    snapshotId,
+    querySnapshotKey,
   );
 
   const statementsQuery = useCompanyStatements(
@@ -197,7 +219,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
       periodsLimit,
       enabled: activeTab === "statements",
     },
-    snapshotId,
+    querySnapshotKey,
   );
 
   const benchmarksQuery = useCompanyBenchmarks(
@@ -206,10 +228,10 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
       metricName: metricParam,
       statementScope,
       periodType,
-      periodEndDate,
+      periodEndDate: queryPeriodEndDate,
       enabled: activeTab === "ratios",
     },
-    snapshotId,
+    querySnapshotKey,
   );
 
   const setTabAndParams = React.useCallback(
@@ -288,6 +310,17 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
     return idx > 0 ? sortedMl[idx - 1] ?? null : null;
   }, [latestMl, sortedMl]);
 
+  const pdSeries = React.useMemo(() => {
+    const firstValidIdx = sortedMl.findIndex(
+      (m) =>
+        m.calibrated_distress_prob !== null &&
+        m.calibrated_distress_prob !== undefined &&
+        Number.isFinite(m.calibrated_distress_prob),
+    );
+    if (firstValidIdx < 0) return [];
+    return sortedMl.slice(firstValidIdx);
+  }, [sortedMl]);
+
   const handleRiskPeriodClick = React.useCallback(
     (payload: { dataIndex?: number }) => {
       if (typeof payload.dataIndex !== "number") return;
@@ -296,6 +329,23 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
       setSelectedMlPeriodEnd(target.period_end_date);
     },
     [setSelectedMlPeriodEnd, sortedMl],
+  );
+
+  const handleDistressPeriodClick = React.useCallback(
+    (payload: { dataIndex?: number }) => {
+      if (typeof payload.dataIndex !== "number") return;
+      const target = pdSeries[payload.dataIndex];
+      if (
+        !target ||
+        target.calibrated_distress_prob === null ||
+        target.calibrated_distress_prob === undefined ||
+        !Number.isFinite(target.calibrated_distress_prob)
+      ) {
+        return;
+      }
+      setSelectedMlPeriodEnd(target.period_end_date);
+    },
+    [pdSeries, setSelectedMlPeriodEnd],
   );
 
   const activeMlPeriodLabel = activeMl
@@ -339,7 +389,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
       selectedIdx >= 0 ? sortedMl[selectedIdx]?.altman_z_double_prime : null;
 
     return {
-      grid: { left: 52, right: 24, top: 28, bottom: 32 },
+      grid: { left: 52, right: 24, top: 34, bottom: 32 },
       tooltip: {
         trigger: "axis",
         formatter: (raw: unknown) => {
@@ -396,27 +446,47 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
               {
                 yAxis: 1.1,
                 lineStyle: { color: palette.riskHigh },
-                label: { formatter: "1,10 (Nguy cơ)", color: palette.riskHigh, position: "insideEndTop" },
+                label: {
+                  formatter: "1,10 (Nguy cơ)",
+                  color: palette.riskHigh,
+                  position: "insideEndBottom",
+                  backgroundColor: palette.surface,
+                  borderColor: palette.border,
+                  borderWidth: 1,
+                  borderRadius: 3,
+                  padding: [2, 5],
+                  distance: 4,
+                },
               },
               {
                 yAxis: 2.6,
                 lineStyle: { color: palette.riskLow },
-                label: { formatter: "2,60 (An toàn)", color: palette.riskLow, position: "insideEndTop" },
+                label: {
+                  formatter: "2,60 (An toàn)",
+                  color: palette.riskLow,
+                  position: "insideEndTop",
+                  backgroundColor: palette.surface,
+                  borderColor: palette.border,
+                  borderWidth: 1,
+                  borderRadius: 3,
+                  padding: [2, 5],
+                  distance: 4,
+                },
               },
             ],
           },
         },
       ],
     };
-  }, [activeMl, palette.company, palette.riskHigh, palette.riskLow, palette.surface, periodType, sortedMl]);
+  }, [activeMl, palette.border, palette.company, palette.riskHigh, palette.riskLow, palette.surface, periodType, sortedMl]);
 
   const mlDistressProbOption = React.useMemo<EChartsOption>(() => {
-    const labels = sortedMl.map((m) => formatPeriodLabel(m.period_end_date, periodType));
+    const labels = pdSeries.map((m) => formatPeriodLabel(m.period_end_date, periodType));
     const selectedIdx = activeMl
-      ? sortedMl.findIndex((m) => m.period_end_date === activeMl.period_end_date)
+      ? pdSeries.findIndex((m) => m.period_end_date === activeMl.period_end_date)
       : -1;
     const rawSelected =
-      selectedIdx >= 0 ? sortedMl[selectedIdx]?.calibrated_distress_prob : null;
+      selectedIdx >= 0 ? pdSeries[selectedIdx]?.calibrated_distress_prob : null;
     const selectedPct =
       typeof rawSelected === "number" && Number.isFinite(rawSelected)
         ? Number((rawSelected * 100).toFixed(2))
@@ -429,7 +499,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
         formatter: (raw: unknown) => {
           const list = Array.isArray(raw) ? raw : [raw];
           const first = list[0] as { dataIndex?: number } | undefined;
-          const m = sortedMl[first?.dataIndex ?? -1];
+          const m = pdSeries[first?.dataIndex ?? -1];
           if (!m) return "";
           const trio = formatCreditTrio({
             risk_tier: m.risk_tier,
@@ -451,6 +521,14 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
         type: "value",
         name: "XS kiệt quệ (%)",
         min: 0,
+        max: (val: { max: number }) => {
+          const peak = Number.isFinite(val.max) ? val.max : 0;
+          if (peak <= 0) return 5;
+          const padded = peak * 1.18;
+          if (padded <= 5) return Math.ceil(padded);
+          if (padded <= 20) return Math.ceil(padded / 2) * 2;
+          return Math.ceil(padded / 5) * 5;
+        },
         axisLabel: {
           formatter: (v: number) =>
             `${formatChartNumber(v, 1, { trimTrailingZeros: true })}%`,
@@ -463,7 +541,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
           symbolSize: 7,
           lineStyle: { color: palette.riskHigh, width: 2 },
           itemStyle: { color: palette.riskHigh },
-          data: sortedMl.map((m) =>
+          data: pdSeries.map((m) =>
             m.calibrated_distress_prob !== null && m.calibrated_distress_prob !== undefined
               ? Number((m.calibrated_distress_prob * 100).toFixed(2))
               : null,
@@ -486,7 +564,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
         },
       ],
     };
-  }, [activeMl, palette.company, palette.riskHigh, palette.surface, periodType, sortedMl]);
+  }, [activeMl, palette.company, palette.riskHigh, palette.surface, pdSeries, periodType]);
 
   if (profileQuery.isLoading) {
     return <PageSkeleton />;
@@ -494,10 +572,31 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
 
   if (profileQuery.isError) {
     return (
-      <ErrorState
-        message={profileQuery.error.message}
-        onRetry={() => profileQuery.refetch()}
-      />
+      <div className="space-y-4">
+        <ErrorState
+          title={`Không thể tải hồ sơ doanh nghiệp ${ticker}`}
+          message={profileQuery.error.message}
+          onRetry={() => profileQuery.refetch()}
+        />
+        <Card>
+          <CardContent className="space-y-3 p-4 text-xs">
+            <p className="font-semibold text-ink">
+              Phạm vi dữ liệu FinIntel: Doanh nghiệp phi tài chính niêm yết
+            </p>
+            <p className="leading-5 text-ink-muted">
+              Hệ thống chỉ phân tích doanh nghiệp phi tài chính trên HOSE, HNX và UPCOM theo chuẩn kế toán VAS (TT200/2014 → TT99/2025). Các tổ chức tài chính như Ngân hàng, Công ty Chứng khoán và Bảo hiểm (ví dụ VCB, SSI, BVH) nằm ngoài phạm vi đánh giá.
+            </p>
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <Link href="/" className={buttonVariants({ variant: "outline", size: "sm" })}>
+                Trang chủ
+              </Link>
+              <Link href="/screener" className={buttonVariants({ variant: "default", size: "sm" })}>
+                Sàng lọc DN
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
@@ -506,7 +605,17 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
     return (
       <EmptyState
         title={`Không tìm thấy hồ sơ doanh nghiệp ${ticker}`}
-        description="Kiểm tra lại mã chứng khoán hoặc chọn doanh nghiệp từ thanh tìm kiếm (Ctrl+K)."
+        description="Kiểm tra lại mã chứng khoán hoặc lưu ý FinIntel chỉ hỗ trợ doanh nghiệp phi tài chính niêm yết (không bao gồm Ngân hàng, Chứng khoán, Bảo hiểm)."
+        action={
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Link href="/" className={buttonVariants({ variant: "outline", size: "sm" })}>
+              Trang chủ
+            </Link>
+            <Link href="/screener" className={buttonVariants({ variant: "default", size: "sm" })}>
+              Sàng lọc DN
+            </Link>
+          </div>
+        }
       />
     );
   }
@@ -534,6 +643,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
         onToggleWatchlist={() => toggleWatchlistTicker(profile.ticker)}
         activeTab={activeTab}
         onChangeTab={(tab) => setTabAndParams(tab)}
+        ragAvailable={isRagEnabled}
       />
 
       <DataCoverageNotice
@@ -553,9 +663,11 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
       />
 
       <div
+        ref={tabPanelRef}
         id={`company-panel-${activeTab}`}
         role="tabpanel"
         aria-labelledby={`company-tab-${activeTab}`}
+        className="scroll-mt-[152px] md:scroll-mt-[172px]"
       >
       {activeTab === "overview" ? (
         <OverviewTab
@@ -568,7 +680,9 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
           isCustomMlPeriod={isCustomMlPeriod}
           onResetMlPeriod={() => setSelectedMlPeriodEnd(null)}
           mlDistressProbOption={mlDistressProbOption}
+          mlDistressItems={pdSeries}
           onRiskPeriodClick={handleRiskPeriodClick}
+          onDistressPeriodClick={handleDistressPeriodClick}
           zStats={zStats}
           probStats={probStats}
           activeRedFlags={activeRedFlags}
@@ -599,6 +713,11 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
           onNavigateTab={setTabAndParams}
           onInvestigateRedFlag={handleInvestigateRedFlag}
           onOpenSourceDrawer={openSourceDrawer}
+          bondSignals={bondSignalsQuery.data}
+          bondLoading={bondSignalsQuery.isLoading}
+          bondError={bondSignalsQuery.isError}
+          bondErrorMessage={bondSignalsQuery.error?.message}
+          onRetryBond={() => bondSignalsQuery.refetch()}
         />
       ) : activeTab === "statements" ? (
         <FinancialsTab
@@ -647,7 +766,10 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
         />
       ) : activeTab === "model" ? (
         <ModelShapTab
+          ticker={profile.ticker}
+          statementScope={statementScope}
           sortedMl={sortedMl}
+          mlDistressItems={pdSeries}
           activeMl={activeMl}
           activeMlPeriodLabel={activeMlPeriodLabel}
           isCustomMlPeriod={isCustomMlPeriod}
@@ -655,6 +777,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
           mlAltmanOption={mlAltmanOption}
           mlDistressProbOption={mlDistressProbOption}
           onRiskPeriodClick={handleRiskPeriodClick}
+          onDistressPeriodClick={handleDistressPeriodClick}
           periodType={periodType}
           ratioDictMap={ratioDictMap}
         />
@@ -664,6 +787,7 @@ function CompanyProfileBody({ ticker }: { ticker: string }) {
           ticker={profile.ticker}
           companyName={profile.company_name_vn ?? issuerMeta?.company_name_vn ?? null}
           initialPreset={ragPreset}
+          ragAvailable={isRagEnabled}
         />
       ) : (
         <SourcesTab

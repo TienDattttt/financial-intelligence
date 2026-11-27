@@ -1,17 +1,35 @@
+import { formatPiotroskiNaDetail } from "@/lib/domain-labels";
 import { cn } from "@/lib/utils";
 
 export function ScoreDots({
   score,
   validComponents,
+  naReason,
+  missingCriteria,
   max = 9,
 }: {
   score: number | null | undefined;
   validComponents?: number | null;
+  naReason?: string | null;
+  missingCriteria?: readonly string[] | null;
   max?: number;
 }) {
   if (score === null || score === undefined) {
+    const detail = formatPiotroskiNaDetail(naReason, missingCriteria);
+    const hasMissingDetail = Boolean(detail.detailLine);
     return (
-      <span className="text-[11px] text-ink-subtle">Chưa đủ tiêu chí</span>
+      <div className="space-y-0.5" title={detail.tooltip}>
+        <p className="text-[11px] leading-4 text-ink-muted">{detail.summary}</p>
+        {hasMissingDetail ? (
+          <p className="text-[11px] leading-4 text-ink-subtle">{detail.detailLine}</p>
+        ) : validComponents !== null &&
+          validComponents !== undefined &&
+          validComponents < max ? (
+          <p className="num text-[11px] leading-4 text-ink-subtle">
+            Đạt {validComponents}/{max} tiêu chí
+          </p>
+        ) : null}
+      </div>
     );
   }
   const filledColor =

@@ -1171,6 +1171,7 @@ def test_suite1_happy_path_full_stack_all_10_routes_gc_and_rollback(
             "status": "ok",
             "active_snapshot_id": snap_1,
             "storage_backend": backend,
+            "rag_available": False,
         }
 
         # Route 2: GET /api/v1/snapshot/overview
@@ -1224,8 +1225,8 @@ def test_suite1_happy_path_full_stack_all_10_routes_gc_and_rollback(
         assert len(benchmarks["peer_ranking"]) >= 2
         assert len(benchmarks["history"]) > 0
 
-        # Route 6: GET /api/v1/companies/{ticker}/lineage across ALL 38/38 ALL_RATIOS
-        assert len(ALL_RATIOS) == 38
+        # Route 6: GET /api/v1/companies/{ticker}/lineage across ALL 39/39 ALL_RATIOS
+        assert len(ALL_RATIOS) == 39
         for idx, ratio_name in enumerate(ALL_RATIOS):
             params = {
                 "ratio_name": ratio_name,
@@ -1557,7 +1558,7 @@ def _build_mode_b_issuer_facts(
             p_start = date(year, sm, sd)
             p_end = date(year, em, ed)
             pub_date = date(year + 1 if q == 4 else year, pm, pd)
-            scale = 1.0 + 0.04 * idx + 0.015 * q
+            scale = (1.0 + 0.04 * idx + 0.015 * q) * 10_000_000.0
             fid = f"fid_{issuer_id}_{year}_q{q}"
             metrics: dict[str, float] = {
                 "BS_TOTAL_ASSETS": 1000.0 * scale,
@@ -1570,7 +1571,7 @@ def _build_mode_b_issuer_facts(
                 "BS_SHORT_TERM_BORROWINGS": (115.0 + 7.0 * (idx % 5)) * scale,
                 "BS_LONG_TERM_BORROWINGS": (90.0 + 5.0 * (idx % 3)) * scale,
                 "BS_RETAINED_EARNINGS": (160.0 - 6.0 * (idx % 6)) * scale,
-                "BS_ORDINARY_SHARES_CAPITAL": 200_000.0,
+                "BS_ORDINARY_SHARES_CAPITAL": 200_000.0 * 10_000_000.0,
                 "BS_TREASURY_SHARES": 0.0,
                 "BS_INVENTORIES": (68.0 + 3.0 * (idx % 5)) * scale,
                 "BS_TRADE_RECEIVABLES_ST": (92.0 + 4.0 * (idx % 4)) * scale,

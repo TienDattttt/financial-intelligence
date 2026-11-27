@@ -104,6 +104,8 @@ def _build_screener_export_fixture(
                 "source_filing_ids": [f"{ticker}_2026Q3"],
                 "roe_total": roe,
                 "roa": round(roe / 2.0, 4),
+                "net_revenue_ttm": 50_000_000_000.0,
+                "borrowing_cost_ttm": 2_000_000_000.0,
                 "ebit_margin": -0.12 if idx == 0 else 0.12,
                 "debt_to_equity": round(0.2 + (idx % 10) * 0.25, 2),
                 "interest_coverage": 4.5,

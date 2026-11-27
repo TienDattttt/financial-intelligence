@@ -20,16 +20,13 @@ Verified Sources:
 
 from __future__ import annotations
 
-import asyncio
 import contextvars
-import csv
 import importlib
-import io
 import logging
-import math
 import os
 import re
 import threading
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import date
@@ -42,14 +39,37 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi import Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
 
+from finintel.alerts.router import mount_alerts_router
 from finintel.analytics.stress_test import (
     StressScenario,
     simulate_financial_stress,
     summarize_stress_by_sector,
 )
 from finintel.exceptions import ContractViolationError
+from finintel.serving._api_helpers import (
+    STRESS_CACHE_CONTROL_HEADER,
+    RagAvailabilityMiddleware,
+    StressBulkheadMiddleware,
+    _dataframe_to_safe_csv_bytes,
+    _extract_snapshot_id,
+    _extract_storage_backend,
+    _finite_scalar,
+    _frame_to_records,
+    _is_rag_unavailable_error,
+    _rag_unavailable_response,
+    build_meta_dictionary_kwargs,
+    build_screener_cache_params,
+    health_etag_source,
+    probe_rag_available,
+)
+from finintel.serving._api_helpers import (
+    _sanitize_csv_cell as _sanitize_csv_cell,
+)
+from finintel.serving._stress_helpers import (
+    build_empty_stress_response_kwargs,
+    build_stress_response_kwargs,
+)
 from finintel.serving.cache import (
     ValkeyResponseCache,
     build_snapshot_cache_key,
@@ -59,11 +79,13 @@ from finintel.serving.dependencies import (
     DEFAULT_API_PORT,
     DEFAULT_STRESS_MAX_CONCURRENCY,
     DEFAULT_STRESS_SEMAPHORE_TIMEOUT,
+    SecurityHeadersMiddleware,
     build_lifespan,
     get_db_cursor,
     get_query_service,
     get_response_cache,
     get_stress_semaphore,
+    resolve_cors_allow_credentials,
     resolve_cors_origins,
 )
 from finintel.serving.observability import (
@@ -71,11 +93,8 @@ from finintel.serving.observability import (
     attach_observability,
     trace_span,
 )
-from finintel.serving.dictionary import (
-    RATIO_DICTIONARY_META,
-    RED_FLAG_DICTIONARY,
-    StatementType,
-)
+from finintel.serving.dictionary import StatementType
+from finintel.serving.exports.router import create_exports_router
 from finintel.serving.freshness import (
     build_composite_cache_token,
     build_freshness_item,
@@ -85,15 +104,17 @@ from finintel.serving.freshness import (
     sanitize_error_detail,
 )
 from finintel.serving.queries import (
-    RATIO_LINEAGE_CATALOG,
     AltmanZone,
     BeneishFlag,
     DashboardQueryService,
+    Exchange,
     PeriodType,
     PeriodView,
     RiskTier,
     StatementScope,
 )
+from finintel.serving.queries._helpers import parse_screener_risk_tiers
+from finintel.serving.routers.screener_v3 import ScreenerExtendedQueryParams
 from finintel.serving.schemas import (
     AuditQuarantineItem,
     AuditQuarantinePageResponse,
@@ -124,11 +145,9 @@ from finintel.serving.schemas import (
     PeerRankingItem,
     QualitySummaryItem,
     QualitySummaryPageResponse,
-    RatioDictionaryItem,
     RatioLineageResponse,
     RatioName,
     ReadinessResponse,
-    RedFlagDictionaryItem,
     RedFlagItem,
     ScreenerItem,
     ScreenerResponse,
@@ -140,9 +159,7 @@ from finintel.serving.schemas import (
     SortDirection,
     StatementPeriodItem,
     StatementRowItem,
-    StressIssuerItem,
     StressScenarioRequest,
-    StressSectorSummaryItem,
     StressTestResponse,
     parse_shap_top_drivers,
 )
@@ -151,7 +168,6 @@ from finintel.storage.repository import ParquetRepository
 logger = logging.getLogger("finintel.serving.api")
 
 CACHE_CONTROL_HEADER = "private, max-age=0, must-revalidate"
-STRESS_CACHE_CONTROL_HEADER = "private, no-store"
 _TICKER_PATTERN = r"^[A-Z0-9]{1,10}$"
 _ICB_CODE_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 _REQUEST_DATA_ROOT: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
@@ -195,75 +211,6 @@ def _apply_cache_headers(response: Response, snapshot_id: str | None) -> None:
     response.headers["Cache-Control"] = CACHE_CONTROL_HEADER
     if snapshot_id is not None:
         response.headers["ETag"] = _format_etag(snapshot_id)
-
-
-def _finite_frame(df: pl.DataFrame) -> pl.DataFrame:
-    """Replace any non-finite floats (NaN/Inf) with NULL vectorially before JSON export."""
-    if df.is_empty():
-        return df
-    float_cols = [name for name, dtype in df.schema.items() if dtype.is_float()]
-    if not float_cols:
-        return df
-    return df.with_columns(
-        pl.when(pl.col(name).is_finite()).then(pl.col(name)).otherwise(None).alias(name)
-        for name in float_cols
-    )
-
-
-def _finite_scalar(value: float | None) -> float | None:
-    if value is None:
-        return None
-    return value if math.isfinite(value) else None
-
-
-def _frame_to_records(df: pl.DataFrame) -> list[dict[str, Any]]:
-    """Serialize a bounded Polars slice to JSON-safe dicts via ``to_dicts()``."""
-    if df.is_empty():
-        return []
-    return _finite_frame(df).to_dicts()
-
-
-_CSV_FORMULA_PREFIXES: tuple[str, ...] = ("=", "+", "-", "@", "\t", "\r")
-
-
-def _sanitize_csv_cell(value: object) -> str | int | float:
-    """Apply OWASP CSV formula injection guard while preserving numeric negatives."""
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return str(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else ""
-    if isinstance(value, date):
-        return value.isoformat()
-    text = str(value)
-    if text.startswith(_CSV_FORMULA_PREFIXES) or text.lstrip().startswith(
-        _CSV_FORMULA_PREFIXES
-    ):
-        return f"'{text}"
-    return text
-
-
-def _dataframe_to_safe_csv_bytes(df: pl.DataFrame) -> bytes:
-    """Serialize a Polars DataFrame to UTF-8 BOM CSV with OWASP formula sanitization."""
-    buf = io.StringIO()
-    writer = csv.writer(buf, lineterminator="\r\n")
-    writer.writerow(df.columns)
-    for row in df.rows():
-        writer.writerow([_sanitize_csv_cell(cell) for cell in row])
-    return ("\ufeff" + buf.getvalue()).encode("utf-8")
-
-
-def _extract_snapshot_id(meta: dict[str, object]) -> str | None:
-    raw = meta.get("snapshot_id")
-    return str(raw) if isinstance(raw, str) and raw else None
-
-
-def _extract_storage_backend(meta: dict[str, object]) -> str:
-    raw = meta.get("storage_backend")
-    return str(raw) if isinstance(raw, str) and raw else "parquet"
 
 
 def _attach_lineage_state(request: Request, meta: Mapping[str, object]) -> None:
@@ -335,160 +282,6 @@ def _store_cached_model(
         return model
 
 
-class StressBulkheadMiddleware:
-    """Pure ASGI event-loop bulkhead for ``POST /api/v1/stress-test`` (NFR-03).
-
-    Uses an event-loop-native ``asyncio.Semaphore`` (instant 0-sleep wakeup) paired
-    with ``app.state.stress_semaphore`` BEFORE FastAPI dispatches into the AnyIO
-    threadpool or opens a DuckDB cursor.
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-        self._loop_sems: dict[int, asyncio.Semaphore] = {}
-
-    def _get_async_semaphore(self, app_state: Any) -> asyncio.Semaphore:
-        loop_id = id(asyncio.get_running_loop())
-        sem = self._loop_sems.get(loop_id)
-        if sem is None:
-            max_conc = int(
-                getattr(
-                    app_state,
-                    "stress_max_concurrency",
-                    DEFAULT_STRESS_MAX_CONCURRENCY,
-                )
-            )
-            sem = asyncio.Semaphore(max(1, max_conc))
-            if len(self._loop_sems) > 16:
-                self._loop_sems.clear()
-            self._loop_sems[loop_id] = sem
-        return sem
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if (
-            scope["type"] != "http"
-            or scope.get("method") != "POST"
-            or scope.get("path") != "/api/v1/stress-test"
-        ):
-            await self.app(scope, receive, send)
-            return
-
-        fastapi_app = scope.get("app")
-        app_state = getattr(fastapi_app, "state", None)
-        thread_sem = getattr(app_state, "stress_semaphore", None)
-        if not isinstance(thread_sem, threading.Semaphore):
-            await self.app(scope, receive, send)
-            return
-        sem_timeout = float(
-            getattr(
-                app_state,
-                "stress_semaphore_timeout",
-                DEFAULT_STRESS_SEMAPHORE_TIMEOUT,
-            )
-        )
-        async_sem = self._get_async_semaphore(app_state)
-        try:
-            await asyncio.wait_for(async_sem.acquire(), timeout=max(0.001, sem_timeout))
-        except TimeoutError:
-            resp = JSONResponse(
-                status_code=503,
-                content={
-                    "detail": "Stress-test simulator is busy; please retry shortly."
-                },
-                headers={"Retry-After": "1"},
-            )
-            await resp(scope, receive, send)
-            return
-
-        # Fast-path non-blocking check against app.state.stress_semaphore (keeps
-        # unit-test manual semaphore pre-acquisition 100% compatible without polling).
-        if not thread_sem.acquire(blocking=False):
-            async_sem.release()
-            resp = JSONResponse(
-                status_code=503,
-                content={
-                    "detail": "Stress-test simulator is busy; please retry shortly."
-                },
-                headers={"Retry-After": "1"},
-            )
-            await resp(scope, receive, send)
-            return
-
-        state_dict = scope.setdefault("state", {})
-        state_dict["_stress_permit_held"] = True
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            state_dict["_stress_permit_held"] = False
-            thread_sem.release()
-            async_sem.release()
-
-
-_RAG_UNAVAILABLE_DETAIL = (
-    "Dịch vụ tra cứu Thuyết minh PDF hiện tạm thời chưa sẵn sàng. Vui lòng thử lại sau."
-)
-
-
-def _is_rag_unavailable_error(exc: Exception) -> bool:
-    """Return True when a RAG dependency, vector DB, or LLM backend is unavailable."""
-    if isinstance(
-        exc,
-        (ImportError, OSError, TimeoutError, ConnectionError, RuntimeError),
-    ):
-        return True
-    mod_name = type(exc).__module__ or ""
-    return mod_name.startswith(
-        (
-            "psycopg",
-            "pgvector",
-            "redis",
-            "httpx",
-            "google",
-            "torch",
-            "sentence_transformers",
-        )
-    )
-
-
-def _rag_unavailable_response() -> JSONResponse:
-    return JSONResponse(
-        status_code=503,
-        content={"detail": _RAG_UNAVAILABLE_DETAIL},
-        headers={
-            "Cache-Control": STRESS_CACHE_CONTROL_HEADER,
-            "Retry-After": "5",
-        },
-    )
-
-
-class RagAvailabilityMiddleware:
-    """Pure ASGI guard converting missing optional deps / unreachable Postgres into HTTP 503 on ``/api/v2/documents/*``."""
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        path = str(scope.get("path", ""))
-        if not path.startswith("/api/v2/documents/"):
-            await self.app(scope, receive, send)
-            return
-        try:
-            await self.app(scope, receive, send)
-        except Exception as exc:
-            if not _is_rag_unavailable_error(exc):
-                raise
-            logger.warning(
-                "RAG endpoint unavailable (%s): %s",
-                type(exc).__name__,
-                path,
-            )
-            resp = _rag_unavailable_response()
-            await resp(scope, receive, send)
-
-
 def _mount_rag_router(
     api: FastAPI,
     *,
@@ -501,6 +294,9 @@ def _mount_rag_router(
     investigator_lock = threading.Lock()
     api.state._rag_store = rag_store
     api.state._rag_investigator = rag_investigator
+    api.state._rag_injected = rag_store is not None or rag_investigator is not None
+    api.state._rag_probe_cache = None
+    api.state._rag_router_mounted = False
 
     def _get_store() -> Any:
         existing = getattr(api.state, "_rag_store", None)
@@ -593,6 +389,7 @@ def _mount_rag_router(
                 return
             try:
                 api.state._rag_investigator = _build_investigator_sync(warm_models=True)
+                api.state._rag_probe_cache = (time.monotonic(), True)
                 logger.info("RAG embedder and Gemini bundle pre-warmed successfully.")
             except Exception as exc:
                 logger.warning("RAG pre-warm failed (%s).", type(exc).__name__)
@@ -623,7 +420,9 @@ def _mount_rag_router(
                 get_investigator=_get_investigator,
             )
         )
+        api.state._rag_router_mounted = True
     except ImportError as exc:
+        api.state._rag_router_mounted = False
         logger.warning(
             "Port 2 RAG router mounted in 503 fallback mode (%s).",
             type(exc).__name__,
@@ -654,7 +453,10 @@ def create_app(
     rag_investigator: Any | None = None,
 ) -> FastAPI:
     """Create a configured read-only analytical FastAPI application."""
-    allowed_origins = resolve_cors_origins(cors_origins)
+    allow_cors_credentials = resolve_cors_allow_credentials()
+    allowed_origins = resolve_cors_origins(
+        cors_origins, allow_credentials=allow_cors_credentials
+    )
     base_lifespan = build_lifespan(
         data_root=data_root,
         repository=repository,
@@ -683,6 +485,7 @@ def create_app(
         lifespan=app_lifespan,
     )
 
+    api.add_middleware(SecurityHeadersMiddleware)
     api.add_middleware(StressBulkheadMiddleware)
     api.add_middleware(RagAvailabilityMiddleware)
     attach_observability(api)
@@ -692,9 +495,14 @@ def create_app(
         api.add_middleware(
             CORSMiddleware,
             allow_origins=list(allowed_origins),
-            allow_credentials=False,
-            allow_methods=["GET", "POST"],
-            allow_headers=["If-None-Match", "Content-Type", "X-Request-ID"],
+            allow_credentials=allow_cors_credentials,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=[
+                "If-None-Match",
+                "Content-Type",
+                "X-Request-ID",
+                "X-Requested-With",
+            ],
             expose_headers=[
                 "ETag",
                 "Cache-Control",
@@ -853,6 +661,7 @@ def create_app(
                 status="degraded",
                 active_snapshot_id=None,
                 storage_backend="parquet",
+                rag_available=False,
             )
             return JSONResponse(
                 status_code=503,
@@ -862,15 +671,18 @@ def create_app(
 
         _attach_lineage_state(request, meta)
         snap_id = _extract_snapshot_id(meta)
-        not_modified = _conditional_not_modified(if_none_match, snap_id)
+        rag_available = probe_rag_available(request.app.state)
+        etag_key = health_etag_source(snap_id, _REQUEST_DATA_ROOT.get(), rag_available)
+        not_modified = _conditional_not_modified(if_none_match, etag_key)
         if not_modified is not None:
             return not_modified
 
-        _apply_cache_headers(response, snap_id)
+        _apply_cache_headers(response, etag_key)
         return HealthResponse(
             status="ok",
             active_snapshot_id=snap_id,
             storage_backend=_extract_storage_backend(meta),
+            rag_available=rag_available,
         )
 
     # ------------------------------------------------------------------
@@ -1316,9 +1128,11 @@ def create_app(
         period_end_date: date | None = Query(None),
         statement_scope: StatementScope = Query("CONSOLIDATED"),
         icb_code_level2: str | None = Query(None, pattern=_ICB_CODE_PATTERN),
+        exchange: Exchange | None = Query(None),
         min_f_score: int | None = Query(None, ge=0, le=9),
         altman_zone: AltmanZone | None = Query(None),
         risk_tier: RiskTier | None = Query(None),
+        risk_tiers: str | None = Query(None, max_length=32),
         beneish_flag: BeneishFlag | None = Query(None),
         max_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
         min_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
@@ -1330,10 +1144,12 @@ def create_app(
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+        ext: ScreenerExtendedQueryParams = Depends(),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
         cache: ValkeyResponseCache = Depends(get_response_cache),
     ) -> ScreenerResponse | Response:
+        effective_tiers = parse_screener_risk_tiers(risk_tier, risk_tiers)
         with service.repository.snapshot_session(connection=cursor) as pinned:
             meta = pinned.get_snapshot_metadata(connection=cursor)
             _attach_lineage_state(request, meta)
@@ -1346,29 +1162,27 @@ def create_app(
                 cache,
                 snap_id,
                 "v1/screener",
-                {
-                    "period_type": period_type,
-                    "period_end_date": (
-                        period_end_date.isoformat()
-                        if period_end_date is not None
-                        else None
-                    ),
-                    "statement_scope": statement_scope,
-                    "icb_code_level2": icb_code_level2,
-                    "min_f_score": min_f_score,
-                    "altman_zone": altman_zone,
-                    "risk_tier": risk_tier,
-                    "beneish_flag": beneish_flag,
-                    "max_distress_prob": max_distress_prob,
-                    "min_distress_prob": min_distress_prob,
-                    "max_red_flags": max_red_flags,
-                    "min_red_flags": min_red_flags,
-                    "q": q,
-                    "sort_by": sort_by,
-                    "sort_dir": sort_dir,
-                    "limit": limit,
-                    "offset": offset,
-                },
+                build_screener_cache_params(
+                    period_type=period_type,
+                    period_end_date=period_end_date,
+                    statement_scope=statement_scope,
+                    icb_code_level2=icb_code_level2,
+                    exchange=exchange,
+                    min_f_score=min_f_score,
+                    altman_zone=altman_zone,
+                    effective_tiers=effective_tiers,
+                    beneish_flag=beneish_flag,
+                    max_distress_prob=max_distress_prob,
+                    min_distress_prob=min_distress_prob,
+                    max_red_flags=max_red_flags,
+                    min_red_flags=min_red_flags,
+                    q=q,
+                    sort_by=sort_by,
+                    sort_dir=sort_dir,
+                    limit=limit,
+                    offset=offset,
+                    extra_params=ext.to_cache_dict(),
+                ),
             )
             if hit is not None:
                 return hit
@@ -1379,9 +1193,11 @@ def create_app(
                 period_end_date=period_end_date,
                 statement_scope=statement_scope,
                 icb_code_level2=icb_code_level2,
+                exchange=exchange,
                 min_f_score=min_f_score,
                 altman_zone=altman_zone,
                 risk_tier=risk_tier,
+                risk_tiers=risk_tiers,
                 beneish_flag=beneish_flag,
                 max_distress_prob=max_distress_prob,
                 min_distress_prob=min_distress_prob,
@@ -1392,6 +1208,7 @@ def create_app(
                 sort_dir=sort_dir,
                 limit=limit,
                 offset=offset,
+                extra_filters=ext.to_domain(),
                 connection=cursor,
             )
             resolved_end = period_end_date
@@ -1440,9 +1257,11 @@ def create_app(
         period_end_date: date | None = Query(None),
         statement_scope: StatementScope = Query("CONSOLIDATED"),
         icb_code_level2: str | None = Query(None, pattern=_ICB_CODE_PATTERN),
+        exchange: Exchange | None = Query(None),
         min_f_score: int | None = Query(None, ge=0, le=9),
         altman_zone: AltmanZone | None = Query(None),
         risk_tier: RiskTier | None = Query(None),
+        risk_tiers: str | None = Query(None, max_length=32),
         beneish_flag: BeneishFlag | None = Query(None),
         max_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
         min_distress_prob: float | None = Query(None, ge=0.0, le=1.0),
@@ -1452,6 +1271,7 @@ def create_app(
         sort_by: ScreenerSortField = Query("calibrated_distress_prob"),
         sort_dir: SortDirection = Query("desc"),
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+        ext: ScreenerExtendedQueryParams = Depends(),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
     ) -> Response:
@@ -1468,9 +1288,11 @@ def create_app(
                 period_end_date=period_end_date,
                 statement_scope=statement_scope,
                 icb_code_level2=icb_code_level2,
+                exchange=exchange,
                 min_f_score=min_f_score,
                 altman_zone=altman_zone,
                 risk_tier=risk_tier,
+                risk_tiers=risk_tiers,
                 beneish_flag=beneish_flag,
                 max_distress_prob=max_distress_prob,
                 min_distress_prob=min_distress_prob,
@@ -1479,6 +1301,7 @@ def create_app(
                 q=q,
                 sort_by=sort_by,
                 sort_dir=sort_dir,
+                extra_filters=ext.to_domain(),
                 connection=cursor,
             )
 
@@ -1556,23 +1379,19 @@ def create_app(
                 gross_margin_shock_pp=payload.gross_margin_shock_pp,
                 dso_shock_days=payload.dso_shock_days,
                 dio_shock_days=payload.dio_shock_days,
+                fx_depreciation_pct=payload.fx_depreciation_pct,
             )
 
             if inputs_df.is_empty():
                 empty_body = StressTestResponse(
-                    snapshot_id=snap_id,
-                    scenario_name=scenario.name,
-                    statement_scope=payload.statement_scope,
-                    period_type=payload.period_type,
-                    period_end_date=payload.period_end_date,
-                    total_issuers_evaluated=0,
-                    total_debt_sum=0.0,
-                    baseline_debt_at_risk_pct=0.0,
-                    stressed_debt_at_risk_pct=0.0,
-                    newly_distressed_count=0,
-                    sector_summary=[],
-                    newly_distressed_issuers=[],
-                    top_stressed_issuers=[],
+                    **build_empty_stress_response_kwargs(
+                        snapshot_id=snap_id,
+                        scenario_name=scenario.name,
+                        statement_scope=payload.statement_scope,
+                        period_type=payload.period_type,
+                        period_end_date=payload.period_end_date,
+                        fx_depreciation_pct=scenario.fx_depreciation_pct,
+                    )
                 )
                 return _store_cached_model(
                     cache,
@@ -1601,82 +1420,23 @@ def create_app(
                         pl.lit("MARKET").alias("icb_name_level2"),
                     )
                 )
-            market_row = market_df.row(0, named=True)
-
-            issuer_cols = [
-                "issuer_id",
-                "ticker",
-                "company_name_vn",
-                "icb_code_level2",
-                "icb_name_level2",
-                "total_debt",
-                "interest_coverage",
-                "stressed_interest_coverage",
-                "stressed_interest_coverage_flag",
-                "ebit_ttm",
-                "stressed_ebit_ttm",
-                "borrowing_cost_ttm",
-                "stressed_borrowing_cost_ttm",
-                "cfo_ttm",
-                "stressed_cfo_ttm",
-                "baseline_debt_at_risk",
-                "stressed_debt_at_risk",
-                "newly_distressed_under_shock",
-            ]
-            newly_limit = (
-                1000 if payload.include_all_newly_distressed else payload.top_n
-            )
-            newly_df = (
-                stressed_df.filter(
-                    pl.col("newly_distressed_under_shock").eq(True).fill_null(False)
-                )
-                .select(issuer_cols)
-                .sort(
-                    ["total_debt", "ticker"],
-                    descending=[True, False],
-                    nulls_last=True,
-                )
-                .head(newly_limit)
-            )
-            top_df = (
-                stressed_df.select(issuer_cols)
-                .sort(
-                    ["stressed_debt_at_risk", "total_debt", "ticker"],
-                    descending=[True, True, False],
-                    nulls_last=True,
-                )
-                .head(payload.top_n)
-            )
 
             body = StressTestResponse(
-                snapshot_id=snap_id,
-                scenario_name=scenario.name,
-                statement_scope=payload.statement_scope,
-                period_type=payload.period_type,
-                period_end_date=(
-                    resolved_end
-                    if isinstance(resolved_end, date)
-                    else payload.period_end_date
-                ),
-                total_issuers_evaluated=int(market_row["issuer_count"]),
-                total_debt_sum=float(market_row["total_debt_sum"]),
-                baseline_debt_at_risk_pct=float(
-                    market_row["baseline_debt_at_risk_pct"]
-                ),
-                stressed_debt_at_risk_pct=float(
-                    market_row["stressed_debt_at_risk_pct"]
-                ),
-                newly_distressed_count=int(market_row["newly_distressed_count"]),
-                sector_summary=[
-                    StressSectorSummaryItem(**row)
-                    for row in _frame_to_records(sector_df)
-                ],
-                newly_distressed_issuers=[
-                    StressIssuerItem(**row) for row in _frame_to_records(newly_df)
-                ],
-                top_stressed_issuers=[
-                    StressIssuerItem(**row) for row in _frame_to_records(top_df)
-                ],
+                **build_stress_response_kwargs(
+                    snapshot_id=snap_id,
+                    scenario_name=scenario.name,
+                    statement_scope=payload.statement_scope,
+                    period_type=payload.period_type,
+                    resolved_end=resolved_end,
+                    fallback_period_end_date=payload.period_end_date,
+                    stressed_df=stressed_df,
+                    sector_df=sector_df,
+                    market_df=market_df,
+                    top_n=payload.top_n,
+                    include_all_newly_distressed=payload.include_all_newly_distressed,
+                    reference_icrs=payload.reference_icrs,
+                    fx_depreciation_pct=scenario.fx_depreciation_pct,
+                )
             )
             return _store_cached_model(
                 cache,
@@ -1863,31 +1623,7 @@ def create_app(
                 return hit
 
         _apply_cache_headers(response, snap_id)
-        ratios = [
-            RatioDictionaryItem(
-                ratio_name=cast(RatioName, name),
-                display_name_vn=RATIO_LINEAGE_CATALOG[name].display_name_vn,
-                category=entry.category,
-                unit=entry.unit,
-                format_type=entry.format_type,
-                direction=entry.direction,
-                formula_display=RATIO_LINEAGE_CATALOG[name].formula,
-                description_vn=entry.description_vn,
-                is_overview_core=entry.is_overview_core,
-            )
-            for name, entry in RATIO_DICTIONARY_META.items()
-        ]
-        red_flags = [
-            RedFlagDictionaryItem(
-                flag_code=rf.flag_code,
-                title_vn=rf.title_vn,
-                default_severity=rf.default_severity,
-                methodology_ref=rf.methodology_ref,
-                description_vn=rf.description_vn,
-            )
-            for rf in RED_FLAG_DICTIONARY
-        ]
-        body = MetaDictionaryResponse(ratios=ratios, red_flags=red_flags)
+        body = MetaDictionaryResponse(**build_meta_dictionary_kwargs())
         return _store_cached_model(cache, cache_key, response, body, snap_id=snap_id)
 
     @api.get(
@@ -2299,6 +2035,21 @@ def create_app(
         rag_store=rag_store,
         rag_investigator=rag_investigator,
     )
+    from finintel.api_gateway.router import mount_api_gateway_router
+    from finintel.auth.router import mount_identity_workspace_routers
+    from finintel.ops.router import mount_ops_routers
+    from finintel.private_credit.router import mount_private_hitl_routers
+    from finintel.quota.router import mount_quota_router
+    from finintel.serving.routers.bonds_v3 import create_bonds_v3_router
+
+    mount_identity_workspace_routers(api, valkey_url=valkey_url)
+    mount_alerts_router(api)
+    api.include_router(create_exports_router())
+    api.include_router(create_bonds_v3_router())
+    mount_quota_router(api, valkey_url=valkey_url)
+    mount_ops_routers(api)
+    mount_api_gateway_router(api, valkey_url=valkey_url)
+    mount_private_hitl_routers(api)
 
     return api
 
@@ -2315,18 +2066,10 @@ def run_server(
     if data_root is not None:
         os.environ["FININTEL_DATA_ROOT"] = str(data_root)
     default_engine: str = "uvicorn" if os.name == "nt" else "granian"
-    raw_engine: str = (
-        engine
-        if engine is not None
-        else (os.getenv("FININTEL_SERVER_ENGINE") or default_engine)
-    )
-    resolved_engine = raw_engine.strip().lower()
-    raw_workers = (
-        workers
-        if workers is not None
-        else int(os.getenv("FININTEL_WORKERS", "1") or "1")
-    )
-    resolved_workers = max(1, int(raw_workers))
+    raw_env_engine = os.getenv("FININTEL_SERVER_ENGINE") or default_engine
+    resolved_engine = (engine if engine is not None else raw_env_engine).strip().lower()
+    raw_w = str(workers) if workers is not None else os.getenv("FININTEL_WORKERS", "1")
+    resolved_workers = max(1, int(raw_w or "1"))
 
     if resolved_engine == "granian":
         try:

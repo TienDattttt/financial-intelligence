@@ -61,6 +61,7 @@ from finintel.storage.schemas import (
     CORE_RATIOS as CORE_RATIOS,
     EXTRA_RATIOS as EXTRA_RATIOS,
     FORENSIC_RATIOS as FORENSIC_RATIOS,
+    V3_RATIOS as V3_RATIOS,
 )
 
 
@@ -73,6 +74,7 @@ class RatioStatusFlag(StrEnum):
     NON_POSITIVE_EBITDA = "NON_POSITIVE_EBITDA"
     NO_INTEREST_EXPENSE = "NO_INTEREST_EXPENSE"
     ZERO_OR_NEGATIVE_DENOMINATOR = "ZERO_OR_NEGATIVE_DENOMINATOR"
+    TINY_DENOMINATOR = "TINY_DENOMINATOR"
     DERIVED_Q4_INPUT = "DERIVED_Q4_INPUT"
     VALID = "VALID"
     NOT_APPLICABLE_FOR_REGIME = "NOT_APPLICABLE_FOR_REGIME"
@@ -83,6 +85,8 @@ class RatioStatusFlag(StrEnum):
 
 Flag = RatioStatusFlag
 USABLE_FLAGS = [Flag.VALID.value, Flag.DERIVED_Q4_INPUT.value]
+MIN_REVENUE_DENOMINATOR_VND = 1_000_000_000.0
+MIN_INTEREST_DENOMINATOR_VND = 100_000_000.0
 
 
 def _has_bad_endpoint(name: str) -> pl.Expr:
@@ -102,6 +106,7 @@ def _ratio(
     boundary: tuple[pl.Expr, Flag] | None = None,
     depreciation_guard: pl.Expr | None = None,
     cross_guard: pl.Expr | None = None,
+    tiny_floor: float | None = None,
 ) -> list[pl.Expr]:
     """Return N/D and its status. Never divide by a nonpositive denominator.
 
@@ -150,6 +155,11 @@ def _ratio(
         .then(pl.lit(special_flag.value))
         .when(denominator <= 0)
         .then(pl.lit(Flag.ZERO_OR_NEGATIVE_DENOMINATOR.value))
+        .when(
+            pl.lit(tiny_floor is not None)
+            & (denominator < (tiny_floor if tiny_floor is not None else 0.0))
+        )
+        .then(pl.lit(Flag.TINY_DENOMINATOR.value))
         .when(~quotient.is_finite())
         .then(pl.lit(Flag.NUMERIC_OVERFLOW.value))
         .when(input_has("derived", *operands))
@@ -258,7 +268,14 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
     return _days_and_cycle(
         periods.with_columns(
             *_ratio("gross_margin", c(GROSS_PROFIT), revenue, GROSS_PROFIT, REVENUE),
-            *_ratio("ebit_margin", ebit, revenue, *EBIT_INPUTS, REVENUE),
+            *_ratio(
+                "ebit_margin",
+                ebit,
+                revenue,
+                *EBIT_INPUTS,
+                REVENUE,
+                tiny_floor=MIN_REVENUE_DENOMINATOR_VND,
+            ),
             *_ratio(
                 "ebitda_margin",
                 ebitda,
@@ -350,6 +367,14 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
                 prior=(CURRENT_LIABILITIES,),
             ),
             *_ratio(
+                "ocf_to_total_liabilities",
+                cfo,
+                c(LIABILITIES),
+                CFO,
+                LIABILITIES,
+                universal=True,
+            ),
+            *_ratio(
                 "liabilities_to_assets",
                 c(LIABILITIES),
                 c(ASSETS),
@@ -389,6 +414,7 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
                 interest,
                 *EBIT_INPUTS,
                 boundary=(interest == 0, Flag.NO_INTEREST_EXPENSE),
+                tiny_floor=MIN_INTEREST_DENOMINATOR_VND,
             ),
             *_ratio(
                 "asset_turnover",

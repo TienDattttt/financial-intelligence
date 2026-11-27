@@ -1,0 +1,39 @@
+# FinIntel V3.0 — Caddy 2 Reverse Proxy for OCI Always Free
+# - Auto-HTTPS (Let's Encrypt) when FININTEL_API_DOMAIN is a public domain
+# - Strict OWASP Security Headers (HSTS, CSP, nosniff, Referrer-Policy)
+# - Blocks public access to /metrics and /internal/*
+
+{$FININTEL_API_DOMAIN:api.finintel.local} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; form-action 'self'"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# Never expose Prometheus metrics or internal routes to the public internet.
+	respond /metrics 403
+	respond /internal/* 403
+
+	request_body {
+		max_size 10MB
+	}
+
+	@public_api {
+		path /api/* /health/*
+	}
+	handle @public_api {
+		reverse_proxy api:8000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}

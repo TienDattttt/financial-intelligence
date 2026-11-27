@@ -233,10 +233,20 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
     });
     page.on("pageerror", (err) => pageErrors.push(err.message));
 
+    const metaRes = await page.request.get("/api/v2/meta/periods");
+    const metaJson = (await metaRes.json()) as {
+      available_periods?: { CONSOLIDATED?: { QUARTER?: string[] } };
+    };
+    const latestQuarter = metaJson.available_periods?.CONSOLIDATED?.QUARTER?.[0];
+
     const summaryPromise = page.waitForResponse(
       (res) =>
         res.url().includes("/api/v2/sectors/risk-summary") &&
-        res.status() === 200,
+        res.url().includes("period_type=QUARTER") &&
+        res.status() === 200 &&
+        (!res.url().includes("period_end_date=") ||
+          (Boolean(latestQuarter) &&
+            res.url().includes(`period_end_date=${latestQuarter}`))),
     );
     await page.goto("/", { waitUntil: "networkidle" });
     const summaryRes = await summaryPromise;
@@ -391,7 +401,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
       page.getByText(/\bR[1-5]\b|Chưa xếp hạng/).first(),
     ).toBeVisible();
     await expect(
-      page.getByText(/Top\s+[\d.,]+%|Chưa có vị thế kỳ/i).first(),
+      page.getByText(/(?:Top|An toàn hơn)\s+[\d.,]+%|Chưa có vị thế kỳ/i).first(),
     ).toBeVisible();
 
     // 2. Price + Early Warning R4/R5 chart (PriceRiskOverlayChart)
@@ -582,7 +592,7 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
         page.getByText(/Kiểm định cuốn chiếu Walk-Forward/i),
       ).toBeVisible();
       await expect(
-        page.getByText(/Độ tin cậy phân tầng tín nhiệm R1 → R5/i),
+        page.getByText(/Độ tin cậy phân tầng cảnh báo rủi ro R1 → R5/i),
       ).toBeVisible();
 
       // Case Studies table & clicking a Case Study navigates to its Company Profile
@@ -632,99 +642,110 @@ test.describe("FinIntel V2 Frontend Real-API E2E", () => {
       name: "Điều tra Thuyết minh (PDF)",
     });
     await expect(docTabBtn).toBeVisible();
+    const isDocDisabled = await docTabBtn.isDisabled();
 
     // Navigate to Quality & Red Flags tab and test jump button on RF_03/RF_07/RF_09 when active
     await page.getByRole("tab", { name: "Chất lượng LN & Cờ đỏ" }).click();
-    const listPromise = page.waitForResponse((res) =>
-      res.url().includes("/api/v2/documents/HBC/list"),
-    );
 
-    const jumpBtn = page
-      .getByRole("button", { name: /Kiểm tra Thuyết minh gốc/i })
-      .first();
-    let jumpedFromRedFlag = false;
-    let invPromise: ReturnType<typeof page.waitForResponse> | null = null;
-    if (await jumpBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
-      jumpedFromRedFlag = true;
-      invPromise = page.waitForResponse(
-        (res) =>
-          res.url().includes("/api/v2/documents/HBC/investigate") &&
-          res.request().method() === "POST",
-        { timeout: 45_000 },
-      );
-      void invPromise.catch(() => null);
-      await jumpBtn.click();
-      await expect(page).toHaveURL(/tab=documents/);
+    if (isDocDisabled) {
+      // D1: When rag_available=false, tab stays visible-but-disabled and no 503 /documents/HBC/list request is fired
+      await expect(docTabBtn).toBeDisabled();
+      await page.goto("/companies/HBC?tab=documents", { waitUntil: "networkidle" });
+      await expect(
+        page.getByText("Dịch vụ tra cứu Thuyết minh PDF hiện chưa bật"),
+      ).toBeVisible();
     } else {
-      await docTabBtn.click();
-    }
+      const listPromise = page.waitForResponse((res) =>
+        res.url().includes("/api/v2/documents/HBC/list"),
+      );
 
-    const listRes = await listPromise;
-    expect([200, 503]).toContain(listRes.status());
+      const jumpBtn = page
+        .getByRole("button", { name: /Kiểm tra Thuyết minh gốc/i })
+        .first();
+      let jumpedFromRedFlag = false;
+      let invPromise: ReturnType<typeof page.waitForResponse> | null = null;
+      if (await jumpBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
+        jumpedFromRedFlag = true;
+        invPromise = page.waitForResponse(
+          (res) =>
+            res.url().includes("/api/v2/documents/HBC/investigate") &&
+            res.request().method() === "POST",
+          { timeout: 45_000 },
+        );
+        void invPromise.catch(() => null);
+        await jumpBtn.click();
+        await expect(page).toHaveURL(/tab=documents/);
+      } else {
+        await docTabBtn.click();
+      }
 
-    if (listRes.status() === 200) {
-      const listJson = (await listRes.json()) as {
-        total_documents: number;
-      };
-      if (listJson.total_documents > 0) {
-        await expect(
-          page.getByText("Truy vấn & Tổng hợp có trích dẫn"),
-        ).toBeVisible();
-        await expect(
-          page.getByText("Bằng chứng PDF Gốc — Nguyên văn đoạn trích"),
-        ).toBeVisible();
-        await expect(page.locator("#rag-fiscal-year")).toBeVisible();
+      const listRes = await listPromise;
+      expect([200, 503]).toContain(listRes.status());
 
-        const rf03Btn = page.getByRole("button", {
-          name: /Phải thu ngoài khách hàng/i,
-        });
-        const rf07Btn = page.getByRole("button", {
-          name: /Cảnh báo kiểm toán & Hoạt động liên tục/i,
-        });
-        const rf09Btn = page.getByRole("button", {
-          name: /Xây dựng cơ bản dở dang/i,
-        });
-        await expect(rf03Btn).toBeVisible();
-        await expect(rf07Btn).toBeVisible();
-        await expect(rf09Btn).toBeVisible();
-
-        const questionInput = page.locator("#rag-question-input");
-        await expect(questionInput).toBeVisible();
-        if (jumpedFromRedFlag) {
-          await expect(questionInput).not.toHaveValue("");
-        } else {
-          invPromise = page.waitForResponse(
-            (res) =>
-              res.url().includes("/api/v2/documents/HBC/investigate") &&
-              res.request().method() === "POST",
-            { timeout: 45_000 },
-          );
-          await rf07Btn.click();
-        }
-
-        const invRes = await invPromise!;
-        expect(invRes.status()).toBe(200);
-        const invJson = (await invRes.json()) as {
-          abstained: boolean;
-          answer: string;
-          abstention_reason: string | null;
-          citations: Array<{ page_no: number }>;
+      if (listRes.status() === 200) {
+        const listJson = (await listRes.json()) as {
+          total_documents: number;
         };
-        expect(invJson.abstained).toBe(false);
-        expect(invJson.citations.length).toBeGreaterThan(0);
-        expect(invJson.answer).not.toMatch(/\bCHUNKS?\b/i);
-        expect(invJson.abstention_reason ?? "").not.toMatch(/\bCHUNKS?\b/i);
+        if (listJson.total_documents > 0) {
+          await expect(
+            page.getByText("Truy vấn & Tổng hợp có trích dẫn"),
+          ).toBeVisible();
+          await expect(
+            page.getByText("Bằng chứng PDF Gốc — Nguyên văn đoạn trích"),
+          ).toBeVisible();
+          await expect(page.locator("#rag-fiscal-year")).toBeVisible();
 
-        await expect(
-          page.getByText(/Dữ liệu đệm sẵn \(Cache\)|Truy xuất mới/),
-        ).toBeVisible({
-          timeout: 15_000,
-        });
-        const firstBadge = page
-          .getByRole("button", { name: /^\[1\]/ })
-          .first();
-        await expect(firstBadge).toBeVisible();
-        await firstBadge.click();
+          const rf03Btn = page.getByRole("button", {
+            name: /Phải thu ngoài khách hàng/i,
+          });
+          const rf07Btn = page.getByRole("button", {
+            name: /Cảnh báo kiểm toán & Hoạt động liên tục/i,
+          });
+          const rf09Btn = page.getByRole("button", {
+            name: /Xây dựng cơ bản dở dang/i,
+          });
+          await expect(rf03Btn).toBeVisible();
+          await expect(rf07Btn).toBeVisible();
+          await expect(rf09Btn).toBeVisible();
+
+          const questionInput = page.locator("#rag-question-input");
+          await expect(questionInput).toBeVisible();
+          if (jumpedFromRedFlag) {
+            await expect(questionInput).not.toHaveValue("");
+          } else {
+            invPromise = page.waitForResponse(
+              (res) =>
+                res.url().includes("/api/v2/documents/HBC/investigate") &&
+                res.request().method() === "POST",
+              { timeout: 45_000 },
+            );
+            await rf07Btn.click();
+          }
+
+          const invRes = await invPromise!;
+          expect(invRes.status()).toBe(200);
+          const invJson = (await invRes.json()) as {
+            abstained: boolean;
+            answer: string;
+            abstention_reason: string | null;
+            citations: Array<{ page_no: number }>;
+          };
+          expect(invJson.abstained).toBe(false);
+          expect(invJson.citations.length).toBeGreaterThan(0);
+          expect(invJson.answer).not.toMatch(/\bCHUNKS?\b/i);
+          expect(invJson.abstention_reason ?? "").not.toMatch(/\bCHUNKS?\b/i);
+
+          await expect(
+            page.getByText(/Dữ liệu đệm sẵn \(Cache\)|Truy xuất mới/),
+          ).toBeVisible({
+            timeout: 15_000,
+          });
+          const firstBadge = page
+            .getByRole("button", { name: /^\[1\]/ })
+            .first();
+          await expect(firstBadge).toBeVisible();
+          await firstBadge.click();
+        }
       }
     }
 

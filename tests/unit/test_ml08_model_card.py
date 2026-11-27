@@ -73,52 +73,53 @@ def _build_panel_period_rows(
     fy_start = date(year, 1, 1)
     filing_id = f"{issuer_id}-{year}Q{quarter}-R1"
 
+    vnd = 1_000_000.0
     if distressed_profile:
-        assets = 100_000.0 * scale
-        debt_st = 42_000.0 * scale
-        debt_lt = 36_000.0 * scale
-        liab = 86_000.0 * scale
-        equity = 14_000.0 * scale
-        curr_assets = 28_000.0 * scale
-        cash = 2_000.0 * scale
-        receivables = 12_000.0 * scale
-        inventories = 12_000.0 * scale
-        curr_liab = 48_000.0 * scale
-        payables = 11_000.0 * scale
-        rev = 14_000.0 * scale
-        cogs = -13_200.0 * scale
-        gp = 800.0 * scale
-        op_profit = -1_800.0 * scale
-        interest = -1_600.0 * scale
-        ebt = -3_400.0 * scale
-        ni = -3_400.0 * scale
-        cfo = -2_100.0 * scale
+        assets = 100_000.0 * vnd * scale
+        debt_st = 42_000.0 * vnd * scale
+        debt_lt = 36_000.0 * vnd * scale
+        liab = 86_000.0 * vnd * scale
+        equity = 14_000.0 * vnd * scale
+        curr_assets = 28_000.0 * vnd * scale
+        cash = 2_000.0 * vnd * scale
+        receivables = 12_000.0 * vnd * scale
+        inventories = 12_000.0 * vnd * scale
+        curr_liab = 48_000.0 * vnd * scale
+        payables = 11_000.0 * vnd * scale
+        rev = 14_000.0 * vnd * scale
+        cogs = -13_200.0 * vnd * scale
+        gp = 800.0 * vnd * scale
+        op_profit = -1_800.0 * vnd * scale
+        interest = -1_600.0 * vnd * scale
+        ebt = -3_400.0 * vnd * scale
+        ni = -3_400.0 * vnd * scale
+        cfo = -2_100.0 * vnd * scale
     else:
-        assets = 150_000.0 * scale
-        debt_st = 10_000.0 * scale
-        debt_lt = 12_000.0 * scale
-        liab = 42_000.0 * scale
-        equity = 108_000.0 * scale
-        curr_assets = 75_000.0 * scale
-        cash = 22_000.0 * scale
-        receivables = 18_000.0 * scale
-        inventories = 20_000.0 * scale
-        curr_liab = 26_000.0 * scale
-        payables = 9_000.0 * scale
-        rev = 42_000.0 * scale
-        cogs = -29_000.0 * scale
-        gp = 13_000.0 * scale
-        op_profit = 6_500.0 * scale
-        interest = -400.0 * scale
-        ebt = 6_100.0 * scale
-        ni = 4_900.0 * scale
-        cfo = 5_400.0 * scale
+        assets = 150_000.0 * vnd * scale
+        debt_st = 10_000.0 * vnd * scale
+        debt_lt = 12_000.0 * vnd * scale
+        liab = 42_000.0 * vnd * scale
+        equity = 108_000.0 * vnd * scale
+        curr_assets = 75_000.0 * vnd * scale
+        cash = 22_000.0 * vnd * scale
+        receivables = 18_000.0 * vnd * scale
+        inventories = 20_000.0 * vnd * scale
+        curr_liab = 26_000.0 * vnd * scale
+        payables = 9_000.0 * vnd * scale
+        rev = 42_000.0 * vnd * scale
+        cogs = -29_000.0 * vnd * scale
+        gp = 13_000.0 * vnd * scale
+        op_profit = 6_500.0 * vnd * scale
+        interest = -400.0 * vnd * scale
+        ebt = 6_100.0 * vnd * scale
+        ni = 4_900.0 * vnd * scale
+        cfo = 5_400.0 * vnd * scale
 
     metrics: dict[str, tuple[str, float]] = {
         "BS_TOTAL_ASSETS": ("BALANCE_SHEET", assets),
         "BS_CURRENT_ASSETS": ("BALANCE_SHEET", curr_assets),
         "BS_CASH_AND_EQUIVALENTS": ("BALANCE_SHEET", cash),
-        "BS_SHORT_TERM_INVESTMENTS": ("BALANCE_SHEET", 2_000.0 * scale),
+        "BS_SHORT_TERM_INVESTMENTS": ("BALANCE_SHEET", 2_000.0 * vnd * scale),
         "BS_TRADE_RECEIVABLES_ST": ("BALANCE_SHEET", receivables),
         "BS_INVENTORIES": ("BALANCE_SHEET", inventories),
         "BS_CURRENT_LIABILITIES": ("BALANCE_SHEET", curr_liab),
@@ -126,32 +127,34 @@ def _build_panel_period_rows(
         "BS_LONG_TERM_BORROWINGS": ("BALANCE_SHEET", debt_lt),
         "BS_TOTAL_LIABILITIES": ("BALANCE_SHEET", liab),
         "BS_TOTAL_EQUITY": ("BALANCE_SHEET", equity),
-        "BS_MINORITY_INTEREST": ("BALANCE_SHEET", 500.0 * scale),
+        "BS_MINORITY_INTEREST": ("BALANCE_SHEET", 500.0 * vnd * scale),
         "BS_TRADE_PAYABLES_ST": ("BALANCE_SHEET", payables),
         "BS_RETAINED_EARNINGS": (
             "BALANCE_SHEET",
-            18_000.0 * scale if not distressed_profile else -8_000.0 * scale,
+            18_000.0 * vnd * scale
+            if not distressed_profile
+            else -8_000.0 * vnd * scale,
         ),
-        "BS_ORDINARY_SHARES_CAPITAL": ("BALANCE_SHEET", 20_000.0 * scale),
+        "BS_ORDINARY_SHARES_CAPITAL": ("BALANCE_SHEET", 20_000.0 * vnd * scale),
         "IS_NET_REVENUE": ("INCOME_STATEMENT", rev),
         "IS_COST_OF_GOODS_SOLD": ("INCOME_STATEMENT", cogs),
         "IS_GROSS_PROFIT": ("INCOME_STATEMENT", gp),
-        "IS_SELLING_EXPENSES": ("INCOME_STATEMENT", -1_400.0 * scale),
-        "IS_ADMINISTRATIVE_EXPENSES": ("INCOME_STATEMENT", -1_200.0 * scale),
+        "IS_SELLING_EXPENSES": ("INCOME_STATEMENT", -1_400.0 * vnd * scale),
+        "IS_ADMINISTRATIVE_EXPENSES": ("INCOME_STATEMENT", -1_200.0 * vnd * scale),
         "IS_OPERATING_PROFIT": ("INCOME_STATEMENT", op_profit),
         "IS_PROFIT_BEFORE_TAX": ("INCOME_STATEMENT", ebt),
         "IS_INTEREST_EXPENSE": ("INCOME_STATEMENT", interest),
         "IS_CURRENT_INCOME_TAX": (
             "INCOME_STATEMENT",
-            -1_200.0 * scale if not distressed_profile else 0.0,
+            -1_200.0 * vnd * scale if not distressed_profile else 0.0,
         ),
         "IS_NET_INCOME": ("INCOME_STATEMENT", ni),
         "IS_NET_INCOME_PARENT": ("INCOME_STATEMENT", ni),
         "IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE": ("INCOME_STATEMENT", 0.0),
         "CF_OPERATING_CASH_FLOW": ("CASH_FLOW", cfo),
         "CF_EQUITY_ISSUANCE_PROCEEDS": ("CASH_FLOW", 0.0),
-        "CF_DEPRECIATION_AMORTIZATION": ("CASH_FLOW", 1_100.0 * scale),
-        "CF_CAPITAL_EXPENDITURE": ("CASH_FLOW", -1_500.0 * scale),
+        "CF_DEPRECIATION_AMORTIZATION": ("CASH_FLOW", 1_100.0 * vnd * scale),
+        "CF_CAPITAL_EXPENDITURE": ("CASH_FLOW", -1_500.0 * vnd * scale),
     }
     rows: list[dict[str, Any]] = []
     for metric_id, (stype, val) in metrics.items():

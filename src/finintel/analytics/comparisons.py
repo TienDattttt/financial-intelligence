@@ -18,12 +18,18 @@ from finintel.storage.schemas import (
     CORE_RATIOS,
     EXTRA_RATIOS,
     FORENSIC_RATIOS,
+    V3_RATIOS,
 )
 
 
 def benchmark_ratios(
     ratios: pl.DataFrame,
-    metrics: tuple[str, ...] = (*CORE_RATIOS, *EXTRA_RATIOS, *FORENSIC_RATIOS),
+    metrics: tuple[str, ...] = (
+        *CORE_RATIOS,
+        *EXTRA_RATIOS,
+        *FORENSIC_RATIOS,
+        *V3_RATIOS,
+    ),
 ) -> pl.DataFrame:
     """Compute peer counts, empirical percentile ranks, medians and quartiles.
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import duckdb
 import polars as pl
@@ -32,6 +32,7 @@ from finintel.analytics.stress_test import (
 )
 from finintel.exceptions import ContractViolationError
 from finintel.serving.dictionary import load_statement_metric_catalog
+from finintel.analytics.qoq_and_peers import compute_discrete_qoq_growth
 from finintel.serving.queries._cache import (
     _ACTIVE_L1B_SNAPSHOT_BY_ROOT,
     _ALL_L1B_CACHES,
@@ -54,6 +55,7 @@ from finintel.serving.queries._cache import (
     ALTMAN_ZONES,
     BENEISH_FLAGS,
     DEFAULT_DATA_ROOT,
+    EXCHANGES,
     PEER_BAND_HISTORY_SCHEMA,
     PEER_GROUP_LEVELS,
     PERIOD_TYPES,
@@ -67,6 +69,7 @@ from finintel.serving.queries._cache import (
     BeneishFlag,
     CompanyProfileData,
     DenominatorMode,
+    Exchange,
     IndustryComparisonData,
     LineageComponent,
     PeerGroupLevel,
@@ -95,6 +98,19 @@ from finintel.serving.queries._cache import (
     pagination_window,
     percent_to_decimal,
     resolve_data_root,
+)
+from finintel.serving.queries._guards import (
+    apply_d8_ratio_guards,
+    guard_benchmark_frame_d8,
+    normalize_company_display_name,
+)
+from finintel.serving.queries._helpers import (
+    build_statement_periods_and_rows,
+    filter_broad_coverage_annual_dates,
+)
+from finintel.serving.queries._piotroski import (
+    PIOTROSKI_EXTRA_FACT_METRICS,
+    enrich_ml_scores_piotroski_diagnostics,
 )
 from finintel.serving.queries.company import (
     ALL_RATIOS,
@@ -259,6 +275,7 @@ class DashboardQueryService(
             ]
             if missing_v2_exprs:
                 ratios = ratios.with_columns(missing_v2_exprs)
+            ratios = apply_d8_ratio_guards(ratios)
 
             growth_metrics = (
                 "IS_NET_REVENUE",
@@ -266,7 +283,11 @@ class DashboardQueryService(
                 "CF_OPERATING_CASH_FLOW",
             )
             bs_metrics = ("BS_TOTAL_ASSETS", "BS_TOTAL_EQUITY", "BS_TOTAL_LIABILITIES")
-            needed_metrics = [*growth_metrics, *bs_metrics]
+            needed_metrics = [
+                *growth_metrics,
+                *bs_metrics,
+                *PIOTROSKI_EXTRA_FACT_METRICS,
+            ]
 
             facts_table = "latest_facts.parquet"
             avail_fact_cols = _available_table_columns(
@@ -285,6 +306,8 @@ class DashboardQueryService(
                 "metric_id",
                 "value",
                 "ttm_value",
+                "comparable_across_taxonomy",
+                "computation_note",
                 "effective_available_at",
                 "revision_no",
                 "filing_id",
@@ -352,16 +375,29 @@ class DashboardQueryService(
                 company_facts.filter(pl.col("metric_id").is_in(growth_metrics))
                 .group_by(["period_end_date", "fiscal_year", "fiscal_quarter"])
                 .agg(
+                    (
+                        pl.col("taxonomy_version").last().alias("taxonomy_version")
+                        if "taxonomy_version" in company_facts.columns
+                        else pl.lit(None, dtype=pl.String).alias("taxonomy_version")
+                    ),
                     *(
                         pl.col(flow_value_col)
                         .filter(pl.col("metric_id") == metric)
                         .last()
                         .alias(metric)
                         for metric in growth_metrics
-                    )
+                    ),
                 )
                 .sort("period_end_date")
             )
+            if period_view == "Quarterly" and not growth_series.is_empty():
+                growth_series = compute_discrete_qoq_growth(
+                    growth_series.with_columns(pl.lit("QUARTER").alias("period_type")),
+                    metric_columns=(
+                        ("IS_NET_REVENUE", "revenue_growth_qoq"),
+                        ("IS_NET_INCOME", "net_income_growth_qoq"),
+                    ),
+                ).drop("period_type")
 
             bs_series = (
                 company_facts.filter(pl.col("metric_id").is_in(bs_metrics))
@@ -424,20 +460,26 @@ class DashboardQueryService(
             else:
                 red_flags = pl.DataFrame(schema=_EMPTY_RED_FLAGS_SCHEMA)
 
-            ml_scores = self._read_ml_scores_for_issuer(
-                pinned,
-                issuer_id=issuer_id,
-                statement_scope=statement_scope,
+            ml_scores = enrich_ml_scores_piotroski_diagnostics(
+                self._read_ml_scores_for_issuer(
+                    pinned,
+                    issuer_id=issuer_id,
+                    statement_scope=statement_scope,
+                    period_type=target_period_type,
+                    connection=connection,
+                ),
+                ratios,
+                company_facts,
                 period_type=target_period_type,
-                connection=connection,
             )
 
             raw_company_name = issuer_row.get("company_name_vn")
             profile_result = CompanyProfileData(
                 ticker=clean_ticker,
                 issuer_id=issuer_id,
-                company_name_vn=(
-                    str(raw_company_name) if raw_company_name is not None else None
+                company_name_vn=normalize_company_display_name(
+                    str(raw_company_name) if raw_company_name is not None else None,
+                    ticker=clean_ticker,
                 ),
                 accounting_regime=str(issuer_row["accounting_regime"]),
                 statement_scope=statement_scope,
@@ -492,47 +534,58 @@ class DashboardQueryService(
                         _PEER_BAND_HISTORY_CACHE.move_to_end(hist_cache_key)
                         return cached_hist
 
-            issuer_row = _resolve_issuer_row(
-                pinned,
-                ticker,
-                columns=("issuer_id", "ticker"),
-                connection=connection,
-            )
-            issuer_id = str(issuer_row["issuer_id"])
-
-            avail = _available_table_columns(
-                pinned, BENCHMARKS_TABLE, connection=connection
-            )
-            if not avail:
-                return pl.DataFrame(schema=PEER_BAND_HISTORY_SCHEMA)
-            cols = _select_existing_columns(
-                list(PEER_BAND_HISTORY_SCHEMA.keys()), avail
-            )
-            frame = pinned.read_table(
-                BENCHMARKS_TABLE,
-                columns=cols,
-                filters={
-                    "issuer_id": issuer_id,
-                    "statement_scope": statement_scope,
-                    "period_type": period_type,
-                    "metric_or_ratio_name": metric_name,
-                },
-                connection=connection,
-            )
-            if frame.is_empty():
-                return pl.DataFrame(schema=PEER_BAND_HISTORY_SCHEMA)
-            hist_res = _wrap_cached_dicts_df(
-                _pad_schema_columns(frame, PEER_BAND_HISTORY_SCHEMA).sort(
-                    "period_end_date"
+            with self._parquet_cursor(pinned, connection) as q_conn:
+                issuer_row = _resolve_issuer_row(
+                    pinned,
+                    ticker,
+                    columns=("issuer_id", "ticker"),
+                    connection=q_conn,
                 )
-            )
-            if hist_cache_key is not None:
-                with _QUERY_CACHE_LOCK:
-                    _evict_stale_l1b_caches_locked(snap_key)
-                    _PEER_BAND_HISTORY_CACHE[hist_cache_key] = hist_res
-                    while len(_PEER_BAND_HISTORY_CACHE) > _MAX_QUERY_CACHE_SIZE:
-                        _PEER_BAND_HISTORY_CACHE.popitem(last=False)
-            return hist_res
+                issuer_id = str(issuer_row["issuer_id"])
+
+                avail = _available_table_columns(
+                    pinned, BENCHMARKS_TABLE, connection=q_conn
+                )
+                if not avail:
+                    return pl.DataFrame(schema=PEER_BAND_HISTORY_SCHEMA)
+                cols = _select_existing_columns(
+                    list(PEER_BAND_HISTORY_SCHEMA.keys()), avail
+                )
+                frame = pinned.read_table(
+                    BENCHMARKS_TABLE,
+                    columns=cols,
+                    filters={
+                        "issuer_id": issuer_id,
+                        "statement_scope": statement_scope,
+                        "period_type": period_type,
+                        "metric_or_ratio_name": metric_name,
+                    },
+                    connection=q_conn,
+                )
+                if frame.is_empty():
+                    return pl.DataFrame(schema=PEER_BAND_HISTORY_SCHEMA)
+                frame = guard_benchmark_frame_d8(
+                    frame,
+                    pinned=pinned,
+                    metric_name=metric_name,
+                    statement_scope=statement_scope,
+                    period_type=period_type,
+                    join_on="period_end_date",
+                    issuer_id=issuer_id,
+                    connection=q_conn,
+                )
+                hist_res = _wrap_cached_dicts_df(
+                    _pad_schema_columns(frame, PEER_BAND_HISTORY_SCHEMA).sort(
+                        "period_end_date"
+                    )
+                )
+                if hist_cache_key is not None:
+                    with _QUERY_CACHE_LOCK:
+                        _evict_stale_l1b_caches_locked(snap_key)
+                        _PEER_BAND_HISTORY_CACHE[hist_cache_key] = hist_res
+                        while len(_PEER_BAND_HISTORY_CACHE) > _MAX_QUERY_CACHE_SIZE:
+                            _PEER_BAND_HISTORY_CACHE.popitem(last=False)
+                return hist_res
 
     def list_ratio_periods(
         self,
@@ -606,9 +659,12 @@ class DashboardQueryService(
             )
             if not avail or "period_end_date" not in avail:
                 return []
+            use_annual_coverage = period_type == "ANNUAL" and "issuer_id" in avail
             dates_df = pinned.read_table(
                 RATIOS_TABLE,
-                columns=["period_end_date"],
+                columns=["issuer_id", "period_end_date"]
+                if use_annual_coverage
+                else ["period_end_date"],
                 filters={
                     "statement_scope": statement_scope,
                     "period_type": period_type,
@@ -617,6 +673,22 @@ class DashboardQueryService(
             )
             if dates_df.is_empty():
                 return []
+            if use_annual_coverage:
+                counts_df = (
+                    dates_df.filter(pl.col("period_end_date").is_not_null())
+                    .group_by("period_end_date")
+                    .agg(pl.col("issuer_id").n_unique().cast(pl.Int64).alias("n"))
+                )
+                pairs = [
+                    (d, int(n))
+                    for d, n in zip(
+                        counts_df.get_column("period_end_date").to_list(),
+                        counts_df.get_column("n").to_list(),
+                        strict=True,
+                    )
+                    if isinstance(d, date)
+                ]
+                return filter_broad_coverage_annual_dates(pairs)
             unique_dates = (
                 dates_df.get_column("period_end_date")
                 .drop_nulls()
@@ -734,121 +806,8 @@ class DashboardQueryService(
             if valid_facts.is_empty():
                 return issuer_id, [], []
 
-            fy_expr = (
-                pl.coalesce(
-                    pl.col("fiscal_year").cast(pl.Int64, strict=False),
-                    pl.col("period_end_date").dt.year().cast(pl.Int64),
-                )
-                if "fiscal_year" in valid_facts.columns
-                else pl.col("period_end_date").dt.year().cast(pl.Int64)
-            )
-            fq_expr = (
-                pl.col("fiscal_quarter").cast(pl.Int64, strict=False)
-                if "fiscal_quarter" in valid_facts.columns
-                else pl.lit(None, dtype=pl.Int64)
-            )
-            derived_fq = (
-                (pl.col("period_end_date").dt.month().cast(pl.Int64) - 1) // 3
-            ) + 1
-            label_expr = (
-                (pl.lit("Năm ") + fy_expr.cast(pl.String))
-                if period_type == "ANNUAL"
-                else (
-                    pl.lit("Q")
-                    + pl.coalesce(
-                        pl.when(fq_expr != 0).then(fq_expr).otherwise(None),
-                        derived_fq,
-                    ).cast(pl.String)
-                    + pl.lit("/")
-                    + fy_expr.cast(pl.String)
-                )
-            )
-            periods_df = (
-                valid_facts.unique(subset=["period_end_date"], keep="first")
-                .select(
-                    pl.col("period_end_date"),
-                    fy_expr.alias("fiscal_year"),
-                    fq_expr.alias("fiscal_quarter"),
-                    label_expr.alias("label"),
-                    (
-                        pl.col("taxonomy_version").cast(pl.String)
-                        if "taxonomy_version" in valid_facts.columns
-                        else pl.lit(None, dtype=pl.String)
-                    ).alias("taxonomy_version"),
-                    (
-                        pl.col("audit_status").cast(pl.String)
-                        if "audit_status" in valid_facts.columns
-                        else pl.lit(None, dtype=pl.String)
-                    ).alias("audit_status"),
-                )
-                .sort("period_end_date", descending=True)
-            )
-            periods_out = cast(list[dict[str, object]], periods_df.to_dicts())
-
-            val_f64 = pl.col("value").cast(pl.Float64, strict=False)
-            clean_facts = valid_facts.select(
-                pl.col("metric_id").cast(pl.String).alias("metric_id"),
-                pl.col("period_end_date").dt.strftime("%Y-%m-%d").alias("period_iso"),
-                pl.when(val_f64.is_finite())
-                .then(val_f64)
-                .otherwise(None)
-                .alias("value"),
-                (
-                    pl.col("unit").cast(pl.String)
-                    if "unit" in valid_facts.columns
-                    else pl.lit(None, dtype=pl.String)
-                ).alias("unit"),
-                (
-                    pl.col("comparable_across_taxonomy").cast(pl.Boolean, strict=False)
-                    if "comparable_across_taxonomy" in valid_facts.columns
-                    else pl.lit(None, dtype=pl.Boolean)
-                ).alias("comparable_across_taxonomy"),
-            )
-
-            rows_out: list[dict[str, object]] = []
-            for key_tuple, sub in clean_facts.partition_by(
-                "metric_id", as_dict=True, maintain_order=True
-            ).items():
-                mid = str(key_tuple[0])
-                mmeta = catalog.get(mid)
-                values: dict[str, float | None] = dict(
-                    zip(
-                        sub.get_column("period_iso").to_list(),
-                        sub.get_column("value").to_list(),
-                        strict=True,
-                    )
-                )
-                if mmeta is not None:
-                    unit_val = mmeta.unit
-                    comp_val = mmeta.comparable_across_taxonomy
-                else:
-                    non_null_units = sub.get_column("unit").drop_nulls()
-                    unit_val = (
-                        str(non_null_units[0])
-                        if not non_null_units.is_empty()
-                        else "VND"
-                    )
-                    non_null_comp = sub.get_column(
-                        "comparable_across_taxonomy"
-                    ).drop_nulls()
-                    comp_val = (
-                        bool(non_null_comp[0]) if not non_null_comp.is_empty() else True
-                    )
-                rows_out.append(
-                    {
-                        "metric_id": mid,
-                        "display_name_vn": mmeta.display_name_vn if mmeta else mid,
-                        "tt200_code": mmeta.tt200_code if mmeta else None,
-                        "tt99_code": mmeta.tt99_code if mmeta else None,
-                        "unit": unit_val,
-                        "is_total": mmeta.is_total if mmeta else False,
-                        "comparable_across_taxonomy": comp_val,
-                        "sort_order": mmeta.sort_order if mmeta else 99_999,
-                        "values": values,
-                    }
-                )
-            rows_out.sort(
-                key=lambda r: (int(cast(int, r["sort_order"])), str(r["metric_id"]))
+            periods_out, rows_out = build_statement_periods_and_rows(
+                valid_facts, period_type=period_type, catalog=catalog
             )
         return issuer_id, periods_out, rows_out
 
@@ -889,6 +848,25 @@ class DashboardQueryService(
                 raise ContractViolationError(
                     "Model card metadata payload must be a JSON object."
                 )
+            case_studies = parsed.get("case_studies")
+            if isinstance(case_studies, list):
+                for cs in case_studies:
+                    if isinstance(cs, dict) and cs.get("company_name_vn") is not None:
+                        raw_cs_ticker = cs.get("ticker")
+                        cs["company_name_vn"] = normalize_company_display_name(
+                            str(cs["company_name_vn"]),
+                            ticker=str(raw_cs_ticker)
+                            if raw_cs_ticker is not None
+                            else None,
+                        )
+            if parsed.get("tt99_mrm_gate") is None and isinstance(
+                parsed.get("taxonomy_drift_psi"), dict
+            ):
+                from finintel.ml.mrm_tt99 import evaluate_tt99_gate_from_psi_report
+
+                parsed["tt99_mrm_gate"] = evaluate_tt99_gate_from_psi_report(
+                    parsed["taxonomy_drift_psi"]
+                )
             return parsed
 
 
@@ -903,6 +881,8 @@ __all__ = [
     "DEFAULT_DATA_ROOT",
     "DashboardQueryService",
     "DenominatorMode",
+    "EXCHANGES",
+    "Exchange",
     "IndustryComparisonData",
     "LineageComponent",
     "OverviewQueryMixin",

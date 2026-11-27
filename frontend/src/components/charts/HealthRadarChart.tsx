@@ -234,7 +234,7 @@ export function HealthRadarChart({
         trigger: "item",
         formatter: () => {
           const rows = pillars.map((p) => {
-            const qLabel = p.quintile ? `Q${p.quintile}` : "N/A";
+            const qLabel = p.quintile ? `Mức ${p.quintile}/5` : "N/A";
             const scoreStr = p.score !== null ? `${formatNumber(p.score, 0)}/100` : "N/A";
             return `<div>${p.label}: <b>${scoreStr}</b> (${qLabel})</div>`;
           });
@@ -297,12 +297,12 @@ export function HealthRadarChart({
     };
   }, [palette, pillars, ticker]);
 
-  const tableHeaders = ["Trụ cột", `Điểm ${ticker} (0–100)`, "Trung vị ngành", "Ngũ phân vị", "Số chỉ số"];
+  const tableHeaders = ["Trụ cột", `Điểm ${ticker} (0–100)`, "Trung vị ngành", "Mức đánh giá", "Số chỉ số"];
   const tableRows = pillars.map((p) => [
     p.label,
     p.score !== null ? formatNumber(p.score, 1) : "N/A",
     "50,0",
-    p.quintile ? `Q${p.quintile}/5` : "N/A",
+    p.quintile ? `Mức ${p.quintile}/5` : "N/A",
     String(p.metricCount),
   ]);
 
@@ -310,7 +310,7 @@ export function HealthRadarChart({
     <div className="space-y-2">
       <EChartBox
         title={chartTitle}
-        subtitle="Thang điểm 0–100 chuẩn hóa theo phân vị cùng ngành (Q1 yếu nhất → Q5 tốt nhất · Trung vị = 50)"
+        subtitle="Thang điểm 0–100 chuẩn hóa theo phân vị cùng ngành (Mức 1/5 yếu nhất → Mức 5/5 tốt nhất · Trung vị = 50)"
         option={option}
         height={320}
         isEmpty={!isLoading && validPillars.length === 0}
@@ -340,11 +340,11 @@ export function HealthRadarChart({
                 {p.quintile ? (
                   <span
                     className={cn(
-                      "rounded-full border px-1.5 py-0.5 text-[10px] font-semibold",
+                      "whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-semibold",
                       QUINTILE_TONE_CLASSES[p.quintile],
                     )}
                   >
-                    Q{p.quintile}
+                    Mức {p.quintile}/5
                   </span>
                 ) : null}
               </div>

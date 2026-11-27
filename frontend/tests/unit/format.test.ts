@@ -8,6 +8,7 @@ import {
   formatPercent,
   formatPercentPoints,
   formatPeriodLabel,
+  formatRatioByType,
   formatVndBillions,
   formatVndPerShare,
   getPercentileQuintile,
@@ -35,7 +36,9 @@ describe("format.ts financial formatting", () => {
       `${MINUS_SIGN}2.500,0`,
     );
     expect(formatVndBillions(0)).toBe("–");
+    expect(formatVndBillions(0, { zeroAsZero: true })).toBe("0");
     expect(formatVndBillions(undefined)).toBe("N/A");
+    expect(formatVndBillions(null, { zeroAsZero: true })).toBe("N/A");
   });
 
   it("formats VND per share", () => {
@@ -49,9 +52,30 @@ describe("format.ts financial formatting", () => {
     expect(formatPercent(0.1534)).toBe("15,3%");
     expect(formatPercent(-0.042)).toBe(`${MINUS_SIGN}4,2%`);
     expect(formatPercent(0.085, { signed: true })).toBe("+8,5%");
-    expect(formatPercentPoints(0.025, 1)).toBe("+2,5 đ%");
-    expect(formatPercentPoints(-0.014, 1)).toBe(`${MINUS_SIGN}1,4 đ%`);
-    expect(formatPercentPoints(0, 1)).toBe("0,0 đ%");
+    expect(formatPercentPoints(0.025, 1)).toBe("+2,5 điểm %");
+    expect(formatPercentPoints(-0.014, 1)).toBe(`${MINUS_SIGN}1,4 điểm %`);
+    expect(formatPercentPoints(0, 1)).toBe("0,0 điểm %");
+  });
+
+  it("formats ratios dynamically via formatRatioByType (U3)", () => {
+    expect(formatRatioByType(0.1534, "PERCENT")).toBe("15,3%");
+    expect(formatRatioByType(0.1534, "RATIO_PERCENT")).toBe("15,3%");
+    expect(formatRatioByType(0.025, "PERCENT_POINTS")).toBe("+2,5 điểm %");
+    expect(formatRatioByType(82.5, "PERCENTILE")).toBe("82,5%");
+    expect(formatRatioByType(45.4, "DAYS")).toBe("45 ngày");
+    expect(formatRatioByType(2.456, "MULTIPLE")).toBe("2,46x");
+    expect(formatRatioByType(2.456, "TIMES")).toBe("2,46x");
+    expect(formatRatioByType(1.5, "ZSCORE")).toBe("+1,50 σ");
+    expect(formatRatioByType(-1.25, "ZSCORE")).toBe(`${MINUS_SIGN}1,25 σ`);
+    expect(formatRatioByType(0, "ZSCORE")).toBe("0,00 σ");
+    expect(formatRatioByType(3.64, "SIGMA")).toBe("3,64 σ");
+    expect(formatRatioByType(3456, "CURRENCY_PER_SHARE")).toBe("3.456 đ/cp");
+    expect(formatRatioByType(0, "CURRENCY_PER_SHARE")).toBe("0 đ/cp");
+    expect(formatRatioByType(3, "QUARTERS")).toBe("3 quý");
+    expect(formatRatioByType(7, "SCORE_9")).toBe("7/9");
+    expect(formatRatioByType(1.234, "NUMBER")).toBe("1,23");
+    expect(formatRatioByType(null, "PERCENT")).toBe("N/A");
+    expect(formatRatioByType(undefined, "MULTIPLE")).toBe("N/A");
   });
 
   it("formats multiples, days, periods and Vietnamese dates", () => {

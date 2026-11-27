@@ -1,114 +1,139 @@
-# Kế Hoạch Thực Thi Nguyên Tử FinIntel V2.0 (`tasks/plan.md`)
+# Implementation Plan: FinIntel V3.0 — Free Cloud Production & Open Research Platform
 
-> **Nhánh thực thi:** `feat/v2-autonomous-finintel`  
-> **Nguyên tắc bất biến:** Tách riêng tuyệt đối commit `Behavior-Preserving` (`TASK-01`) khỏi các commit `Behavior-Changing` (`TASK-02..12`); không ghi/sửa/xóa `data/live_fhsc_universe/` và `data/universe_600_800/`; mọi kiểm thử chạy offline trên `tmp_path`.
-
----
-
-## Tổng Quan Chuỗi 13 Task Nguyên Tử & Các Cổng Kiểm Chứng
-
-| Mã Task | Phân loại Commit (`AGENTS.md` §2.2.1) | Năng lực (`Capability`) | Tệp sản phẩm tối đa | Trạng thái |
-|---|---|---|---|---|
-| `TASK-00` | Governance & Spec Baseline | Khởi tạo `CONSTRAINTS.md`, `spec/`, `tasks/`, `scripts/check_constraints.py`, `docs/runbooks/` | `6` tệp mới | Hoàn tất (Đợt 1) |
-| `TASK-01` | **Behavior-Preserving** *(100% giữ nguyên hành vi)* | `cap-04`: Phân rã `serving/queries.py` -> gói `serving/queries/` (`< 1.000` dòng/file, `0` sửa `tests/`) | `7` tệp gói con (xóa file đơn) | Hoàn tất (Đợt 1) |
-| `TASK-02` | Behavior-Changing | `cap-01`: Hợp nhất `FININTEL_DATA_ROOT` + chặn `DisclosureFetcherResource` báo pass giả offline | `6` tệp | Hoàn tất (Đợt 1) |
-| `TASK-03` | Behavior-Changing | `cap-01` + `cap-04`: Pacing SQLite `< 1ms` liên tiến trình + `ssrf_guard.py` + Telemetry `entry_point` | `6` tệp | Hoàn tất (Đợt 1) |
-| *Cổng 1* | **Verification Checkpoint #1** | Chạy toàn bộ `CONSTRAINTS.md` sau `TASK-00..03` | — | Hoàn tất (Cuối Đợt 1) |
-| `TASK-04` | Behavior-Changing | `cap-02`: Sửa Dagster retrain path, `pipeline_write_pool=1`, Sensor BCTC `15m` & Quét TT96 Watermark `30m` | `6` tệp | Hoàn tất (Đợt 2) |
-| `TASK-05` | Behavior-Changing | `cap-02`: Port 3 EOD an toàn chia tách + Port 1 replay pháp lý + Đối soát chéo `FHSC ↔ Vietcap IQ` | `6` tệp | Hoàn tất (Đợt 2) |
-| `TASK-06` | Behavior-Changing | `cap-02`: Port 2 PDF CAS (`<= 400` trang) + Dagster Port 1/2/3 schedules + Docker `dagster-daemon` (`--read-only` UI) | `6` tệp | Hoàn tất (Đợt 2) |
-| *Cổng 2* | **Verification Checkpoint #2** | Chạy toàn bộ `CONSTRAINTS.md` + kiểm chứng Dagster definitions sau `TASK-04..06` | — | Hoàn tất (Cuối Đợt 2) |
-| `TASK-07` | Behavior-Changing | `cap-03`: Cờ đỏ Hậu kiểm toán `RF_10_POST_AUDIT_PROFIT_DOWNGRADE` (`severity="HIGH"`, `restatements.py` + DBSP bump) | `5` tệp | Hoàn tất (Đợt 3) |
-| `TASK-08` | Behavior-Changing | `cap-03`: Chỉ báo cấu trúc thị trường `Merton DTD` (`merton_dtd.py` cho Overlay + Walk-Forward ML Ablation độc lập) | `5` tệp | Hoàn tất (Đợt 3) |
-| *Cổng 3* | **Verification Checkpoint #3** | Kiểm chứng định lượng Layer 4A/4B (`0%` look-ahead, `0` QG2 orphan, DuPont `<= 1e-9`) | — | Hoàn tất (Cuối Đợt 3) |
-| `TASK-09` | Behavior-Changing | `cap-04`: Con trỏ tiến SQLite/Postgres + Composite `ETag` + API Freshness/DTD + OTel spans + Sanitizer | `6` tệp | Hoàn tất (Đợt 4) |
-| `TASK-10` | Behavior-Changing | `cap-05`: Frontend đồng bộ `X-Snapshot-ID`, tích hợp thẻ `Merton DTD` + bằng chứng `RF_10` & mã nhãn VN | `6` tệp | Hoàn tất (Đợt 4) |
-| `TASK-11` | Behavior-Changing | `cap-05`: Nâng cấp WAI-ARIA `frontend/src/components/ui/segmented-control.tsx`, thanh Freshness 3 mốc `200%` zoom & chuẩn hóa `SourceDrawer` | `6` tệp | Hoàn tất (Đợt 4) |
-| `TASK-12` | Behavior-Changing | `cap-05`: Tab/vùng cuộn `/methodology` A11y + Vitest JSDOM `.tsx` + Cổng `wcag22aa` & CWV + Sidecar `/automation` | `5` tệp | Hoàn tất (Đợt 4) |
+Source specs:
+- Capability Map: [`spec/v3/capability-map.md`](../spec/v3/capability-map.md)
+- Module Specs: [`spec/v3/SPEC-v3-*.md`](../spec/v3/) (11 modules across 3 Phases / 4 Waves)
+- Archived V2.0 Completed Plan: [`tasks/plan-v2.md`](./plan-v2.md)
+- Actionable Task Checklist Target: [`tasks/todo.md`](./todo.md) (`33` atomic S/M tasks + `11` Checkpoints)
 
 ---
 
-## Chi Tiết Đợt 1 (`TASK-00` → `Verification Checkpoint #1`)
+## 1. Overview
 
-### `TASK-00` — Khởi Tạo Hồ Sơ Quản Trị Cơ Học & Baseline V2.0
-- **Loại commit:** `chore(governance)`
-- **Tệp tạo mới (`6` tệp):** `CONSTRAINTS.md`, `spec/capability-map.md`, `spec/SPEC-v2-autonomous-institutional-finintel.md`, `tasks/plan.md`, `scripts/check_constraints.py`, `docs/runbooks/autonomous_pipeline.md`.
-- **Nghiệm thu:** Chạy đầy đủ các lệnh kiểm chứng trong `CONSTRAINTS.md`.
-
-### `TASK-01` — Phân Rã `serving/queries.py` Thành Gói Domain (`100% Behavior-Preserving`)
-- **Loại commit:** `refactor(serving)` (**Behavior-Preserving tuyệt đối:** `0` thay đổi logic, `0` sửa đổi bất kỳ file nào trong `tests/`).
-- **Phạm vi:** Tách `src/finintel/serving/queries.py` (`5.019` dòng) thành gói `src/finintel/serving/queries/` với mọi file con `< 1.000` dòng, giữ đúng `parents[4]`, `_DEFAULT_READ_TABLE = ParquetRepository.read_table`, `__all__`, docstring `Verified Sources:`, `0` chuỗi `"data/raw"` / `"data/curated"` và `0` top-level import nhóm `platform`.
-
-### `TASK-02` — Hợp Nhất `FININTEL_DATA_ROOT` & Khóa Chặn Chế Độ Offline Giả Trong Dagster (`cap-01`)
-- **Loại commit:** `fix(config,orchestration)` (`Behavior-Changing`).
-- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `config/settings.yaml`, `src/finintel/config.py`, `src/finintel/pipeline/cli.py`, `src/finintel/orchestration/resources.py`, `src/finintel/orchestration/assets.py`, `scripts/start_demo_685.ps1`.
-- **Chi tiết:** Ghi đè đồng bộ mọi đường dẫn lưu trữ trong `Settings` khi đặt `FININTEL_DATA_ROOT`; đổi mặc định `DisclosureFetcherResource.fetch_online` theo `FININTEL_DISCLOSURE_FETCH_ONLINE` (khi `fetch_online=False`, `disclosure_dates_enrichment` xuất `status="SKIPPED_OFFLINE"`, `enriched_filings=0`); đồng bộ `scripts/start_demo_685.ps1` đọc từ `FININTEL_DATA_ROOT`.
-
-### `TASK-03` — Pacing Liên Tiến Trình SQLite `< 1ms`, Chốt Chặn SSRF & Telemetry Đầu Vào (`cap-01`, `cap-04`)
-- **Loại commit:** `feat(ingestion,observability)` (`Behavior-Changing`).
-- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `src/finintel/ingestion/ssrf_guard.py` *(mới)*, `src/finintel/pipeline/state_store.py`, `src/finintel/pipeline/health.py`, `src/finintel/ingestion/fhsc_oapi_adapter.py`, `src/finintel/ingestion/disclosure_enricher.py`, `src/finintel/serving/observability.py` (+ `tests/unit/test_fhsc_pacing_lease.py`).
-- **Chi tiết:** `acquire_host_pacing_slot()` (`BEGIN IMMEDIATE` `< 1ms`, `time.sleep` ngoài khóa) áp dụng cho cả `FhscOapiAdapter` (`min_interval=1.75s`) và `health_check(online=True)`; `ssrf_guard.py` chặn IP nội bộ/loopback/metadata + HTTP redirect + giới hạn kích thước đọc với `Accept-Encoding: identity`; bổ sung ngữ cảnh `entry_point` và metrics `finintel_ingestion_requests_total`, `finintel_ingestion_duration_seconds`.
+FinIntel V3.0 nâng cấp nền tảng FinIntel V2.0 (Lakehouse đọc-chỉ cho 685 doanh nghiệp phi tài chính niêm yết Việt Nam) thành một hệ thống **go-live production hoàn chỉnh ở mức chi phí `$0/tháng` (phi thương mại)**, giải quyết triệt để các khoảng trống còn thiếu từ kiểm toán 64 chức năng: tuân thủ pháp lý VN 2025–2026 & cổng drift `TT200 → TT99`, PIT Valuation Mart + Screener đa tiêu chí đầy đủ, hạ tầng Cloud Free (`OCI Always Free + Vercel Hobby + Cloudflare R2`), Auth/RBAC nội địa + Multi-Watchlist/Notes + Audit Log, Xuất `.xlsx`/PDF Tear-Sheet, Cảnh báo sớm tự động (Telegram/Resend/Webhook), Mở rộng PDF RAG kiểm soát hạn mức miễn phí, Sơ đồ cây DuPont + Peer Auto-Suggest + Ops QA bất biến, Open Research API/SDK, Thẩm định BCTC doanh nghiệp chưa niêm yết + HITL, và Stress Test Tỷ giá FX + Tín hiệu Trái phiếu doanh nghiệp.
 
 ---
 
-## Chi Tiết Đợt 2 (`TASK-04` → `Verification Checkpoint #2`)
+## 2. Locked Architecture Decisions
 
-### `TASK-04` — Chuẩn Hóa Huấn Luyện Lại ML, Pool Ghi Đơn, Sensor BCTC `15m` & Quét TT96 Watermark `30m` (`cap-02`)
-- **Loại commit:** `feat(orchestration)` (`Behavior-Changing`).
-- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `config/dagster.yaml`, `config/dagster.postgres.yaml`, `src/finintel/pipeline/state_store.py`, `src/finintel/orchestration/partitions.py`, `src/finintel/orchestration/assets.py`, `src/finintel/orchestration/definitions.py`.
-- **Chi tiết:** Chuẩn hóa đường dẫn tương đối `regulatory_ledger/regulatory_events.parquet`, gắn `pool="pipeline_write_pool"` (`limit=1`) và khởi tạo sẵn trong `DEFAULT_CONCURRENCY_POOL_LIMITS`, ghi nhận cooldown FHSC 429 & thất bại quét watermark, giới hạn tối đa `3` lần thử lại ở `downstream_publish_sensor`, bổ sung bảng `ticker_sweep_watermarks` (`*/30 * * * *`, `< 2.86` ngày/685 mã) và `bctc_disclosure_feed_sensor` (`900s`, tối đa `5` mã/nhịp, đối chiếu đúng ngày công bố thực `EXACT_FILING`).
-
-### `TASK-05` — Port 3 An Toàn Chia Tách Cổ Tức, Port 1 Replay Pháp Lý & Đối Soát Chéo `FHSC ↔ Vietcap IQ` (`cap-02`)
-- **Loại commit:** `feat(ingestion,normalization)` (`Behavior-Changing`).
-- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `src/finintel/normalization/reconciliation.py` *(mới)*, `src/finintel/ingestion/market_prices_collector.py`, `src/finintel/ingestion/regulatory_events_collector.py`, `scripts/collect_regulatory_events.py`, `src/finintel/quality/gate.py`, `src/finintel/serving/observability.py`.
-- **Chi tiết:** Đồng bộ giá EOD cửa sổ chồng lấn `5` phiên phát hiện chia tách/cổ tức (`|Δclose_adj| > 1e-3`) cùng nhà cung cấp tự tải lại `2018-01-01..today` và bảo toàn `shares_outstanding_market`; gỡ bỏ mốc chặn cứng cuối năm 2026, khóa ngoại tuyến `fetch_online=False` và nạp lại toàn bộ biên lai thô kèm trang đầu mới ở Port 1; cài đặt `reconcile_cross_provider_facts()` khớp cùng cấp kiểm toán phát `CROSS_PROVIDER_DISCREPANCY_WARN` vào `info_codes` (giữ nguyên toàn bộ phiên bản lịch sử trong `clean_facts`) và phơi bày `finintel_provider_discrepancy_total` qua `/metrics`.
-
-### `TASK-06` — Gia Cố Port 2 PDF Từ Kho CAS, Lịch Chạy Dagster Port 1/2/3 & Docker Daemon Tự Trị (`cap-02`)
-- **Loại commit:** `feat(ingestion,orchestration,docker)` (`Behavior-Changing`).
-- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `src/finintel/ingestion/curated_pdf_service.py` *(mới)*, `src/finintel/rag/parser.py`, `src/finintel/orchestration/assets.py`, `src/finintel/orchestration/definitions.py`, `docker-compose.yml`, `Dockerfile`.
-- **Chi tiết:** Trích xuất liên kết `.pdf`/`.zip` trực tiếp từ kho CAS `RawArchive` (lazy-import `pymupdf`/`pgvector`, pacing `0.6s`/host và chỉ khóa `pipeline.lock` lúc ghi manifest), chặn cứng `<= 400` trang và `<= 4096px`; đăng ký 3 asset & lịch chạy UTC `RUNNING` (`market_prices_eod_schedule`, `regulatory_events_ledger_schedule`, `curated_pdf_rag_schedule`); đồng bộ `uv:0.9.30` + `DAGSTER_HOME=/app/dagster_home` (`dagster.postgres.yaml`), bootstrap tự động pools/partitions trên `dagster-daemon` và tách `dagster-webserver --read-only` trên `127.0.0.1:3002`.
-
----
-
-## Chi Tiết Đợt 3 (`TASK-07` → `Verification Checkpoint #3`)
-
-### `TASK-07` — Tín Hiệu Điều Tra Hậu Kiểm Toán `RF_10_POST_AUDIT_PROFIT_DOWNGRADE` (`cap-03`)
-- **Loại commit:** `feat(analytics)` (`Behavior-Changing`).
-- **Phạm vi (`5` tệp sản phẩm + test đơn vị):** `src/finintel/analytics/restatements.py` *(mới)*, `src/finintel/analytics/intermediates.py`, `src/finintel/analytics/red_flags.py`, `src/finintel/transform/incremental.py`, `src/finintel/serving/dictionary.py`.
-- **Chi tiết:** So sánh tổng 4 quý rời rạc trước kiểm toán năm `audit_status != "AUDITED"` (bao gồm Q2 soát xét bán niên `REVIEWED` theo TT96 và các quý `UNAUDITED`, loại trừ `DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX` và các bản sửa đổi sau kiểm toán, hỗ trợ niên độ lệch lịch `fiscal_year_start_date`, tổng ngày `[350, 380]`) với BCTC `ANNUAL` `AUDITED`; kích hoạt `RF_10_POST_AUDIT_PROFIT_DOWNGRADE` (`severity="HIGH"`) khi đảo chiều lãi-thành-lỗ (`<= -1 tỷ VND`) hoặc bốc hơi lợi nhuận trọng yếu (`<= -15%` và `<= -5 tỷ VND`), khóa PIT cấp dòng (`_period_available_at >= annual_audited_available_at`, mang theo trên `QUARTER` trong `(0, 275]` ngày), tăng `TRANSFORM_STATE_SCHEMA_VERSION = 3` và đạt `0` orphan `filing_id` ở `QG2`.
-
-### `TASK-08` — Khoảng Cách Vỡ Nợ Cấu Trúc Thị Trường `Merton DTD` & Kiểm Chứng Walk-Forward (`cap-03`)
-- **Loại commit:** `feat(analytics,ml)` (`Behavior-Changing`).
-- **Phạm vi (`5` tệp sản phẩm + test đơn vị):** `src/finintel/analytics/merton_dtd.py` *(mới, `<= 450` LOC)*, `src/finintel/analytics/market_valuation.py`, `src/finintel/serving/queries/stress_and_overlay.py`, `src/finintel/ml/supervised/train.py`, `src/finintel/ml/supervised/explain.py` (+ `tests/unit/test_ui09b_market_valuation.py`).
-- **Chi tiết:** Cài đặt `compute_merton_dtd_series()` và `attach_merton_dtd_to_periods()` theo phương trình Bharath & Shumway (2008): hợp nhất đủ 3 khoản mục nợ vay VAS (`BS_SHORT_TERM_BORROWINGS`, `BS_LONG_TERM_BORROWINGS`, `BS_CONVERTIBLE_BONDS` mã `338/339/340`) ở đơn vị `VND` gốc, phân biệt `VALID` / `MISSING_BCTC_DEBT` / `ZERO_FINANCIAL_DEBT` / `STALE_BCTC_DEBT` (`> 180d`) / `INSUFFICIENT_TRADING_SESSIONS` (`< 60` cặp phiên cách nhau `<= 14d` hoặc dừng giao dịch `volume == 0` quá `14d`) / `MISSING_SHARES`; căn chỉnh PIT 2 bước (`strategy="forward"` từ ngày công bố sang phiên giao dịch, sau đó `strategy="backward", tolerance="180d"`, không lùi kỳ `period_end_date`) đạt `0%` look-ahead cuối tuần và tiến `_period_available_at` sang `max(a_t, trade_date)` trước `build_distress_targets`; đăng ký ràng buộc đơn điệu XGBoost (`merton_dtd: -1`, `equity_volatility_1y: +1`, `naive_edf: +1`) cùng `MERTON_ABLATION_FEATURES` trong `train.py` và nhãn tiếng Việt trong `explain.py`.
+1. **Hạ tầng Cloud Free (`$0/tháng`) — Phương án 1 (Khóa cứng):**
+   - **Frontend (`Next.js 16`):** Vercel Hobby (`$0`, đúng điều khoản phi thương mại).
+   - **DNS / WAF / Object Storage:** Cloudflare Free + **Cloudflare R2 Free (`10 GB`, `$0` egress)** cho DuckLake/Parquet backup & PDF lưu trữ.
+   - **Compute + DB + Cache + Dagster:** **Oracle Cloud (OCI) Always Free Singapore (`2 ARM Ampere A1 OCPUs, 12 GB RAM, 200 GB Disk`)** chạy `docker-compose.free.yml` với `mem_limit` cứng `< 8 GB` (`Caddy` + `FastAPI` + `pgvector/pgvector:pg16` + `Valkey 8` + `Dagster Daemon`), giữ phương án dự phòng Zero-Card (`HF Spaces + Neon + Upstash + GitHub Actions`) qua cùng giao diện `object_store.py`.
+   - **Email / Cảnh báo / LLM:** Resend Free (`3.000/tháng`, `100/ngày`) + Telegram Bot API (miễn phí không giới hạn) + Google AI Studio Gemini Free Tier (`Text-first PyMuPDF` + `daily_vision_page_cap = 150`).
+2. **Mô hình Phi Thương Mại & RBAC 3 Vai Trò:**
+   - Loại bỏ hoàn toàn cổng thanh toán trả phí (VNPay/PayOS/Stripe); thay bằng **Fair-Use Free Quota & Global Gemini Circuit Breaker** (`src/finintel/quota/`).
+   - Chuẩn hóa đúng 3 vai trò trong toàn bộ hệ thống: `USER`, `RESEARCHER`, `INTERNAL_OPS`.
+3. **Kỷ Luật Pháp Lý, Kế Toán & MRM (`CONSTRAINTS.md`):**
+   - Gỡ sạch nhãn *"Bậc tín nhiệm / Xếp hạng tín nhiệm"* trên UI/Export (tuân thủ NĐ `88/2014/NĐ-CP`), gắn miễn trừ phi khuyến nghị (Luật CK `2019` sửa đổi Luật `56/2024/QH15`), lưu PII tập trung tại `finintel_app` có đồng ý & quyền xóa (Luật `91/2025/QH15`).
+   - Giữ `api.py` và các file legacy `> 1.000` LOC tăng ròng `<= +10` dòng bằng cách tách 100% logic mới thành `APIRouter` độc lập (`src/finintel/auth/`, `workspace/`, `alerts/`, `quota/`, `ops/`, `api_gateway/`, `private_credit/`, `hitl/`, `serving/exports/`, `serving/routers/`).
+   - Giữ **lazy-import** mọi thư viện thuộc group `platform` (`psycopg`, `redis`, `argon2`, `xlsxwriter`, `openpyxl`, `dagster`, `opentelemetry`) để CI `mvp-checks` (`--group ml --dev`) luôn xanh.
+4. **Cơ Chế Thực Thi Song Song Cho Coding Agents (`git-workflow-and-versioning`):**
+   - **Nhánh tích hợp chung (Đã khóa):** `refactor/64-feature`. Toàn bộ các worktree/branch của 4 Wave (`Wave 1A → Wave 1B → Wave 2 → Wave 3`) tách từ và merge ngược về `refactor/64-feature`; chỉ merge 1 lần duy nhất về `main` sau khi qua Final Release Gate (`v3.1.0`).
+   - Mỗi module chạy trên `git worktree` cô lập (`git worktree add ../finintel-<module-id> -b feat/<module-id> refactor/64-feature`) hoặc `workspace: "share"` khi chạy qua `/teamwork`.
+   - Tách bạch tuyệt đối commit `refactor:` (*Behavior-Preserving*) với `feat:` (*Behavior-Changing*).
+   - Mỗi task giới hạn kích thước `S` hoặc `M` (`<= 5` tệp), hoàn tất trong 1 phiên tập trung và chạy đủ bộ lệnh kiểm chứng của module trước khi commit.
 
 ---
 
-## Chi Tiết Đợt 4 (`TASK-09` → Nghiệm Thu Cuối Hệ Thống)
+## 3. Dependency Graph & Parallel Execution Schedule
 
-### `TASK-09` — Con Trỏ Tiến SQLite/Postgres, Composite `ETag`, API Freshness/DTD, OTel Spans & Sanitizer (`cap-04`)
-- **Loại commit:** `feat(serving,storage,observability)` (`Behavior-Changing`).
-- **Phạm vi (`6` tệp sản phẩm + test):** `src/finintel/serving/freshness.py` *(mới)*, `src/finintel/serving/observability.py`, `src/finintel/serving/schemas.py`, `src/finintel/serving/api.py`, `src/finintel/storage/ducklake_store.py`, `src/finintel/orchestration/assets.py` (+ `tests/unit/test_serving_latency_budget.py`, cập nhật khẳng định composite `ETag` ở `test_layer5_fastapi_serving.py` và `test_option_b_e2e_platform.py`).
-- **Chi tiết:** Bổ sung view `public.finintel_serving_pointer` và chốt chặn đơn điệu tiến `ducklake_version` trong `publish_snapshot()` / `reconcile_unpromoted_snapshots()`; xuất Composite `ETag` `"{snapshot_id}:{extension_ports_digest}"` và khóa Valkey L2 xoay tự động khi Port 1/2/3 cập nhật giữa hai kỳ BCTC; chặn tham số công khai `?snapshot_id=` (`HTTP 422`); mở rộng `PriceOverlayPointItem` với `merton_dtd` / `equity_volatility_1y` / `naive_edf` / `dtd_flag` và `MetaPeriodsResponse.freshness` (`DataFreshnessItem` 3 tầng); gắn đủ 4 span OTel chuẩn (`finintel.ingest.fetch`, `finintel.transform.incremental`, `finintel.storage.publish_snapshot`, `finintel.serving.query`), metrics `finintel_snapshot_freshness_age_seconds{port}` + `finintel_wap_publish_total{outcome}`, và bộ lọc `sanitize_error_detail` chống lộ đường dẫn/DSN/SQL/token nội bộ; kiểm chứng đạt ngân sách độ trễ `p95` (`Warm <= 50ms`, `DuckLake Cold <= 200ms`, `Stress-Test <= 300ms`).
+```mermaid
+flowchart LR
+    subgraph W1A["Wave 1A (3 Parallel Worktrees)"]
+        T1["V3-01..03<br/>v3-compliance-and-mrm"]
+        T2["V3-04..06<br/>v3-valuation-mart-and-screener"]
+        T3["V3-07..09<br/>v3-infra-ha-storage"]
+    end
 
-### `TASK-10` — Đồng Bộ `X-Snapshot-ID`, Thẻ `Merton DTD` & Nhãn Bằng Chứng `RF_10` (`cap-05`)
-- **Loại commit:** `feat(frontend)` (`Behavior-Changing`).
-- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `frontend/src/lib/market-overlay-types.ts`, `frontend/src/lib/api-client.ts`, `frontend/src/components/providers/app-providers.tsx`, `frontend/src/lib/domain-labels.ts`, `frontend/src/components/charts/PriceRiskOverlayChart.tsx`, `frontend/src/components/rag/DocumentInvestigationPanel.tsx` (+ `frontend/tests/unit/task10_snapshot_dtd_rf10.test.ts`, cập nhật `frontend/tests/unit/ui08b.test.ts`).
-- **Chi tiết:** Giám sát tiêu đề phản hồi `X-Snapshot-ID` trên mọi lời gọi `fetch` với debounce `150ms` để xoay đồng bộ toàn bộ khóa TanStack Query (`[*, snapshotId]`) mà không bị lệch phiên giữa các panel, đồng thời phơi bày `freshness` trên `useAppState()`; mở rộng `PitValuationStrip` lên 4 thẻ bổ sung **Merton DTD (Thị trường)** kèm `EDF` ngụ ý, biến động giá `1Y`, tooltip/bảng dữ liệu và giải thích tiếng Việt sạch cho `ZERO_FINANCIAL_DEBT` / `INSUFFICIENT_TRADING_SESSIONS` / `STALE_BCTC_DEBT`; bổ sung ánh xạ bằng chứng kế toán `RF_10` (`ni_unaudited_4q_sum`, `ni_audited_annual`, `audit_earnings_diff_vnd`, `audit_adjustment_pct`), câu hỏi điều tra PDF định sẵn `RF_10`, nhãn ML `merton_dtd` / `equity_volatility_1y` / `naive_edf` và nhãn đối soát chéo `CROSS_PROVIDER_DISCREPANCY_WARN`.
+    subgraph W1B["Wave 1B (2 Parallel Worktrees)"]
+        T4["V3-10..12<br/>v3-identity-and-workspace"]
+        T5["V3-13..15<br/>v3-export-and-tearsheet"]
+    end
 
-### `TASK-11` — Nâng Cấp WAI-ARIA `segmented-control.tsx`, Thanh Freshness 3 Mốc & Chuẩn Hóa `SourceDrawer` (`cap-05`)
-- **Loại commit:** `feat(frontend)` (`Behavior-Changing`).
-- **Phạm vi (`6` tệp sản phẩm + test đơn vị):** `frontend/src/components/ui/segmented-control.tsx`, `frontend/src/components/ui/info-tooltip.tsx`, `frontend/src/components/layout/AppShell.tsx`, `frontend/src/components/layout/SourceDrawer.tsx`, `frontend/src/components/company/OverviewTab.tsx`, `frontend/src/components/financial/RedFlagChecklist.tsx` (+ `frontend/tests/unit/task11_a11y_freshness_drawer.test.ts`).
-- **Chi tiết:** Nâng cấp `segmented-control.tsx` đạt chuẩn WAI-ARIA Tabs / Radiogroup với roving `tabIndex`, điều hướng bàn phím (`ArrowRight`/`ArrowDown`, `ArrowLeft`/`ArrowUp`, `Home`, `End`), liên kết `aria-controls` và kích thước vùng bấm tối thiểu `>= 24x24px` (`WCAG 2.2 AA SC 2.5.8`, đồng bộ trên cả `InfoTooltip` và nút hành động nội dòng); bổ sung thanh độ tươi dữ liệu 3 tầng (`BCTC`, `Giá EOD`, `Pháp lý`) co giãn không tràn ngang ở `1440x900`, `720x450` (`200%` zoom) và `320x800`; chuẩn hóa `SourceDrawer` (`formatFilingReference` khử đuôi tệp và mã nội bộ, nhãn dự phòng an toàn cho `taxonomy_version`) và cập nhật bộ đếm `10` quy tắc cờ đỏ trên `OverviewTab` / `RedFlagChecklist`.
+    subgraph W2["Wave 2 (3 Parallel Worktrees)"]
+        T6["V3-16..18<br/>v3-early-warning-alerts"]
+        T7["V3-19..21<br/>v3-scaled-rag-and-billing"]
+        T8["V3-22..24<br/>v3-analyst-depth-and-ops-qa"]
+    end
 
-### `TASK-12` — Tab/Vùng Cuộn `/methodology` A11y, Vitest JSDOM `.tsx`, Cổng `wcag22aa` + CWV & Tự Động Hóa Định Kỳ (`cap-05`)
-- **Loại commit:** `feat(frontend,e2e)` (`Behavior-Changing`).
-- **Phạm vi (`6` tệp trong kho + sidecar cấu hình ngoài kho):** `frontend/src/app/methodology/page.tsx`, `frontend/src/app/screener/page.tsx`, `frontend/vitest.config.ts`, `frontend/tests/unit/methodology_and_a11y.test.tsx` *(mới)*, `frontend/tests/e2e/a11y-light-dark.spec.ts`, `frontend/tests/e2e/finintel.spec.ts`.
-- **Chi tiết:** Chuyển thanh tab `/methodology` sang `SegmentedControl` chuẩn WAI-ARIA (`role="tablist"` / `role="tab"` liên kết `aria-controls` tới `role="tabpanel"`), cập nhật `10` quy tắc phát hiện bất thường kế toán (`Quy tắc 01 – 10`) và gắn `tabIndex={0} role="region"` cho toàn bộ bảng cuộn ngang; kích hoạt `@vitejs/plugin-react` + kiểm thử đơn vị JSDOM `.tsx` trong `vitest.config.ts`; nâng cấp cổng Playwright `axe-core` với thẻ `wcag22aa` (`0` `critical` và `0` `serious`, không tràn ngang ở `1440x900`, `720x450` `200%` zoom, `320x800` cho cả Light & Dark) cùng bộ đo `CWV` thực tế (`LCP <= 2500ms`, `INP <= 200ms`, `CLS <= 0.10`); cấu hình tác vụ kiểm toán tự động hằng ngày `08:00 Asia/Ho_Chi_Minh`.
+    subgraph W3["Wave 3 (3 Parallel Worktrees)"]
+        T9["V3-25..27<br/>v3-b2b-commercial-api"]
+        T10["V3-28..30<br/>v3-private-issuer-and-hitl"]
+        T11["V3-31..33<br/>v3-fx-stress-and-bond-signals"]
+    end
+
+    T1 --> T4
+    T1 --> T5
+    T2 --> T5
+    T4 --> T6
+    T3 --> T6
+    T4 --> T7
+    T3 --> T7
+    T2 --> T8
+    T4 --> T8
+    T6 --> T9
+    T7 --> T9
+    T4 --> T10
+    T8 --> T10
+    T1 --> T11
+    T2 --> T11
+```
 
 ---
 
-## Ghi Chú Cho Đợt 3 & Đợt 4 (Đã Khóa Theo Quyết Định Nghiệp Vụ)
-- **`TASK-07` (`RF_10`):** Giữ `severity = "HIGH"` cho `RF_10_POST_AUDIT_PROFIT_DOWNGRADE`; loại trừ `DERIVED_ANNUAL_MINUS_9M_AUDITED_MIX` và tăng `TRANSFORM_STATE_SCHEMA_VERSION`.
-- **`TASK-08` (`Merton DTD`):** Cài đặt `merton_dtd.py` phục vụ đồng thời **Market Price & Risk Overlay** và đánh giá **Walk-Forward Ablation độc lập** (cộng đủ `BS_CONVERTIBLE_BONDS`, tách `ZERO_FINANCIAL_DEBT` khỏi `MISSING_BCTC_DEBT`, căn chỉnh 2 bước chống look-ahead cuối tuần).
-- **`TASK-11` & `TASK-12` (UI/A11y):** Sửa đúng tệp thực tế trên đĩa `frontend/src/components/ui/segmented-control.tsx` (kebab-case) để đạt chuẩn WAI-ARIA Tabs/Radiogroup và vượt cổng `wcag22aa` ở `100%` & `200%` zoom.
+## 4. Ordered Task Index & Milestones
+
+*(Chi tiết từng task, acceptance criteria, tệp chạm và lệnh kiểm chứng nằm đầy đủ trong [`tasks/todo.md`](./todo.md).)*
+
+### Phase 1 — Wave 1A: Foundation, Compliance, Valuation Screener & Free Cloud Infra (3 luồng song song)
+- **Stream 1A-1 (`v3-compliance-and-mrm`):** `V3-01` → `V3-02` → `V3-03` → *Checkpoint 1A-1*
+- **Stream 1A-2 (`v3-valuation-mart-and-screener`):** `V3-04` → `V3-05` → `V3-06` → *Checkpoint 1A-2*
+- **Stream 1A-3 (`v3-infra-ha-storage`):** `V3-07` → `V3-08` → `V3-09` → *Checkpoint 1A-3 & Wave 1A Merge Gate*
+
+### Phase 1 — Wave 1B: Identity/Workspace & Institutional Exports (2 luồng song song)
+- **Stream 1B-1 (`v3-identity-and-workspace`):** `V3-10` → `V3-11` → `V3-12` → *Checkpoint 1B-1*
+- **Stream 1B-2 (`v3-export-and-tearsheet`):** `V3-13` → `V3-14` → `V3-15` → *Checkpoint 1B-2 & Phase 1 Milestone Gate*
+- **Release Tag:** `v3.0.0-beta.1` (Public Beta trên OCI Always Free + Vercel Hobby + Cloudflare R2) + `CHANGELOG.md`
+
+### Phase 2 — Wave 2: Retention Engine, Scaled Free RAG & Analyst Depth (3 luồng song song)
+- **Stream 2-1 (`v3-early-warning-alerts`):** `V3-16` → `V3-17` → `V3-18` → *Checkpoint 2-1*
+- **Stream 2-2 (`v3-scaled-rag-and-billing`):** `V3-19` → `V3-20` → `V3-21` → *Checkpoint 2-2*
+- **Stream 2-3 (`v3-analyst-depth-and-ops-qa`):** `V3-22` → `V3-23` → `V3-24` → *Checkpoint 2-3 & Phase 2 Milestone Gate*
+- **Release Tag:** `v3.0.0` (Free Cloud GA) + `CHANGELOG.md`
+
+### Phase 3 — Wave 3: Open Research API, Private Credit Scoring & FX/Bond Risk (3 luồng song song)
+- **Stream 3-1 (`v3-b2b-commercial-api`):** `V3-25` → `V3-26` → `V3-27` → *Checkpoint 3-1*
+- **Stream 3-2 (`v3-private-issuer-and-hitl`):** `V3-28` → `V3-29` → `V3-30` → *Checkpoint 3-2*
+- **Stream 3-3 (`v3-fx-stress-and-bond-signals`):** `V3-31` → `V3-32` → `V3-33` → *Checkpoint 3-3 & Final Release Gate*
+- **Release Tag:** `v3.1.0` (Open Research & Credit Platform) + `CHANGELOG.md`
+
+---
+
+## 5. Parallelization Rules & Shared-File Coordination
+
+| Nhóm tệp | Mức độ an toàn song song | Quy ước tránh xung đột merge |
+|---|---|---|
+| Các gói mới (`src/finintel/auth/`, `workspace/`, `alerts/`, `quota/`, `ops/`, `api_gateway/`, `private_credit/`, `hitl/`, `serving/exports/`) | **An toàn 100% song song** | Mỗi module sở hữu trọn thư mục riêng, không sửa ngang thư mục module khác. |
+| SQL Migrations (`config/migrations/app_v3_00X_*.sql`) | **Đánh số cố định theo module** | `001` identity/workspace, `002` alerts, `003` quota, `004` ops QA, `005` API keys, `006` private credit/HITL — không bao giờ đụng tên file. |
+| `src/finintel/serving/api.py` & `frontend/src/types/api.generated.ts` | **Cần phối hợp lúc merge** | Mỗi module chỉ thêm `<= 2` dòng `api.include_router(...)`; chạy `npm --prefix frontend run gen:api-types` sau khi merge backend vào nhánh tích hợp. |
+| `pyproject.toml` & `uv.lock` | **Tuần tự khi merge** | Chỉ 3 task chạm dependency (`V3-10` `argon2-cffi`, `V3-13` `xlsxwriter`, `V3-28` `openpyxl`); luôn ghim cứng `==` trong group `platform` và regenerate `uv.lock` lúc merge. |
+
+---
+
+## 6. Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| OCI Always Free khu vực Singapore hết dung lượng ARM A1 lúc đăng ký | Medium | `V3-07`/`V3-09` thiết kế `object_store.py` (Cloudflare R2) + workflow `.github/workflows/free-etl-fallback.yml` để chạy ngay Phương án 2 (Vercel + HF Spaces 16GB + Neon + Upstash) mà không sửa code nghiệp vụ. |
+| Cháy hạn mức miễn phí Gemini / Resend / R2 khi mở công khai | High | `V3-19`/`V3-20` khóa cứng `daily_vision_page_cap = 150`, Global Gemini Circuit Breaker ở `85%`, ưu tiên Telegram (không giới hạn) cho instant alerts và chỉ dùng Resend cho auth + Daily Digest (`< 80/ngày`). |
+| Xung đột merge giữa nhiều agent song song trên `api.py` hoặc `screener.py` | Medium | Tách mọi route mới ra `APIRouter` riêng; chỉ ghép Wave sau khi Wave trước xanh đủ `CONSTRAINTS.md`. |
+| Phá CI `mvp-checks` (`--group ml --dev`) do import trực tiếp thư viện `platform` | High | Mọi module mới giữ lazy-import cho `psycopg`, `redis`, `argon2`, `xlsxwriter`, `openpyxl` và có test verify chạy offline không cần Postgres/Valkey. |
+| Vi phạm giới hạn `< 1.000` LOC trên `serving/queries/screener.py` hoặc `frontend/src/*` | Medium | Chạy `scripts/check_constraints.py` trên mọi task; tách helper nhỏ (`_screener_filters.py`, sub-components) ngay khi file chạm `750` LOC. |
+
+---
+
+## 7. Locked Execution Decisions
+
+1. **Nhánh tích hợp chung:** Giữ `refactor/64-feature` làm nhánh tích hợp duy nhất cho cả 4 Wave (`Wave 1A → Wave 1B → Wave 2 → Wave 3`); chỉ merge 1 lần về `main` sau khi hoàn tất toàn bộ và pass đủ cổng kiểm chứng.
+2. **Chế độ thực thi:** Chạy song song theo từng Wave bằng `/teamwork` (tối đa 3 coding worker chạy trên 3 workspace/worktree cô lập + 1 Coordinator/Reviewer kiểm chứng & merge từng Wave về `refactor/64-feature`).

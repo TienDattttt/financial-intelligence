@@ -32,7 +32,7 @@ export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
     tone: "low",
     rankOrder: 1,
     description:
-      "Bậc tín nhiệm R1 (chuẩn toàn chu kỳ TTC): xác suất kiệt quệ 1 năm nằm ở vùng an toàn nhất.",
+      "Nhóm cảnh báo rủi ro định lượng R1 (chuẩn toàn chu kỳ TTC): xác suất kiệt quệ 1 năm nằm ở vùng an toàn nhất.",
   },
   R2: {
     tier: "R2",
@@ -42,7 +42,7 @@ export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
     tone: "low",
     rankOrder: 2,
     description:
-      "Bậc tín nhiệm R2 (chuẩn toàn chu kỳ TTC): rủi ro thấp, cấu trúc tài chính duy trì ổn định.",
+      "Nhóm cảnh báo rủi ro định lượng R2 (chuẩn toàn chu kỳ TTC): rủi ro thấp, cấu trúc tài chính duy trì ổn định.",
   },
   R3: {
     tier: "R3",
@@ -52,7 +52,7 @@ export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
     tone: "mid",
     rankOrder: 3,
     description:
-      "Bậc tín nhiệm R3 (chuẩn toàn chu kỳ TTC): mức trung bình, cần theo dõi xu hướng đòn bẩy và dòng tiền.",
+      "Nhóm cảnh báo rủi ro định lượng R3 (chuẩn toàn chu kỳ TTC): mức trung bình, cần theo dõi xu hướng đòn bẩy và dòng tiền.",
   },
   R4: {
     tier: "R4",
@@ -62,7 +62,7 @@ export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
     tone: "high",
     rankOrder: 4,
     description:
-      "Bậc tín nhiệm R4 (chuẩn toàn chu kỳ TTC): cảnh báo sớm rủi ro cao, cần rà soát cờ đỏ kế toán và thanh khoản.",
+      "Nhóm cảnh báo rủi ro định lượng R4 (chuẩn toàn chu kỳ TTC): cảnh báo sớm rủi ro cao, cần rà soát cờ đỏ kế toán và thanh khoản.",
   },
   R5: {
     tier: "R5",
@@ -72,7 +72,7 @@ export const RISK_TIER_META: Record<CreditRiskTier, RiskTierDisplayMeta> = {
     tone: "high",
     rankOrder: 5,
     description:
-      "Bậc tín nhiệm R5 (chuẩn toàn chu kỳ TTC): vùng căng thẳng tài chính nghiêm trọng, rủi ro kiệt quệ rất cao.",
+      "Nhóm cảnh báo rủi ro định lượng R5 (chuẩn toàn chu kỳ TTC): vùng căng thẳng tài chính nghiêm trọng, rủi ro kiệt quệ rất cao.",
   },
 };
 
@@ -91,11 +91,11 @@ export function getRiskTierMeta(tier: string | null | undefined): EnumDisplayMet
   return {
     tier: null,
     badgeText: "N/A",
-    label: "Chưa xếp bậc",
-    shortLabel: "Chưa xếp bậc",
+    label: "Chưa phân nhóm",
+    shortLabel: "Chưa phân nhóm",
     tone: "neutral",
     rankOrder: 0,
-    description: "Chưa có dữ liệu xếp bậc tín nhiệm R1–R5 cho kỳ hoặc phạm vi báo cáo này.",
+    description: "Chưa có dữ liệu phân nhóm cảnh báo rủi ro định lượng R1–R5 cho kỳ hoặc phạm vi báo cáo này.",
   };
 }
 
@@ -122,10 +122,13 @@ export function formatCreditTrio(input: {
   const topPercent = validPct
     ? Math.max(0.1, 100 - Math.min(100, Math.max(0, pct)))
     : null;
+  const safePercent = topPercent !== null ? Math.min(99.9, topPercent) : null;
   const topPercentLabel =
-    topPercent !== null
-      ? `Top ${formatNumber(topPercent, topPercent < 10 ? 1 : 0)}% rủi ro nhất`
-      : "Chưa có vị thế kỳ";
+    topPercent === null || safePercent === null
+      ? "Chưa có vị thế kỳ"
+      : topPercent > 50
+        ? `An toàn hơn ${formatNumber(safePercent, safePercent > 90 ? 1 : 0)}% DN`
+        : `Top ${formatNumber(topPercent, topPercent < 10 ? 1 : 0)}% rủi ro nhất`;
   const pdLabel = formatPercent(input.calibrated_distress_prob);
   const lift = input.relative_risk_lift;
   const liftLabel =
@@ -292,6 +295,7 @@ export const AUDIT_STATUS_LABELS: Record<string, string> = {
 export const AUDIT_OPINION_LABELS: Record<string, string> = {
   UNMODIFIED: "Chấp nhận toàn phần",
   UNQUALIFIED: "Chấp nhận toàn phần",
+  REVIEWED_NO_OPINION: "Đã soát xét (không nêu ý kiến)",
   EXCEPT_FOR: "Ngoại trừ",
   QUALIFIED: "Ngoại trừ",
   ADVERSE: "Trái ngược",
@@ -299,6 +303,68 @@ export const AUDIT_OPINION_LABELS: Record<string, string> = {
   NOT_APPLICABLE: "Chưa kiểm toán",
   UNKNOWN: "Chưa rõ",
 };
+
+export const PIOTROSKI_NA_REASON_LABELS: Record<string, string> = {
+  TT200_TT99_TAXONOMY_GUARD: "Không tính do giao chuẩn TT200 → TT99",
+  MISSING_DILUTION_DATA: "Thiếu dữ liệu pha loãng cổ phiếu",
+  MISSING_PRIOR_YEAR_BASE: "Thiếu dữ liệu kỳ gốc năm trước",
+  INSUFFICIENT_COMPONENTS: "Chưa đủ 9 tiêu chí thành phần",
+};
+
+export const PIOTROSKI_CRITERIA_LABELS: Record<string, string> = {
+  F1_ROA: "ROA dương",
+  F2_CFO: "Dòng tiền HĐKD (CFO) dương",
+  F3_DELTA_ROA: "Cải thiện ROA so với năm trước",
+  F4_ACCRUAL: "Chất lượng tiền mặt (CFO > LNST)",
+  F4_ACCRUALS: "Chất lượng tiền mặt (CFO > LNST)",
+  F5_DELTA_LEVERAGE: "Tỷ lệ nợ dài hạn giảm hoặc ổn định",
+  F6_DELTA_LIQUIDITY: "Thanh toán hiện hành cải thiện",
+  F7_NO_DILUTION: "Không phát hành pha loãng cổ phiếu",
+  F8_DELTA_MARGIN: "Biên lợi nhuận gộp cải thiện",
+  F9_DELTA_TURNOVER: "Vòng quay tổng tài sản cải thiện",
+};
+
+export interface PiotroskiNaDetail {
+  summary: string;
+  detailLine: string | null;
+  tooltip: string;
+}
+
+export function formatPiotroskiNaDetail(
+  reason?: string | null,
+  missingCriteria?: readonly string[] | null,
+): PiotroskiNaDetail {
+  const summary =
+    (reason && PIOTROSKI_NA_REASON_LABELS[reason]) ||
+    "Chưa đủ tiêu chí thành phần";
+  const mappedCriteria = Array.from(
+    new Set(
+      (missingCriteria ?? [])
+        .map((code) => PIOTROSKI_CRITERIA_LABELS[code])
+        .filter((label): label is string => Boolean(label)),
+    ),
+  );
+  if (mappedCriteria.length === 0) {
+    return {
+      summary,
+      detailLine: null,
+      tooltip: summary,
+    };
+  }
+  const detailLine =
+    mappedCriteria.length <= 2
+      ? `Thiếu tiêu chí: ${mappedCriteria.join(", ")}`
+      : `Thiếu ${mappedCriteria.length}/9 tiêu chí thành phần`;
+  const tooltip = `${summary} · Thiếu: ${mappedCriteria.join(", ")}`;
+  return {
+    summary:
+      reason && PIOTROSKI_NA_REASON_LABELS[reason]
+        ? summary
+        : `Thiếu ${mappedCriteria.length} tiêu chí`,
+    detailLine,
+    tooltip,
+  };
+}
 
 export const REVISION_REASON_LABELS: Record<string, string> = {
   ORIGINAL: "Bản gốc",
@@ -340,7 +406,7 @@ export function getDistressRiskBadge(
     label: `1Y PD ${formatPercent(prob)}`,
     shortLabel: formatPercent(prob),
     tone: "neutral",
-    description: "Xác suất kiệt quệ 1 năm đã hiệu chỉnh theo mô hình; xem bậc tín nhiệm R1–R5.",
+    description: "Xác suất kiệt quệ 1 năm đã hiệu chỉnh theo mô hình; xem nhóm cảnh báo rủi ro định lượng R1–R5.",
   };
 }
 
@@ -561,6 +627,8 @@ export const PEER_STANDARDIZATION_LABELS: Record<string, string> = {
     "Chuẩn hóa toàn thị trường phi tài chính (do trước 2026 chưa có lịch sử phân ngành theo năm)",
   SECTOR_Z_SCORE: "Chuẩn hóa Z-Score theo phân ngành ICB cùng kỳ",
   HYBRID: "Chuẩn hóa kết hợp theo ngành ICB và toàn thị trường",
+  PIT_REGIME_SYMMETRIC: "So sánh cùng kỳ theo chuẩn mực kế toán (đối xứng)",
+  PIT_ICB: "So sánh cùng kỳ theo ngành ICB",
 };
 
 export function formatPeerStandardizationMode(mode: string | null | undefined): string {
@@ -587,6 +655,7 @@ export const ML_FEATURE_LABELS: Record<string, string> = {
   cash_ratio: "Hệ số thanh toán tiền mặt",
   interest_coverage: "Khả năng thanh toán lãi vay (EBIT / Lãi vay)",
   ocf_to_current_liabilities: "CFO / Nợ ngắn hạn",
+  ocf_to_total_liabilities: "CFO / Tổng nợ phải trả",
   fcf_to_revenue: "Dòng tiền tự do / Doanh thu",
   altman_z_double_prime: "Điểm Altman Z″ (Thị trường mới nổi)",
   piotroski_f_score: "Điểm Piotroski F-Score",
@@ -627,6 +696,11 @@ export function sanitizeModelLimitationText(raw: string): string {
       PEER_STANDARDIZATION_LABELS.MARKET_ONLY_BEFORE_2026,
     )
     .replace(/\bSECTOR_Z_SCORE\b/g, PEER_STANDARDIZATION_LABELS.SECTOR_Z_SCORE)
+    .replace(
+      /\bPIT_REGIME_SYMMETRIC\b/g,
+      PEER_STANDARDIZATION_LABELS.PIT_REGIME_SYMMETRIC,
+    )
+    .replace(/\bPIT_ICB\b/g, PEER_STANDARDIZATION_LABELS.PIT_ICB)
     .replace(/\brevision_no\s*=\s*1\b/gi, "phiên bản đơn kỳ ban đầu")
     .replace(/\bVAS_TT200_2014\b/g, "TT200/2014")
     .replace(/\bVAS_TT99_2025\b/g, "TT99/2025")
@@ -635,117 +709,11 @@ export function sanitizeModelLimitationText(raw: string): string {
     .replace(/\.parquet\b/gi, "");
 }
 
-export const STATEMENT_METRIC_LABELS: Record<string, string> = {
-  BS_BAD_DEBT_PROVISION_LT: "Dự phòng phải thu dài hạn khó đòi",
-  BS_BAD_DEBT_PROVISION_ST: "Dự phòng phải thu ngắn hạn khó đòi",
-  BS_CASH_AND_EQUIVALENTS: "Tiền và các khoản tương đương tiền",
-  BS_CIP_LONG_TERM: "Chi phí xây dựng cơ bản dở dang",
-  BS_CONVERTIBLE_BONDS: "Trái phiếu chuyển đổi",
-  BS_CURRENT_ASSETS: "Tài sản ngắn hạn",
-  BS_CURRENT_LIABILITIES: "Nợ ngắn hạn",
-  BS_FIXED_ASSETS: "Tài sản cố định",
-  BS_INTANGIBLE_FIXED_ASSETS: "Tài sản cố định vô hình",
-  BS_INVENTORIES: "Hàng tồn kho",
-  BS_LONG_TERM_BORROWINGS: "Vay và nợ thuê tài chính dài hạn",
-  BS_LT_FINANCIAL_INVESTMENTS: "Đầu tư tài chính dài hạn",
-  BS_LT_RECEIVABLES: "Các khoản phải thu dài hạn",
-  BS_MINORITY_INTEREST: "Lợi ích cổ đông không kiểm soát",
-  BS_NONCURRENT_ASSETS: "Tài sản dài hạn",
-  BS_NONCURRENT_LIABILITIES: "Nợ dài hạn",
-  BS_ORDINARY_SHARES_CAPITAL: "Vốn góp cổ phiếu phổ thông",
-  BS_OTHER_NONCURRENT_ASSETS: "Tài sản dài hạn khác",
-  BS_RETAINED_EARNINGS: "Lợi nhuận sau thuế chưa phân phối",
-  BS_SHORT_TERM_BORROWINGS: "Vay và nợ thuê tài chính ngắn hạn",
-  BS_SHORT_TERM_INVESTMENTS: "Đầu tư tài chính ngắn hạn",
-  BS_SHORT_TERM_RECEIVABLES: "Các khoản phải thu ngắn hạn",
-  BS_TANGIBLE_FIXED_ASSETS: "Tài sản cố định hữu hình",
-  BS_TOTAL_ASSETS: "Tổng cộng tài sản",
-  BS_TOTAL_EQUITY: "Vốn chủ sở hữu",
-  BS_TOTAL_LIABILITIES: "Nợ phải trả",
-  BS_TOTAL_LIABILITIES_AND_EQUITY: "Tổng cộng nguồn vốn",
-  BS_TRADE_PAYABLES_ST: "Phải trả người bán ngắn hạn",
-  BS_TRADE_RECEIVABLES_ALLOWANCE_LT: "Dự phòng phải thu khách hàng dài hạn",
-  BS_TRADE_RECEIVABLES_ALLOWANCE_ST: "Dự phòng phải thu khách hàng ngắn hạn",
-  BS_TRADE_RECEIVABLES_LT: "Phải thu dài hạn của khách hàng",
-  BS_TRADE_RECEIVABLES_ST: "Phải thu ngắn hạn của khách hàng",
-  BS_TREASURY_SHARES: "Cổ phiếu quỹ",
-  CF_CAPITAL_EXPENDITURE: "Chi đầu tư TSCĐ và tài sản dài hạn",
-  CF_DEPRECIATION_AMORTIZATION: "Khấu hao TSCĐ và BĐSĐT",
-  CF_EQUITY_ISSUANCE_PROCEEDS: "Tiền thu từ phát hành cổ phiếu, góp vốn",
-  CF_FINANCING_CASH_FLOW: "Lưu chuyển tiền thuần từ HĐ tài chính",
-  CF_INVESTING_CASH_FLOW: "Lưu chuyển tiền thuần từ HĐ đầu tư",
-  CF_NET_CASH_CHANGE: "Lưu chuyển tiền thuần trong kỳ",
-  CF_OPERATING_CASH_FLOW: "Lưu chuyển tiền thuần từ HĐ kinh doanh",
-  CF_PROCEEDS_FROM_BORROWINGS: "Tiền thu từ đi vay",
-  CF_REPAYMENT_OF_BORROWINGS: "Tiền trả nợ gốc vay",
-  CF_SUPPLIER_PAYMENTS: "Tiền chi trả người cung cấp",
-  IS_ADMINISTRATIVE_EXPENSES: "Chi phí quản lý doanh nghiệp",
-  IS_BORROWING_COSTS: "Chi phí đi vay",
-  IS_CONTINUING_OPERATIONS_NET_INCOME: "LNST từ hoạt động liên tục",
-  IS_COST_OF_GOODS_SOLD: "Giá vốn hàng bán",
-  IS_CURRENT_INCOME_TAX: "Chi phí thuế TNDN hiện hành",
-  IS_DEFERRED_INCOME_TAX: "Chi phí thuế TNDN hoãn lại",
-  IS_DILUTIVE_NONCASH_EQUITY_ISSUANCE: "Phát hành cổ phiếu không thu tiền có pha loãng",
-  IS_EPS_BASIC_REPORTED: "Lãi cơ bản trên cổ phiếu",
-  IS_FINANCIAL_EXPENSES: "Chi phí tài chính",
-  IS_FINANCIAL_REVENUE: "Doanh thu hoạt động tài chính",
-  IS_GROSS_PROFIT: "Lợi nhuận gộp",
-  IS_GROSS_REVENUE: "Doanh thu bán hàng và cung cấp dịch vụ",
-  IS_INTEREST_EXPENSE: "Chi phí lãi vay",
-  IS_INVESTMENT_PROPERTY_DISPOSAL_GAIN_LOSS: "Lãi/lỗ thanh lý BĐS đầu tư",
-  IS_NET_INCOME: "Lợi nhuận sau thuế TNDN",
-  IS_NET_INCOME_PARENT: "Lợi nhuận sau thuế công ty mẹ",
-  IS_NET_REVENUE: "Doanh thu thuần",
-  IS_OPERATING_PROFIT: "Lợi nhuận thuần từ HĐKD",
-  IS_OTHER_EXPENSES: "Chi phí khác",
-  IS_OTHER_INCOME: "Thu nhập khác",
-  IS_OTHER_PROFIT: "Lợi nhuận khác",
-  IS_PROFIT_BEFORE_TAX: "Tổng lợi nhuận kế toán trước thuế",
-  IS_REVENUE_DEDUCTIONS: "Các khoản giảm trừ doanh thu",
-  IS_SELLING_EXPENSES: "Chi phí bán hàng",
-};
-
-export function getStatementMetricLabel(metricId: string): string {
-  return STATEMENT_METRIC_LABELS[metricId] ?? "Chỉ tiêu báo cáo tài chính";
-}
-
-const FORMULA_TERM_REPLACEMENTS: Record<string, string> = {
-  ...STATEMENT_METRIC_LABELS,
-  TotalDebt: "Tổng nợ vay tài chính",
-  CashAndSTInvestments: "Tiền & Đầu tư ngắn hạn",
-  NetDebt: "Nợ vay ròng",
-  ParentEquity: "VCSH công ty mẹ",
-  InvestedCapital: "Vốn đầu tư",
-  EstimatedShares: "Số cổ phiếu lưu hành ước tính",
-  CoreOperatingProfit_TTM: "LN kinh doanh cốt lõi TTM",
-  NOPAT_TTM: "LN hoạt động sau thuế (NOPAT)",
-  EBITDA_TTM: "EBITDA TTM",
-  EBIT_TTM: "EBIT TTM",
-  inventory_turnover: "Vòng quay hàng tồn kho",
-  receivables_turnover: "Vòng quay phải thu",
-  payables_turnover: "Vòng quay phải trả",
-};
-
-export function formatFormulaVi(formula: string): string {
-  const withSubscripts = formula.replace(
-    /\b([A-Za-z][A-Za-z0-9_]*)_\{t-4\}/g,
-    (_, base: string) =>
-      `${FORMULA_TERM_REPLACEMENTS[base] ?? base} (cùng kỳ năm trước)`,
-  );
-  return withSubscripts.replace(/\b[A-Za-z][A-Za-z0-9_]*\b/g, (token) => {
-    if (token in FORMULA_TERM_REPLACEMENTS) {
-      return FORMULA_TERM_REPLACEMENTS[token];
-    }
-    const baseToken = token.replace(/_(t|prior)$/, "");
-    if (baseToken in FORMULA_TERM_REPLACEMENTS) {
-      const suffix = token.endsWith("_prior")
-        ? " (cùng kỳ năm trước)"
-        : " (kỳ hiện tại)";
-      return `${FORMULA_TERM_REPLACEMENTS[baseToken]}${suffix}`;
-    }
-    return token;
-  });
-}
+export {
+  STATEMENT_METRIC_LABELS,
+  getStatementMetricLabel,
+  formatFormulaVi,
+} from "@/lib/statement-labels";
 
 export const RATIO_STATUS_FLAG_META: Record<
   string,
@@ -836,114 +804,12 @@ export const MODEL_ROLE_LABELS: Record<string, string> = {
   CALIBRATED_PD_MODEL: "Mô hình xác suất kiệt quệ hiệu chỉnh",
 };
 
-export type EvidenceFormatType =
-  | "PERCENT"
-  | "VND_BILLIONS"
-  | "MULTIPLE"
-  | "DAYS"
-  | "AUDIT_OPINION"
-  | "BOOLEAN"
-  | "NUMBER";
-
-export const RED_FLAG_EVIDENCE_META: Record<
-  string,
-  { label: string; format: EvidenceFormatType }
-> = {
-  net_income_ttm: { label: "LNST TTM", format: "VND_BILLIONS" },
-  cfo_ttm: { label: "CFO TTM", format: "VND_BILLIONS" },
-  previous_net_income_ttm: { label: "LNST kỳ trước", format: "VND_BILLIONS" },
-  previous_cfo_ttm: { label: "CFO kỳ trước", format: "VND_BILLIONS" },
-  accruals_to_assets: { label: "Dồn tích / Tổng TS", format: "PERCENT" },
-  revenue_growth_yoy: { label: "Tăng trưởng doanh thu YoY", format: "PERCENT" },
-  trade_receivables_growth_yoy: { label: "Tăng trưởng phải thu KH YoY", format: "PERCENT" },
-  dso: { label: "Số ngày thu tiền (DSO)", format: "DAYS" },
-  dso_prior: { label: "DSO cùng kỳ trước", format: "DAYS" },
-  dso_change_days: { label: "Biến động DSO", format: "DAYS" },
-  BS_TOTAL_ASSETS: { label: "Tổng tài sản", format: "VND_BILLIONS" },
-  BS_SHORT_TERM_RECEIVABLES: { label: "Phải thu ngắn hạn", format: "VND_BILLIONS" },
-  BS_TRADE_RECEIVABLES_ST: { label: "Phải thu KH ngắn hạn", format: "VND_BILLIONS" },
-  BS_LT_RECEIVABLES: { label: "Phải thu dài hạn", format: "VND_BILLIONS" },
-  BS_TRADE_RECEIVABLES_LT: { label: "Phải thu KH dài hạn", format: "VND_BILLIONS" },
-  BS_BAD_DEBT_PROVISION_ST: { label: "Dự phòng phải thu NH", format: "VND_BILLIONS" },
-  BS_BAD_DEBT_PROVISION_LT: { label: "Dự phòng phải thu DH", format: "VND_BILLIONS" },
-  BS_TRADE_RECEIVABLES_ALLOWANCE_ST: {
-    label: "Dự phòng phải thu KH ngắn hạn",
-    format: "VND_BILLIONS",
-  },
-  BS_TRADE_RECEIVABLES_ALLOWANCE_LT: {
-    label: "Dự phòng phải thu KH dài hạn",
-    format: "VND_BILLIONS",
-  },
-  CF_OPERATING_CASH_FLOW: { label: "CFO TTM", format: "VND_BILLIONS" },
-  net_non_customer_receivables_st: {
-    label: "Phải thu ngoài KH ngắn hạn (ròng)",
-    format: "VND_BILLIONS",
-  },
-  net_non_customer_receivables_lt: {
-    label: "Phải thu ngoài KH dài hạn (ròng)",
-    format: "VND_BILLIONS",
-  },
-  other_receivables_to_assets: { label: "Phải thu ngoài KH / Tổng TS", format: "PERCENT" },
-  inventory_to_assets: { label: "Tồn kho / Tổng TS", format: "PERCENT" },
-  dio: { label: "Số ngày tồn kho (DIO)", format: "DAYS" },
-  dio_prior: { label: "DIO cùng kỳ trước", format: "DAYS" },
-  dio_change_days: { label: "Biến động DIO", format: "DAYS" },
-  gross_margin: { label: "Biên lợi nhuận gộp", format: "PERCENT" },
-  gross_margin_prior: { label: "Biên gộp cùng kỳ trước", format: "PERCENT" },
-  interest_coverage: { label: "EBIT / Lãi vay", format: "MULTIPLE" },
-  total_debt: { label: "Tổng nợ vay", format: "VND_BILLIONS" },
-  current_ratio: { label: "Thanh toán hiện hành", format: "MULTIPLE" },
-  debt_to_equity: { label: "Nợ vay / VCSH", format: "MULTIPLE" },
-  BS_TOTAL_EQUITY: { label: "Vốn chủ sở hữu", format: "VND_BILLIONS" },
-  parent_equity: { label: "VCSH công ty mẹ", format: "VND_BILLIONS" },
-  audit_opinion: { label: "Ý kiến kiểm toán", format: "AUDIT_OPINION" },
-  is_filed_late: { label: "Nộp BCTC trễ hạn", format: "BOOLEAN" },
-  ebt_ttm: { label: "Lợi nhuận trước thuế TTM", format: "VND_BILLIONS" },
-  core_operating_profit_ttm: { label: "LN kinh doanh lõi TTM", format: "VND_BILLIONS" },
-  debt_cost_ttm: { label: "Chi phí đi vay TTM", format: "VND_BILLIONS" },
-  core_to_ebt_ratio: { label: "LN lõi / EBT", format: "PERCENT" },
-  non_core_distortion_to_assets: { label: "Biến dạng phi lõi / TS", format: "PERCENT" },
-  financial_revenue_ttm: { label: "Doanh thu tài chính TTM", format: "VND_BILLIONS" },
-  other_profit_ttm: { label: "Lợi nhuận khác TTM", format: "VND_BILLIONS" },
-  ip_disposal_gain_loss_ttm: { label: "Lãi/lỗ thanh lý BĐSĐT", format: "VND_BILLIONS" },
-  cip_to_assets_t: { label: "XDCB dở dang / Tổng TS", format: "PERCENT" },
-  cip_to_assets_prior: { label: "XDCB dở dang / TS kỳ trước", format: "PERCENT" },
-  cip_growth_yoy: { label: "Tăng trưởng XDCB dở dang", format: "PERCENT" },
-  tangible_fixed_assets_growth_yoy: {
-    label: "Tăng trưởng TSCĐ hữu hình",
-    format: "PERCENT",
-  },
-  ni_unaudited_4q_sum: { label: "Tổng LNST 4 quý tự lập", format: "VND_BILLIONS" },
-  ni_audited_annual: { label: "LNST năm sau kiểm toán", format: "VND_BILLIONS" },
-  audit_earnings_diff_vnd: { label: "Chênh lệch LNST hậu kiểm toán", format: "VND_BILLIONS" },
-  audit_adjustment_pct: { label: "Tỷ lệ điều chỉnh hậu kiểm toán", format: "PERCENT" },
-};
-
-export const RED_FLAG_CODE_LABELS: Record<string, string> = {
-  RF_01: "Quy tắc 01",
-  RF_02: "Quy tắc 02",
-  RF_03: "Quy tắc 03",
-  RF_04: "Quy tắc 04",
-  RF_05: "Quy tắc 05",
-  RF_06: "Quy tắc 06",
-  RF_07: "Quy tắc 07",
-  RF_08: "Quy tắc 08",
-  RF_09: "Quy tắc 09",
-  RF_10: "Quy tắc 10",
-};
-
-export function formatRedFlagCodeLabel(flagCode: string | null | undefined): string {
-  if (!flagCode) return "Quy tắc cảnh báo";
-  const shortCode = flagCode.trim().toUpperCase().split("_").slice(0, 2).join("_");
-  if (shortCode in RED_FLAG_CODE_LABELS) {
-    return RED_FLAG_CODE_LABELS[shortCode];
-  }
-  const match = /^RF_?0?(\d+)$/i.exec(shortCode);
-  if (match) {
-    return `Quy tắc ${match[1].padStart(2, "0")}`;
-  }
-  return "Quy tắc cảnh báo";
-}
+export {
+  type EvidenceFormatType,
+  RED_FLAG_EVIDENCE_META,
+  RED_FLAG_CODE_LABELS,
+  formatRedFlagCodeLabel,
+} from "@/lib/red-flag-labels";
 
 export function selectMlScoreForPeriod<T extends { period_end_date: string }>(
   scores: readonly T[] | null | undefined,

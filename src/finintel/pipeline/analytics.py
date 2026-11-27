@@ -36,6 +36,7 @@ from finintel.storage.repository import ParquetRepository
 from finintel.storage.schemas import (
     ML_SCORES_TABLE,
     MODEL_CARD_META_TABLE,
+    PIT_VALUATION_MART_TABLE,
 )
 from finintel.transform.incremental import (
     TRANSFORM_STATE_FILENAME,
@@ -249,6 +250,11 @@ class AnalyticsHandler:
             tables[ML_SCORES_TABLE] = bundle.ml_scores
         if bundle.model_card_meta is not None:
             tables[MODEL_CARD_META_TABLE] = bundle.model_card_meta
+        if (
+            bundle.pit_valuation_mart is not None
+            and not bundle.pit_valuation_mart.is_empty()
+        ):
+            tables[PIT_VALUATION_MART_TABLE] = bundle.pit_valuation_mart
 
         ratios = tables[RATIOS_TABLE]
         if context.tickers or context.request.period:

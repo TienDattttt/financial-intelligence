@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { ArrowLeftRight } from "lucide-react";
 import { EChartBox, type EChartsOption } from "@/components/charts/EChartBox";
 import { Button } from "@/components/ui/button";
@@ -372,7 +373,7 @@ export function getRiskTierSeriesStyles(
     },
     {
       tier: "UNRATED",
-      seriesName: "Chưa xếp bậc",
+      seriesName: "Chưa phân nhóm",
       color: palette.neutral,
       symbol: "circle",
       symbolSize: 7,
@@ -405,7 +406,7 @@ export function buildScreenerScatterOption(
     if (!d) return "";
     const tierBadge =
       d.riskTier === "UNRATED"
-        ? "Chưa xếp bậc"
+        ? "Chưa phân nhóm"
         : [d.riskTierLabel, d.topRiskLabel, d.liftLabel]
             .filter(Boolean)
             .join(" · ");
@@ -414,7 +415,7 @@ export function buildScreenerScatterOption(
       `<div style="color:${palette.inkMuted};font-size:11px;margin-bottom:4px">${d.sector}</div>`,
       `<div>X · ${xMetric.label}: <b>${formatScatterMetricValue(d.rawX, xMetric)}</b></div>`,
       `<div>Y · ${yMetric.label}: <b>${formatScatterMetricValue(d.rawY, yMetric)}</b></div>`,
-      `<div>Tín nhiệm: <b>${tierBadge}</b></div>`,
+      `<div>Nhóm rủi ro: <b>${tierBadge}</b></div>`,
       `<div>Cờ đỏ kế toán: <b>${d.redFlags}</b></div>`,
       `<div style="color:${palette.company};font-size:11px;margin-top:3px">Nhấp để mở hồ sơ ${d.ticker} →</div>`,
     ].join("");
@@ -430,24 +431,30 @@ export function buildScreenerScatterOption(
       xAxis: rl.value,
       label: {
         formatter: rl.label,
-        position: idx % 2 === 0 ? ("insideEndTop" as const) : ("insideMiddleTop" as const),
+        position: "insideEndTop" as const,
+        rotate: 0,
         distance: idx % 2 === 0 ? 4 : 18,
       },
     })) ?? [];
   const yMarkLines =
     yMetric.referenceLines?.map((rl) => ({
       yAxis: rl.value,
-      label: { formatter: rl.label, position: "insideEndTop" as const },
+      label: {
+        formatter: rl.label,
+        position: "insideEndTop" as const,
+        rotate: 0,
+      },
     })) ?? [];
   const allMarkLines = [...xMarkLines, ...yMarkLines];
 
   return {
-    grid: { left: 68, right: 24, top: 64, bottom: 48 },
+    grid: { left: 68, right: 24, top: 72, bottom: 48 },
     legend: {
       top: 4,
       right: 12,
       left: 12,
-      type: "scroll",
+      type: "plain",
+      itemGap: 10,
     },
     tooltip: {
       trigger: "item",
@@ -571,7 +578,13 @@ export function ScreenerScatterChart({
     "Cờ đỏ",
   ];
   const tableRows = plottable.map((pt) => [
-    pt.ticker,
+    <Link
+      key={pt.ticker}
+      href={`/companies/${encodeURIComponent(pt.ticker)}`}
+      className="font-mono font-semibold text-accent-ink hover:underline"
+    >
+      {pt.ticker}
+    </Link>,
     pt.sector,
     pt.riskTierLabel,
     formatScatterMetricValue(pt.rawX, xMetric),
@@ -627,8 +640,8 @@ export function ScreenerScatterChart({
 
   return (
     <EChartBox
-      title={`Phân tán ${xMetric.label} vs ${yMetric.label} theo bậc R1–R5 (${plottable.length} DN trên trang)`}
-      subtitle="Màu sắc và hình dạng điểm phân theo bậc tín nhiệm R1–R5 · Nhấp vào điểm để mở hồ sơ doanh nghiệp"
+      title={`Phân tán ${xMetric.label} vs ${yMetric.label} theo nhóm R1–R5 (${plottable.length} DN trên trang)`}
+      subtitle="Màu sắc và hình dạng điểm phân theo nhóm cảnh báo rủi ro định lượng R1–R5 · Giá trị Altman Z″ ngoài [−6; 12] được neo tại biên · Nhấp vào điểm để mở hồ sơ doanh nghiệp"
       option={option}
       height={400}
       headerRight={axisSelectors}

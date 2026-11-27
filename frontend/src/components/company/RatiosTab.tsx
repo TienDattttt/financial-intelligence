@@ -10,6 +10,7 @@ import {
   type PillarGroupId,
   type RatioTableSortField,
 } from "@/components/charts/HealthRadarChart";
+import { DuPontTreeChart } from "@/components/charts/DuPontTreeChart";
 import { PeerBandChart } from "@/components/charts/PeerBandChart";
 import { SectorBoxPlotChart } from "@/components/charts/SectorBoxPlotChart";
 import { PercentileBar } from "@/components/financial/PercentileBar";
@@ -118,7 +119,7 @@ export function RatiosTab({
     <div className="space-y-4">
       <Card>
         <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3.5">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex w-full flex-col gap-1.5 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:gap-2">
             <label htmlFor="ratio-select" className="text-xs font-semibold text-ink">
               Chọn tỷ số phân tích:
             </label>
@@ -128,7 +129,7 @@ export function RatiosTab({
               onChange={(e) =>
                 onNavigateTab("ratios", { metric: e.target.value })
               }
-              className="min-w-[260px] text-xs"
+              className="w-full text-xs sm:w-auto sm:min-w-[260px]"
             >
               {Object.entries(RATIO_CATEGORY_LABELS).map(([catKey, catLbl]) => {
                 const groupItems = ratiosDict.filter((r) => r.category === catKey);
@@ -243,7 +244,7 @@ export function RatiosTab({
                         : "text-ink-muted hover:text-ink",
                     )}
                   >
-                    Tất cả 38
+                    Tất cả {ratiosDict.length || 38}
                   </button>
                 </div>
               </div>
@@ -286,8 +287,12 @@ export function RatiosTab({
                   Không tìm thấy chỉ số phù hợp với bộ lọc hiện tại.
                 </p>
               ) : (
-                <div className="overflow-x-auto rounded-md border border-border">
-                  <table className="w-full border-collapse text-xs">
+                <>
+                  <p className="text-[11px] text-ink-subtle md:hidden">
+                    Vuốt ngang để xem phân vị, xu hướng &amp; truy nguồn →
+                  </p>
+                  <div className="overflow-x-auto rounded-md border border-border">
+                    <table className="w-full border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                         <th scope="col" className="px-3 py-2 text-left font-semibold">
@@ -455,6 +460,7 @@ export function RatiosTab({
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
             </CardContent>
           </Card>
@@ -476,6 +482,9 @@ export function RatiosTab({
               </div>
             </CardHeader>
             <CardContent className="p-0">
+              <p className="mb-1.5 px-3 pt-2 text-[11px] text-ink-subtle md:hidden">
+                Vuốt ngang để xem đầy đủ cột xếp hạng →
+              </p>
               <div
                 tabIndex={0}
                 role="region"
@@ -566,8 +575,26 @@ export function RatiosTab({
               Chưa có chuỗi phân tách DuPont cho phạm vi này.
             </p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-xs">
+            <>
+              <DuPontTreeChart
+                dupontSeries={profile.dupont_series}
+                ratiosTable={profile.ratios_table}
+                periodType={periodType}
+                onSelectMetric={(ratioName, ped) =>
+                  onOpenSourceDrawer({
+                    ticker: profile.ticker,
+                    ratioName,
+                    statementScope,
+                    periodType,
+                    periodEndDate: ped,
+                  })
+                }
+              />
+              <p className="mb-1.5 px-3 pt-2 text-[11px] text-ink-subtle md:hidden">
+                Vuốt ngang để xem đầy đủ 5 nhân tố DuPont →
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-border bg-surface-muted/70 text-ink-muted">
                     <th scope="col" className="px-3 py-2 text-left font-semibold">Kỳ</th>
@@ -616,6 +643,7 @@ export function RatiosTab({
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </CardContent>
       </Card>

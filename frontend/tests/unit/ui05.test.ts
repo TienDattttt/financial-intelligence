@@ -11,13 +11,16 @@ import {
   SCATTER_AXIS_METRICS,
 } from "@/components/charts/ScreenerScatterChart";
 import { DARK_CHART_PALETTE, LIGHT_CHART_PALETTE } from "@/lib/echarts-theme";
+import { ML_FEATURE_LABELS } from "@/lib/domain-labels";
 import { MINUS_SIGN } from "@/lib/format";
 import {
   ALL_SCREENER_OPTIONAL_COLUMN_IDS,
   BUILTIN_SCREENER_PRESETS,
   buildScreenerExportUrl,
+  countActiveScreenerFilters,
   DEFAULT_VISIBLE_SCREENER_COLUMNS,
   deleteSavedScreen,
+  filtersToApiQueryParams,
   filtersToUrlPatch,
   formatAnomalyFlagMeta,
   formatRelativeRiskLiftLabel,
@@ -30,6 +33,7 @@ import {
   getVisibleColumnsSnapshot,
   parseContentDispositionFilename,
   parseSavedScreensJson,
+  parseScreenerFilters,
   parseVisibleColumnsJson,
   renameSavedScreen,
   resetVisibleColumns,
@@ -37,6 +41,7 @@ import {
   showAllScreenerColumns,
   toggleVisibleColumn,
   toggleVisibleColumnGroup,
+  VALID_SORT_FIELDS,
 } from "@/lib/saved-screens-store";
 import type { ScreenerItem, ScreenerQueryParams } from "@/types/api";
 
@@ -236,8 +241,35 @@ describe("UI-05a Screener export URL builder, saved screens store, columns & sca
       "Sức khỏe ổn định R1–R2",
     ]);
     const patch = filtersToUrlPatch(BUILTIN_SCREENER_PRESETS[0].filters);
-    expect(patch.altman_zone).toBe("DISTRESS_ZONE");
+    expect(patch.risk_tiers).toBe("R4,R5");
+    expect(patch.risk_tier).toBeNull();
+    expect(patch.altman_zone).toBeNull();
     expect(patch.sort_by).toBe("calibrated_distress_prob");
+
+    const healthyPatch = filtersToUrlPatch(BUILTIN_SCREENER_PRESETS[2].filters);
+    expect(healthyPatch.risk_tiers).toBe("R1,R2");
+    expect(healthyPatch.altman_zone).toBe("SAFE_ZONE");
+    expect(healthyPatch.min_f_score).toBe("6");
+    expect(healthyPatch.max_red_flags).toBe("1");
+    expect(healthyPatch.sort_by).toBe("roe_total");
+
+    expect(VALID_SORT_FIELDS).toContain("ebit_margin");
+    expect(VALID_SORT_FIELDS).toContain("interest_coverage");
+
+    const parsedMulti = parseScreenerFilters(
+      new URLSearchParams("exchange=HOSE&risk_tiers=R4,R5&sort_by=ebit_margin"),
+    );
+    expect(parsedMulti.exchange).toBe("HOSE");
+    expect(parsedMulti.risk_tiers).toEqual(["R4", "R5"]);
+    expect(parsedMulti.risk_tier).toBe("");
+    expect(parsedMulti.sort_by).toBe("ebit_margin");
+
+    const parsedSingle = parseScreenerFilters(
+      new URLSearchParams("risk_tier=R4&sort_by=interest_coverage"),
+    );
+    expect(parsedSingle.risk_tiers).toEqual(["R4"]);
+    expect(parsedSingle.risk_tier).toBe("R4");
+    expect(parsedSingle.sort_by).toBe("interest_coverage");
 
     // Empty name rejected
     const invalidRes = saveScreenerView("   ", { risk_tier: "R5" });
@@ -328,6 +360,8 @@ describe("UI-05a Screener export URL builder, saved screens store, columns & sca
 
     expect(formatTopRiskPercentileLabel(98.3)).toBe("Top 1,7% rủi ro nhất");
     expect(formatTopRiskPercentileLabel(80)).toBe("Top 20% rủi ro nhất");
+    expect(formatTopRiskPercentileLabel(12)).toBe("An toàn hơn 88% DN");
+    expect(formatTopRiskPercentileLabel(5)).toBe("An toàn hơn 95,0% DN");
     expect(formatTopRiskPercentileLabel(null)).toBeNull();
 
     expect(formatRelativeRiskLiftLabel(14.6)).toBe("14,6× nền");
@@ -462,5 +496,140 @@ describe("UI-05a Screener export URL builder, saved screens store, columns & sca
       expect(src).not.toContain("REGIME_FALLBACK");
       expect(src).not.toContain("NEGATIVE_EARNINGS");
     }
+  });
+
+  it("V3-06: parses/serializes extended financial & valuation filters, preserves legacy Saved Screens, and exposes V3 columns & OCF ratio label", () => {
+    const parsedV3 = parseScreenerFilters(
+      new URLSearchParams(
+        "cluster_id=2&anomaly_flag=true&min_roe_parent=0.15&min_pe_ttm=5&max_pb_ratio=3.5&min_market_cap_bn_vnd=1000&min_ocf_to_total_liabilities=0.2&min_cfo_ttm=50000000000&sort_by=pe_ttm&sort_dir=asc",
+      ),
+    );
+    expect(parsedV3.cluster_id).toBe("2");
+    expect(parsedV3.anomaly_flag).toBe("true");
+    expect(parsedV3.min_roe_parent).toBe("0.15");
+    expect(parsedV3.min_pe_ttm).toBe("5");
+    expect(parsedV3.max_pb_ratio).toBe("3.5");
+    expect(parsedV3.min_market_cap_bn_vnd).toBe("1000");
+    expect(parsedV3.min_ocf_to_total_liabilities).toBe("0.2");
+    expect(parsedV3.min_cfo_ttm).toBe("50000000000");
+    expect(parsedV3.sort_by).toBe("pe_ttm");
+    expect(parsedV3.sort_dir).toBe("asc");
+    expect(countActiveScreenerFilters(parsedV3)).toBe(8);
+
+    const apiParams = filtersToApiQueryParams(parsedV3, {
+      statement_scope: "CONSOLIDATED",
+      period_type: "QUARTER",
+      period_end_date: "2026-03-31",
+      limit: 50,
+      offset: 0,
+    });
+    expect(apiParams.cluster_id).toBe(2);
+    expect(apiParams.anomaly_flag).toBe(true);
+    expect(apiParams.min_roe_parent).toBe(0.15);
+    expect(apiParams.min_pe_ttm).toBe(5);
+    expect(apiParams.max_pb_ratio).toBe(3.5);
+    expect(apiParams.min_market_cap_bn_vnd).toBe(1000);
+    expect(apiParams.min_ocf_to_total_liabilities).toBe(0.2);
+    expect(apiParams.min_cfo_ttm).toBe(50_000_000_000);
+
+    const urlPatch = filtersToUrlPatch(parsedV3);
+    expect(urlPatch.min_pe_ttm).toBe("5");
+    expect(urlPatch.anomaly_flag).toBe("true");
+    expect(urlPatch.cluster_id).toBe("2");
+
+    // Verify CSV export URL preserves all 24 V3 filter keys and drops limit/offset
+    const exportUrlV3 = buildScreenerExportUrl(apiParams);
+    const parsedExportV3 = new URL(exportUrlV3, "https://finintel.local");
+    expect(parsedExportV3.pathname).toBe("/api/v1/screener/export");
+    expect(parsedExportV3.searchParams.has("limit")).toBe(false);
+    expect(parsedExportV3.searchParams.has("offset")).toBe(false);
+    expect(parsedExportV3.searchParams.get("cluster_id")).toBe("2");
+    expect(parsedExportV3.searchParams.get("anomaly_flag")).toBe("true");
+    expect(parsedExportV3.searchParams.get("min_roe_parent")).toBe("0.15");
+    expect(parsedExportV3.searchParams.get("min_pe_ttm")).toBe("5");
+    expect(parsedExportV3.searchParams.get("max_pb_ratio")).toBe("3.5");
+    expect(parsedExportV3.searchParams.get("min_market_cap_bn_vnd")).toBe("1000");
+    expect(parsedExportV3.searchParams.get("min_ocf_to_total_liabilities")).toBe(
+      "0.2",
+    );
+    expect(parsedExportV3.searchParams.get("min_cfo_ttm")).toBe("50000000000");
+
+    const allV3ExportKeys: ScreenerQueryParams = {
+      cluster_id: 1,
+      anomaly_flag: false,
+      min_roe_parent: 0.1,
+      max_roe_parent: 0.9,
+      min_roa: 0.05,
+      max_roa: 0.5,
+      min_eps_ttm_estimated: 1000,
+      max_eps_ttm_estimated: 10000,
+      min_liabilities_to_assets: 0.1,
+      max_liabilities_to_assets: 0.8,
+      min_debt_to_equity: 0.2,
+      max_debt_to_equity: 2.5,
+      min_cfo_ttm: 1_000_000,
+      max_cfo_ttm: 9_000_000_000,
+      min_ocf_to_total_liabilities: 0.05,
+      max_ocf_to_total_liabilities: 1.5,
+      min_revenue_growth_yoy: -0.1,
+      max_revenue_growth_yoy: 0.8,
+      min_pe_ttm: 4,
+      max_pe_ttm: 30,
+      min_pb_ratio: 0.5,
+      max_pb_ratio: 5,
+      min_market_cap_bn_vnd: 500,
+      max_market_cap_bn_vnd: 50000,
+    };
+    const fullV3ExportUrl = new URL(
+      buildScreenerExportUrl(allV3ExportKeys),
+      "https://finintel.local",
+    );
+    for (const [k, v] of Object.entries(allV3ExportKeys)) {
+      expect(fullV3ExportUrl.searchParams.get(k)).toBe(String(v));
+    }
+
+    // Backward-compatible parsing of legacy Saved Screens without V3 fields
+    const legacySaved = parseSavedScreensJson(
+      JSON.stringify([
+        {
+          id: "legacy-1",
+          name: "Old Saved Filter",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          filters: {
+            q: "FPT",
+            exchange: "HOSE",
+            icb_code_level2: "",
+            altman_zone: "SAFE_ZONE",
+            risk_tier: "R1",
+            risk_tiers: ["R1"],
+            beneish_flag: "",
+            min_f_score: "6",
+            min_distress_prob: "",
+            max_distress_prob: "",
+            min_red_flags: "",
+            max_red_flags: "",
+            sort_by: "roe_total",
+            sort_dir: "desc",
+          },
+        },
+      ]),
+    );
+    expect(legacySaved).toHaveLength(1);
+    expect(legacySaved[0].filters.cluster_id).toBe("");
+    expect(legacySaved[0].filters.min_pe_ttm).toBe("");
+
+    for (const colId of [
+      "eps_ttm_estimated",
+      "liabilities_to_assets",
+      "cfo_ttm",
+      "ocf_to_total_liabilities",
+      "pe_ttm",
+      "pb_ratio",
+      "market_cap_vnd",
+    ] as const) {
+      expect(ALL_SCREENER_OPTIONAL_COLUMN_IDS).toContain(colId);
+    }
+    expect(ML_FEATURE_LABELS.ocf_to_total_liabilities).toBeTruthy();
   });
 });

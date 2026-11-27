@@ -46,6 +46,16 @@ export function StressSectorBarChart({
 }) {
   const { palette } = useChartTheme();
   const isCompareMode = comparisonA !== null;
+  const [isNarrow, setIsNarrow] = React.useState(false);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-width: 519px)");
+    const sync = () => setIsNarrow(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   const mergedRows = React.useMemo<MergedSectorRow[]>(() => {
     if (!comparisonA) {
@@ -129,11 +139,21 @@ export function StressSectorBarChart({
     });
 
     return {
-      grid: { left: 220, right: 32, top: 38, bottom: 28 },
-      legend: {
-        top: 2,
-        right: 8,
-      },
+      grid: isNarrow
+        ? { left: 118, right: 16, top: 46, bottom: 28 }
+        : { left: 220, right: 32, top: 38, bottom: 28 },
+      legend: isNarrow
+        ? {
+            top: 2,
+            left: 4,
+            right: 4,
+            itemGap: 10,
+            textStyle: { fontSize: 10 },
+          }
+        : {
+            top: 2,
+            right: 8,
+          },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
@@ -163,8 +183,12 @@ export function StressSectorBarChart({
       },
       xAxis: {
         type: "value",
+        min: 0,
         max: 100,
+        splitNumber: isNarrow ? 3 : 5,
         axisLabel: {
+          hideOverlap: true,
+          fontSize: isNarrow ? 10 : 11,
           formatter: (v: number) =>
             `${formatChartNumber(v, 1, { trimTrailingZeros: true })}%`,
         },
@@ -175,9 +199,10 @@ export function StressSectorBarChart({
         data: labels,
         axisLabel: {
           color: palette.ink,
-          fontSize: 11,
-          width: 205,
-          overflow: "break",
+          fontSize: isNarrow ? 10 : 11,
+          width: isNarrow ? 105 : 205,
+          overflow: isNarrow ? "truncate" : "break",
+          ellipsis: "…",
           lineHeight: 14,
           interval: 0,
         },
@@ -202,6 +227,7 @@ export function StressSectorBarChart({
     };
   }, [
     isCompareMode,
+    isNarrow,
     mergedRows,
     palette.company,
     palette.ink,

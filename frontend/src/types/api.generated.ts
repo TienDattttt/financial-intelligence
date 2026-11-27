@@ -412,10 +412,1398 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Register */
+        post: operations["register_api_v3_auth_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Login */
+        post: operations["login_api_v3_auth_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Session Status */
+        get: operations["session_status_api_v3_auth_session_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Logout */
+        post: operations["logout_api_v3_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/auth/logout-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Logout All */
+        post: operations["logout_all_api_v3_auth_logout_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/auth/password-reset/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Password Reset Request */
+        post: operations["password_reset_request_api_v3_auth_password_reset_request_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/auth/password-reset/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Password Reset Confirm */
+        post: operations["password_reset_confirm_api_v3_auth_password_reset_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/auth/password-change": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Password Change */
+        post: operations["password_change_api_v3_auth_password_change_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Me */
+        get: operations["get_me_api_v3_auth_me_get"];
+        put?: never;
+        post?: never;
+        /** Delete Me */
+        delete: operations["delete_me_api_v3_auth_me_delete"];
+        options?: never;
+        head?: never;
+        /** Patch Me */
+        patch: operations["patch_me_api_v3_auth_me_patch"];
+        trace?: never;
+    };
+    "/api/v3/auth/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Sessions */
+        get: operations["get_sessions_api_v3_auth_sessions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/auth/sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke One Session */
+        delete: operations["revoke_one_session_api_v3_auth_sessions__session_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/workspace/watchlists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Watchlists */
+        get: operations["list_watchlists_api_v3_workspace_watchlists_get"];
+        put?: never;
+        /** Create Watchlist */
+        post: operations["create_watchlist_api_v3_workspace_watchlists_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/workspace/watchlists/{watchlist_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Watchlist */
+        delete: operations["delete_watchlist_api_v3_workspace_watchlists__watchlist_id__delete"];
+        options?: never;
+        head?: never;
+        /** Rename Watchlist */
+        patch: operations["rename_watchlist_api_v3_workspace_watchlists__watchlist_id__patch"];
+        trace?: never;
+    };
+    "/api/v3/workspace/watchlists/import-local": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Local Watchlist */
+        post: operations["import_local_watchlist_api_v3_workspace_watchlists_import_local_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/workspace/watchlists/{watchlist_id}/items/{ticker}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Add Watchlist Ticker */
+        put: operations["add_watchlist_ticker_api_v3_workspace_watchlists__watchlist_id__items__ticker__put"];
+        post?: never;
+        /** Remove Watchlist Ticker */
+        delete: operations["remove_watchlist_ticker_api_v3_workspace_watchlists__watchlist_id__items__ticker__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/workspace/notes/{ticker}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Notes */
+        get: operations["list_notes_api_v3_workspace_notes__ticker__get"];
+        put?: never;
+        /** Create Note */
+        post: operations["create_note_api_v3_workspace_notes__ticker__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/workspace/notes/{ticker}/{note_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Note */
+        delete: operations["delete_note_api_v3_workspace_notes__ticker___note_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Note */
+        patch: operations["update_note_api_v3_workspace_notes__ticker___note_id__patch"];
+        trace?: never;
+    };
+    "/api/v3/workspace/saved-screens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Saved Screens */
+        get: operations["list_saved_screens_api_v3_workspace_saved_screens_get"];
+        put?: never;
+        /** Create Saved Screen */
+        post: operations["create_saved_screen_api_v3_workspace_saved_screens_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/workspace/saved-screens/{screen_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Saved Screen */
+        delete: operations["delete_saved_screen_api_v3_workspace_saved_screens__screen_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/audit/my-activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get My Activity */
+        get: operations["get_my_activity_api_v3_audit_my_activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/audit-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Ops Audit Logs */
+        get: operations["get_ops_audit_logs_api_v3_ops_audit_logs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/alerts/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Notifications */
+        get: operations["list_notifications_api_v3_alerts_notifications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/alerts/notifications/{notification_id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark Notification Read */
+        post: operations["mark_notification_read_api_v3_alerts_notifications__notification_id__read_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/alerts/notifications/read-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark All Notifications Read */
+        post: operations["mark_all_notifications_read_api_v3_alerts_notifications_read_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/alerts/subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Subscription */
+        get: operations["get_subscription_api_v3_alerts_subscriptions_get"];
+        /** Update Subscription */
+        put: operations["update_subscription_api_v3_alerts_subscriptions_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/alerts/webhooks/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Webhook */
+        post: operations["test_webhook_api_v3_alerts_webhooks_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/exports/companies/{ticker}.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Company Xlsx */
+        get: operations["export_company_xlsx_api_v3_exports_companies__ticker__xlsx_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/exports/screener.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Screener Xlsx */
+        get: operations["export_screener_xlsx_api_v3_exports_screener_xlsx_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/companies/{ticker}/bond-signals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Company Bond Signals */
+        get: operations["get_company_bond_signals_api_v3_companies__ticker__bond_signals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/quota/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get My Quota */
+        get: operations["get_my_quota_api_v3_quota_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/quota/system-budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get System Budget */
+        get: operations["get_system_budget_api_v3_ops_quota_system_budget_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/companies/{ticker}/suggested-peers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Suggested Peers */
+        get: operations["get_suggested_peers_api_v3_companies__ticker__suggested_peers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/companies/{ticker}/anomaly-drivers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Anomaly Drivers */
+        get: operations["get_anomaly_drivers_api_v3_companies__ticker__anomaly_drivers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/qa-queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Qa Queue */
+        get: operations["get_qa_queue_api_v3_ops_qa_queue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/qa-queue/{ticket_id}/assign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Assign Qa Ticket */
+        post: operations["assign_qa_ticket_api_v3_ops_qa_queue__ticket_id__assign_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/qa-queue/{ticket_id}/submit-revision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Qa Revision */
+        post: operations["submit_qa_revision_api_v3_ops_qa_queue__ticket_id__submit_revision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/qa-queue/{ticket_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Qa Ticket */
+        post: operations["decide_qa_ticket_api_v3_ops_qa_queue__ticket_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/issuers/lifecycle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Issuers Lifecycle */
+        get: operations["get_issuers_lifecycle_api_v3_ops_issuers_lifecycle_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/issuers/sync-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Issuer Sync */
+        post: operations["request_issuer_sync_api_v3_ops_issuers_sync_request_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Api Keys */
+        get: operations["list_api_keys_api_v3_b2b_keys_get"];
+        put?: never;
+        /** Create Api Key */
+        post: operations["create_api_key_api_v3_b2b_keys_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/keys/{key_id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rotate Api Key */
+        post: operations["rotate_api_key_api_v3_b2b_keys__key_id__rotate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/keys/{key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Api Key */
+        delete: operations["revoke_api_key_api_v3_b2b_keys__key_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Api Usage */
+        get: operations["get_api_usage_api_v3_b2b_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/webhooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List B2B Webhooks */
+        get: operations["list_b2b_webhooks_api_v3_b2b_webhooks_get"];
+        put?: never;
+        /** Create B2B Webhook */
+        post: operations["create_b2b_webhook_api_v3_b2b_webhooks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/webhooks/{endpoint_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete B2B Webhook */
+        delete: operations["delete_b2b_webhook_api_v3_b2b_webhooks__endpoint_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/webhooks/{endpoint_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test B2B Webhook */
+        post: operations["test_b2b_webhook_api_v3_b2b_webhooks__endpoint_id__test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/open/companies/{ticker}/risk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Open Company Risk */
+        get: operations["get_open_company_risk_api_v3_open_companies__ticker__risk_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/open/screener": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Open Screener */
+        get: operations["get_open_screener_api_v3_open_screener_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/open/stress-test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Post Open Stress Test */
+        post: operations["post_open_stress_test_api_v3_open_stress_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/open/companies/{ticker}/statements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Open Raw Statements */
+        get: operations["get_open_raw_statements_api_v3_open_companies__ticker__statements_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/private-credit/template.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Vas Template */
+        get: operations["download_vas_template_api_v3_private_credit_template_xlsx_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/private-credit/parse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Parse Private Statement */
+        post: operations["parse_private_statement_api_v3_private_credit_parse_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/private-credit/dossiers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Dossiers */
+        get: operations["list_dossiers_api_v3_private_credit_dossiers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/private-credit/dossiers/{dossier_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Dossier */
+        get: operations["get_dossier_api_v3_private_credit_dossiers__dossier_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Dossier */
+        delete: operations["delete_dossier_api_v3_private_credit_dossiers__dossier_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/private-credit/dossiers/{dossier_id}/score": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Score Dossier */
+        post: operations["score_dossier_api_v3_private_credit_dossiers__dossier_id__score_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/hitl/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Hitl Feedback */
+        post: operations["submit_hitl_feedback_api_v3_hitl_feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/hitl/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Hitl Summary */
+        get: operations["get_hitl_summary_api_v3_hitl_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AlertEventType
+         * @description Canonical early-warning alert event types.
+         * @enum {string}
+         */
+        AlertEventType: "NEW_FILING_PUBLISHED" | "RISK_TIER_UPGRADE" | "NEW_RED_FLAG_TRIGGERED" | "REGULATORY_EVENT_ISSUED" | "MERTON_DTD_BREACH";
+        /** AlertNotificationItem */
+        AlertNotificationItem: {
+            /**
+             * Notification Id
+             * Format: uuid
+             */
+            notification_id: string;
+            /** Ticker */
+            ticker: string;
+            event_type: components["schemas"]["AlertEventType"];
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "INFO" | "MEDIUM" | "HIGH" | "CRITICAL";
+            /** Title Vi */
+            title_vi: string;
+            /** Company Url */
+            company_url: string;
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Is Read */
+            is_read: boolean;
+            /** Read At */
+            read_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** AlertSubscriptionResponse */
+        AlertSubscriptionResponse: {
+            /**
+             * Subscription Id
+             * Format: uuid
+             */
+            subscription_id: string;
+            /** Watchlist Id */
+            watchlist_id?: string | null;
+            /** Event Types */
+            event_types: components["schemas"]["AlertEventType"][];
+            /** In App Enabled */
+            in_app_enabled: boolean;
+            /** Email Digest Enabled */
+            email_digest_enabled: boolean;
+            /**
+             * Email Frequency
+             * @enum {string}
+             */
+            email_frequency: "INSTANT" | "DAILY_DIGEST";
+            /** Telegram Enabled */
+            telegram_enabled: boolean;
+            /** Telegram Chat Id */
+            telegram_chat_id?: string | null;
+            /** Webhook Enabled */
+            webhook_enabled: boolean;
+            /** Webhook Url */
+            webhook_url?: string | null;
+            /** Webhook Secret Configured */
+            webhook_secret_configured: boolean;
+            /** Merton Dtd Threshold */
+            merton_dtd_threshold: number;
+            /** Is Active */
+            is_active: boolean;
+            /** Has Alert Consent */
+            has_alert_consent: boolean;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** AlertSubscriptionUpdateRequest */
+        AlertSubscriptionUpdateRequest: {
+            /** Watchlist Id */
+            watchlist_id?: string | null;
+            /** Event Types */
+            event_types?: components["schemas"]["AlertEventType"][];
+            /**
+             * In App Enabled
+             * @default true
+             */
+            in_app_enabled: boolean;
+            /**
+             * Email Digest Enabled
+             * @default false
+             */
+            email_digest_enabled: boolean;
+            /**
+             * Email Frequency
+             * @default DAILY_DIGEST
+             * @enum {string}
+             */
+            email_frequency: "INSTANT" | "DAILY_DIGEST";
+            /**
+             * Telegram Enabled
+             * @default false
+             */
+            telegram_enabled: boolean;
+            /** Telegram Chat Id */
+            telegram_chat_id?: string | null;
+            /**
+             * Webhook Enabled
+             * @default false
+             */
+            webhook_enabled: boolean;
+            /** Webhook Url */
+            webhook_url?: string | null;
+            /** Webhook Secret Hmac */
+            webhook_secret_hmac?: string | null;
+            /**
+             * Merton Dtd Threshold
+             * @default 1.5
+             */
+            merton_dtd_threshold: number;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+        };
+        /** AnalystNoteCreateRequest */
+        AnalystNoteCreateRequest: {
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Content */
+            content: string;
+            /** Period End Date */
+            period_end_date?: string | null;
+        };
+        /** AnalystNoteItem */
+        AnalystNoteItem: {
+            /**
+             * Note Id
+             * Format: uuid
+             */
+            note_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Title */
+            title: string;
+            /** Content */
+            content: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** AnalystNoteUpdateRequest */
+        AnalystNoteUpdateRequest: {
+            /** Title */
+            title?: string | null;
+            /** Content */
+            content?: string | null;
+            /** Period End Date */
+            period_end_date?: string | null;
+            /**
+             * Clear Period End Date
+             * @default false
+             */
+            clear_period_end_date: boolean;
+        };
+        /** AnalystNotesListResponse */
+        AnalystNotesListResponse: {
+            /** Ticker */
+            ticker: string;
+            /** Notes */
+            notes: components["schemas"]["AnalystNoteItem"][];
+        };
+        /** AnomalyDriverItem */
+        AnomalyDriverItem: {
+            /** Metric Name */
+            metric_name: string;
+            /** Display Name Vn */
+            display_name_vn: string;
+            /** Company Value */
+            company_value: number;
+            /** Peer Median */
+            peer_median?: number | null;
+            /** Sector Z */
+            sector_z: number;
+            /** Abs Sector Z */
+            abs_sector_z: number;
+            /**
+             * Direction Vs Sector
+             * @enum {string}
+             */
+            direction_vs_sector: "ABOVE_MEDIAN" | "BELOW_MEDIAN" | "AT_MEDIAN";
+            /** Peer Group Level */
+            peer_group_level?: string | null;
+            /**
+             * Peer Count
+             * @default 0
+             */
+            peer_count: number;
+        };
+        /** AnomalyDriversResponse */
+        AnomalyDriversResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Ticker */
+            ticker: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Anomaly Percentile Rank */
+            anomaly_percentile_rank?: number | null;
+            /**
+             * Statistical Outlier Flag
+             * @default false
+             */
+            statistical_outlier_flag: boolean;
+            /**
+             * Is Multivariate Outlier
+             * @default false
+             */
+            is_multivariate_outlier: boolean;
+            /** Drivers */
+            drivers: components["schemas"]["AnomalyDriverItem"][];
+        };
+        /** ApiKeyCreateRequest */
+        ApiKeyCreateRequest: {
+            /** Name */
+            name: string;
+            /**
+             * Prefix Mode
+             * @default res
+             * @enum {string}
+             */
+            prefix_mode: "res" | "live";
+            /** Scopes */
+            scopes?: ("read:derived_risk" | "write:webhooks" | "read:rag" | "read:raw_statements")[];
+            /** Expires In Days */
+            expires_in_days?: number | null;
+        };
+        /** ApiKeyCreateResponse */
+        ApiKeyCreateResponse: {
+            key: components["schemas"]["ApiKeyMetadataItem"];
+            /** Plaintext Key */
+            plaintext_key: string;
+        };
+        /** ApiKeyListResponse */
+        ApiKeyListResponse: {
+            /** Items */
+            items: components["schemas"]["ApiKeyMetadataItem"][];
+            /** Raw Redistribution Enabled */
+            raw_redistribution_enabled: boolean;
+            /** Default Rate Limit Per Min */
+            default_rate_limit_per_min: number;
+            /** Default Daily Limit */
+            default_daily_limit: number;
+        };
+        /** ApiKeyMetadataItem */
+        ApiKeyMetadataItem: {
+            /**
+             * Key Id
+             * Format: uuid
+             */
+            key_id: string;
+            /** Name */
+            name: string;
+            /** Key Prefix */
+            key_prefix: string;
+            /** Scopes */
+            scopes: string[];
+            /** Rate Limit Per Min */
+            rate_limit_per_min: number;
+            /** Daily Limit */
+            daily_limit: number;
+            /** Is Active */
+            is_active: boolean;
+            /** Last Used At */
+            last_used_at?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Revoked At */
+            revoked_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** ApiKeyRevokeResponse */
+        ApiKeyRevokeResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "REVOKED";
+            /**
+             * Key Id
+             * Format: uuid
+             */
+            key_id: string;
+            /**
+             * Revoked At
+             * Format: date-time
+             */
+            revoked_at: string;
+        };
+        /** ApiUsageDailyPoint */
+        ApiUsageDailyPoint: {
+            /**
+             * Usage Date
+             * Format: date
+             */
+            usage_date: string;
+            /**
+             * Key Id
+             * Format: uuid
+             */
+            key_id: string;
+            /** Key Prefix */
+            key_prefix: string;
+            /** Endpoint */
+            endpoint: string;
+            /** Status Class */
+            status_class: string;
+            /** Request Count */
+            request_count: number;
+            /** Cache Hits */
+            cache_hits: number;
+        };
+        /** ApiUsageSummaryResponse */
+        ApiUsageSummaryResponse: {
+            /**
+             * From Date
+             * Format: date
+             */
+            from_date: string;
+            /**
+             * To Date
+             * Format: date
+             */
+            to_date: string;
+            /** Total Requests */
+            total_requests: number;
+            /** Total Cache Hits */
+            total_cache_hits: number;
+            /** Daily */
+            daily: components["schemas"]["ApiUsageDailyPoint"][];
+        };
+        /** AuditLogItemResponse */
+        AuditLogItemResponse: {
+            /** Audit Id */
+            audit_id: number;
+            /** Actor User Id */
+            actor_user_id?: string | null;
+            /** Actor Subject Hash */
+            actor_subject_hash: string;
+            /** Actor Role */
+            actor_role: string;
+            /** Action */
+            action: string;
+            /** Resource Type */
+            resource_type: string;
+            /** Resource Id */
+            resource_id: string;
+            /** Outcome */
+            outcome: string;
+            /** Ip Hash */
+            ip_hash: string;
+            /** Metadata Json */
+            metadata_json: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** AuditLogsPageResponse */
+        AuditLogsPageResponse: {
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Items */
+            items: components["schemas"]["AuditLogItemResponse"][];
+        };
         /**
          * AuditQuarantineItem
          * @description Single row from ``audit_quarantine.parquet``.
@@ -461,6 +1849,94 @@ export interface components {
             /** Items */
             items: components["schemas"]["AuditQuarantineItem"][];
         };
+        /** AuthActionMessageResponse */
+        AuthActionMessageResponse: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "OK" | "ACCEPTED";
+            /** Message */
+            message: string;
+        };
+        /** B2BWebhookCreateRequest */
+        B2BWebhookCreateRequest: {
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Url */
+            url: string;
+            /** Secret Hmac */
+            secret_hmac?: string | null;
+            /** Event Types */
+            event_types?: string[];
+        };
+        /** B2BWebhookCreateResponse */
+        B2BWebhookCreateResponse: {
+            webhook: components["schemas"]["B2BWebhookItem"];
+            /** Secret Hmac */
+            secret_hmac: string;
+        };
+        /** B2BWebhookDeleteResponse */
+        B2BWebhookDeleteResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "DELETED";
+            /**
+             * Endpoint Id
+             * Format: uuid
+             */
+            endpoint_id: string;
+        };
+        /** B2BWebhookItem */
+        B2BWebhookItem: {
+            /**
+             * Endpoint Id
+             * Format: uuid
+             */
+            endpoint_id: string;
+            /** Label */
+            label: string;
+            /** Url */
+            url: string;
+            /** Event Types */
+            event_types: string[];
+            /** Secret Configured */
+            secret_configured: boolean;
+            /** Is Active */
+            is_active: boolean;
+            /** Last Status */
+            last_status?: number | null;
+            /** Last Error */
+            last_error?: string | null;
+            /** Last Delivered At */
+            last_delivered_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** B2BWebhookListResponse */
+        B2BWebhookListResponse: {
+            /** Items */
+            items: components["schemas"]["B2BWebhookItem"][];
+        };
+        /** B2BWebhookTestResponse */
+        B2BWebhookTestResponse: {
+            /** Delivered */
+            delivered: boolean;
+            /** Http Status */
+            http_status?: number | null;
+            /** Signature Header Prefix */
+            signature_header_prefix?: string | null;
+            /** Detail */
+            detail: string;
+        };
         /**
          * BenchmarkSummaryItem
          * @description Single ratio peer benchmark + 8-period sparkline for Traffic Light tables.
@@ -470,7 +1946,7 @@ export interface components {
              * Metric Name
              * @enum {string}
              */
-            metric_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+            metric_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
             /** Display Name Vn */
             display_name_vn: string;
             /**
@@ -608,7 +2084,7 @@ export interface components {
              * Metric Name
              * @enum {string}
              */
-            metric_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+            metric_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
             /** Peer Group Level */
             peer_group_level?: string | null;
             /** Icb Code Used */
@@ -657,13 +2133,61 @@ export interface components {
              * @enum {string}
              */
             period_type: "QUARTER" | "ANNUAL";
-            /**
-             * Period End Date
-             * Format: date
-             */
-            period_end_date: string;
+            /** Period End Date */
+            period_end_date?: string | null;
             /** Items */
             items: components["schemas"]["BenchmarkSummaryItem"][];
+        };
+        /**
+         * CompanyBondSignalsResponse
+         * @description V3 Company route response: Extension Port 4 corporate bond maturity & delay signals.
+         */
+        CompanyBondSignalsResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /**
+             * Has Bond Data
+             * @default false
+             */
+            has_bond_data: boolean;
+            /**
+             * Has Outstanding Bonds
+             * @default false
+             */
+            has_outstanding_bonds: boolean;
+            /** As Of Date */
+            as_of_date?: string | null;
+            /** Outstanding Bond Vnd */
+            outstanding_bond_vnd?: number | null;
+            /** Bond Maturity 12M Vnd */
+            bond_maturity_12m_vnd?: number | null;
+            /** Total Cash And St Investments Vnd */
+            total_cash_and_st_investments_vnd?: number | null;
+            /** Cash Period End Date */
+            cash_period_end_date?: string | null;
+            /** Bond Maturity To Cash Ratio */
+            bond_maturity_to_cash_ratio?: number | null;
+            /**
+             * Bond Payment Delay Flag
+             * @default false
+             */
+            bond_payment_delay_flag: boolean;
+            /**
+             * Liquidity Pressure Status
+             * @default NO_BONDS
+             * @enum {string}
+             */
+            liquidity_pressure_status: "NO_BONDS" | "COVERED" | "WATCH" | "HIGH_PRESSURE" | "PAYMENT_DELAY" | "MISSING_CASH_DATA";
+            /** Source Provider */
+            source_provider?: string | null;
+            /** Source Url */
+            source_url?: string | null;
+            /** Payload Sha256 */
+            payload_sha256?: string | null;
         };
         /**
          * CompanyFilingItem
@@ -820,6 +2344,29 @@ export interface components {
             rows: components["schemas"]["StatementRowItem"][];
         };
         /**
+         * ConsentPurpose
+         * @description Granular processing purposes under PDPL Law 91/2025/QH15.
+         * @enum {string}
+         */
+        ConsentPurpose: "ACCOUNT_CORE" | "ALERT_NOTIFICATIONS" | "CROSS_BORDER_LLM_RAG";
+        /** ConsentStatusItem */
+        ConsentStatusItem: {
+            purpose: components["schemas"]["ConsentPurpose"];
+            /** Policy Version */
+            policy_version: string;
+            /** Granted */
+            granted: boolean;
+            /** Active */
+            active: boolean;
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
+            /** Withdrawn At */
+            withdrawn_at?: string | null;
+        };
+        /**
          * CoreEarningsPoint
          * @description Pre-computed V2 Core Earnings quality metrics (Rouen, So & Wang 2021).
          */
@@ -852,6 +2399,27 @@ export interface components {
             /** Core To Ebt Ratio Flag */
             core_to_ebt_ratio_flag?: string | null;
         };
+        /** DataDeletionReceiptResponse */
+        DataDeletionReceiptResponse: {
+            /** Request Id */
+            request_id: string;
+            /**
+             * Status
+             * @constant
+             */
+            status: "COMPLETED";
+            /** Sla Days */
+            sla_days: number;
+            /** Anonymized Audit Logs */
+            anonymized_audit_logs: boolean;
+            /**
+             * Completed At
+             * Format: date-time
+             */
+            completed_at: string;
+            /** Legal Basis */
+            legal_basis: string;
+        };
         /**
          * DataFreshnessItem
          * @description Three-tier freshness summary across BCTC snapshot and Extension Ports 1/2/3.
@@ -880,6 +2448,13 @@ export interface components {
             curated_pdfs_updated_at?: string | null;
             /** Extension Ports Digest */
             extension_ports_digest: string;
+        };
+        /** DeleteAccountRequest */
+        DeleteAccountRequest: {
+            /** Current Password */
+            current_password: string;
+            /** Reason */
+            reason?: string | null;
         };
         /** DocumentFileItem */
         DocumentFileItem: {
@@ -1033,12 +2608,22 @@ export interface components {
             fiscal_year?: number | null;
             /** Fiscal Quarter */
             fiscal_quarter?: number | null;
+            /** Taxonomy Version */
+            taxonomy_version?: string | null;
             /** Is Net Revenue */
             IS_NET_REVENUE?: number | null;
             /** Is Net Income */
             IS_NET_INCOME?: number | null;
             /** Cf Operating Cash Flow */
             CF_OPERATING_CASH_FLOW?: number | null;
+            /** Revenue Growth Qoq */
+            revenue_growth_qoq?: number | null;
+            /** Revenue Growth Qoq Flag */
+            revenue_growth_qoq_flag?: string | null;
+            /** Net Income Growth Qoq */
+            net_income_growth_qoq?: number | null;
+            /** Net Income Growth Qoq Flag */
+            net_income_growth_qoq_flag?: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1059,6 +2644,11 @@ export interface components {
             active_snapshot_id: string | null;
             /** Storage Backend */
             storage_backend: string;
+            /**
+             * Rag Available
+             * @default false
+             */
+            rag_available: boolean;
         };
         /**
          * HistoricalCaseStudyItem
@@ -1109,6 +2699,137 @@ export interface components {
             peak_period_end_date?: string | null;
             /** Top 3 Shap Drivers */
             top_3_shap_drivers?: components["schemas"]["ShapDriverItem"][];
+        };
+        /**
+         * HitlFeedbackItem
+         * @description Recorded expert feedback item (SR 11-7 safe: never mutates ML ground truth).
+         */
+        HitlFeedbackItem: {
+            /**
+             * Feedback Id
+             * Format: uuid
+             */
+            feedback_id: string;
+            /** User Id */
+            user_id?: string | null;
+            /** Ticker */
+            ticker: string;
+            /** Icb Code Level2 */
+            icb_code_level2: string;
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Signal Code */
+            signal_code: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "CONFIRMED_RISK" | "BENIGN_DOMAIN_EXCEPTION";
+            /**
+             * Reason Category
+             * @enum {string}
+             */
+            reason_category: "CONSTRUCTION_PROGRESS_BILLING" | "HOLDING_ASSOCIATE_DIVIDENDS" | "SEASONAL_WORKING_CAPITAL" | "TRANSIENT_CAPEX_EXPANSION" | "ACCOUNTING_RECLASSIFICATION" | "CONFIRMED_FUNDAMENTAL_RISK" | "OTHER";
+            /** Note */
+            note: string;
+            /** Citation Page */
+            citation_page?: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Ml Training Labels Untouched
+             * @default true
+             * @constant
+             */
+            ml_training_labels_untouched: true;
+        };
+        /**
+         * HitlFeedbackRequest
+         * @description Expert triage payload for a triggered red flag or multivariate outlier.
+         */
+        HitlFeedbackRequest: {
+            /** Ticker */
+            ticker: string;
+            /** Icb Code Level2 */
+            icb_code_level2?: string | null;
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Signal Code */
+            signal_code: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "CONFIRMED_RISK" | "BENIGN_DOMAIN_EXCEPTION";
+            /**
+             * Reason Category
+             * @enum {string}
+             */
+            reason_category: "CONSTRUCTION_PROGRESS_BILLING" | "HOLDING_ASSOCIATE_DIVIDENDS" | "SEASONAL_WORKING_CAPITAL" | "TRANSIENT_CAPEX_EXPANSION" | "ACCOUNTING_RECLASSIFICATION" | "CONFIRMED_FUNDAMENTAL_RISK" | "OTHER";
+            /** Note */
+            note: string;
+            /** Citation Page */
+            citation_page?: number | null;
+        };
+        /**
+         * HitlSummaryCell
+         * @description False-positive aggregation for one ``signal_code x icb_code_level2`` pair.
+         */
+        HitlSummaryCell: {
+            /** Signal Code */
+            signal_code: string;
+            /** Icb Code Level2 */
+            icb_code_level2: string;
+            /** Total Count */
+            total_count: number;
+            /** Confirmed Risk Count */
+            confirmed_risk_count: number;
+            /** Benign Exception Count */
+            benign_exception_count: number;
+            /** False Positive Rate */
+            false_positive_rate: number;
+            /** Top Reason Categories */
+            top_reason_categories: string[];
+        };
+        /**
+         * HitlSummaryResponse
+         * @description INTERNAL_OPS aggregated HITL triage report.
+         */
+        HitlSummaryResponse: {
+            /** Total Feedback */
+            total_feedback: number;
+            /** Overall False Positive Rate */
+            overall_false_positive_rate?: number | null;
+            /** Items */
+            items: components["schemas"]["HitlSummaryCell"][];
+            /** Mrm Governance Note */
+            mrm_governance_note: string;
+        };
+        /** ImportLocalWatchlistRequest */
+        ImportLocalWatchlistRequest: {
+            /** Tickers */
+            tickers: string[];
+            /** Watchlist Name */
+            watchlist_name?: string | null;
+        };
+        /** ImportLocalWatchlistResponse */
+        ImportLocalWatchlistResponse: {
+            watchlist: components["schemas"]["WatchlistResponseItem"];
+            /** Added Count */
+            added_count: number;
+            /** Skipped Duplicates */
+            skipped_duplicates: number;
+            /** Truncated By Limit */
+            truncated_by_limit: number;
         };
         /** InvestigateRequest */
         InvestigateRequest: {
@@ -1187,6 +2908,80 @@ export interface components {
             /** Delisted Date */
             delisted_date?: string | null;
         };
+        /** IssuerLifecycleEventItem */
+        IssuerLifecycleEventItem: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /**
+             * Exchange
+             * @enum {string}
+             */
+            exchange: "HOSE" | "HNX" | "UPCOM" | "DELISTED";
+            /**
+             * Event Type
+             * @enum {string}
+             */
+            event_type: "IPO_LISTING" | "EXCHANGE_TRANSFER" | "DELISTING" | "FY_END_CHANGE" | "METADATA_SYNC";
+            /**
+             * Effective Date
+             * Format: date
+             */
+            effective_date: string;
+            /** Fy End Month */
+            fy_end_month: number;
+            /** Previous Exchange */
+            previous_exchange?: string | null;
+            /**
+             * Source Url
+             * @default
+             */
+            source_url: string;
+            /**
+             * Notes
+             * @default
+             */
+            notes: string;
+            /** Status */
+            status: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** IssuerLifecycleItem */
+        IssuerLifecycleItem: {
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Company Name Vn */
+            company_name_vn?: string | null;
+            /** Exchange */
+            exchange: string;
+            /** Accounting Regime */
+            accounting_regime: string;
+            /** Icb Name Level2 */
+            icb_name_level2?: string | null;
+            /** Icb Name Level3 */
+            icb_name_level3?: string | null;
+            /** Delisted Date */
+            delisted_date?: string | null;
+            /**
+             * Fy End Month
+             * @default 12
+             */
+            fy_end_month: number;
+            /** Recent Events */
+            recent_events?: components["schemas"]["IssuerLifecycleEventItem"][];
+        };
         /**
          * IssuersPageResponse
          * @description Route 3 response: paginated issuers list.
@@ -1258,6 +3053,13 @@ export interface components {
              */
             status: "alive";
         };
+        /** LoginRequest */
+        LoginRequest: {
+            /** Email */
+            email: string;
+            /** Password */
+            password: string;
+        };
         /**
          * MLScoreItem
          * @description Single period Layer 4B classical + unsupervised + supervised ML score record.
@@ -1288,6 +3090,10 @@ export interface components {
             piotroski_f_score?: number | null;
             /** Piotroski Valid Components Count */
             piotroski_valid_components_count?: number | null;
+            /** Piotroski Missing Criteria */
+            piotroski_missing_criteria?: string[];
+            /** Piotroski Na Reason */
+            piotroski_na_reason?: string | null;
             /** Beneish M8 Score */
             beneish_m8_score?: number | null;
             /** Beneish Flag */
@@ -1327,6 +3133,16 @@ export interface components {
             /** Shap Top Drivers Json */
             shap_top_drivers_json?: string | null;
             shap_top_drivers?: components["schemas"]["ShapExplanationItem"] | null;
+        };
+        /** MarkAllReadResponse */
+        MarkAllReadResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "OK";
+            /** Updated Count */
+            updated_count: number;
         };
         /**
          * MarkerDrawdownBundleItem
@@ -1493,6 +3309,7 @@ export interface components {
             walk_forward: components["schemas"]["WalkForwardReportItem"];
             risk_tier_reliability: components["schemas"]["RiskTierReliabilityReportItem"];
             taxonomy_drift_psi: components["schemas"]["TaxonomyDriftPSIItem"];
+            tt99_mrm_gate?: components["schemas"]["TT99MrmGateItem"] | null;
             /** Case Studies */
             case_studies: components["schemas"]["HistoricalCaseStudyItem"][];
             /** Limitations */
@@ -1568,6 +3385,441 @@ export interface components {
             /** Relative Risk Lift */
             relative_risk_lift?: number | null;
             drawdowns?: components["schemas"]["MarkerDrawdownBundleItem"] | null;
+        };
+        /** MyQuotaResponse */
+        MyQuotaResponse: {
+            /** Authenticated */
+            authenticated: boolean;
+            /** Role */
+            role: components["schemas"]["UserRole"] | "ANONYMOUS";
+            /**
+             * Quota Date
+             * Format: date
+             */
+            quota_date: string;
+            /**
+             * Timezone
+             * @constant
+             */
+            timezone: "Asia/Ho_Chi_Minh";
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
+            /** Cross Border Rag Consent */
+            cross_border_rag_consent: boolean;
+            /** Circuit Breaker Open */
+            circuit_breaker_open: boolean;
+            /** Circuit Breaker Reopen At */
+            circuit_breaker_reopen_at?: string | null;
+            /** Meters */
+            meters: components["schemas"]["QuotaMeterStatus"][];
+        };
+        /** NotificationReadResponse */
+        NotificationReadResponse: {
+            /**
+             * Notification Id
+             * Format: uuid
+             */
+            notification_id: string;
+            /** Is Read */
+            is_read: boolean;
+            /** Read At */
+            read_at?: string | null;
+        };
+        /** NotificationsListResponse */
+        NotificationsListResponse: {
+            /** Items */
+            items: components["schemas"]["AlertNotificationItem"][];
+            /** Total */
+            total: number;
+            /** Unread Count */
+            unread_count: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** OpenDerivedRiskResponse */
+        OpenDerivedRiskResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** License Scope */
+            license_scope: string;
+            /** Ticker */
+            ticker: string;
+            /** Company Name Vn */
+            company_name_vn: string;
+            /** Accounting Regime */
+            accounting_regime: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period View */
+            period_view: string;
+            /** Latest Taxonomy Version */
+            latest_taxonomy_version?: string | null;
+            /** Latest Quality Status */
+            latest_quality_status?: string | null;
+            /** Ml Scores */
+            ml_scores: {
+                [key: string]: unknown;
+            }[];
+            /** Red Flags */
+            red_flags: {
+                [key: string]: unknown;
+            }[];
+            /** Ratios */
+            ratios: {
+                [key: string]: unknown;
+            }[];
+            /** Disclaimer Vi */
+            disclaimer_vi: string;
+        };
+        /** OpenRawStatementsResponse */
+        OpenRawStatementsResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** License Scope */
+            license_scope: string;
+            /** Ticker */
+            ticker: string;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Statement Type */
+            statement_type: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /** Periods */
+            periods: {
+                [key: string]: unknown;
+            }[];
+            /** Rows */
+            rows: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** OpenScreenerResponse */
+        OpenScreenerResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** License Scope */
+            license_scope: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Items */
+            items: {
+                [key: string]: unknown;
+            }[];
+            /** Disclaimer Vi */
+            disclaimer_vi: string;
+        };
+        /** OpenStressTestRequest */
+        OpenStressTestRequest: {
+            /**
+             * Scenario Name
+             * @default Kịch bản sốc lãi suất +200bps
+             */
+            scenario_name: string;
+            /**
+             * Statement Scope
+             * @default CONSOLIDATED
+             * @enum {string}
+             */
+            statement_scope: "CONSOLIDATED" | "SEPARATE";
+            /**
+             * Period Type
+             * @default QUARTER
+             * @enum {string}
+             */
+            period_type: "QUARTER" | "ANNUAL";
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Tickers */
+            tickers?: string[] | null;
+            /**
+             * Interest Rate Shock Bps
+             * @default 0
+             */
+            interest_rate_shock_bps: number;
+            /**
+             * Revenue Shock Pct
+             * @default 0
+             */
+            revenue_shock_pct: number;
+            /**
+             * Gross Margin Shock Pp
+             * @default 0
+             */
+            gross_margin_shock_pp: number;
+            /**
+             * Dso Shock Days
+             * @default 0
+             */
+            dso_shock_days: number;
+            /**
+             * Dio Shock Days
+             * @default 0
+             */
+            dio_shock_days: number;
+        };
+        /** OpenStressTestResponse */
+        OpenStressTestResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** License Scope */
+            license_scope: string;
+            /** Scenario Name */
+            scenario_name: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Issuers Stressed */
+            issuers_stressed: number;
+            /** Newly Distressed Count */
+            newly_distressed_count: number;
+            /** Sectors */
+            sectors: {
+                [key: string]: unknown;
+            }[];
+            /** Issuers */
+            issuers: {
+                [key: string]: unknown;
+            }[];
+            /** Disclaimer Vi */
+            disclaimer_vi: string;
+        };
+        /** OpsAssignTicketRequest */
+        OpsAssignTicketRequest: {
+            /** Assigned To User Id */
+            assigned_to_user_id?: string | null;
+            /**
+             * Root Cause Note
+             * @default
+             */
+            root_cause_note: string;
+        };
+        /** OpsDecisionRequest */
+        OpsDecisionRequest: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "APPROVE_REINGEST" | "KEEP_QUARANTINED";
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /** OpsIssuerLifecycleResponse */
+        OpsIssuerLifecycleResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Total */
+            total: number;
+            /** Items */
+            items: components["schemas"]["IssuerLifecycleItem"][];
+        };
+        /** OpsIssuerSyncRequest */
+        OpsIssuerSyncRequest: {
+            /** Ticker */
+            ticker: string;
+            /** Issuer Id */
+            issuer_id?: string | null;
+            /**
+             * Exchange
+             * @enum {string}
+             */
+            exchange: "HOSE" | "HNX" | "UPCOM" | "DELISTED";
+            /**
+             * Event Type
+             * @enum {string}
+             */
+            event_type: "IPO_LISTING" | "EXCHANGE_TRANSFER" | "DELISTING" | "FY_END_CHANGE" | "METADATA_SYNC";
+            /**
+             * Effective Date
+             * Format: date
+             */
+            effective_date: string;
+            /**
+             * Fy End Month
+             * @default 12
+             */
+            fy_end_month: number;
+            /** Previous Exchange */
+            previous_exchange?: string | null;
+            /**
+             * Source Url
+             * @default
+             */
+            source_url: string;
+            /**
+             * Notes
+             * @default
+             */
+            notes: string;
+        };
+        /** OpsIssuerSyncResponse */
+        OpsIssuerSyncResponse: {
+            /** Status */
+            status: string;
+            event: components["schemas"]["IssuerLifecycleEventItem"];
+        };
+        /** OpsQaQueueResponse */
+        OpsQaQueueResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Total */
+            total: number;
+            /** Items */
+            items: components["schemas"]["OpsQuarantineTicketItem"][];
+        };
+        /** OpsQuarantineTicketItem */
+        OpsQuarantineTicketItem: {
+            /**
+             * Ticket Id
+             * Format: uuid
+             */
+            ticket_id: string;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Filing Id */
+            filing_id: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Taxonomy Version */
+            taxonomy_version: string;
+            /** Rule Code */
+            rule_code: string;
+            /** Severity */
+            severity: string;
+            /** Details Json */
+            details_json: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "OPEN" | "IN_REVIEW" | "RESOLVED";
+            /** Decision */
+            decision?: ("APPROVE_REINGEST" | "KEEP_QUARANTINED") | null;
+            /** Assigned To User Id */
+            assigned_to_user_id?: string | null;
+            /**
+             * Root Cause Note
+             * @default
+             */
+            root_cause_note: string;
+            /** Latest Revision No */
+            latest_revision_no: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /** Revisions */
+            revisions?: components["schemas"]["OpsRevisionItem"][];
+        };
+        /** OpsRevisionItem */
+        OpsRevisionItem: {
+            /**
+             * Submission Id
+             * Format: uuid
+             */
+            submission_id: string;
+            /**
+             * Ticket Id
+             * Format: uuid
+             */
+            ticket_id: string;
+            /** Revision No */
+            revision_no: number;
+            /** Source Url */
+            source_url?: string | null;
+            /** Raw File Sha256 */
+            raw_file_sha256?: string | null;
+            /** Reason */
+            reason: string;
+            /** Reingest Status */
+            reingest_status: string;
+            /** Dagster Run Id */
+            dagster_run_id?: string | null;
+            /** Submitted By User Id */
+            submitted_by_user_id?: string | null;
+            /**
+             * Submitted At
+             * Format: date-time
+             */
+            submitted_at: string;
+        };
+        /** OpsSubmitRevisionRequest */
+        OpsSubmitRevisionRequest: {
+            /** Source Url */
+            source_url?: string | null;
+            /** Raw File Sha256 */
+            raw_file_sha256?: string | null;
+            /** Reason */
+            reason: string;
+            /** Payload Summary */
+            payload_summary?: {
+                [key: string]: unknown;
+            };
+        };
+        /** OpsTicketMutationResponse */
+        OpsTicketMutationResponse: {
+            /** Status */
+            status: string;
+            ticket: components["schemas"]["OpsQuarantineTicketItem"];
+        };
+        /** PasswordChangeBody */
+        PasswordChangeBody: {
+            /** Current Password */
+            current_password: string;
+            /** New Password */
+            new_password: string;
+        };
+        /** PasswordResetConfirmBody */
+        PasswordResetConfirmBody: {
+            /** Token */
+            token: string;
+            /** New Password */
+            new_password: string;
+        };
+        /** PasswordResetRequestBody */
+        PasswordResetRequestBody: {
+            /** Email */
+            email: string;
         };
         /**
          * PeerBandHistoryPoint
@@ -1664,6 +3916,413 @@ export interface components {
             dtd_flag?: string | null;
         };
         /**
+         * PrivateClassicalScores
+         * @description Classical corporate accounting distress & forensic scores.
+         */
+        PrivateClassicalScores: {
+            /** Altman Z Double Prime */
+            altman_z_double_prime?: number | null;
+            /** Altman Em Score */
+            altman_em_score?: number | null;
+            /** Altman Zone */
+            altman_zone?: string | null;
+            /** Piotroski F Score */
+            piotroski_f_score?: number | null;
+            /** Piotroski Valid Components Count */
+            piotroski_valid_components_count?: number | null;
+            /** Beneish M8 Score */
+            beneish_m8_score?: number | null;
+            /** Beneish Flag */
+            beneish_flag?: string | null;
+        };
+        /**
+         * PrivateDossierDeleteResponse
+         * @description Deletion confirmation for a private credit dossier.
+         */
+        PrivateDossierDeleteResponse: {
+            /**
+             * Status
+             * @default DELETED
+             * @constant
+             */
+            status: "DELETED";
+            /**
+             * Dossier Id
+             * Format: uuid
+             */
+            dossier_id: string;
+        };
+        /**
+         * PrivateDossierListResponse
+         * @description List of private credit dossiers owned by the authenticated user.
+         */
+        PrivateDossierListResponse: {
+            /** Items */
+            items: components["schemas"]["PrivateDossierSummaryItem"][];
+        };
+        /**
+         * PrivateDossierPreviewResponse
+         * @description Response returned by ``POST /api/v3/private-credit/parse`` and ``GET /dossiers/{id}``.
+         */
+        PrivateDossierPreviewResponse: {
+            /**
+             * Dossier Id
+             * Format: uuid
+             */
+            dossier_id: string;
+            /** Company Name */
+            company_name: string;
+            /** Tax Code */
+            tax_code?: string | null;
+            /** Icb Code Level2 */
+            icb_code_level2?: string | null;
+            /**
+             * Statement Scope
+             * @enum {string}
+             */
+            statement_scope: "CONSOLIDATED" | "SEPARATE";
+            /**
+             * Taxonomy Version
+             * @enum {string}
+             */
+            taxonomy_version: "VAS_TT200_2014" | "VAS_TT99_2025";
+            /** Unit Multiplier */
+            unit_multiplier: number;
+            /** Source Filename */
+            source_filename: string;
+            /** Source Sha256 */
+            source_sha256: string;
+            /** Periods */
+            periods: string[];
+            qg1: components["schemas"]["Qg1ReportResponse"];
+            /** Lines */
+            lines: components["schemas"]["PrivateParsedLineItem"][];
+            /**
+             * Retention Days
+             * @default 30
+             */
+            retention_days: number;
+            /**
+             * Retention Expires At
+             * Format: date-time
+             */
+            retention_expires_at: string;
+            /**
+             * Processing Mode
+             * @default LOCAL_SERVER_ONLY
+             * @constant
+             */
+            processing_mode: "LOCAL_SERVER_ONLY";
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * PrivateDossierSummaryItem
+         * @description Compact summary item when listing a user's own private dossiers.
+         */
+        PrivateDossierSummaryItem: {
+            /**
+             * Dossier Id
+             * Format: uuid
+             */
+            dossier_id: string;
+            /** Company Name */
+            company_name: string;
+            /** Tax Code */
+            tax_code?: string | null;
+            /**
+             * Taxonomy Version
+             * @enum {string}
+             */
+            taxonomy_version: "VAS_TT200_2014" | "VAS_TT99_2025";
+            /**
+             * Qg1 Status
+             * @enum {string}
+             */
+            qg1_status: "PASS" | "WARNING" | "FAIL";
+            /** Periods */
+            periods: string[];
+            /** Has Score */
+            has_score: boolean;
+            /**
+             * Retention Expires At
+             * Format: date-time
+             */
+            retention_expires_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * PrivateDupontBreakdown
+         * @description 5-factor and 6-factor DuPont decomposition for the latest period.
+         */
+        PrivateDupontBreakdown: {
+            /** Tax Burden */
+            tax_burden?: number | null;
+            /** Interest Burden */
+            interest_burden?: number | null;
+            /** Ebit Margin */
+            ebit_margin?: number | null;
+            /** Asset Turnover */
+            asset_turnover?: number | null;
+            /** Equity Multiplier Total */
+            equity_multiplier_total?: number | null;
+            /** Parent Profit Share */
+            parent_profit_share?: number | null;
+            /** Equity Multiplier Parent */
+            equity_multiplier_parent?: number | null;
+            /** Roe Total */
+            roe_total?: number | null;
+            /** Roe Parent */
+            roe_parent?: number | null;
+            /**
+             * Dupont Valid Flag
+             * @default false
+             */
+            dupont_valid_flag: boolean;
+        };
+        /**
+         * PrivateMlAccountingOnlyResult
+         * @description Isolated ML PD estimate under explicit ACCOUNTING_ONLY_MODE.
+         */
+        PrivateMlAccountingOnlyResult: {
+            /**
+             * Ml Mode
+             * @default ACCOUNTING_ONLY_MODE
+             * @constant
+             */
+            ml_mode: "ACCOUNTING_ONLY_MODE";
+            /** Calibrated Distress Prob */
+            calibrated_distress_prob?: number | null;
+            /** Risk Tier */
+            risk_tier?: string | null;
+            /** Model Version */
+            model_version: string;
+            /** Accounting Feature Coverage */
+            accounting_feature_coverage: number;
+            /** Missing Market Tt96 Features */
+            missing_market_tt96_features: string[];
+            /** Coverage Warning Vi */
+            coverage_warning_vi: string;
+        };
+        /**
+         * PrivateParsedLineItem
+         * @description Single normalized VAS statement line across uploaded periods.
+         */
+        PrivateParsedLineItem: {
+            /**
+             * Statement Type
+             * @enum {string}
+             */
+            statement_type: "BALANCE_SHEET" | "INCOME_STATEMENT" | "CASH_FLOW";
+            /** Vas Code */
+            vas_code: string;
+            /** Metric Id */
+            metric_id: string;
+            /** Line Label Vn */
+            line_label_vn: string;
+            /** Values By Period */
+            values_by_period?: {
+                [key: string]: number | null;
+            };
+        };
+        /**
+         * PrivateRedFlagItem
+         * @description Triggered Layer 4A accounting red flag on the private dossier.
+         */
+        PrivateRedFlagItem: {
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Flag Code */
+            flag_code: string;
+            /** Severity */
+            severity: string;
+            /** Flag Title Vn */
+            flag_title_vn: string;
+            /** Explanation Text Vn */
+            explanation_text_vn: string;
+            /** Evidence Json */
+            evidence_json: string;
+        };
+        /**
+         * PrivateScoreRequest
+         * @description Optional stress-test shock parameters when scoring a private issuer dossier.
+         */
+        PrivateScoreRequest: {
+            /**
+             * Scenario Name
+             * @default Kịch bản bất lợi chuẩn IMF
+             */
+            scenario_name: string;
+            /**
+             * Interest Rate Shock Bps
+             * @default 200
+             */
+            interest_rate_shock_bps: number;
+            /**
+             * Revenue Shock Pct
+             * @default -0.15
+             */
+            revenue_shock_pct: number;
+            /**
+             * Gross Margin Shock Pp
+             * @default -0.03
+             */
+            gross_margin_shock_pp: number;
+            /**
+             * Dso Shock Days
+             * @default 15
+             */
+            dso_shock_days: number;
+            /**
+             * Dio Shock Days
+             * @default 15
+             */
+            dio_shock_days: number;
+        };
+        /**
+         * PrivateScoreResponse
+         * @description Complete isolated private-issuer quantitative risk report.
+         */
+        PrivateScoreResponse: {
+            /**
+             * Dossier Id
+             * Format: uuid
+             */
+            dossier_id: string;
+            /** Company Name */
+            company_name: string;
+            /** Tax Code */
+            tax_code?: string | null;
+            /**
+             * Taxonomy Version
+             * @enum {string}
+             */
+            taxonomy_version: "VAS_TT200_2014" | "VAS_TT99_2025";
+            /**
+             * Statement Scope
+             * @enum {string}
+             */
+            statement_scope: "CONSOLIDATED" | "SEPARATE";
+            /**
+             * Scored Period End Date
+             * Format: date
+             */
+            scored_period_end_date: string;
+            /**
+             * Qg1 Status
+             * @enum {string}
+             */
+            qg1_status: "PASS" | "WARNING" | "FAIL";
+            /** Ratios */
+            ratios: {
+                [key: string]: number | null;
+            };
+            /** Ratio Flags */
+            ratio_flags: {
+                [key: string]: string | null;
+            };
+            dupont: components["schemas"]["PrivateDupontBreakdown"];
+            classical: components["schemas"]["PrivateClassicalScores"];
+            /** Red Flags */
+            red_flags: components["schemas"]["PrivateRedFlagItem"][];
+            ml_assessment: components["schemas"]["PrivateMlAccountingOnlyResult"];
+            stress_test: components["schemas"]["PrivateStressResult"];
+            /**
+             * Ducklake Contaminated
+             * @default false
+             * @constant
+             */
+            ducklake_contaminated: false;
+            /**
+             * Ml Labels Modified
+             * @default false
+             * @constant
+             */
+            ml_labels_modified: false;
+            /** Elapsed Ms */
+            elapsed_ms: number;
+        };
+        /**
+         * PrivateStressResult
+         * @description Deterministic IMF WP/15/216 stress test result for the private issuer.
+         */
+        PrivateStressResult: {
+            /** Scenario Name */
+            scenario_name: string;
+            /** Baseline Ebit Vnd */
+            baseline_ebit_vnd?: number | null;
+            /** Stressed Ebit Vnd */
+            stressed_ebit_vnd?: number | null;
+            /** Baseline Interest Coverage */
+            baseline_interest_coverage?: number | null;
+            /** Stressed Interest Coverage */
+            stressed_interest_coverage?: number | null;
+            /** Stressed Interest Coverage Flag */
+            stressed_interest_coverage_flag?: string | null;
+            /** Baseline Cfo Vnd */
+            baseline_cfo_vnd?: number | null;
+            /** Stressed Cfo Vnd */
+            stressed_cfo_vnd?: number | null;
+            /** Baseline Debt At Risk */
+            baseline_debt_at_risk?: boolean | null;
+            /** Stressed Debt At Risk */
+            stressed_debt_at_risk?: boolean | null;
+        };
+        /**
+         * Qg1DiscrepancyItem
+         * @description Single Layer 6 QG1 accounting discrepancy detected in uploaded workbook.
+         */
+        Qg1DiscrepancyItem: {
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Rule Code */
+            rule_code: string;
+            /** Severity */
+            severity: string;
+            /** Message Vi */
+            message_vi: string;
+            /** Expected Value Vnd */
+            expected_value_vnd?: number | null;
+            /** Actual Value Vnd */
+            actual_value_vnd?: number | null;
+            /** Abs Residual Vnd */
+            abs_residual_vnd?: number | null;
+            /** Missing Metrics */
+            missing_metrics?: string[];
+        };
+        /**
+         * Qg1ReportResponse
+         * @description Layer 6 QG1 verification summary for a private issuer upload.
+         */
+        Qg1ReportResponse: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "PASS" | "WARNING" | "FAIL";
+            /** Discrepancies */
+            discrepancies?: components["schemas"]["Qg1DiscrepancyItem"][];
+            /** Warnings */
+            warnings?: string[];
+            /** Info Signals */
+            info_signals?: string[];
+            /** Can Score */
+            can_score: boolean;
+        };
+        /**
          * QualitySummaryItem
          * @description Single row from ``quality_summary.parquet``.
          */
@@ -1712,6 +4371,30 @@ export interface components {
             /** Items */
             items: components["schemas"]["QualitySummaryItem"][];
         };
+        /** QuotaMeterStatus */
+        QuotaMeterStatus: {
+            /**
+             * Meter
+             * @enum {string}
+             */
+            meter: "rag_query" | "xlsx_export" | "api_call";
+            /** Used */
+            used: number;
+            /** Limit */
+            limit?: number | null;
+            /** Remaining */
+            remaining?: number | null;
+            /**
+             * Unlimited
+             * @default false
+             */
+            unlimited: boolean;
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
+        };
         /**
          * RatioDictionaryItem
          * @description Dictionary definition for one published financial ratio.
@@ -1721,7 +4404,7 @@ export interface components {
              * Ratio Name
              * @enum {string}
              */
-            ratio_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+            ratio_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
             /** Display Name Vn */
             display_name_vn: string;
             /**
@@ -1782,7 +4465,7 @@ export interface components {
              * Ratio Name
              * @enum {string}
              */
-            ratio_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+            ratio_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
             /** Display Name Vn */
             display_name_vn: string;
             /** Formula */
@@ -1886,6 +4569,32 @@ export interface components {
             /** Filing Id */
             filing_id?: string | null;
         };
+        /** RegisterRequest */
+        RegisterRequest: {
+            /** Email */
+            email: string;
+            /** Password */
+            password: string;
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /** Accepted Consent Version */
+            accepted_consent_version: string;
+            /** Accept Account Core */
+            accept_account_core: boolean;
+            /**
+             * Accept Alert Notifications
+             * @default false
+             */
+            accept_alert_notifications: boolean;
+            /**
+             * Accept Cross Border Llm Rag
+             * @default false
+             */
+            accept_cross_border_llm_rag: boolean;
+        };
         /**
          * RegulatoryEventMarkerItem
          * @description PIT marker for a real regulatory distress or audit sanction event.
@@ -1971,11 +4680,73 @@ export interface components {
             /** Mean Predicted Pd */
             mean_predicted_pd?: number | null;
         };
+        /** SavedScreenCreateRequest */
+        SavedScreenCreateRequest: {
+            /** Name */
+            name: string;
+            /** Filters Json */
+            filters_json: {
+                [key: string]: unknown;
+            };
+        };
+        /** SavedScreenItem */
+        SavedScreenItem: {
+            /**
+             * Screen Id
+             * Format: uuid
+             */
+            screen_id: string;
+            /** Name */
+            name: string;
+            /** Filters Json */
+            filters_json: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** SavedScreensListResponse */
+        SavedScreensListResponse: {
+            /** Screens */
+            screens: components["schemas"]["SavedScreenItem"][];
+        };
         /**
          * ScreenerItem
-         * @description Single issuer row matching ``DashboardQueryService.screen_market()`` (41 columns).
+         * @description Single issuer row matching ``DashboardQueryService.screen_market()`` (with V3 ratios & valuation).
          */
         ScreenerItem: {
+            /** Roe Parent */
+            roe_parent?: number | null;
+            /** Eps Ttm Estimated */
+            eps_ttm_estimated?: number | null;
+            /** Liabilities To Assets */
+            liabilities_to_assets?: number | null;
+            /** Cfo Ttm */
+            cfo_ttm?: number | null;
+            /** Fcf Ttm */
+            fcf_ttm?: number | null;
+            /** Ocf To Total Liabilities */
+            ocf_to_total_liabilities?: number | null;
+            /** Revenue Growth Yoy */
+            revenue_growth_yoy?: number | null;
+            /** Market Cap Vnd */
+            market_cap_vnd?: number | null;
+            /** Pe Ttm */
+            pe_ttm?: number | null;
+            /** Pb Ratio */
+            pb_ratio?: number | null;
+            /** Pe Flag */
+            pe_flag?: string | null;
+            /** Pb Flag */
+            pb_flag?: string | null;
             /** Issuer Id */
             issuer_id: string;
             /** Ticker */
@@ -2166,6 +4937,44 @@ export interface components {
             /** Top Deteriorating */
             top_deteriorating: components["schemas"]["MarketChangeItem"][];
         };
+        /** SessionStatusResponse */
+        SessionStatusResponse: {
+            /** Authenticated */
+            authenticated: boolean;
+            /** Auth Configured */
+            auth_configured: boolean;
+            user?: components["schemas"]["UserProfileResponse"] | null;
+        };
+        /** SessionSummaryItem */
+        SessionSummaryItem: {
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Last Seen At
+             * Format: date-time
+             */
+            last_seen_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Is Current */
+            is_current: boolean;
+        };
+        /** SessionsListResponse */
+        SessionsListResponse: {
+            /** Sessions */
+            sessions: components["schemas"]["SessionSummaryItem"][];
+        };
         /**
          * ShapDriverItem
          * @description Single TreeSHAP driver entry (risk-increasing or risk-decreasing).
@@ -2266,6 +5075,14 @@ export interface components {
             values: {
                 [key: string]: number | null;
             };
+            /** Qoq Values */
+            qoq_values?: {
+                [key: string]: number | null;
+            };
+            /** Qoq Flags */
+            qoq_flags?: {
+                [key: string]: string | null;
+            };
         };
         /**
          * StressIssuerItem
@@ -2288,6 +5105,8 @@ export interface components {
             interest_coverage?: number | null;
             /** Stressed Interest Coverage */
             stressed_interest_coverage?: number | null;
+            /** Scenario A Icr */
+            scenario_a_icr?: number | null;
             /** Stressed Interest Coverage Flag */
             stressed_interest_coverage_flag?: string | null;
             /** Ebit Ttm */
@@ -2308,6 +5127,16 @@ export interface components {
             stressed_debt_at_risk?: boolean | null;
             /** Newly Distressed Under Shock */
             newly_distressed_under_shock?: boolean | null;
+            /** Net Fx Debt Vnd */
+            net_fx_debt_vnd?: number | null;
+            /** Fx Revaluation Loss Vnd */
+            fx_revaluation_loss_vnd?: number | null;
+            /**
+             * Fx Coverage Status
+             * @default NOT_DISCLOSED
+             * @enum {string}
+             */
+            fx_coverage_status: "REPORTED" | "NOT_DISCLOSED";
         };
         /**
          * StressScenarioRequest
@@ -2359,6 +5188,11 @@ export interface components {
              */
             dio_shock_days: number;
             /**
+             * Fx Depreciation Pct
+             * @default 0
+             */
+            fx_depreciation_pct: number;
+            /**
              * Top N
              * @default 50
              */
@@ -2367,6 +5201,10 @@ export interface components {
             include_all_newly_distressed?: boolean | null;
             /** Tickers */
             tickers?: string[] | null;
+            /** Reference Icrs */
+            reference_icrs?: {
+                [key: string]: number | null;
+            } | null;
         };
         /**
          * StressSectorSummaryItem
@@ -2409,6 +5247,16 @@ export interface components {
             period_type: "QUARTER" | "ANNUAL";
             /** Period End Date */
             period_end_date?: string | null;
+            /**
+             * Fx Depreciation Pct
+             * @default 0
+             */
+            fx_depreciation_pct: number;
+            /**
+             * Fx Disclosed Issuers Count
+             * @default 0
+             */
+            fx_disclosed_issuers_count: number;
             /** Total Issuers Evaluated */
             total_issuers_evaluated: number;
             /** Total Debt Sum */
@@ -2419,12 +5267,136 @@ export interface components {
             stressed_debt_at_risk_pct: number;
             /** Newly Distressed Count */
             newly_distressed_count: number;
+            /** Total Newly Distressed */
+            total_newly_distressed?: number | null;
+            /** Issuer Icrs */
+            issuer_icrs?: {
+                [key: string]: number | null;
+            };
             /** Sector Summary */
             sector_summary: components["schemas"]["StressSectorSummaryItem"][];
             /** Newly Distressed Issuers */
             newly_distressed_issuers: components["schemas"]["StressIssuerItem"][];
             /** Top Stressed Issuers */
             top_stressed_issuers: components["schemas"]["StressIssuerItem"][];
+        };
+        /** SuggestedPeerItem */
+        SuggestedPeerItem: {
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Company Name Vn */
+            company_name_vn?: string | null;
+            /** Exchange */
+            exchange?: string | null;
+            /** Icb Code Level2 */
+            icb_code_level2?: string | null;
+            /** Icb Name Level2 */
+            icb_name_level2?: string | null;
+            /** Icb Code Level3 */
+            icb_code_level3?: string | null;
+            /** Icb Name Level3 */
+            icb_name_level3?: string | null;
+            /** Peer Basis */
+            peer_basis: string;
+            /** Size Metric */
+            size_metric: string;
+            /** Size Ratio */
+            size_ratio?: number | null;
+            /** Market Cap Vnd */
+            market_cap_vnd?: number | null;
+            /** Bs Total Assets */
+            bs_total_assets?: number | null;
+            /** Risk Tier */
+            risk_tier?: string | null;
+            /** Calibrated Distress Prob */
+            calibrated_distress_prob?: number | null;
+        };
+        /** SuggestedPeersResponse */
+        SuggestedPeersResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Ticker */
+            ticker: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Peer Basis */
+            peer_basis: string;
+            /** Peers */
+            peers: components["schemas"]["SuggestedPeerItem"][];
+        };
+        /** SystemBudgetResponse */
+        SystemBudgetResponse: {
+            /**
+             * Budget Date
+             * Format: date
+             */
+            budget_date: string;
+            /**
+             * Timezone
+             * @constant
+             */
+            timezone: "Asia/Ho_Chi_Minh";
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
+            /** Gemini Requests Used */
+            gemini_requests_used: number;
+            /** Gemini Requests Cap */
+            gemini_requests_cap: number;
+            /** Gemini Utilization Ratio */
+            gemini_utilization_ratio: number;
+            /** Circuit Breaker Ratio */
+            circuit_breaker_ratio: number;
+            /** Circuit Breaker Open */
+            circuit_breaker_open: boolean;
+            /** Vision Pages Used */
+            vision_pages_used: number;
+            /** Vision Pages Cap */
+            vision_pages_cap: number;
+            /** Vision Pages Remaining */
+            vision_pages_remaining: number;
+        };
+        /**
+         * TT99MrmGateItem
+         * @description TT200/2014 -> TT99/2025 Model Risk Management drift gate status (V3-02).
+         */
+        TT99MrmGateItem: {
+            /** Verdict */
+            verdict: string;
+            /** Shadow Mode Active */
+            shadow_mode_active: boolean;
+            /** Auto Promote Allowed */
+            auto_promote_allowed: boolean;
+            /** Tt99 Sample Count */
+            tt99_sample_count: number;
+            /** Min Shadow Samples */
+            min_shadow_samples: number;
+            /** Min Ga Samples */
+            min_ga_samples: number;
+            /** Psi Breach Threshold */
+            psi_breach_threshold: number;
+            /** Missing Jump Threshold */
+            missing_jump_threshold: number;
+            /** Max Feature Psi */
+            max_feature_psi?: number | null;
+            /** Max Missing Jump */
+            max_missing_jump?: number | null;
+            /** Breached Psi Features */
+            breached_psi_features?: string[];
+            /** Breached Missing Features */
+            breached_missing_features?: string[];
+            /** Non Finite Features */
+            non_finite_features?: string[];
+            /** Summary Vi */
+            summary_vi: string;
         };
         /**
          * TaxonomyDriftPSIItem
@@ -2471,6 +5443,43 @@ export interface components {
             /** R4 R5 Share Delta */
             r4_r5_share_delta?: number | null;
         };
+        /** UpdateProfileRequest */
+        UpdateProfileRequest: {
+            /** Display Name */
+            display_name?: string | null;
+            /** Consents */
+            consents?: {
+                [key: string]: boolean;
+            } | null;
+        };
+        /** UserProfileResponse */
+        UserProfileResponse: {
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /** Email */
+            email: string;
+            /** Display Name */
+            display_name: string;
+            role: components["schemas"]["UserRole"];
+            /** Consents */
+            consents: components["schemas"]["ConsentStatusItem"][];
+            /** Active Sessions Count */
+            active_sessions_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * UserRole
+         * @description Canonical 3-role RBAC enum across FinIntel V3.0.
+         * @enum {string}
+         */
+        UserRole: "USER" | "RESEARCHER" | "INTERNAL_OPS";
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -2604,6 +5613,85 @@ export interface components {
             };
             to_first_regulatory_event?: components["schemas"]["DrawdownWindowMetricsItem"] | null;
             to_current?: components["schemas"]["DrawdownWindowMetricsItem"] | null;
+        };
+        /** WatchlistCreateRequest */
+        WatchlistCreateRequest: {
+            /** Name */
+            name: string;
+        };
+        /** WatchlistLimitsInfo */
+        WatchlistLimitsInfo: {
+            /** Max Watchlists */
+            max_watchlists: number;
+            /** Max Items Per Watchlist */
+            max_items_per_watchlist: number;
+            /** Max Notes */
+            max_notes: number;
+            /** Max Saved Screens */
+            max_saved_screens: number;
+        };
+        /** WatchlistRenameRequest */
+        WatchlistRenameRequest: {
+            /** Name */
+            name: string;
+        };
+        /** WatchlistResponseItem */
+        WatchlistResponseItem: {
+            /**
+             * Watchlist Id
+             * Format: uuid
+             */
+            watchlist_id: string;
+            /** Name */
+            name: string;
+            /** Is Default */
+            is_default: boolean;
+            /** Items */
+            items: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** WatchlistsListResponse */
+        WatchlistsListResponse: {
+            /** Watchlists */
+            watchlists: components["schemas"]["WatchlistResponseItem"][];
+            limits: components["schemas"]["WatchlistLimitsInfo"];
+        };
+        /** WebhookTestRequest */
+        WebhookTestRequest: {
+            /** Webhook Url */
+            webhook_url?: string | null;
+            /** Webhook Secret Hmac */
+            webhook_secret_hmac?: string | null;
+        };
+        /** WebhookTestResponse */
+        WebhookTestResponse: {
+            /** Delivered */
+            delivered: boolean;
+            /** Http Status */
+            http_status?: number | null;
+            /** Signature Header Prefix */
+            signature_header_prefix?: string | null;
+            /** Detail */
+            detail: string;
+        };
+        /** WorkspaceDeleteResponse */
+        WorkspaceDeleteResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "DELETED";
+            /** Id */
+            id: string;
         };
     };
     responses: never;
@@ -2789,7 +5877,7 @@ export interface operations {
     get_company_benchmarks_api_v1_companies__ticker__benchmarks_get: {
         parameters: {
             query?: {
-                metric_name?: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+                metric_name?: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
                 statement_scope?: "CONSOLIDATED" | "SEPARATE";
                 period_type?: "QUARTER" | "ANNUAL";
                 period_end_date?: string | null;
@@ -2829,7 +5917,7 @@ export interface operations {
     get_company_lineage_api_v1_companies__ticker__lineage_get: {
         parameters: {
             query?: {
-                ratio_name?: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+                ratio_name?: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
                 statement_scope?: "CONSOLIDATED" | "SEPARATE";
                 period_type?: "QUARTER" | "ANNUAL";
                 period_end_date?: string | null;
@@ -2871,19 +5959,45 @@ export interface operations {
                 period_end_date?: string | null;
                 statement_scope?: "CONSOLIDATED" | "SEPARATE";
                 icb_code_level2?: string | null;
+                exchange?: ("HOSE" | "HNX" | "UPCOM") | null;
                 min_f_score?: number | null;
                 altman_zone?: ("SAFE_ZONE" | "GREY_ZONE" | "DISTRESS_ZONE") | null;
                 risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
+                risk_tiers?: string | null;
                 beneish_flag?: ("VALID" | "HIGH_MANIPULATION_RISK_SCREEN" | "MIXED_TAXONOMY" | "MISSING_PRIOR_YEAR_BASE" | "MISSING_DEPRECIATION_DIRECT_CF" | "MISSING_OR_INVALID_INPUT") | null;
                 max_distress_prob?: number | null;
                 min_distress_prob?: number | null;
                 max_red_flags?: number | null;
                 min_red_flags?: number | null;
                 q?: string | null;
-                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "debt_to_equity";
+                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "roe_parent" | "roa" | "eps_ttm_estimated" | "liabilities_to_assets" | "debt_to_equity" | "ebit_margin" | "interest_coverage" | "cfo_ttm" | "ocf_to_total_liabilities" | "revenue_growth_yoy" | "pe_ttm" | "pb_ratio" | "market_cap_vnd";
                 sort_dir?: "asc" | "desc";
                 limit?: number;
                 offset?: number;
+                cluster_id?: number | null;
+                anomaly_flag?: boolean | null;
+                min_roe_parent?: number | null;
+                max_roe_parent?: number | null;
+                min_roa?: number | null;
+                max_roa?: number | null;
+                min_eps_ttm_estimated?: number | null;
+                max_eps_ttm_estimated?: number | null;
+                min_liabilities_to_assets?: number | null;
+                max_liabilities_to_assets?: number | null;
+                min_debt_to_equity?: number | null;
+                max_debt_to_equity?: number | null;
+                min_cfo_ttm?: number | null;
+                max_cfo_ttm?: number | null;
+                min_ocf_to_total_liabilities?: number | null;
+                max_ocf_to_total_liabilities?: number | null;
+                min_revenue_growth_yoy?: number | null;
+                max_revenue_growth_yoy?: number | null;
+                min_pe_ttm?: number | null;
+                max_pe_ttm?: number | null;
+                min_pb_ratio?: number | null;
+                max_pb_ratio?: number | null;
+                min_market_cap_bn_vnd?: number | null;
+                max_market_cap_bn_vnd?: number | null;
             };
             header?: {
                 "If-None-Match"?: string | null;
@@ -2920,17 +6034,43 @@ export interface operations {
                 period_end_date?: string | null;
                 statement_scope?: "CONSOLIDATED" | "SEPARATE";
                 icb_code_level2?: string | null;
+                exchange?: ("HOSE" | "HNX" | "UPCOM") | null;
                 min_f_score?: number | null;
                 altman_zone?: ("SAFE_ZONE" | "GREY_ZONE" | "DISTRESS_ZONE") | null;
                 risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
+                risk_tiers?: string | null;
                 beneish_flag?: ("VALID" | "HIGH_MANIPULATION_RISK_SCREEN" | "MIXED_TAXONOMY" | "MISSING_PRIOR_YEAR_BASE" | "MISSING_DEPRECIATION_DIRECT_CF" | "MISSING_OR_INVALID_INPUT") | null;
                 max_distress_prob?: number | null;
                 min_distress_prob?: number | null;
                 max_red_flags?: number | null;
                 min_red_flags?: number | null;
                 q?: string | null;
-                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "debt_to_equity";
+                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "roe_parent" | "roa" | "eps_ttm_estimated" | "liabilities_to_assets" | "debt_to_equity" | "ebit_margin" | "interest_coverage" | "cfo_ttm" | "ocf_to_total_liabilities" | "revenue_growth_yoy" | "pe_ttm" | "pb_ratio" | "market_cap_vnd";
                 sort_dir?: "asc" | "desc";
+                cluster_id?: number | null;
+                anomaly_flag?: boolean | null;
+                min_roe_parent?: number | null;
+                max_roe_parent?: number | null;
+                min_roa?: number | null;
+                max_roa?: number | null;
+                min_eps_ttm_estimated?: number | null;
+                max_eps_ttm_estimated?: number | null;
+                min_liabilities_to_assets?: number | null;
+                max_liabilities_to_assets?: number | null;
+                min_debt_to_equity?: number | null;
+                max_debt_to_equity?: number | null;
+                min_cfo_ttm?: number | null;
+                max_cfo_ttm?: number | null;
+                min_ocf_to_total_liabilities?: number | null;
+                max_ocf_to_total_liabilities?: number | null;
+                min_revenue_growth_yoy?: number | null;
+                max_revenue_growth_yoy?: number | null;
+                min_pe_ttm?: number | null;
+                max_pe_ttm?: number | null;
+                min_pb_ratio?: number | null;
+                max_pb_ratio?: number | null;
+                min_market_cap_bn_vnd?: number | null;
+                max_market_cap_bn_vnd?: number | null;
             };
             header?: {
                 "If-None-Match"?: string | null;
@@ -3161,7 +6301,7 @@ export interface operations {
                 statement_scope?: "CONSOLIDATED" | "SEPARATE";
                 period_type?: "QUARTER" | "ANNUAL";
                 period_end_date?: string | null;
-                metrics?: ("gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio")[] | null;
+                metrics?: ("gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio")[] | null;
             };
             header?: {
                 "If-None-Match"?: string | null;
@@ -3427,6 +6567,2148 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InvestigateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_api_v3_auth_register_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_api_v3_auth_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    session_status_api_v3_auth_session_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionStatusResponse"];
+                };
+            };
+        };
+    };
+    logout_api_v3_auth_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthActionMessageResponse"];
+                };
+            };
+        };
+    };
+    logout_all_api_v3_auth_logout_all_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthActionMessageResponse"];
+                };
+            };
+        };
+    };
+    password_reset_request_api_v3_auth_password_reset_request_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequestBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthActionMessageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    password_reset_confirm_api_v3_auth_password_reset_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetConfirmBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthActionMessageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    password_change_api_v3_auth_password_change_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordChangeBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthActionMessageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_me_api_v3_auth_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserProfileResponse"];
+                };
+            };
+        };
+    };
+    delete_me_api_v3_auth_me_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Confirm-Password"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DeleteAccountRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataDeletionReceiptResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_me_api_v3_auth_me_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProfileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sessions_api_v3_auth_sessions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionsListResponse"];
+                };
+            };
+        };
+    };
+    revoke_one_session_api_v3_auth_sessions__session_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthActionMessageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_watchlists_api_v3_workspace_watchlists_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistsListResponse"];
+                };
+            };
+        };
+    };
+    create_watchlist_api_v3_workspace_watchlists_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchlistCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistResponseItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_watchlist_api_v3_workspace_watchlists__watchlist_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_watchlist_api_v3_workspace_watchlists__watchlist_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchlistRenameRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistResponseItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_local_watchlist_api_v3_workspace_watchlists_import_local_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportLocalWatchlistRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportLocalWatchlistResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_watchlist_ticker_api_v3_workspace_watchlists__watchlist_id__items__ticker__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchlist_id: string;
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistResponseItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_watchlist_ticker_api_v3_workspace_watchlists__watchlist_id__items__ticker__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchlist_id: string;
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_notes_api_v3_workspace_notes__ticker__get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalystNotesListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_note_api_v3_workspace_notes__ticker__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnalystNoteCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalystNoteItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_note_api_v3_workspace_notes__ticker___note_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticker: string;
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_note_api_v3_workspace_notes__ticker___note_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticker: string;
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnalystNoteUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalystNoteItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_saved_screens_api_v3_workspace_saved_screens_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedScreensListResponse"];
+                };
+            };
+        };
+    };
+    create_saved_screen_api_v3_workspace_saved_screens_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedScreenCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedScreenItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_saved_screen_api_v3_workspace_saved_screens__screen_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                screen_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_my_activity_api_v3_audit_my_activity_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditLogsPageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_ops_audit_logs_api_v3_ops_audit_logs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                action?: string | null;
+                actor_user_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditLogsPageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_notifications_api_v3_alerts_notifications_get: {
+        parameters: {
+            query?: {
+                unread_only?: boolean;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationsListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_notification_read_api_v3_alerts_notifications__notification_id__read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notification_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationReadResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_all_notifications_read_api_v3_alerts_notifications_read_all_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarkAllReadResponse"];
+                };
+            };
+        };
+    };
+    get_subscription_api_v3_alerts_subscriptions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertSubscriptionResponse"];
+                };
+            };
+        };
+    };
+    update_subscription_api_v3_alerts_subscriptions_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertSubscriptionUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertSubscriptionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_webhook_api_v3_alerts_webhooks_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["WebhookTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_company_xlsx_api_v3_exports_companies__ticker__xlsx_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_type?: "QUARTER" | "ANNUAL";
+                periods_limit?: number;
+            };
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 4-sheet VAS & quantitative risk workbook (.xlsx) for one company. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+                };
+            };
+            /** @description Ticker not found in active snapshot. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_screener_xlsx_api_v3_exports_screener_xlsx_get: {
+        parameters: {
+            query?: {
+                period_type?: "QUARTER" | "ANNUAL";
+                period_end_date?: string | null;
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                icb_code_level2?: string | null;
+                exchange?: ("HOSE" | "HNX" | "UPCOM") | null;
+                min_f_score?: number | null;
+                altman_zone?: ("SAFE_ZONE" | "GREY_ZONE" | "DISTRESS_ZONE") | null;
+                risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
+                risk_tiers?: string | null;
+                beneish_flag?: ("VALID" | "HIGH_MANIPULATION_RISK_SCREEN" | "MIXED_TAXONOMY" | "MISSING_PRIOR_YEAR_BASE" | "MISSING_DEPRECIATION_DIRECT_CF" | "MISSING_OR_INVALID_INPUT") | null;
+                max_distress_prob?: number | null;
+                min_distress_prob?: number | null;
+                max_red_flags?: number | null;
+                min_red_flags?: number | null;
+                q?: string | null;
+                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "roe_parent" | "roa" | "eps_ttm_estimated" | "liabilities_to_assets" | "debt_to_equity" | "ebit_margin" | "interest_coverage" | "cfo_ttm" | "ocf_to_total_liabilities" | "revenue_growth_yoy" | "pe_ttm" | "pb_ratio" | "market_cap_vnd";
+                sort_dir?: "asc" | "desc";
+                cluster_id?: number | null;
+                anomaly_flag?: boolean | null;
+                min_roe_parent?: number | null;
+                max_roe_parent?: number | null;
+                min_roa?: number | null;
+                max_roa?: number | null;
+                min_eps_ttm_estimated?: number | null;
+                max_eps_ttm_estimated?: number | null;
+                min_liabilities_to_assets?: number | null;
+                max_liabilities_to_assets?: number | null;
+                min_debt_to_equity?: number | null;
+                max_debt_to_equity?: number | null;
+                min_cfo_ttm?: number | null;
+                max_cfo_ttm?: number | null;
+                min_ocf_to_total_liabilities?: number | null;
+                max_ocf_to_total_liabilities?: number | null;
+                min_revenue_growth_yoy?: number | null;
+                max_revenue_growth_yoy?: number | null;
+                min_pe_ttm?: number | null;
+                max_pe_ttm?: number | null;
+                min_pb_ratio?: number | null;
+                max_pb_ratio?: number | null;
+                min_market_cap_bn_vnd?: number | null;
+                max_market_cap_bn_vnd?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Filtered market screener workbook (.xlsx), capped at 2,000 rows. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_company_bond_signals_api_v3_companies__ticker__bond_signals_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                as_of?: string | null;
+            };
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyBondSignalsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_my_quota_api_v3_quota_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyQuotaResponse"];
+                };
+            };
+        };
+    };
+    get_system_budget_api_v3_ops_quota_system_budget_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemBudgetResponse"];
+                };
+            };
+        };
+    };
+    get_suggested_peers_api_v3_companies__ticker__suggested_peers_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_type?: "QUARTER" | "ANNUAL";
+                period_end_date?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestedPeersResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_anomaly_drivers_api_v3_companies__ticker__anomaly_drivers_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_type?: "QUARTER" | "ANNUAL";
+                period_end_date?: string | null;
+                top_k?: number;
+            };
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnomalyDriversResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_qa_queue_api_v3_ops_qa_queue_get: {
+        parameters: {
+            query?: {
+                status?: ("OPEN" | "IN_REVIEW" | "RESOLVED") | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsQaQueueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assign_qa_ticket_api_v3_ops_qa_queue__ticket_id__assign_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpsAssignTicketRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsTicketMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_qa_revision_api_v3_ops_qa_queue__ticket_id__submit_revision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpsSubmitRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsTicketMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_qa_ticket_api_v3_ops_qa_queue__ticket_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpsDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsTicketMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_issuers_lifecycle_api_v3_ops_issuers_lifecycle_get: {
+        parameters: {
+            query?: {
+                exchange?: string | null;
+                q?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsIssuerLifecycleResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_issuer_sync_api_v3_ops_issuers_sync_request_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpsIssuerSyncRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsIssuerSyncResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_api_keys_api_v3_b2b_keys_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyListResponse"];
+                };
+            };
+        };
+    };
+    create_api_key_api_v3_b2b_keys_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApiKeyCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyCreateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rotate_api_key_api_v3_b2b_keys__key_id__rotate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyCreateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_api_key_api_v3_b2b_keys__key_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyRevokeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_usage_api_v3_b2b_usage_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiUsageSummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_b2b_webhooks_api_v3_b2b_webhooks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["B2BWebhookListResponse"];
+                };
+            };
+        };
+    };
+    create_b2b_webhook_api_v3_b2b_webhooks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["B2BWebhookCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["B2BWebhookCreateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_b2b_webhook_api_v3_b2b_webhooks__endpoint_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["B2BWebhookDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_b2b_webhook_api_v3_b2b_webhooks__endpoint_id__test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["B2BWebhookTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_open_company_risk_api_v3_open_companies__ticker__risk_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_view?: "TTM" | "Quarterly" | "Annual";
+            };
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenDerivedRiskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_open_screener_api_v3_open_screener_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_type?: "QUARTER" | "ANNUAL";
+                period_end_date?: string | null;
+                exchange?: ("HOSE" | "HNX" | "UPCOM") | null;
+                risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenScreenerResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_open_stress_test_api_v3_open_stress_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenStressTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenStressTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_open_raw_statements_api_v3_open_companies__ticker__statements_get: {
+        parameters: {
+            query?: {
+                statement_type?: string;
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_type?: "QUARTER" | "ANNUAL";
+                periods_limit?: number;
+            };
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenRawStatementsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_vas_template_api_v3_private_credit_template_xlsx_get: {
+        parameters: {
+            query?: {
+                taxonomy?: "VAS_TT200_2014" | "VAS_TT99_2025";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    parse_private_statement_api_v3_private_credit_parse_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateDossierPreviewResponse"];
+                };
+            };
+        };
+    };
+    list_dossiers_api_v3_private_credit_dossiers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateDossierListResponse"];
+                };
+            };
+        };
+    };
+    get_dossier_api_v3_private_credit_dossiers__dossier_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateDossierPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_dossier_api_v3_private_credit_dossiers__dossier_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateDossierDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    score_dossier_api_v3_private_credit_dossiers__dossier_id__score_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PrivateScoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateScoreResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_hitl_feedback_api_v3_hitl_feedback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HitlFeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HitlFeedbackItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_hitl_summary_api_v3_hitl_summary_get: {
+        parameters: {
+            query?: {
+                signal_code?: string | null;
+                icb_code_level2?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HitlSummaryResponse"];
                 };
             };
             /** @description Validation Error */

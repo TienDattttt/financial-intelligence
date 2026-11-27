@@ -41,8 +41,16 @@ const PREFERRED_SUGGESTIONS = ["HPG", "FPT", "VNM", "MWG", "GAS"];
 
 export default function MarketOverviewPage() {
   const router = useRouter();
-  const { statementScope, periodType, periodEndDate, availableDates, snapshotId } =
-    useAppState();
+  const {
+    statementScope,
+    periodType,
+    periodEndDate,
+    queryPeriodEndDate = null,
+    availableDates,
+    snapshotId,
+    cacheSnapshotKey,
+  } = useAppState();
+  const effectiveCacheKey = cacheSnapshotKey ?? snapshotId;
 
   const watchlist = React.useSyncExternalStore(
     subscribePreferences,
@@ -51,8 +59,8 @@ export default function MarketOverviewPage() {
   );
 
   const sectorSummary = useSectorRiskSummary(
-    { statementScope, periodType, periodEndDate },
-    snapshotId,
+    { statementScope, periodType, periodEndDate: queryPeriodEndDate },
+    effectiveCacheKey,
   );
   const currentPeriodDate =
     sectorSummary.data?.period_end_date ?? periodEndDate ?? availableDates[0] ?? null;
@@ -67,9 +75,9 @@ export default function MarketOverviewPage() {
     {
       statementScope,
       periodType,
-      periodEndDate: prevPeriodDate ?? periodEndDate,
+      periodEndDate: prevPeriodDate ?? queryPeriodEndDate,
     },
-    snapshotId,
+    effectiveCacheKey,
   );
   const prevData = prevPeriodDate ? prevSectorSummary.data ?? null : null;
   const watchlistChanges = useMarketChanges(
@@ -80,9 +88,9 @@ export default function MarketOverviewPage() {
       limit: 20,
       enabled: watchlist.length > 0,
     },
-    snapshotId,
+    effectiveCacheKey,
   );
-  const issuersQuery = useAllIssuers(snapshotId);
+  const issuersQuery = useAllIssuers(effectiveCacheKey);
 
   const suggestedTickers = React.useMemo(() => {
     const issuers = issuersQuery.data ?? [];
@@ -158,11 +166,19 @@ export default function MarketOverviewPage() {
         })()
       : null;
 
+    const unclassifiedCount = Math.max(
+      0,
+      total - data.safe_zone_count - data.grey_zone_count - data.distress_zone_count,
+    );
+
     return [
       {
         title: "Doanh nghiệp được đánh giá",
         value: formatNumber(total, 0),
-        sub: `${data.safe_zone_count} An toàn · ${data.grey_zone_count} Vùng xám`,
+        sub:
+          unclassifiedCount > 0
+            ? `${data.safe_zone_count} An toàn · ${data.grey_zone_count} Vùng xám · ${unclassifiedCount} Chưa xếp vùng (N/A)`
+            : `${data.safe_zone_count} An toàn · ${data.grey_zone_count} Vùng xám`,
         delta: totalDelta,
         href: "/screener",
         toneClass: "text-ink",
@@ -452,7 +468,21 @@ export default function MarketOverviewPage() {
             <CardContent className="space-y-2.5 p-3.5 text-xs">
               {(() => {
                 const total = Math.max(1, data.total_issuers);
-                const bands = [
+                const unclassifiedCount = Math.max(
+                  0,
+                  data.total_issuers -
+                    data.safe_zone_count -
+                    data.grey_zone_count -
+                    data.distress_zone_count,
+                );
+                const bands: {
+                  label: string;
+                  count: number;
+                  pct: number;
+                  barClass: string;
+                  textClass: string;
+                  href: string | null;
+                }[] = [
                   {
                     label: "Vùng an toàn (Z″ > 2,60)",
                     count: data.safe_zone_count,
@@ -477,27 +507,48 @@ export default function MarketOverviewPage() {
                     textClass: "text-risk-high",
                     href: "/screener?altman_zone=DISTRESS_ZONE",
                   },
+                  {
+                    label: "Chưa xếp vùng (N/A)",
+                    count: unclassifiedCount,
+                    pct: (unclassifiedCount / total) * 100,
+                    barClass: "bg-ink-subtle/60",
+                    textClass: "text-ink-muted",
+                    href: null,
+                  },
                 ];
-                return bands.map((b) => (
-                  <Link
-                    key={b.label}
-                    href={b.href}
-                    className="block rounded-md p-1.5 transition-colors hover:bg-surface-hover/60"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium text-ink">{b.label}</span>
-                      <span className={`num font-semibold ${b.textClass}`}>
-                        {formatNumber(b.count, 0)} DN ({formatPercent(b.pct / 100, { decimals: 1 })})
-                      </span>
+                return bands.map((b) => {
+                  const content = (
+                    <>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-ink">{b.label}</span>
+                        <span className={`num font-semibold ${b.textClass}`}>
+                          {formatNumber(b.count, 0)} DN ({formatPercent(b.pct / 100, { decimals: 1 })})
+                        </span>
+                      </div>
+                      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-muted">
+                        <div
+                          className={`h-full rounded-full ${b.barClass}`}
+                          style={{
+                            width: `${Math.min(100, Math.max(b.count > 0 ? 2 : 0, b.pct))}%`,
+                          }}
+                        />
+                      </div>
+                    </>
+                  );
+                  return b.href ? (
+                    <Link
+                      key={b.label}
+                      href={b.href}
+                      className="block rounded-md p-1.5 transition-colors hover:bg-surface-hover/60"
+                    >
+                      {content}
+                    </Link>
+                  ) : (
+                    <div key={b.label} className="rounded-md p-1.5">
+                      {content}
                     </div>
-                    <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-muted">
-                      <div
-                        className={`h-full rounded-full ${b.barClass}`}
-                        style={{ width: `${Math.min(100, Math.max(2, b.pct))}%` }}
-                      />
-                    </div>
-                  </Link>
-                ));
+                  );
+                });
               })()}
             </CardContent>
           </Card>

@@ -8,6 +8,7 @@ Verified Sources:
 
 from finintel.storage.curated_gc import collect_curated_garbage
 from finintel.storage.ducklake_store import DuckLakeStore, StorageConfig
+from finintel.storage.object_store import ObjectStoreConfig
 from finintel.storage.repository import (
     DuckDBQueryRepository,
     DuckDBRepository,
@@ -35,6 +36,7 @@ __all__ = [
     "DuckLakeStore",
     "FilterRange",
     "KNOWN_TABLES",
+    "ObjectStoreConfig",
     "ParquetRepository",
     "Repository",
     "SnapshotPublisher",

@@ -15,6 +15,11 @@ from dataclasses import dataclass
 
 import polars as pl
 
+from finintel.analytics.stress_fx import (
+    fx_borrowing_cost_delta_expr,
+    prepare_fx_revaluation_stage,
+    validate_fx_depreciation_pct,
+)
 from finintel.exceptions import ContractViolationError
 
 REQUIRED_STRESS_COLUMNS: tuple[str, ...] = (
@@ -42,6 +47,7 @@ _BOUNDS: tuple[tuple[str, float, float], ...] = (
     ("dso_shock_days", -90.0, 180.0),
     ("dio_shock_days", -90.0, 180.0),
 )
+MIN_INTEREST_DENOMINATOR_VND = 100_000_000.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +60,7 @@ class StressScenario:
     gross_margin_shock_pp: float = 0.0
     dso_shock_days: float = 0.0
     dio_shock_days: float = 0.0
+    fx_depreciation_pct: float = 0.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -71,6 +78,7 @@ class StressScenario:
                 raise ContractViolationError(
                     f"StressScenario parameter {field_name}={value!r} outside allowed bounds [{low}, {high}]."
                 )
+        validate_fx_depreciation_pct(self.fx_depreciation_pct)
 
 
 def simulate_financial_stress(
@@ -94,7 +102,9 @@ def simulate_financial_stress(
     ir_shock = float(scenario.interest_rate_shock_bps)
     dso_shock = float(scenario.dso_shock_days)
     dio_shock = float(scenario.dio_shock_days)
-    base_cols = list(ratios_with_inputs.columns)
+    fx_shock = float(scenario.fx_depreciation_pct)
+    fx_cols = {"net_fx_debt_vnd", "fx_revaluation_loss_vnd", "fx_coverage_status"}
+    base_cols = [col for col in ratios_with_inputs.columns if col not in fx_cols]
 
     # Stage intermediate expressions sequentially so Polars builds a flat DAG
     # instead of duplicating nested sub-expressions across 12 output columns.
@@ -112,6 +122,7 @@ def simulate_financial_stress(
             .fill_null(False)
             .alias("_elig"),
         )
+        .pipe(prepare_fx_revaluation_stage, fx_depreciation_pct=fx_shock)
         .with_columns(
             pl.when(c("_elig"))
             .then(c("net_revenue_ttm") * (1.0 + rev_shock))
@@ -129,7 +140,9 @@ def simulate_financial_stress(
             .then(
                 pl.max_horizontal(
                     pl.lit(0.0),
-                    c("borrowing_cost_ttm") + c("total_debt") * (ir_shock / 10000.0),
+                    c("borrowing_cost_ttm")
+                    + c("total_debt") * (ir_shock / 10000.0)
+                    + fx_borrowing_cost_delta_expr(),
                 )
             )
             .cast(pl.Float64)
@@ -189,6 +202,8 @@ def simulate_financial_stress(
             .then(pl.lit("NUMERIC_OVERFLOW"))
             .when(c("stressed_borrowing_cost_ttm") == 0.0)
             .then(pl.lit("NO_INTEREST_EXPENSE"))
+            .when(c("stressed_borrowing_cost_ttm") < MIN_INTEREST_DENOMINATOR_VND)
+            .then(pl.lit("TINY_DENOMINATOR"))
             .when(~c("_icr_q").is_finite())
             .then(pl.lit("NUMERIC_OVERFLOW"))
             .otherwise(pl.lit("VALID"))
@@ -236,6 +251,12 @@ def simulate_financial_stress(
             )
             .then(pl.lit(False))
             .when(
+                (c("interest_coverage_flag") == "TINY_DENOMINATOR")
+                & c("borrowing_cost_ttm").is_not_null()
+                & (c("borrowing_cost_ttm") > 0.0)
+            )
+            .then((c("ebit_ttm") < c("borrowing_cost_ttm")) & (c("total_debt") > 0.0))
+            .when(
                 c("interest_coverage").is_not_null()
                 & (c("interest_coverage") < 1.0)
                 & (c("total_debt") > 0.0)
@@ -261,6 +282,15 @@ def simulate_financial_stress(
                 | (c("total_debt") <= 0.0)
             )
             .then(pl.lit(False))
+            .when(
+                (c("stressed_interest_coverage_flag") == "TINY_DENOMINATOR")
+                & c("stressed_borrowing_cost_ttm").is_not_null()
+                & (c("stressed_borrowing_cost_ttm") > 0.0)
+            )
+            .then(
+                (c("stressed_ebit_ttm") < c("stressed_borrowing_cost_ttm"))
+                & (c("total_debt") > 0.0)
+            )
             .when(
                 c("stressed_interest_coverage").is_not_null()
                 & (c("stressed_interest_coverage") < 1.0)
@@ -291,6 +321,9 @@ def simulate_financial_stress(
         "stressed_cfo_ttm",
         "baseline_debt_at_risk",
         "stressed_debt_at_risk",
+        "net_fx_debt_vnd",
+        "fx_revaluation_loss_vnd",
+        "fx_coverage_status",
     ).with_columns(
         pl.when(
             c("baseline_debt_at_risk").is_not_null()
