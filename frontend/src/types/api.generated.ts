@@ -1067,6 +1067,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/private-credit/template.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Vas Template */
+        get: operations["download_vas_template_api_v3_private_credit_template_xlsx_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/private-credit/parse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Parse Private Statement */
+        post: operations["parse_private_statement_api_v3_private_credit_parse_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/private-credit/dossiers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Dossiers */
+        get: operations["list_dossiers_api_v3_private_credit_dossiers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/private-credit/dossiers/{dossier_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Dossier */
+        get: operations["get_dossier_api_v3_private_credit_dossiers__dossier_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Dossier */
+        delete: operations["delete_dossier_api_v3_private_credit_dossiers__dossier_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/private-credit/dossiers/{dossier_id}/score": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Score Dossier */
+        post: operations["score_dossier_api_v3_private_credit_dossiers__dossier_id__score_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/hitl/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Hitl Feedback */
+        post: operations["submit_hitl_feedback_api_v3_hitl_feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/hitl/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Hitl Summary */
+        get: operations["get_hitl_summary_api_v3_hitl_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2122,6 +2242,120 @@ export interface components {
             /** Top 3 Shap Drivers */
             top_3_shap_drivers?: components["schemas"]["ShapDriverItem"][];
         };
+        /**
+         * HitlFeedbackItem
+         * @description Recorded expert feedback item (SR 11-7 safe: never mutates ML ground truth).
+         */
+        HitlFeedbackItem: {
+            /**
+             * Feedback Id
+             * Format: uuid
+             */
+            feedback_id: string;
+            /** User Id */
+            user_id?: string | null;
+            /** Ticker */
+            ticker: string;
+            /** Icb Code Level2 */
+            icb_code_level2: string;
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Signal Code */
+            signal_code: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "CONFIRMED_RISK" | "BENIGN_DOMAIN_EXCEPTION";
+            /**
+             * Reason Category
+             * @enum {string}
+             */
+            reason_category: "CONSTRUCTION_PROGRESS_BILLING" | "HOLDING_ASSOCIATE_DIVIDENDS" | "SEASONAL_WORKING_CAPITAL" | "TRANSIENT_CAPEX_EXPANSION" | "ACCOUNTING_RECLASSIFICATION" | "CONFIRMED_FUNDAMENTAL_RISK" | "OTHER";
+            /** Note */
+            note: string;
+            /** Citation Page */
+            citation_page?: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Ml Training Labels Untouched
+             * @default true
+             * @constant
+             */
+            ml_training_labels_untouched: true;
+        };
+        /**
+         * HitlFeedbackRequest
+         * @description Expert triage payload for a triggered red flag or multivariate outlier.
+         */
+        HitlFeedbackRequest: {
+            /** Ticker */
+            ticker: string;
+            /** Icb Code Level2 */
+            icb_code_level2?: string | null;
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Signal Code */
+            signal_code: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "CONFIRMED_RISK" | "BENIGN_DOMAIN_EXCEPTION";
+            /**
+             * Reason Category
+             * @enum {string}
+             */
+            reason_category: "CONSTRUCTION_PROGRESS_BILLING" | "HOLDING_ASSOCIATE_DIVIDENDS" | "SEASONAL_WORKING_CAPITAL" | "TRANSIENT_CAPEX_EXPANSION" | "ACCOUNTING_RECLASSIFICATION" | "CONFIRMED_FUNDAMENTAL_RISK" | "OTHER";
+            /** Note */
+            note: string;
+            /** Citation Page */
+            citation_page?: number | null;
+        };
+        /**
+         * HitlSummaryCell
+         * @description False-positive aggregation for one ``signal_code x icb_code_level2`` pair.
+         */
+        HitlSummaryCell: {
+            /** Signal Code */
+            signal_code: string;
+            /** Icb Code Level2 */
+            icb_code_level2: string;
+            /** Total Count */
+            total_count: number;
+            /** Confirmed Risk Count */
+            confirmed_risk_count: number;
+            /** Benign Exception Count */
+            benign_exception_count: number;
+            /** False Positive Rate */
+            false_positive_rate: number;
+            /** Top Reason Categories */
+            top_reason_categories: string[];
+        };
+        /**
+         * HitlSummaryResponse
+         * @description INTERNAL_OPS aggregated HITL triage report.
+         */
+        HitlSummaryResponse: {
+            /** Total Feedback */
+            total_feedback: number;
+            /** Overall False Positive Rate */
+            overall_false_positive_rate?: number | null;
+            /** Items */
+            items: components["schemas"]["HitlSummaryCell"][];
+            /** Mrm Governance Note */
+            mrm_governance_note: string;
+        };
         /** ImportLocalWatchlistRequest */
         ImportLocalWatchlistRequest: {
             /** Tickers */
@@ -3059,6 +3293,413 @@ export interface components {
             naive_edf?: number | null;
             /** Dtd Flag */
             dtd_flag?: string | null;
+        };
+        /**
+         * PrivateClassicalScores
+         * @description Classical corporate accounting distress & forensic scores.
+         */
+        PrivateClassicalScores: {
+            /** Altman Z Double Prime */
+            altman_z_double_prime?: number | null;
+            /** Altman Em Score */
+            altman_em_score?: number | null;
+            /** Altman Zone */
+            altman_zone?: string | null;
+            /** Piotroski F Score */
+            piotroski_f_score?: number | null;
+            /** Piotroski Valid Components Count */
+            piotroski_valid_components_count?: number | null;
+            /** Beneish M8 Score */
+            beneish_m8_score?: number | null;
+            /** Beneish Flag */
+            beneish_flag?: string | null;
+        };
+        /**
+         * PrivateDossierDeleteResponse
+         * @description Deletion confirmation for a private credit dossier.
+         */
+        PrivateDossierDeleteResponse: {
+            /**
+             * Status
+             * @default DELETED
+             * @constant
+             */
+            status: "DELETED";
+            /**
+             * Dossier Id
+             * Format: uuid
+             */
+            dossier_id: string;
+        };
+        /**
+         * PrivateDossierListResponse
+         * @description List of private credit dossiers owned by the authenticated user.
+         */
+        PrivateDossierListResponse: {
+            /** Items */
+            items: components["schemas"]["PrivateDossierSummaryItem"][];
+        };
+        /**
+         * PrivateDossierPreviewResponse
+         * @description Response returned by ``POST /api/v3/private-credit/parse`` and ``GET /dossiers/{id}``.
+         */
+        PrivateDossierPreviewResponse: {
+            /**
+             * Dossier Id
+             * Format: uuid
+             */
+            dossier_id: string;
+            /** Company Name */
+            company_name: string;
+            /** Tax Code */
+            tax_code?: string | null;
+            /** Icb Code Level2 */
+            icb_code_level2?: string | null;
+            /**
+             * Statement Scope
+             * @enum {string}
+             */
+            statement_scope: "CONSOLIDATED" | "SEPARATE";
+            /**
+             * Taxonomy Version
+             * @enum {string}
+             */
+            taxonomy_version: "VAS_TT200_2014" | "VAS_TT99_2025";
+            /** Unit Multiplier */
+            unit_multiplier: number;
+            /** Source Filename */
+            source_filename: string;
+            /** Source Sha256 */
+            source_sha256: string;
+            /** Periods */
+            periods: string[];
+            qg1: components["schemas"]["Qg1ReportResponse"];
+            /** Lines */
+            lines: components["schemas"]["PrivateParsedLineItem"][];
+            /**
+             * Retention Days
+             * @default 30
+             */
+            retention_days: number;
+            /**
+             * Retention Expires At
+             * Format: date-time
+             */
+            retention_expires_at: string;
+            /**
+             * Processing Mode
+             * @default LOCAL_SERVER_ONLY
+             * @constant
+             */
+            processing_mode: "LOCAL_SERVER_ONLY";
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * PrivateDossierSummaryItem
+         * @description Compact summary item when listing a user's own private dossiers.
+         */
+        PrivateDossierSummaryItem: {
+            /**
+             * Dossier Id
+             * Format: uuid
+             */
+            dossier_id: string;
+            /** Company Name */
+            company_name: string;
+            /** Tax Code */
+            tax_code?: string | null;
+            /**
+             * Taxonomy Version
+             * @enum {string}
+             */
+            taxonomy_version: "VAS_TT200_2014" | "VAS_TT99_2025";
+            /**
+             * Qg1 Status
+             * @enum {string}
+             */
+            qg1_status: "PASS" | "WARNING" | "FAIL";
+            /** Periods */
+            periods: string[];
+            /** Has Score */
+            has_score: boolean;
+            /**
+             * Retention Expires At
+             * Format: date-time
+             */
+            retention_expires_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * PrivateDupontBreakdown
+         * @description 5-factor and 6-factor DuPont decomposition for the latest period.
+         */
+        PrivateDupontBreakdown: {
+            /** Tax Burden */
+            tax_burden?: number | null;
+            /** Interest Burden */
+            interest_burden?: number | null;
+            /** Ebit Margin */
+            ebit_margin?: number | null;
+            /** Asset Turnover */
+            asset_turnover?: number | null;
+            /** Equity Multiplier Total */
+            equity_multiplier_total?: number | null;
+            /** Parent Profit Share */
+            parent_profit_share?: number | null;
+            /** Equity Multiplier Parent */
+            equity_multiplier_parent?: number | null;
+            /** Roe Total */
+            roe_total?: number | null;
+            /** Roe Parent */
+            roe_parent?: number | null;
+            /**
+             * Dupont Valid Flag
+             * @default false
+             */
+            dupont_valid_flag: boolean;
+        };
+        /**
+         * PrivateMlAccountingOnlyResult
+         * @description Isolated ML PD estimate under explicit ACCOUNTING_ONLY_MODE.
+         */
+        PrivateMlAccountingOnlyResult: {
+            /**
+             * Ml Mode
+             * @default ACCOUNTING_ONLY_MODE
+             * @constant
+             */
+            ml_mode: "ACCOUNTING_ONLY_MODE";
+            /** Calibrated Distress Prob */
+            calibrated_distress_prob?: number | null;
+            /** Risk Tier */
+            risk_tier?: string | null;
+            /** Model Version */
+            model_version: string;
+            /** Accounting Feature Coverage */
+            accounting_feature_coverage: number;
+            /** Missing Market Tt96 Features */
+            missing_market_tt96_features: string[];
+            /** Coverage Warning Vi */
+            coverage_warning_vi: string;
+        };
+        /**
+         * PrivateParsedLineItem
+         * @description Single normalized VAS statement line across uploaded periods.
+         */
+        PrivateParsedLineItem: {
+            /**
+             * Statement Type
+             * @enum {string}
+             */
+            statement_type: "BALANCE_SHEET" | "INCOME_STATEMENT" | "CASH_FLOW";
+            /** Vas Code */
+            vas_code: string;
+            /** Metric Id */
+            metric_id: string;
+            /** Line Label Vn */
+            line_label_vn: string;
+            /** Values By Period */
+            values_by_period?: {
+                [key: string]: number | null;
+            };
+        };
+        /**
+         * PrivateRedFlagItem
+         * @description Triggered Layer 4A accounting red flag on the private dossier.
+         */
+        PrivateRedFlagItem: {
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Flag Code */
+            flag_code: string;
+            /** Severity */
+            severity: string;
+            /** Flag Title Vn */
+            flag_title_vn: string;
+            /** Explanation Text Vn */
+            explanation_text_vn: string;
+            /** Evidence Json */
+            evidence_json: string;
+        };
+        /**
+         * PrivateScoreRequest
+         * @description Optional stress-test shock parameters when scoring a private issuer dossier.
+         */
+        PrivateScoreRequest: {
+            /**
+             * Scenario Name
+             * @default Kịch bản bất lợi chuẩn IMF
+             */
+            scenario_name: string;
+            /**
+             * Interest Rate Shock Bps
+             * @default 200
+             */
+            interest_rate_shock_bps: number;
+            /**
+             * Revenue Shock Pct
+             * @default -0.15
+             */
+            revenue_shock_pct: number;
+            /**
+             * Gross Margin Shock Pp
+             * @default -0.03
+             */
+            gross_margin_shock_pp: number;
+            /**
+             * Dso Shock Days
+             * @default 15
+             */
+            dso_shock_days: number;
+            /**
+             * Dio Shock Days
+             * @default 15
+             */
+            dio_shock_days: number;
+        };
+        /**
+         * PrivateScoreResponse
+         * @description Complete isolated private-issuer quantitative risk report.
+         */
+        PrivateScoreResponse: {
+            /**
+             * Dossier Id
+             * Format: uuid
+             */
+            dossier_id: string;
+            /** Company Name */
+            company_name: string;
+            /** Tax Code */
+            tax_code?: string | null;
+            /**
+             * Taxonomy Version
+             * @enum {string}
+             */
+            taxonomy_version: "VAS_TT200_2014" | "VAS_TT99_2025";
+            /**
+             * Statement Scope
+             * @enum {string}
+             */
+            statement_scope: "CONSOLIDATED" | "SEPARATE";
+            /**
+             * Scored Period End Date
+             * Format: date
+             */
+            scored_period_end_date: string;
+            /**
+             * Qg1 Status
+             * @enum {string}
+             */
+            qg1_status: "PASS" | "WARNING" | "FAIL";
+            /** Ratios */
+            ratios: {
+                [key: string]: number | null;
+            };
+            /** Ratio Flags */
+            ratio_flags: {
+                [key: string]: string | null;
+            };
+            dupont: components["schemas"]["PrivateDupontBreakdown"];
+            classical: components["schemas"]["PrivateClassicalScores"];
+            /** Red Flags */
+            red_flags: components["schemas"]["PrivateRedFlagItem"][];
+            ml_assessment: components["schemas"]["PrivateMlAccountingOnlyResult"];
+            stress_test: components["schemas"]["PrivateStressResult"];
+            /**
+             * Ducklake Contaminated
+             * @default false
+             * @constant
+             */
+            ducklake_contaminated: false;
+            /**
+             * Ml Labels Modified
+             * @default false
+             * @constant
+             */
+            ml_labels_modified: false;
+            /** Elapsed Ms */
+            elapsed_ms: number;
+        };
+        /**
+         * PrivateStressResult
+         * @description Deterministic IMF WP/15/216 stress test result for the private issuer.
+         */
+        PrivateStressResult: {
+            /** Scenario Name */
+            scenario_name: string;
+            /** Baseline Ebit Vnd */
+            baseline_ebit_vnd?: number | null;
+            /** Stressed Ebit Vnd */
+            stressed_ebit_vnd?: number | null;
+            /** Baseline Interest Coverage */
+            baseline_interest_coverage?: number | null;
+            /** Stressed Interest Coverage */
+            stressed_interest_coverage?: number | null;
+            /** Stressed Interest Coverage Flag */
+            stressed_interest_coverage_flag?: string | null;
+            /** Baseline Cfo Vnd */
+            baseline_cfo_vnd?: number | null;
+            /** Stressed Cfo Vnd */
+            stressed_cfo_vnd?: number | null;
+            /** Baseline Debt At Risk */
+            baseline_debt_at_risk?: boolean | null;
+            /** Stressed Debt At Risk */
+            stressed_debt_at_risk?: boolean | null;
+        };
+        /**
+         * Qg1DiscrepancyItem
+         * @description Single Layer 6 QG1 accounting discrepancy detected in uploaded workbook.
+         */
+        Qg1DiscrepancyItem: {
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Rule Code */
+            rule_code: string;
+            /** Severity */
+            severity: string;
+            /** Message Vi */
+            message_vi: string;
+            /** Expected Value Vnd */
+            expected_value_vnd?: number | null;
+            /** Actual Value Vnd */
+            actual_value_vnd?: number | null;
+            /** Abs Residual Vnd */
+            abs_residual_vnd?: number | null;
+            /** Missing Metrics */
+            missing_metrics?: string[];
+        };
+        /**
+         * Qg1ReportResponse
+         * @description Layer 6 QG1 verification summary for a private issuer upload.
+         */
+        Qg1ReportResponse: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "PASS" | "WARNING" | "FAIL";
+            /** Discrepancies */
+            discrepancies?: components["schemas"]["Qg1DiscrepancyItem"][];
+            /** Warnings */
+            warnings?: string[];
+            /** Info Signals */
+            info_signals?: string[];
+            /** Can Score */
+            can_score: boolean;
         };
         /**
          * QualitySummaryItem
@@ -6747,6 +7388,239 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OpsIssuerSyncResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_vas_template_api_v3_private_credit_template_xlsx_get: {
+        parameters: {
+            query?: {
+                taxonomy?: "VAS_TT200_2014" | "VAS_TT99_2025";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    parse_private_statement_api_v3_private_credit_parse_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateDossierPreviewResponse"];
+                };
+            };
+        };
+    };
+    list_dossiers_api_v3_private_credit_dossiers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateDossierListResponse"];
+                };
+            };
+        };
+    };
+    get_dossier_api_v3_private_credit_dossiers__dossier_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateDossierPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_dossier_api_v3_private_credit_dossiers__dossier_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateDossierDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    score_dossier_api_v3_private_credit_dossiers__dossier_id__score_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PrivateScoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateScoreResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_hitl_feedback_api_v3_hitl_feedback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HitlFeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HitlFeedbackItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_hitl_summary_api_v3_hitl_summary_get: {
+        parameters: {
+            query?: {
+                signal_code?: string | null;
+                icb_code_level2?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HitlSummaryResponse"];
                 };
             };
             /** @description Validation Error */

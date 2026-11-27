@@ -161,3 +161,32 @@ export type IssuerLifecycleItem = Schema["IssuerLifecycleItem"];
 export type OpsIssuerLifecycleResponse = Schema["OpsIssuerLifecycleResponse"];
 export type OpsIssuerSyncRequest = Schema["OpsIssuerSyncRequest"];
 export type OpsIssuerSyncResponse = Schema["OpsIssuerSyncResponse"];
+
+export type PrivateQg1Discrepancy = Schema["Qg1DiscrepancyItem"];
+export type PrivateQg1Report = Schema["Qg1ReportResponse"];
+export type PrivateParsedFactLine = Schema["PrivateParsedLineItem"];
+export type PrivateDossierPreviewResponse = Schema["PrivateDossierPreviewResponse"];
+export type PrivateDossierSummaryItem = Schema["PrivateDossierSummaryItem"];
+export type PrivateDossierListResponse = Schema["PrivateDossierListResponse"];
+export type PrivateScoreRequest = Schema["PrivateScoreRequest"];
+export type PrivateClassicalScores = Schema["PrivateClassicalScores"];
+export type PrivateDupontBreakdown = Schema["PrivateDupontBreakdown"];
+export type PrivateRedFlagItem = Schema["PrivateRedFlagItem"];
+export type PrivateStressResult = Schema["PrivateStressResult"];
+export type PrivateMlAccountingOnlyResult = Schema["PrivateMlAccountingOnlyResult"];
+export type PrivateScoreResponse = Schema["PrivateScoreResponse"];
+export type PrivateDossierDeleteResponse = Schema["PrivateDossierDeleteResponse"];
+
+export type HitlVerdict = "CONFIRMED_RISK" | "BENIGN_DOMAIN_EXCEPTION";
+export type HitlReasonCategory =
+  | "CONSTRUCTION_PROGRESS_BILLING"
+  | "HOLDING_ASSOCIATE_DIVIDENDS"
+  | "SEASONAL_WORKING_CAPITAL"
+  | "TRANSIENT_CAPEX_EXPANSION"
+  | "ACCOUNTING_RECLASSIFICATION"
+  | "CONFIRMED_FUNDAMENTAL_RISK"
+  | "OTHER";
+export type HitlFeedbackRequest = Schema["HitlFeedbackRequest"];
+export type HitlFeedbackItem = Schema["HitlFeedbackItem"];
+export type HitlSummaryCell = Schema["HitlSummaryCell"];
+export type HitlSummaryResponse = Schema["HitlSummaryResponse"];
