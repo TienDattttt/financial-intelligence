@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import importlib
 import io
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
+import polars as pl
 import pytest
 
 from finintel.private_credit.vas_excel_parser import (
@@ -263,3 +265,389 @@ def test_vas_excel_qg1_imbalance_blocks_scoring() -> None:
         d for d in parsed.qg1.discrepancies if d.rule_code == "BS_IDENTITY_MISMATCH"
     )
     assert bs_disc.abs_residual_vnd == pytest.approx(50_000_000_000.0)
+
+
+def _snapshot_tree_fingerprint(root: Path) -> dict[str, tuple[int, int]]:
+    return {
+        p.relative_to(root).as_posix(): (p.stat().st_size, p.stat().st_mtime_ns)
+        for p in sorted(root.rglob("*"))
+        if p.is_file() and not p.name.endswith(("-shm", "-wal"))
+    }
+
+
+def _create_test_snapshot(data_root: Path) -> None:
+    from finintel.pipeline.state_store import StateStore
+    from finintel.storage.snapshot_publisher import SnapshotPublisher
+
+    snapshots_root = data_root / "published" / "snapshots"
+    state_store = StateStore(data_root / "metadata" / "state.sqlite")
+    state_store.initialize()
+    state_store.start_run("run-priv-hitl-test", "CLI_MANUAL", {}, None)
+    publisher = SnapshotPublisher(snapshots_root, state_store=state_store)
+    issuers_df = pl.DataFrame(
+        [
+            {
+                "issuer_id": "ISS_HPG",
+                "ticker": "HPG",
+                "exchange": "HOSE",
+                "company_name_vn": "Tập đoàn Hòa Phát",
+                "accounting_regime": "CORPORATE",
+                "icb_code_level2": "1700",
+                "icb_name_level2": "Tài nguyên Cơ bản",
+                "icb_code_level3": "1750",
+                "icb_name_level3": "Thép",
+                "industry_snapshot_date": date(2025, 1, 1),
+                "delisted_date": None,
+            }
+        ],
+        schema_overrides={"delisted_date": pl.Date},
+    )
+    reg_df = pl.DataFrame(
+        {
+            "issuer_id": ["ISS_HPG"],
+            "event_date": [date(2025, 1, 15)],
+            "effective_from": [date(2025, 1, 15)],
+            "event_type": ["CONTROL"],
+            "event_stage": ["FIRST_ENTRY"],
+        }
+    )
+    publisher.publish(
+        "snap_v3_priv_hitl",
+        {
+            "issuers.parquet": issuers_df,
+            "regulatory_events.parquet": reg_df,
+        },
+        run_id="run-priv-hitl-test",
+    )
+
+
+def _register_and_login_accounts(
+    app: Any, app_store: Any, clients_roles: tuple[tuple[Any, str, Any], ...]
+) -> None:
+    for client, email, role in clients_roles:
+        reg = client.post(
+            "/api/v3/auth/register",
+            json={
+                "email": email,
+                "password": "StrongPassword!2026",
+                "display_name": str(role.value),
+                "accepted_consent_version": "2026.01",
+                "accept_account_core": True,
+            },
+        )
+        assert reg.status_code == 201
+        rec = app_store.get_user_by_email(email)
+        assert rec is not None
+        app_store._users[rec.user_id] = type(rec)(**{**rec.__dict__, "role": role})
+        assert (
+            client.post(
+                "/api/v3/auth/login",
+                json={"email": email, "password": "StrongPassword!2026"},
+            ).status_code
+            == 200
+        )
+
+
+def test_private_credit_scoring_isolation_rbac_and_idor(tmp_path: Path) -> None:
+    """V3-29: Private scoring runs <3s in ACCOUNTING_ONLY_MODE with 0 DuckLake mutation & 0 IDOR."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("pydantic")
+    pytest.importorskip("argon2")
+
+    from fastapi.testclient import TestClient
+
+    from finintel.auth._store import InMemoryAppStore
+    from finintel.auth.dependencies import UserRole
+    from finintel.auth.email import InMemoryEmailOutbox
+    from finintel.private_credit._store import InMemoryPrivateCreditStore
+    from finintel.serving.api import create_app
+
+    data_root = tmp_path / "data_priv_test"
+    _create_test_snapshot(data_root)
+    before_fp = _snapshot_tree_fingerprint(data_root)
+
+    app = create_app(data_root=data_root, valkey_url="")
+    app_store = InMemoryAppStore()
+    priv_store = InMemoryPrivateCreditStore()
+    app.state._app_store = app_store
+    app.state._private_credit_store = priv_store
+    app.state._email_sender = InMemoryEmailOutbox()
+    csrf = {"X-Requested-With": "FinIntel-Web"}
+
+    with (
+        TestClient(app, base_url="https://testserver") as c_user,
+        TestClient(app, base_url="https://testserver") as c_res1,
+        TestClient(app, base_url="https://testserver") as c_res2,
+    ):
+        _register_and_login_accounts(
+            app,
+            app_store,
+            (
+                (c_user, "u@finintel.vn", UserRole.USER),
+                (c_res1, "r1@finintel.vn", UserRole.RESEARCHER),
+                (c_res2, "r2@finintel.vn", UserRole.RESEARCHER),
+            ),
+        )
+
+        # USER cannot access private credit endpoints
+        assert c_user.get("/api/v3/private-credit/template.xlsx").status_code == 403
+
+        # RESEARCHER downloads template
+        tpl_res = c_res1.get(
+            "/api/v3/private-credit/template.xlsx?taxonomy=VAS_TT99_2025"
+        )
+        assert tpl_res.status_code == 200
+        assert tpl_res.content.startswith(b"PK\x03\x04")
+
+        # Upload & parse valid 2-year TT99 workbook
+        parse_res = c_res1.post(
+            "/api/v3/private-credit/parse",
+            files={
+                "file": (
+                    "minh_long.xlsx",
+                    _valid_tt99_fixture(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            data={
+                "company_name": "Công ty TNHH Minh Long",
+                "tax_code": "0301234567",
+                "icb_code_level2": "1700",
+                "statement_scope": "SEPARATE",
+                "taxonomy_version": "AUTO",
+                "unit_multiplier": "1",
+            },
+            headers=csrf,
+        )
+        assert parse_res.status_code == 201
+        preview = parse_res.json()
+        dossier_id = preview["dossier_id"]
+        assert preview["qg1"]["status"] == "PASS"
+        assert preview["qg1"]["can_score"] is True
+        assert preview["processing_mode"] == "LOCAL_SERVER_ONLY"
+
+        # Score isolated in ACCOUNTING_ONLY_MODE (< 3 seconds)
+        score_res = c_res1.post(
+            f"/api/v3/private-credit/dossiers/{dossier_id}/score",
+            json={"interest_rate_shock_bps": 250.0, "revenue_shock_pct": -0.20},
+            headers=csrf,
+        )
+        assert score_res.status_code == 200
+        scored = score_res.json()
+        assert scored["elapsed_ms"] < 3000.0
+        assert scored["ducklake_contaminated"] is False
+        assert scored["ml_labels_modified"] is False
+        assert scored["ml_assessment"]["ml_mode"] == "ACCOUNTING_ONLY_MODE"
+        assert "merton_dtd" in scored["ml_assessment"]["missing_market_tt96_features"]
+        assert (
+            "overdue_or_late_count_4q"
+            in scored["ml_assessment"]["missing_market_tt96_features"]
+        )
+        assert scored["ratios"]["roa"] is not None
+        assert scored["ratios"]["roe_total"] is not None
+        assert scored["ratios"]["ocf_to_total_liabilities"] is not None
+        assert scored["dupont"]["dupont_valid_flag"] is True
+        assert scored["classical"]["altman_z_double_prime"] is not None
+        assert scored["classical"]["piotroski_valid_components_count"] >= 5
+        assert scored["stress_test"]["stressed_ebit_vnd"] is not None
+
+        # Zero IDOR: r2 cannot view, score, or delete r1's dossier
+        assert (
+            c_res2.get(f"/api/v3/private-credit/dossiers/{dossier_id}").status_code
+            == 404
+        )
+        assert (
+            c_res2.post(
+                f"/api/v3/private-credit/dossiers/{dossier_id}/score",
+                json={},
+                headers=csrf,
+            ).status_code
+            == 404
+        )
+        assert (
+            c_res2.delete(
+                f"/api/v3/private-credit/dossiers/{dossier_id}",
+                headers=csrf,
+            ).status_code
+            == 404
+        )
+
+        # Delete dossier cleanly
+        del_res = c_res1.delete(
+            f"/api/v3/private-credit/dossiers/{dossier_id}", headers=csrf
+        )
+        assert del_res.status_code == 200
+        assert (
+            c_res1.get(f"/api/v3/private-credit/dossiers/{dossier_id}").status_code
+            == 404
+        )
+
+        # Imbalanced upload parses with QG1 FAIL and score endpoint blocks with 422
+        bad_bytes = _populate_template_bytes(
+            taxonomy="VAS_TT99_2025",
+            values_by_sheet_code={
+                "BS": {
+                    "100": (600_000_000_000.0, 700_000_000_000.0),
+                    "200": (400_000_000_000.0, 500_000_000_000.0),
+                    "280": (1_000_000_000_000.0, 1_200_000_000_000.0),
+                    "300": (550_000_000_000.0, 650_000_000_000.0),
+                    "400": (450_000_000_000.0, 510_000_000_000.0),
+                    "440": (1_000_000_000_000.0, 1_160_000_000_000.0),
+                },
+                "IS": {
+                    "10": (900_000_000_000.0, 1_000_000_000_000.0),
+                    "60": (50e9, 60e9),
+                },
+                "CF": {"02": (10e9, 12e9), "20": (60e9, 70e9)},
+            },
+        )
+        bad_parse = c_res1.post(
+            "/api/v3/private-credit/parse",
+            files={"file": ("bad.xlsx", bad_bytes, "application/octet-stream")},
+            data={"company_name": "DN Lệch CĐKT"},
+            headers=csrf,
+        )
+        assert bad_parse.status_code == 201
+        bad_id = bad_parse.json()["dossier_id"]
+        assert bad_parse.json()["qg1"]["status"] == "FAIL"
+        assert bad_parse.json()["qg1"]["can_score"] is False
+        blocked_score = c_res1.post(
+            f"/api/v3/private-credit/dossiers/{bad_id}/score",
+            json={},
+            headers=csrf,
+        )
+        assert blocked_score.status_code == 422
+
+    # Confirm 0 files written/modified inside DuckLake/snapshot data_root
+    after_fp = _snapshot_tree_fingerprint(data_root)
+    assert after_fp == before_fp
+
+
+def test_hitl_feedback_rbac_aggregation_and_zero_ml_mutation(tmp_path: Path) -> None:
+    """V3-29: HITL triage allows expert feedback, restricts summary to INTERNAL_OPS, leaves ML/DuckLake untouched."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("pydantic")
+    pytest.importorskip("argon2")
+
+    from fastapi.testclient import TestClient
+
+    from finintel.auth._store import InMemoryAppStore
+    from finintel.auth.dependencies import UserRole
+    from finintel.auth.email import InMemoryEmailOutbox
+    from finintel.hitl._store import InMemoryHitlStore
+    from finintel.serving.api import create_app
+
+    data_root = tmp_path / "data_hitl_test"
+    _create_test_snapshot(data_root)
+    before_fp = _snapshot_tree_fingerprint(data_root)
+    reg_before = pl.read_parquet(
+        data_root
+        / "published"
+        / "snapshots"
+        / "snap_v3_priv_hitl"
+        / "regulatory_events.parquet"
+    )
+
+    app = create_app(data_root=data_root, valkey_url="")
+    app_store = InMemoryAppStore()
+    hitl_store = InMemoryHitlStore()
+    app.state._app_store = app_store
+    app.state._hitl_store = hitl_store
+    app.state._email_sender = InMemoryEmailOutbox()
+    csrf = {"X-Requested-With": "FinIntel-Web"}
+
+    with (
+        TestClient(app, base_url="https://testserver") as c_user,
+        TestClient(app, base_url="https://testserver") as c_res,
+        TestClient(app, base_url="https://testserver") as c_ops,
+    ):
+        _register_and_login_accounts(
+            app,
+            app_store,
+            (
+                (c_user, "u_hitl@finintel.vn", UserRole.USER),
+                (c_res, "r_hitl@finintel.vn", UserRole.RESEARCHER),
+                (c_ops, "ops_hitl@finintel.vn", UserRole.INTERNAL_OPS),
+            ),
+        )
+
+        # USER and RESEARCHER submit HITL feedback
+        fb1 = c_user.post(
+            "/api/v3/hitl/feedback",
+            json={
+                "ticker": "HPG",
+                "period_end_date": "2025-12-31",
+                "signal_code": "RF_09_FROZEN_CIP_CAPITALIZATION",
+                "verdict": "BENIGN_DOMAIN_EXCEPTION",
+                "reason_category": "TRANSIENT_CAPEX_EXPANSION",
+                "note": "Dự án Dung Quất 2 đang trong giai đoạn lắp đặt theo tiến độ thuyết minh.",
+                "citation_page": 42,
+            },
+            headers=csrf,
+        )
+        assert fb1.status_code == 201
+        assert fb1.json()["icb_code_level2"] == "1700"
+        assert fb1.json()["ml_training_labels_untouched"] is True
+
+        fb2 = c_res.post(
+            "/api/v3/hitl/feedback",
+            json={
+                "ticker": "HPG",
+                "icb_code_level2": "1700",
+                "period_end_date": "2025-12-31",
+                "signal_code": "RF_09_FROZEN_CIP_CAPITALIZATION",
+                "verdict": "CONFIRMED_RISK",
+                "reason_category": "CONFIRMED_FUNDAMENTAL_RISK",
+                "note": "Thời gian hoàn thành kéo dài 2 quý liên tiếp.",
+            },
+            headers=csrf,
+        )
+        assert fb2.status_code == 201
+
+        # USER & RESEARCHER get 403 on summary
+        assert c_user.get("/api/v3/hitl/summary").status_code == 403
+        assert c_res.get("/api/v3/hitl/summary").status_code == 403
+
+        # INTERNAL_OPS gets aggregated false-positive rate by signal_code x icb_code_level2
+        sum_res = c_ops.get("/api/v3/hitl/summary")
+        assert sum_res.status_code == 200
+        body = sum_res.json()
+        assert body["total_feedback"] == 2
+        assert body["overall_false_positive_rate"] == pytest.approx(0.5)
+        assert len(body["items"]) == 1
+        cell = body["items"][0]
+        assert cell["signal_code"] == "RF_09_FROZEN_CIP_CAPITALIZATION"
+        assert cell["icb_code_level2"] == "1700"
+        assert cell["benign_exception_count"] == 1
+        assert cell["confirmed_risk_count"] == 1
+        assert cell["false_positive_rate"] == pytest.approx(0.5)
+
+    # Confirm DuckLake & regulatory_events.parquet untouched
+    assert _snapshot_tree_fingerprint(data_root) == before_fp
+    reg_after = pl.read_parquet(
+        data_root
+        / "published"
+        / "snapshots"
+        / "snap_v3_priv_hitl"
+        / "regulatory_events.parquet"
+    )
+    assert reg_after.equals(reg_before)
+
+
+def test_private_credit_and_hitl_offline_mvp_checks_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify core parser and package entrypoints import cleanly without platform deps."""
+    for pkg in ("fastapi", "pydantic", "argon2", "psycopg", "redis"):
+        monkeypatch.setitem(sys.modules, pkg, None)
+    for mod_name in list(sys.modules):
+        if mod_name.startswith(("finintel.private_credit", "finintel.hitl")):
+            monkeypatch.delitem(sys.modules, mod_name, raising=False)
+
+    priv_pkg = importlib.import_module("finintel.private_credit")
+    hitl_pkg = importlib.import_module("finintel.hitl")
+    parser_mod = importlib.import_module("finintel.private_credit.vas_excel_parser")
+    assert hasattr(priv_pkg, "mount_private_hitl_routers")
+    assert hasattr(hitl_pkg, "mount_hitl_router")
+    tpl = parser_mod.build_vas_template_xlsx("VAS_TT99_2025", years=(2024, 2025))
+    assert tpl.startswith(b"PK\x03\x04")
