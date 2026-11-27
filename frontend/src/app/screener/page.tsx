@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { ScreenerScatterChart } from "@/components/charts/ScreenerScatterChart";
+import { ExportActionMenu, buildScreenerXlsxExportUrl } from "@/components/export/ExportActionMenu";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { ScreenerFilterDrawer } from "@/components/screener/ScreenerFilterDrawer";
@@ -950,6 +951,14 @@ function ScreenerContent() {
                 <Download className="size-3" />
                 {isExporting ? "Đang xuất CSV..." : `Xuất CSV (${total})`}
               </Button>
+              <ExportActionMenu
+                xlsxUrl={buildScreenerXlsxExportUrl(queryParams)}
+                xlsxFallbackFilename="finintel-screener.xlsx"
+                onDownloadCsv={handleExportCsv}
+                disabled={total === 0}
+                label="Xuất Excel"
+                onError={setExportError}
+              />
             </div>
           </div>
 

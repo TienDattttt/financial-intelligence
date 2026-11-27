@@ -93,6 +93,7 @@ from finintel.serving.observability import (
     trace_span,
 )
 from finintel.serving.dictionary import StatementType
+from finintel.serving.exports.router import create_exports_router
 from finintel.serving.freshness import (
     build_composite_cache_token,
     build_freshness_item,
@@ -2033,6 +2034,7 @@ def create_app(
     from finintel.auth.router import mount_identity_workspace_routers
 
     mount_identity_workspace_routers(api, valkey_url=valkey_url)
+    api.include_router(create_exports_router())
 
     return api
 
