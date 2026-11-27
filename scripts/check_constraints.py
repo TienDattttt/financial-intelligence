@@ -63,6 +63,15 @@ _SKIP_TEST_RE = re.compile(
     r"|\bpytest\.skip\s*\("
 )
 
+_FORBIDDEN_COMPLIANCE_WORDING_RE = re.compile(
+    r"xếp\s+hạng\s+tín\s+nhiệm"
+    r"|(?:xếp\s+)?bậc\s+tín\s+nhiệm"
+    r"|phân\s+tầng\s+tín\s+nhiệm"
+    r"|\btín\s+nhiệm\b"
+    r"|khuyến\s+nghị\s+(?:mua|bán)(?:\s*/\s*(?:mua|bán))?",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -446,6 +455,38 @@ def check_constraints_tamper(
     return findings
 
 
+def check_frontend_compliance_text(rel_path: str, content: str) -> list[Finding]:
+    """Check one frontend/src file against NĐ 88/2014 & Securities Law 56/2024 wording bans."""
+    findings: list[Finding] = []
+    for line_no, line in enumerate(content.splitlines(), start=1):
+        match = _FORBIDDEN_COMPLIANCE_WORDING_RE.search(line)
+        if match:
+            findings.append(
+                Finding(
+                    "forbidden-compliance-wording",
+                    f"{rel_path}:{line_no}",
+                    f"Forbidden legal wording matched: {match.group(0)!r}",
+                )
+            )
+    return findings
+
+
+def check_frontend_compliance(repo_root: Path) -> list[Finding]:
+    """Scan all frontend/src/**/*.{ts,tsx} files for prohibited credit-rating/advisory phrases."""
+    findings: list[Finding] = []
+    frontend_src = repo_root / "frontend" / "src"
+    if not frontend_src.exists():
+        return findings
+    for src_file in sorted([*frontend_src.rglob("*.ts"), *frontend_src.rglob("*.tsx")]):
+        rel_path = src_file.relative_to(repo_root).as_posix()
+        try:
+            content = src_file.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        findings.extend(check_frontend_compliance_text(rel_path, content))
+    return findings
+
+
 def run_checks(
     repo_root: Path, explicit_base: str | None = None
 ) -> tuple[int, list[Finding]]:
@@ -499,6 +540,7 @@ def run_checks(
     findings.extend(check_serving_boundaries(root))
     findings.extend(check_module_sizes(root, merge_base, changed_paths))
     findings.extend(check_constraints_tamper(root, merge_base, changed_paths))
+    findings.extend(check_frontend_compliance(root))
 
     return (1 if findings else 0), findings
 
@@ -531,6 +573,25 @@ def _run_selftest() -> int:
     assert any(f.rule == "test-file-deleted" for f in viol_del), (
         "Must catch deleted test file"
     )
+
+    clean_fe = check_frontend_compliance_text(
+        "frontend/src/lib/compliance.ts",
+        "Nhóm cảnh báo rủi ro tài chính định lượng (R1–R5); không phải khuyến nghị đầu tư.",
+    )
+    assert clean_fe == [], "Clean compliance wording must pass"
+
+    for bad_phrase in (
+        "Xếp hạng tín nhiệm nội bộ",
+        "Bậc tín nhiệm R4",
+        "Khuyến nghị mua/bán cổ phiếu",
+    ):
+        viol_fe = check_frontend_compliance_text(
+            "frontend/src/lib/domain-labels.ts",
+            bad_phrase,
+        )
+        assert any(f.rule == "forbidden-compliance-wording" for f in viol_fe), (
+            f"Must catch forbidden compliance wording: {bad_phrase}"
+        )
 
     print(
         "check_constraints --selftest: PASS (all violation & control assertions verified)"

@@ -124,7 +124,7 @@ export const BUILTIN_SCREENER_PRESETS: readonly ScreenerPreset[] = [
     id: "preset-high-risk-r4-r5",
     name: "Rủi ro cao R4–R5",
     description:
-      "Nhóm doanh nghiệp xếp bậc rủi ro R4–R5 theo mô hình, xếp theo xác suất kiệt quệ giảm dần.",
+      "Nhóm doanh nghiệp thuộc nhóm cảnh báo rủi ro R4–R5 theo mô hình, xếp theo xác suất kiệt quệ giảm dần.",
     filters: {
       risk_tiers: ["R4", "R5"],
       sort_by: "calibrated_distress_prob",
@@ -176,10 +176,10 @@ export const SCREENER_RISK_TIER_META: Record<
 > = {
   R1: {
     tier: "R1",
-    label: "Bậc R1 · Rủi ro rất thấp",
+    label: "Nhóm R1 · Rủi ro rất thấp",
     shortLabel: "R1 · Rất thấp",
     tone: "low",
-    description: "Xếp hạng tín nhiệm nội bộ bậc thấp nhất về nguy cơ kiệt quệ.",
+    description: "Nhóm cảnh báo rủi ro định lượng nội bộ mức thấp nhất về nguy cơ kiệt quệ.",
   },
   R2: {
     tier: "R2",
@@ -225,10 +225,10 @@ export function getScreenerRiskTierMeta(
   }
   return {
     tier: "UNRATED",
-    label: "Chưa xếp bậc",
+    label: "Chưa phân nhóm",
     shortLabel: "N/A",
     tone: "neutral",
-    description: "Chưa có dữ liệu xếp bậc tín nhiệm cho doanh nghiệp/kỳ này.",
+    description: "Chưa có dữ liệu phân nhóm cảnh báo rủi ro định lượng cho doanh nghiệp/kỳ này.",
   };
 }
 
