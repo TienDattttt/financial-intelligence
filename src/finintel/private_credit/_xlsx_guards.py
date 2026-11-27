@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
+import email.parser
+import email.policy
 import importlib
 import math
 import re
 from collections.abc import Sequence
 from datetime import date, datetime
 from io import BytesIO
+from typing import TYPE_CHECKING
 from zipfile import BadZipFile, ZipFile
 
 from finintel.private_credit._qg1 import StatementType, TaxonomyVersionStr
 from finintel.serving.dictionary import load_statement_metric_catalog
 
+if TYPE_CHECKING:
+    from fastapi import Request
+
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_XLSX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_SHEET_ROWS = 5_000
 MAX_SHEET_COLS = 64
+_MULTIPART_OVERHEAD_BYTES = 256 * 1024
 
 _SHEET_DEFS: tuple[tuple[StatementType, str, tuple[str, ...]], ...] = (
     ("BALANCE_SHEET", "BS", ("bs", "cdkt", "can_doi_ke_toan", "b01", "balance_sheet")),
@@ -261,3 +268,63 @@ def parse_numeric_cell(raw: object) -> float | None:
             raise PrivateCreditValidationError(422, "Ô số liệu chứa giá trị vô cực.")
         return -abs(val) if neg else val
     raise PrivateCreditValidationError(422, "Định dạng ô số liệu không được hỗ trợ.")
+
+
+async def parse_multipart_upload(
+    request: Request,
+) -> tuple[bytes, str, dict[str, str]]:
+    """Parse ``multipart/form-data`` using Python stdlib without requiring ``python-multipart``."""
+    from fastapi import HTTPException
+
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" not in content_type.lower():
+        raise HTTPException(
+            status_code=400,
+            detail="Yêu cầu tải lên phải dùng định dạng multipart/form-data.",
+        )
+
+    max_body = MAX_UPLOAD_BYTES + _MULTIPART_OVERHEAD_BYTES
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_body:
+            raise HTTPException(
+                status_code=413,
+                detail="Dung lượng tệp tải lên vượt quá giới hạn tối đa 15 MB.",
+            )
+        chunks.append(chunk)
+
+    raw_body = b"".join(chunks)
+    header_block = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode(
+        "latin-1"
+    )
+    msg = email.parser.BytesParser(policy=email.policy.default).parsebytes(
+        header_block + raw_body
+    )
+    if not msg.is_multipart():
+        raise HTTPException(
+            status_code=400, detail="Không thể phân tích gói tin multipart/form-data."
+        )
+
+    file_bytes = b""
+    filename = ""
+    fields: dict[str, str] = {}
+    for part in msg.iter_parts():
+        field_name = part.get_param("name", header="content-disposition")
+        if not isinstance(field_name, str) or not field_name:
+            continue
+        part_filename = part.get_filename()
+        payload = part.get_payload(decode=True)
+        raw_part = payload if isinstance(payload, bytes) else b""
+        if part_filename is not None:
+            filename = part_filename
+            file_bytes = raw_part
+        else:
+            fields[field_name] = raw_part.decode("utf-8", errors="replace").strip()
+
+    if not filename:
+        raise HTTPException(
+            status_code=422, detail="Vui lòng đính kèm tệp Excel (.xlsx) cần thẩm định."
+        )
+    return file_bytes, filename, fields
