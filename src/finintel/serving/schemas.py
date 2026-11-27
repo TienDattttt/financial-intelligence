@@ -61,6 +61,9 @@ from finintel.serving._schema_extensions import (
     TaxonomyScoreDriftItem as TaxonomyScoreDriftItem,
 )
 from finintel.serving._schema_extensions import (
+    TT99MrmGateItem as TT99MrmGateItem,
+)
+from finintel.serving._schema_extensions import (
     WalkForwardModelSummaryItem as WalkForwardModelSummaryItem,
 )
 from finintel.serving._schema_extensions import (

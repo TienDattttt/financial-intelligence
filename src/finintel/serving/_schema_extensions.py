@@ -226,6 +226,25 @@ class HistoricalCaseStudyItem(BaseModel):
     top_3_shap_drivers: list[ShapDriverItem] = Field(default_factory=list)
 
 
+class TT99MrmGateItem(BaseModel):
+    """TT200/2014 -> TT99/2025 Model Risk Management drift gate status (V3-02)."""
+
+    verdict: str
+    shadow_mode_active: bool
+    auto_promote_allowed: bool
+    tt99_sample_count: int
+    min_shadow_samples: int
+    min_ga_samples: int
+    psi_breach_threshold: float
+    missing_jump_threshold: float
+    max_feature_psi: float | None = None
+    max_missing_jump: float | None = None
+    breached_psi_features: list[str] = Field(default_factory=list)
+    breached_missing_features: list[str] = Field(default_factory=list)
+    non_finite_features: list[str] = Field(default_factory=list)
+    summary_vi: str
+
+
 class ModelCardResponse(BaseModel):
     """V2 Meta route response: complete DuckLake-persisted Model Card (ML-08 / H-04)."""
 
@@ -251,6 +270,7 @@ class ModelCardResponse(BaseModel):
     walk_forward: WalkForwardReportItem
     risk_tier_reliability: RiskTierReliabilityReportItem
     taxonomy_drift_psi: TaxonomyDriftPSIItem
+    tt99_mrm_gate: TT99MrmGateItem | None = None
     case_studies: list[HistoricalCaseStudyItem]
     limitations: list[str]
 

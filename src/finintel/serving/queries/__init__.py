@@ -845,6 +845,14 @@ class DashboardQueryService(
                             if raw_cs_ticker is not None
                             else None,
                         )
+            if parsed.get("tt99_mrm_gate") is None and isinstance(
+                parsed.get("taxonomy_drift_psi"), dict
+            ):
+                from finintel.ml.mrm_tt99 import evaluate_tt99_gate_from_psi_report
+
+                parsed["tt99_mrm_gate"] = evaluate_tt99_gate_from_psi_report(
+                    parsed["taxonomy_drift_psi"]
+                )
             return parsed
 
 

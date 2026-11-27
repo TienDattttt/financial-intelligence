@@ -140,3 +140,126 @@ def test_compliance_notice_and_legal_docs_are_consistent_and_clean() -> None:
         "TT99/2025",
     ):
         assert required_token in doc_text
+
+
+def test_tt99_mrm_gate_verdicts_boundaries_and_nan_inf_guard() -> None:
+    """V3-02: evaluate_tt99_mrm_gate enforces sample/PSI/missing boundaries and NaN/inf safety."""
+    from finintel.ml.mrm_tt99 import TT99GateVerdict, evaluate_tt99_mrm_gate
+
+    # n < 30 -> INSUFFICIENT_TT99_SAMPLES
+    rep0 = evaluate_tt99_mrm_gate(
+        tt99_sample_count=0,
+        feature_psi={},
+        missing_rate_delta={},
+    )
+    assert rep0.verdict == TT99GateVerdict.INSUFFICIENT_TT99_SAMPLES
+    assert rep0.shadow_mode_active is True
+    assert rep0.auto_promote_allowed is False
+    assert rep0.max_feature_psi is None
+    assert rep0.max_missing_jump is None
+
+    rep29 = evaluate_tt99_mrm_gate(
+        tt99_sample_count=29,
+        feature_psi={"roa": 0.10},
+        missing_rate_delta={"roa": 0.02},
+    )
+    assert rep29.verdict == TT99GateVerdict.INSUFFICIENT_TT99_SAMPLES
+
+    # 30 <= n < 150 with healthy drift -> SHADOW_MONITORING
+    rep100 = evaluate_tt99_mrm_gate(
+        tt99_sample_count=100,
+        feature_psi={"roa": 0.24},
+        missing_rate_delta={"roa": 0.14},
+    )
+    assert rep100.verdict == TT99GateVerdict.SHADOW_MONITORING
+    assert rep100.shadow_mode_active is True
+    assert rep100.auto_promote_allowed is False
+
+    # n >= 150 with PSI < 0.25 and missing_jump < 0.15 -> READY_FOR_GA
+    rep150 = evaluate_tt99_mrm_gate(
+        tt99_sample_count=150,
+        feature_psi={"roa": 0.24},
+        missing_rate_delta={"roa": 0.14},
+    )
+    assert rep150.verdict == TT99GateVerdict.READY_FOR_GA
+    assert rep150.shadow_mode_active is False
+    assert rep150.auto_promote_allowed is True
+
+    rep200_ok = evaluate_tt99_mrm_gate(
+        tt99_sample_count=200,
+        feature_psi={"roa": 0.24, "debt_to_equity": 0.11},
+        missing_rate_delta={"roa": 0.14, "debt_to_equity": -0.05},
+    )
+    assert rep200_ok.verdict == TT99GateVerdict.READY_FOR_GA
+    assert rep200_ok.max_feature_psi == pytest.approx(0.24)
+    assert rep200_ok.max_missing_jump == pytest.approx(0.14)
+
+    # PSI >= 0.25 -> DRIFT_BREACH (at n=200 and n=100)
+    rep_psi_breach = evaluate_tt99_mrm_gate(
+        tt99_sample_count=200,
+        feature_psi={"roa": 0.26, "debt_to_equity": 0.10},
+        missing_rate_delta={"roa": 0.05},
+    )
+    assert rep_psi_breach.verdict == TT99GateVerdict.DRIFT_BREACH
+    assert rep_psi_breach.auto_promote_allowed is False
+    assert rep_psi_breach.breached_psi_features == ("roa",)
+
+    rep_shadow_breach = evaluate_tt99_mrm_gate(
+        tt99_sample_count=100,
+        feature_psi={"roa": 0.25},
+        missing_rate_delta={"roa": 0.01},
+    )
+    assert rep_shadow_breach.verdict == TT99GateVerdict.DRIFT_BREACH
+
+    # missing_jump >= 0.15 -> DRIFT_BREACH
+    rep_miss_breach = evaluate_tt99_mrm_gate(
+        tt99_sample_count=200,
+        feature_psi={"roa": 0.12},
+        missing_rate_delta={"roa": 0.16, "roe_parent": 0.04},
+    )
+    assert rep_miss_breach.verdict == TT99GateVerdict.DRIFT_BREACH
+    assert rep_miss_breach.breached_missing_features == ("roa",)
+
+    # NaN / inf guard: finite metrics still evaluated and JSON stays strictly finite
+    rep_nan = evaluate_tt99_mrm_gate(
+        tt99_sample_count=200,
+        feature_psi={
+            "roa": float("nan"),
+            "ebit_margin": float("inf"),
+            "roe_parent": 0.12,
+        },
+        missing_rate_delta={"roa": float("-inf"), "roe_parent": 0.03},
+    )
+    assert rep_nan.verdict == TT99GateVerdict.READY_FOR_GA
+    assert rep_nan.max_feature_psi == pytest.approx(0.12)
+    assert rep_nan.max_missing_jump == pytest.approx(0.03)
+    assert rep_nan.non_finite_features == ("ebit_margin", "roa")
+    json.dumps(rep_nan.to_dict(), allow_nan=False)
+
+    with pytest.raises(ContractViolationError):
+        evaluate_tt99_mrm_gate(
+            tt99_sample_count=-1, feature_psi={}, missing_rate_delta={}
+        )
+
+
+def test_tt99_mrm_gate_wires_into_psi_model_card_and_serving_schema() -> None:
+    """V3-02: compute_taxonomy_drift_psi, ModelCardResponse, and mrm_tt99 work seamlessly."""
+    import polars as pl
+
+    from finintel.ml.mrm_tt99 import evaluate_tt99_gate_from_psi_report
+    from finintel.ml.supervised.train import compute_taxonomy_drift_psi
+    from finintel.serving.schemas import ModelCardResponse, TT99MrmGateItem
+
+    ref_df = pl.DataFrame({"roa": [0.05 + 0.001 * i for i in range(40)]})
+    empty_tt99 = pl.DataFrame(schema={"roa": pl.Float64})
+
+    psi_zero_tt99 = compute_taxonomy_drift_psi(ref_df, empty_tt99, features=("roa",))
+    assert psi_zero_tt99["target_rows"] == 0
+    assert "tt99_mrm_gate" in psi_zero_tt99
+    assert psi_zero_tt99["tt99_mrm_gate"]["verdict"] == "INSUFFICIENT_TT99_SAMPLES"
+
+    gate_from_report = evaluate_tt99_gate_from_psi_report(psi_zero_tt99)
+    gate_item = TT99MrmGateItem(**gate_from_report)
+    assert gate_item.verdict == "INSUFFICIENT_TT99_SAMPLES"
+    assert gate_item.shadow_mode_active is True
+    assert "tt99_mrm_gate" in ModelCardResponse.model_fields
