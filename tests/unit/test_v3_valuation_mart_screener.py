@@ -9,7 +9,9 @@ Verified Sources:
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 
+import duckdb
 import polars as pl
 import pytest
 
@@ -246,6 +248,254 @@ def test_pit_valuation_mart_uses_close_raw_on_split_and_zero_weekend_lookahead()
     assert loss_row["pe_flag"] == "NEGATIVE_DENOMINATOR"
     assert loss_row["pb_ratio"] is None
     assert loss_row["pb_flag"] == "NEGATIVE_DENOMINATOR"
+
+
+def test_pit_valuation_mart_catalog_and_b03_extension_port_preservation(
+    tmp_path: Path,
+) -> None:
+    """PIT_VALUATION_MART_TABLE is managed cleanly while regulatory_events and market_prices remain untouched (B-03)."""
+    from finintel.pipeline.state_store import StateStore
+    from finintel.storage.ducklake_store import (
+        EXTENSION_PORT_CATALOG_TABLES,
+        MANAGED_MART_CATALOG_TABLES,
+        MANAGED_MART_TABLES,
+        OPTIONAL_MANAGED_MART_TABLES,
+        DuckLakeStore,
+        ensure_ducklake_attached,
+    )
+    from finintel.storage.schemas import PIT_VALUATION_MART_TABLE
+
+    assert len(MANAGED_MART_TABLES) == 10
+    assert PIT_VALUATION_MART_TABLE in OPTIONAL_MANAGED_MART_TABLES
+    assert "pit_valuation_mart" in MANAGED_MART_CATALOG_TABLES
+    assert MANAGED_MART_CATALOG_TABLES.isdisjoint(EXTENSION_PORT_CATALOG_TABLES)
+
+    data_root = tmp_path / "data"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    store = DuckLakeStore(
+        catalog_path=data_root / "metadata" / "ducklake_catalog.sqlite",
+        data_path=data_root / "lakehouse" / "data",
+        state_store=state,
+    )
+    issuers = _make_issuers(
+        [
+            {
+                "issuer_id": "VN_FPT",
+                "ticker": "FPT",
+                "exchange": "HOSE",
+                "company_name_vn": "FPT Corp",
+                "icb_code": "9530",
+                "icb_code_level2": "9500",
+                "icb_name_level2": "Technology",
+                "icb_code_level3": "9530",
+                "icb_name_level3": "Software & Computer Services",
+                "accounting_regime": "CORPORATE",
+                "is_listed": True,
+                "industry_snapshot_date": date(2026, 6, 1),
+                "delisted_date": None,
+            }
+        ]
+    )
+    facts = _make_facts(
+        {
+            (2025, None): {
+                "BS_TOTAL_ASSETS": 1_000_000_000_000.0,
+                "BS_TOTAL_LIABILITIES": 400_000_000_000.0,
+                "BS_TOTAL_EQUITY": 600_000_000_000.0,
+                "BS_MINORITY_INTEREST": 0.0,
+                "BS_ORDINARY_SHARES_CAPITAL": 100_000_000_000.0,
+                "BS_TREASURY_SHARES": 0.0,
+                "IS_NET_INCOME_PARENT": 80_000_000_000.0,
+                "CF_OPERATING_CASH_FLOW": 100_000_000_000.0,
+            }
+        },
+        issuer_id="VN_FPT",
+        available_overrides={(2025, None): date(2026, 4, 20)},
+    )
+    prices = pl.DataFrame(
+        {
+            "issuer_id": ["VN_FPT"],
+            "ticker": ["FPT"],
+            "trade_date": [date(2026, 4, 20)],
+            "close_raw": [120_000.0],
+            "close_adj": [100_000.0],
+            "volume": [1_000_000.0],
+            "shares_outstanding_market": [10_000_000.0],
+            "source_provider": ["test"],
+        }
+    )
+    periods = prepare_periods(facts, issuers, as_of=date(2026, 6, 1))
+    ratios = calculate_ratios(periods)
+    mart = build_pit_valuation_mart(ratios, prices, facts=facts, as_of=date(2026, 6, 1))
+
+    state.start_run("run-1", "CLI_MANUAL", {}, None)
+    store.publish_snapshot(
+        "snap_001",
+        {
+            "issuers.parquet": issuers,
+            "financial_facts.parquet": facts,
+            PIT_VALUATION_MART_TABLE: mart,
+        },
+        run_id="run-1",
+    )
+    state.finish_run("run-1", "SUCCEEDED", "snap_001")
+
+    con = store._open_rw_connection()
+    try:
+        reg_df = pl.DataFrame(
+            {
+                "issuer_id": ["VN_FPT"],
+                "event_date": [date(2026, 1, 15)],
+                "effective_from": [date(2026, 1, 16)],
+                "resolution_date": [None],
+                "event_type": ["WARNING"],
+                "event_stage": ["FIRST_ENTRY"],
+                "exchange_delisted_from": [None],
+                "source_provider": ["hsx"],
+                "source_url": ["https://hsx.vn/test"],
+                "raw_headline": ["Test event"],
+                "payload_sha256": ["a" * 64],
+            }
+        )
+        con.register("_stage_reg", reg_df)
+        con.register("_stage_px", prices)
+        con.execute(
+            f'CREATE TABLE "{store.catalog_alias}"."regulatory_events" AS SELECT * FROM "_stage_reg";'
+        )
+        con.execute(
+            f'CREATE TABLE "{store.catalog_alias}"."market_prices" AS SELECT * FROM "_stage_px";'
+        )
+    finally:
+        con.close()
+
+    state.start_run("run-2", "CLI_MANUAL", {}, None)
+    store.publish_snapshot(
+        "snap_002",
+        {
+            "issuers.parquet": issuers,
+            "financial_facts.parquet": facts,
+        },
+        run_id="run-2",
+    )
+    state.finish_run("run-2", "SUCCEEDED", "snap_002")
+
+    con_ro = duckdb.connect(":memory:")
+    try:
+        ensure_ducklake_attached(
+            con_ro,
+            catalog_path=store.catalog_path,
+            data_path=store.data_path,
+            catalog_alias=store.catalog_alias,
+            read_only=True,
+        )
+        tables = {
+            str(row[0])
+            for row in con_ro.execute(
+                f"SELECT table_name FROM information_schema.tables "
+                f"WHERE table_catalog = '{store.catalog_alias}' AND table_schema = 'main'"
+            ).fetchall()
+        }
+        assert "regulatory_events" in tables
+        assert "market_prices" in tables
+        assert "pit_valuation_mart" not in tables
+        assert con_ro.execute(
+            f'SELECT COUNT(*) FROM "{store.catalog_alias}"."market_prices"'
+        ).fetchone() == (1,)
+        assert con_ro.execute(
+            f'SELECT COUNT(*) FROM "{store.catalog_alias}"."regulatory_events"'
+        ).fetchone() == (1,)
+    finally:
+        con_ro.close()
+
+
+def test_incremental_transform_populates_pit_valuation_mart() -> None:
+    """run_incremental_analytics_transform builds bundle.pit_valuation_mart from ratios + market_prices."""
+    from finintel.transform.incremental import run_incremental_analytics_transform
+
+    issuers = _make_issuers(
+        [
+            {
+                "issuer_id": "VN_FPT",
+                "ticker": "FPT",
+                "exchange": "HOSE",
+                "company_name_vn": "FPT Corp",
+                "icb_code": "9530",
+                "icb_code_level2": "9500",
+                "icb_name_level2": "Technology",
+                "icb_code_level3": "9530",
+                "icb_name_level3": "Software & Computer Services",
+                "accounting_regime": "CORPORATE",
+                "is_listed": True,
+                "industry_snapshot_date": date(2026, 6, 1),
+                "delisted_date": None,
+            }
+        ]
+    )
+    facts = _make_facts(
+        {
+            (2024, None): {
+                "BS_TOTAL_ASSETS": 900_000_000_000.0,
+                "BS_CURRENT_ASSETS": 400_000_000_000.0,
+                "BS_CURRENT_LIABILITIES": 200_000_000_000.0,
+                "BS_TOTAL_LIABILITIES": 400_000_000_000.0,
+                "BS_TOTAL_EQUITY": 500_000_000_000.0,
+                "BS_MINORITY_INTEREST": 0.0,
+                "BS_ORDINARY_SHARES_CAPITAL": 100_000_000_000.0,
+                "BS_TREASURY_SHARES": 0.0,
+                "IS_NET_REVENUE": 700_000_000_000.0,
+                "IS_NET_INCOME": 70_000_000_000.0,
+                "IS_NET_INCOME_PARENT": 70_000_000_000.0,
+                "CF_OPERATING_CASH_FLOW": 85_000_000_000.0,
+            },
+            (2025, None): {
+                "BS_TOTAL_ASSETS": 1_000_000_000_000.0,
+                "BS_CURRENT_ASSETS": 450_000_000_000.0,
+                "BS_CURRENT_LIABILITIES": 220_000_000_000.0,
+                "BS_TOTAL_LIABILITIES": 400_000_000_000.0,
+                "BS_TOTAL_EQUITY": 600_000_000_000.0,
+                "BS_MINORITY_INTEREST": 0.0,
+                "BS_ORDINARY_SHARES_CAPITAL": 100_000_000_000.0,
+                "BS_TREASURY_SHARES": 0.0,
+                "IS_NET_REVENUE": 800_000_000_000.0,
+                "IS_NET_INCOME": 80_000_000_000.0,
+                "IS_NET_INCOME_PARENT": 80_000_000_000.0,
+                "CF_OPERATING_CASH_FLOW": 100_000_000_000.0,
+            },
+        },
+        issuer_id="VN_FPT",
+        available_overrides={
+            (2024, None): date(2025, 4, 1),
+            (2025, None): date(2026, 4, 20),
+        },
+    )
+    prices = pl.DataFrame(
+        {
+            "issuer_id": ["VN_FPT", "VN_FPT"],
+            "ticker": ["FPT", "FPT"],
+            "trade_date": [date(2025, 4, 1), date(2026, 4, 20)],
+            "close_raw": [100_000.0, 120_000.0],
+            "close_adj": [80_000.0, 100_000.0],
+            "volume": [1_000_000.0, 1_200_000.0],
+            "shares_outstanding_market": [10_000_000.0, 10_000_000.0],
+            "source_provider": ["test", "test"],
+        }
+    )
+    bundle = run_incremental_analytics_transform(
+        facts,
+        issuers,
+        as_of=date(2026, 6, 1),
+        run_id="v3-05-transform-test",
+        market_prices=prices,
+        persist_state=False,
+    )
+    assert bundle.pit_valuation_mart is not None
+    assert bundle.pit_valuation_mart.schema == PIT_VALUATION_MART_SCHEMA
+    row_2025 = bundle.pit_valuation_mart.filter(
+        pl.col("period_end_date") == date(2025, 12, 31)
+    ).row(0, named=True)
+    assert row_2025["pe_ttm"] == pytest.approx(15.0)
+    assert row_2025["pb_ratio"] == pytest.approx(2.0)
 
 
 def test_pit_valuation_mart_empty_prices_returns_empty_schema() -> None:

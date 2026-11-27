@@ -87,6 +87,7 @@ from finintel.storage.schemas import (
     FILINGS_MANIFEST_TABLE,
     ML_SCORES_TABLE,
     MODEL_CARD_META_TABLE,
+    PIT_VALUATION_MART_TABLE,
     QUALITY_SUMMARY_TABLE,
     RATIOS_TABLE,
     RED_FLAGS_TABLE,
@@ -1173,6 +1174,8 @@ def published_financial_marts(
             }
             if bundle.model_card_meta is not None:
                 tables[MODEL_CARD_META_TABLE] = bundle.model_card_meta
+            if bundle.pit_valuation_mart is not None:
+                tables[PIT_VALUATION_MART_TABLE] = bundle.pit_valuation_mart
             if storage_cfg.publish_unmapped:
                 unmapped_candidate = facts_path.with_name("unmapped_metrics.parquet")
                 if unmapped_candidate.is_file():
