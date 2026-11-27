@@ -1,5 +1,18 @@
-"""Extension Ports 1, 2, and 3 contracts for FinIntel Lakehouse (ARCH-09)."""
+"""Extension Ports 1, 2, 3, and 4 contracts for FinIntel Lakehouse (ARCH-09 / V3-31)."""
 
+from finintel.ports.bonds import (
+    BOND_PORT_TABLES,
+    CORPORATE_BOND_SIGNALS_KEY,
+    CORPORATE_BOND_SIGNALS_SCHEMA,
+    CORPORATE_BOND_SIGNALS_TABLE,
+    FX_DEBT_EXPOSURE_KEY,
+    FX_DEBT_EXPOSURE_SCHEMA,
+    FX_DEBT_EXPOSURE_TABLE,
+    CorporateBondSignalProvider,
+    FxDebtExposureProvider,
+    validate_corporate_bond_signals,
+    validate_fx_debt_exposure,
+)
 from finintel.ports.documents import (
     DOCUMENT_CHUNKS_CONTRACT,
     DOCUMENT_STATEMENT_SCOPES,
@@ -36,10 +49,19 @@ from finintel.ports.regulatory import (
 )
 
 __all__ = [
+    "BOND_PORT_TABLES",
+    "CORPORATE_BOND_SIGNALS_KEY",
+    "CORPORATE_BOND_SIGNALS_SCHEMA",
+    "CORPORATE_BOND_SIGNALS_TABLE",
+    "CorporateBondSignalProvider",
     "DOCUMENT_CHUNKS_CONTRACT",
     "DOCUMENT_STATEMENT_SCOPES",
     "DocumentChunk",
     "DocumentRetriever",
+    "FX_DEBT_EXPOSURE_KEY",
+    "FX_DEBT_EXPOSURE_SCHEMA",
+    "FX_DEBT_EXPOSURE_TABLE",
+    "FxDebtExposureProvider",
     "MARKET_PRICES_KEY",
     "MARKET_PRICES_SCHEMA",
     "MARKET_PRICES_TABLE",
@@ -60,7 +82,9 @@ __all__ = [
     "RegulatoryEventProvider",
     "align_events_to_market_prices_pit",
     "extract_pdf_members_from_zip",
+    "validate_corporate_bond_signals",
     "validate_document_chunks",
+    "validate_fx_debt_exposure",
     "validate_market_prices",
     "validate_pdf_cdn_url",
     "validate_regulatory_events",
