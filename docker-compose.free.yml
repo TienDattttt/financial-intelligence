@@ -5,7 +5,8 @@
 #
 # Security Invariants:
 #   - ONLY Caddy exposes public ports (80/443).
-#   - Postgres, Valkey, FastAPI, and Dagster reside inside `internal_net` (internal: true).
+#   - Postgres, Valkey, and dagster-webserver reside strictly inside `internal_net` (internal: true).
+#   - `api` and `dagster-daemon` join `internal_net` + `egress_net` (outbound R2/FHSC/Gemini, zero host ports).
 #   - Access Dagster UI strictly via SSH tunnel if needed (`ssh -L 3001:127.0.0.1:3001 ...`).
 
 services:
@@ -115,6 +116,7 @@ services:
       - ${FININTEL_HOST_DATA_ROOT:-./data}:/app/data:ro
     networks:
       - internal_net
+      - egress_net
     command:
       - uv
       - run
@@ -174,6 +176,7 @@ services:
       - ${FININTEL_HOST_DATA_ROOT:-./data}:/app/data
     networks:
       - internal_net
+      - egress_net
     command:
       - sh
       - -c
@@ -221,6 +224,8 @@ services:
 
 networks:
   edge_net:
+    driver: bridge
+  egress_net:
     driver: bridge
   internal_net:
     driver: bridge

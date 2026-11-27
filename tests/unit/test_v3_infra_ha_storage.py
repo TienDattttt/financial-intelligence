@@ -495,6 +495,8 @@ def test_v3_09_docker_compose_free_budget_and_network_isolation() -> None:
     networks = data["networks"]
 
     assert networks["internal_net"]["internal"] is True
+    assert "egress_net" in networks
+    assert networks["egress_net"].get("internal") is not True
     assert set(services.keys()) >= {
         "caddy",
         "api",
@@ -510,13 +512,18 @@ def test_v3_09_docker_compose_free_budget_and_network_isolation() -> None:
     for svc_name, svc in services.items():
         assert "mem_limit" in svc, f"{svc_name} missing mem_limit"
         total_mem_bytes += _parse_mem_limit_bytes(str(svc["mem_limit"]))
+        svc_networks = set(svc.get("networks", []))
         if svc_name == "caddy":
             ports = [str(p) for p in svc.get("ports", [])]
             assert any(":80" in p for p in ports)
             assert any(":443" in p for p in ports)
         else:
             assert "ports" not in svc, f"{svc_name} must not expose public ports"
-            assert "internal_net" in svc.get("networks", [])
+            assert "internal_net" in svc_networks
+            if svc_name in {"api", "dagster-daemon"}:
+                assert svc_networks == {"internal_net", "egress_net"}
+            else:
+                assert svc_networks == {"internal_net"}
 
     # Total container mem_limit MUST remain strictly < 8 GB for OCI 12 GB RAM.
     assert total_mem_bytes < 8 * (1024**3)
@@ -619,3 +626,91 @@ def test_v3_09_backup_to_r2_retention_and_dry_run_cli(
     assert payload["dry_run"] is True
     assert payload["target_bucket"] == "finintel-r2-free"
     assert payload["max_total_bytes"] == R2_WARN_BYTES
+
+
+def test_v3_09_r2_env_wiring_in_storage_resource_and_serving_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("dagster")
+    import duckdb
+
+    from finintel.orchestration.resources import FinIntelPathsResource, StorageResource
+    from finintel.serving.dependencies import _attach_ducklake_read_only_if_applicable
+    from finintel.storage.repository import ParquetRepository
+
+    data_root = tmp_path / "data"
+    data_root.mkdir(parents=True)
+    paths = FinIntelPathsResource(
+        project_root=str(tmp_path),
+        data_root=str(data_root),
+    )
+    resource = StorageResource()
+
+    # Default local mode when FININTEL_OBJECT_STORE_BACKEND is unset
+    monkeypatch.delenv("FININTEL_OBJECT_STORE_BACKEND", raising=False)
+    local_cfg = resource.resolve_storage_config(paths)
+    assert local_cfg.object_store.backend == "local"
+    assert local_cfg.object_store.is_remote is False
+
+    # Remote R2 mode wired automatically from environment variables
+    monkeypatch.setenv("FININTEL_OBJECT_STORE_BACKEND", "r2")
+    monkeypatch.setenv("FININTEL_OBJECT_STORE_BUCKET", "finintel-r2-prod")
+    monkeypatch.setenv("FININTEL_OBJECT_STORE_PREFIX", "v3/lakehouse")
+    monkeypatch.setenv(
+        "FININTEL_R2_ENDPOINT_URL", "https://acct999.r2.cloudflarestorage.com"
+    )
+    monkeypatch.setenv("FININTEL_S3_REGION", "auto")
+
+    r2_cfg = resource.resolve_storage_config(paths)
+    assert r2_cfg.object_store.backend == "r2"
+    assert r2_cfg.object_store.is_remote is True
+    assert r2_cfg.object_store.bucket == "finintel-r2-prod"
+    assert r2_cfg.object_store.r2_account_id() == "acct999"
+
+    # Serving read-only attach routes through ObjectStoreConfig.attach_remote_ducklake when remote
+    captured: list[dict[str, object]] = []
+
+    def fake_attach_remote(
+        self: ObjectStoreConfig,
+        connection: duckdb.DuckDBPyConnection,
+        *,
+        catalog_path: Path,
+        catalog_alias: str,
+        catalog_driver: str,
+        postgres_dsn_env: str,
+        read_only: bool = True,
+        override_data_path: bool = False,
+    ) -> None:
+        _ = (connection, override_data_path)
+        captured.append(
+            {
+                "backend": self.backend,
+                "bucket": self.bucket,
+                "catalog_path": catalog_path,
+                "catalog_alias": catalog_alias,
+                "catalog_driver": catalog_driver,
+                "postgres_dsn_env": postgres_dsn_env,
+                "read_only": read_only,
+            }
+        )
+
+    monkeypatch.setattr(ObjectStoreConfig, "attach_remote_ducklake", fake_attach_remote)
+    repo = ParquetRepository(
+        data_root=data_root,
+        catalog_driver="postgres",
+        postgres_dsn_env="FININTEL_TEST_R2_PG_DSN",
+        backend="ducklake",
+    )
+    con = duckdb.connect(":memory:")
+    try:
+        _attach_ducklake_read_only_if_applicable(con, repo)
+    finally:
+        con.close()
+
+    assert len(captured) == 1
+    assert captured[0]["backend"] == "r2"
+    assert captured[0]["bucket"] == "finintel-r2-prod"
+    assert captured[0]["catalog_driver"] == "postgres"
+    assert captured[0]["postgres_dsn_env"] == "FININTEL_TEST_R2_PG_DSN"
+    assert captured[0]["read_only"] is True

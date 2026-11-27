@@ -537,6 +537,57 @@ describe("UI-05a Screener export URL builder, saved screens store, columns & sca
     expect(urlPatch.anomaly_flag).toBe("true");
     expect(urlPatch.cluster_id).toBe("2");
 
+    // Verify CSV export URL preserves all 24 V3 filter keys and drops limit/offset
+    const exportUrlV3 = buildScreenerExportUrl(apiParams);
+    const parsedExportV3 = new URL(exportUrlV3, "https://finintel.local");
+    expect(parsedExportV3.pathname).toBe("/api/v1/screener/export");
+    expect(parsedExportV3.searchParams.has("limit")).toBe(false);
+    expect(parsedExportV3.searchParams.has("offset")).toBe(false);
+    expect(parsedExportV3.searchParams.get("cluster_id")).toBe("2");
+    expect(parsedExportV3.searchParams.get("anomaly_flag")).toBe("true");
+    expect(parsedExportV3.searchParams.get("min_roe_parent")).toBe("0.15");
+    expect(parsedExportV3.searchParams.get("min_pe_ttm")).toBe("5");
+    expect(parsedExportV3.searchParams.get("max_pb_ratio")).toBe("3.5");
+    expect(parsedExportV3.searchParams.get("min_market_cap_bn_vnd")).toBe("1000");
+    expect(parsedExportV3.searchParams.get("min_ocf_to_total_liabilities")).toBe(
+      "0.2",
+    );
+    expect(parsedExportV3.searchParams.get("min_cfo_ttm")).toBe("50000000000");
+
+    const allV3ExportKeys: ScreenerQueryParams = {
+      cluster_id: 1,
+      anomaly_flag: false,
+      min_roe_parent: 0.1,
+      max_roe_parent: 0.9,
+      min_roa: 0.05,
+      max_roa: 0.5,
+      min_eps_ttm_estimated: 1000,
+      max_eps_ttm_estimated: 10000,
+      min_liabilities_to_assets: 0.1,
+      max_liabilities_to_assets: 0.8,
+      min_debt_to_equity: 0.2,
+      max_debt_to_equity: 2.5,
+      min_cfo_ttm: 1_000_000,
+      max_cfo_ttm: 9_000_000_000,
+      min_ocf_to_total_liabilities: 0.05,
+      max_ocf_to_total_liabilities: 1.5,
+      min_revenue_growth_yoy: -0.1,
+      max_revenue_growth_yoy: 0.8,
+      min_pe_ttm: 4,
+      max_pe_ttm: 30,
+      min_pb_ratio: 0.5,
+      max_pb_ratio: 5,
+      min_market_cap_bn_vnd: 500,
+      max_market_cap_bn_vnd: 50000,
+    };
+    const fullV3ExportUrl = new URL(
+      buildScreenerExportUrl(allV3ExportKeys),
+      "https://finintel.local",
+    );
+    for (const [k, v] of Object.entries(allV3ExportKeys)) {
+      expect(fullV3ExportUrl.searchParams.get(k)).toBe(String(v));
+    }
+
     // Backward-compatible parsing of legacy Saved Screens without V3 fields
     const legacySaved = parseSavedScreensJson(
       JSON.stringify([

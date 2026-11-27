@@ -61,17 +61,7 @@ export function MethodologyModelsTab({
   const card = modelCardQuery.data;
   const drift = card.taxonomy_drift_psi;
   const cutoffs = card.risk_tier_cutoffs;
-  const tt99Gate = (
-    card as ModelCardResponse & {
-      tt99_mrm_gate?: {
-        verdict: string;
-        shadow_mode_active: boolean;
-        tt99_sample_count: number;
-        min_ga_samples: number;
-        summary_vi: string;
-      } | null;
-    }
-  ).tt99_mrm_gate;
+  const tt99Gate = card.tt99_mrm_gate;
   const tt99GateMeta = getTt99GateVerdictMeta(tt99Gate?.verdict);
 
   return (

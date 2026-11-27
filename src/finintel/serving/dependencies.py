@@ -39,6 +39,7 @@ from finintel.serving.cache import ValkeyResponseCache
 from finintel.serving.observability import mark_current_process_dead
 from finintel.serving.queries import DashboardQueryService
 from finintel.storage.ducklake_store import ensure_ducklake_attached
+from finintel.storage.object_store import ObjectStoreConfig
 from finintel.storage.repository import (
     _CACHE_LOCK,
     _POSTGRES_POINTER_CACHE,
@@ -381,6 +382,17 @@ def _attach_ducklake_read_only_if_applicable(
             )
         return
     cat_path, _state_path, lake_data = located
+    object_store = ObjectStoreConfig.from_env()
+    if object_store.is_remote:
+        object_store.attach_remote_ducklake(
+            conn,
+            catalog_path=cat_path,
+            catalog_alias=repository._catalog_alias,
+            catalog_driver=repository._catalog_driver,
+            postgres_dsn_env=repository._postgres_dsn_env,
+            read_only=True,
+        )
+        return
     ensure_ducklake_attached(
         conn,
         catalog_path=cat_path,

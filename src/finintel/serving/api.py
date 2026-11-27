@@ -2041,18 +2041,10 @@ def run_server(
     if data_root is not None:
         os.environ["FININTEL_DATA_ROOT"] = str(data_root)
     default_engine: str = "uvicorn" if os.name == "nt" else "granian"
-    raw_engine: str = (
-        engine
-        if engine is not None
-        else (os.getenv("FININTEL_SERVER_ENGINE") or default_engine)
-    )
-    resolved_engine = raw_engine.strip().lower()
-    raw_workers = (
-        workers
-        if workers is not None
-        else int(os.getenv("FININTEL_WORKERS", "1") or "1")
-    )
-    resolved_workers = max(1, int(raw_workers))
+    raw_env_engine = os.getenv("FININTEL_SERVER_ENGINE") or default_engine
+    resolved_engine = (engine if engine is not None else raw_env_engine).strip().lower()
+    raw_w = str(workers) if workers is not None else os.getenv("FININTEL_WORKERS", "1")
+    resolved_workers = max(1, int(raw_w or "1"))
 
     if resolved_engine == "granian":
         try:

@@ -1499,6 +1499,7 @@ export interface components {
             walk_forward: components["schemas"]["WalkForwardReportItem"];
             risk_tier_reliability: components["schemas"]["RiskTierReliabilityReportItem"];
             taxonomy_drift_psi: components["schemas"]["TaxonomyDriftPSIItem"];
+            tt99_mrm_gate?: components["schemas"]["TT99MrmGateItem"] | null;
             /** Case Studies */
             case_studies: components["schemas"]["HistoricalCaseStudyItem"][];
             /** Limitations */
@@ -2467,6 +2468,40 @@ export interface components {
             newly_distressed_issuers: components["schemas"]["StressIssuerItem"][];
             /** Top Stressed Issuers */
             top_stressed_issuers: components["schemas"]["StressIssuerItem"][];
+        };
+        /**
+         * TT99MrmGateItem
+         * @description TT200/2014 -> TT99/2025 Model Risk Management drift gate status (V3-02).
+         */
+        TT99MrmGateItem: {
+            /** Verdict */
+            verdict: string;
+            /** Shadow Mode Active */
+            shadow_mode_active: boolean;
+            /** Auto Promote Allowed */
+            auto_promote_allowed: boolean;
+            /** Tt99 Sample Count */
+            tt99_sample_count: number;
+            /** Min Shadow Samples */
+            min_shadow_samples: number;
+            /** Min Ga Samples */
+            min_ga_samples: number;
+            /** Psi Breach Threshold */
+            psi_breach_threshold: number;
+            /** Missing Jump Threshold */
+            missing_jump_threshold: number;
+            /** Max Feature Psi */
+            max_feature_psi?: number | null;
+            /** Max Missing Jump */
+            max_missing_jump?: number | null;
+            /** Breached Psi Features */
+            breached_psi_features?: string[];
+            /** Breached Missing Features */
+            breached_missing_features?: string[];
+            /** Non Finite Features */
+            non_finite_features?: string[];
+            /** Summary Vi */
+            summary_vi: string;
         };
         /**
          * TaxonomyDriftPSIItem

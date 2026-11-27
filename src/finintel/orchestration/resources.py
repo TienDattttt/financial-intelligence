@@ -58,6 +58,7 @@ from finintel.storage.ducklake_store import (
     StorageRetentionConfig,
     validate_sql_identifier,
 )
+from finintel.storage.object_store import ObjectStoreConfig
 from finintel.storage.repository import ParquetRepository
 from finintel.storage.snapshot_publisher import (
     DEFAULT_PIPELINE_LOCK_TIMEOUT,
@@ -339,6 +340,11 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
             else base.override_data_path
         )
 
+        env_object_store = ObjectStoreConfig.from_env()
+        effective_object_store = (
+            env_object_store if env_object_store.is_remote else base.object_store
+        )
+
         return StorageConfig(
             backend=effective_backend,
             catalog=StorageCatalogConfig(
@@ -355,6 +361,7 @@ class StorageResource(dg.ConfigurableResource["StorageResource"]):
             ),
             publish_unmapped=publish_unmapped,
             override_data_path=override_data_path,
+            object_store=effective_object_store,
         )
 
     def build_repository(self, paths: FinIntelPathsResource) -> ParquetRepository:

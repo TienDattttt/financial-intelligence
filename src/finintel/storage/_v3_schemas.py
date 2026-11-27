@@ -11,6 +11,13 @@ from __future__ import annotations
 import polars as pl
 
 PIT_VALUATION_MART_TABLE = "pit_valuation_mart.parquet"
+OPTIONAL_MANAGED_MART_TABLES: frozenset[str] = frozenset(
+    {
+        "unmapped_metrics.parquet",
+        "model_card_meta.parquet",
+        PIT_VALUATION_MART_TABLE,
+    }
+)
 V3_RATIOS = ("ocf_to_total_liabilities",)
 
 PIT_VALUATION_MART_KEY = (

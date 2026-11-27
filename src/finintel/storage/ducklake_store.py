@@ -42,6 +42,9 @@ import polars as pl
 
 from finintel.exceptions import ContractViolationError
 from finintel.pipeline.state_store import StateStore
+from finintel.storage._v3_schemas import (
+    OPTIONAL_MANAGED_MART_TABLES as OPTIONAL_MANAGED_MART_TABLES,
+)
 from finintel.storage.object_store import ObjectStoreConfig
 from finintel.storage.schemas import (
     AUDIT_QUARANTINE_TABLE,
@@ -49,8 +52,6 @@ from finintel.storage.schemas import (
     EXTENSION_PORT_TABLES,
     FILINGS_MANIFEST_TABLE,
     ML_SCORES_TABLE,
-    MODEL_CARD_META_TABLE,
-    PIT_VALUATION_MART_TABLE,
     QUALITY_SUMMARY_TABLE,
     RATIOS_TABLE,
     RED_FLAGS_TABLE,
@@ -89,13 +90,6 @@ MANAGED_MART_TABLES: frozenset[str] = frozenset(
         ML_SCORES_TABLE,
         QUALITY_SUMMARY_TABLE,
         AUDIT_QUARANTINE_TABLE,
-    }
-)
-OPTIONAL_MANAGED_MART_TABLES: frozenset[str] = frozenset(
-    {
-        "unmapped_metrics.parquet",
-        MODEL_CARD_META_TABLE,
-        PIT_VALUATION_MART_TABLE,
     }
 )
 MANAGED_MART_CATALOG_TABLES: frozenset[str] = frozenset(
