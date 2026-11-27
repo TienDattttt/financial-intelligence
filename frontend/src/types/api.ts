@@ -125,3 +125,6 @@ export type SavedScreenItem = Schema["SavedScreenItem"];
 export type SavedScreensListResponse = Schema["SavedScreensListResponse"];
 export type AuditLogItemResponse = Schema["AuditLogItemResponse"];
 export type AuditLogsPageResponse = Schema["AuditLogsPageResponse"];
+export type QuotaMeterStatus = Schema["QuotaMeterStatus"];
+export type MyQuotaResponse = Schema["MyQuotaResponse"];
+export type SystemBudgetResponse = Schema["SystemBudgetResponse"];

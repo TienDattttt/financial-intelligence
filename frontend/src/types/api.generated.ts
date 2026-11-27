@@ -811,6 +811,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/quota/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get My Quota */
+        get: operations["get_my_quota_api_v3_quota_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/quota/system-budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get System Budget */
+        get: operations["get_system_budget_api_v3_ops_quota_system_budget_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2160,6 +2194,36 @@ export interface components {
             relative_risk_lift?: number | null;
             drawdowns?: components["schemas"]["MarkerDrawdownBundleItem"] | null;
         };
+        /** MyQuotaResponse */
+        MyQuotaResponse: {
+            /** Authenticated */
+            authenticated: boolean;
+            /** Role */
+            role: components["schemas"]["UserRole"] | "ANONYMOUS";
+            /**
+             * Quota Date
+             * Format: date
+             */
+            quota_date: string;
+            /**
+             * Timezone
+             * @constant
+             */
+            timezone: "Asia/Ho_Chi_Minh";
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
+            /** Cross Border Rag Consent */
+            cross_border_rag_consent: boolean;
+            /** Circuit Breaker Open */
+            circuit_breaker_open: boolean;
+            /** Circuit Breaker Reopen At */
+            circuit_breaker_reopen_at?: string | null;
+            /** Meters */
+            meters: components["schemas"]["QuotaMeterStatus"][];
+        };
         /** PasswordChangeBody */
         PasswordChangeBody: {
             /** Current Password */
@@ -2321,6 +2385,30 @@ export interface components {
             offset: number;
             /** Items */
             items: components["schemas"]["QualitySummaryItem"][];
+        };
+        /** QuotaMeterStatus */
+        QuotaMeterStatus: {
+            /**
+             * Meter
+             * @enum {string}
+             */
+            meter: "rag_query" | "xlsx_export" | "api_call";
+            /** Used */
+            used: number;
+            /** Limit */
+            limit?: number | null;
+            /** Remaining */
+            remaining?: number | null;
+            /**
+             * Unlimited
+             * @default false
+             */
+            unlimited: boolean;
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
         };
         /**
          * RatioDictionaryItem
@@ -3173,6 +3261,40 @@ export interface components {
             newly_distressed_issuers: components["schemas"]["StressIssuerItem"][];
             /** Top Stressed Issuers */
             top_stressed_issuers: components["schemas"]["StressIssuerItem"][];
+        };
+        /** SystemBudgetResponse */
+        SystemBudgetResponse: {
+            /**
+             * Budget Date
+             * Format: date
+             */
+            budget_date: string;
+            /**
+             * Timezone
+             * @constant
+             */
+            timezone: "Asia/Ho_Chi_Minh";
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
+            /** Gemini Requests Used */
+            gemini_requests_used: number;
+            /** Gemini Requests Cap */
+            gemini_requests_cap: number;
+            /** Gemini Utilization Ratio */
+            gemini_utilization_ratio: number;
+            /** Circuit Breaker Ratio */
+            circuit_breaker_ratio: number;
+            /** Circuit Breaker Open */
+            circuit_breaker_open: boolean;
+            /** Vision Pages Used */
+            vision_pages_used: number;
+            /** Vision Pages Cap */
+            vision_pages_cap: number;
+            /** Vision Pages Remaining */
+            vision_pages_remaining: number;
         };
         /**
          * TT99MrmGateItem
@@ -5350,6 +5472,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_my_quota_api_v3_quota_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyQuotaResponse"];
+                };
+            };
+        };
+    };
+    get_system_budget_api_v3_ops_quota_system_budget_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemBudgetResponse"];
                 };
             };
         };

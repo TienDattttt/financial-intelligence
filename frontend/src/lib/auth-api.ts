@@ -10,6 +10,7 @@ import type {
   DeleteAccountRequest,
   ImportLocalWatchlistResponse,
   LoginRequest,
+  MyQuotaResponse,
   PasswordChangeBody,
   PasswordResetConfirmBody,
   PasswordResetRequestBody,
@@ -169,6 +170,12 @@ export const authApi = {
       `/api/v3/audit/my-activity?limit=${limit}&offset=${offset}`,
       { signal, mutating: false },
     ),
+
+  getMyQuota: (signal?: AbortSignal) =>
+    authFetchJson<MyQuotaResponse>("/api/v3/quota/me", {
+      signal,
+      mutating: false,
+    }),
 };
 
 export const workspaceApi = {

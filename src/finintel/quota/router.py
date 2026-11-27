@@ -126,7 +126,9 @@ def mount_quota_router(
         guard = quota_guard
 
     api.state._quota_guard = guard
-    api.include_router(create_quota_router(get_quota_guard=lambda: guard))
+    api.include_router(
+        create_quota_router(get_quota_guard=lambda: resolve_quota_guard_from_app(api))
+    )
 
 
 __all__ = [

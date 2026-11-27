@@ -13,9 +13,18 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import { EmptyState, ErrorState } from "@/components/layout/StateBlocks";
+import {
+  QuotaBadge,
+  deriveRagQuotaGateState,
+} from "@/components/quota/QuotaBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge, Select, Skeleton } from "@/components/ui/primitives";
+import {
+  MY_QUOTA_QUERY_KEY,
+  useMyQuota,
+  useOptionalQueryClient,
+} from "@/hooks/use-auth-workspace";
 import { useCompanyDocuments } from "@/hooks/use-finintel-queries";
 import { apiClient } from "@/lib/api-client";
 import { STATEMENT_SCOPE_LABELS } from "@/lib/domain-labels";
@@ -209,7 +218,13 @@ export function DocumentInvestigationPanel({
   ragAvailable = true,
 }: DocumentInvestigationPanelProps) {
   const cleanTicker = ticker.trim().toUpperCase();
+  const queryClient = useOptionalQueryClient();
   const docsQuery = useCompanyDocuments(cleanTicker, { enabled: ragAvailable });
+  const quotaQuery = useMyQuota(ragAvailable);
+  const quotaGate = React.useMemo(
+    () => deriveRagQuotaGateState(quotaQuery.data, "rag_query"),
+    [quotaQuery.data],
+  );
   const documents = React.useMemo(
     () => docsQuery.data?.documents ?? [],
     [docsQuery.data?.documents],
@@ -288,10 +303,27 @@ export function DocumentInvestigationPanel({
   });
 
   const isInvestigating = investigateQuery.isFetching;
+  const isQuotaBlocked = quotaGate.blocked;
   const investigateError =
     validationError ??
     (investigateQuery.isError ? investigateQuery.error.message : null);
   const result = investigateQuery.data ?? null;
+
+  React.useEffect(() => {
+    if (
+      queryClient &&
+      investigateQuery.isSuccess &&
+      investigateQuery.data &&
+      !investigateQuery.data.cached
+    ) {
+      void queryClient.invalidateQueries({ queryKey: MY_QUOTA_QUERY_KEY });
+    }
+  }, [
+    investigateQuery.data,
+    investigateQuery.dataUpdatedAt,
+    investigateQuery.isSuccess,
+    queryClient,
+  ]);
 
   const submitInvestigation = React.useCallback(
     (rawQuestion: string, yearOverride?: string) => {
@@ -415,6 +447,11 @@ export function DocumentInvestigationPanel({
           </div>
 
           <div className="space-y-4 p-4">
+            <QuotaBadge
+              quota={quotaQuery.data}
+              isLoading={quotaQuery.isLoading}
+            />
+
             {/* Fiscal Year Filter */}
             <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
               <label
@@ -460,7 +497,7 @@ export function DocumentInvestigationPanel({
                       type="button"
                       variant={isActivePreset ? "default" : "outline"}
                       size="xs"
-                      disabled={isInvestigating}
+                      disabled={isInvestigating || isQuotaBlocked}
                       onClick={() => {
                         setQuestion(preset.question);
                         submitInvestigation(preset.question);
@@ -506,7 +543,11 @@ export function DocumentInvestigationPanel({
                   type="submit"
                   variant="default"
                   size="sm"
-                  disabled={isInvestigating || question.trim().length < 3}
+                  disabled={
+                    isInvestigating ||
+                    isQuotaBlocked ||
+                    question.trim().length < 3
+                  }
                 >
                   {isInvestigating ? (
                     <>

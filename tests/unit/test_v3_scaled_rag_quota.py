@@ -604,3 +604,253 @@ def test_batch_pipeline_graceful_stop_at_vision_cap_finishes_clean_text(
         entry.operation == "batch_deferred_cap"
         for entry in quota_store.list_rag_usage()
     )
+
+
+def test_rag_router_consent_pii_anonymization_cache_hit_and_5xx_refund(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """V3-21: RAG route enforces CROSS_BORDER_LLM_RAG consent, anonymizes PII, and never deducts quota on cache HIT or 5xx."""
+    pytest.importorskip("fastapi")
+    monkeypatch.setattr("finintel.rag.investigator.time.sleep", lambda _s: None)
+    import json
+    from datetime import date
+    from types import SimpleNamespace
+    from typing import cast
+
+    import polars as pl
+    from fastapi.testclient import TestClient
+
+    from finintel.auth._store import InMemoryAppStore
+    from finintel.auth.dependencies import SESSION_COOKIE_NAME
+    from finintel.auth.email import InMemoryEmailOutbox
+    from finintel.auth.service import AuthService
+    from finintel.domain.compliance import CURRENT_CONSENT_POLICY_VERSION
+    from finintel.pipeline.state_store import StateStore
+    from finintel.ports.documents import DocumentChunk
+    from finintel.quota.guard import InMemoryQuotaStore, QuotaGuard
+    from finintel.quota.policies import QuotaBudgetConfig
+    from finintel.rag.investigator import GroundedDocumentInvestigator
+    from finintel.rag.retriever import RetrievalHit
+    from finintel.rag.store import IndexedDocumentSummary
+    from finintel.serving.api import create_app
+    from finintel.storage.snapshot_publisher import SnapshotPublisher
+
+    pytest.importorskip("argon2")
+
+    data_root = tmp_path / "data_v321"
+    issuers = pl.DataFrame(
+        {
+            "issuer_id": ["HBC"],
+            "ticker": ["HBC"],
+            "exchange": ["HOSE"],
+            "company_name_vn": ["Tập đoàn Xây dựng Hòa Bình"],
+            "accounting_regime": ["CORPORATE"],
+            "icb_code_level2": ["2300"],
+            "icb_name_level2": ["Xây dựng và Vật liệu"],
+            "icb_code_level3": ["2357"],
+            "icb_name_level3": ["Xây dựng"],
+            "industry_snapshot_date": [date(2024, 1, 1)],
+            "delisted_date": [None],
+        },
+        schema_overrides={"delisted_date": pl.Date},
+    )
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    state.start_run("run_v321", "MANUAL", {}, None)
+    SnapshotPublisher(data_root / "published" / "snapshots", state_store=state).publish(
+        "snap_v321",
+        {"issuers.parquet": issuers},
+        run_id="run_v321",
+    )
+
+    seen_prompts: list[str] = []
+    should_fail = [False]
+    excerpt = "tại ngày 31/12/2023 Tập đoàn có lỗ lũy kế là 3.240,3 tỷ VND."
+
+    class _WorkingStore:
+        def list_documents(self, ticker: str) -> list[IndexedDocumentSummary]:
+            _ = ticker
+            return []
+
+    class _StubRetriever:
+        def retrieve_hits(self, **kwargs: Any) -> list[RetrievalHit]:
+            _ = kwargs
+            return [
+                RetrievalHit(
+                    chunk=DocumentChunk(
+                        filing_id="HBC_FY2023_CONSOLIDATED_b0f2ff7892bc",
+                        issuer_id="HBC",
+                        fiscal_year=2023,
+                        fiscal_quarter=None,
+                        statement_scope="CONSOLIDATED",
+                        doc_type="AUDITED_ANNUAL_CONSOLIDATED_FS",
+                        page_no=7,
+                        section_title="Báo cáo kiểm toán độc lập",
+                        unit_scale="VND",
+                        text_content=f"Như đã trình bày, {excerpt}",
+                        content_sha256="b" * 64,
+                        score=0.03,
+                    ),
+                    source_title="BCTC 2023",
+                    rrf_score=0.03,
+                    vector_similarity=0.78,
+                    fts_rank=0.45,
+                    vector_position=1,
+                    fts_position=1,
+                )
+            ]
+
+    class _StubModels:
+        def generate_content(self, **kwargs: Any) -> Any:
+            seen_prompts.append(str(kwargs.get("contents", "")))
+            if should_fail[0]:
+                raise RuntimeError("Upstream Gemini 503 error")
+            payload = {
+                "abstained": False,
+                "abstention_reason": None,
+                "answer": "Tại 31/12/2023 có lỗ lũy kế 3.240,3 tỷ VND [Tài liệu, Trang 7].",
+                "citations": [
+                    {"chunk_id": 1, "page_no": 7, "verbatim_excerpt": excerpt}
+                ],
+            }
+            return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))
+
+    in_mem_cache: dict[str, dict[str, Any]] = {}
+    investigator = GroundedDocumentInvestigator(
+        retriever=cast(Any, _StubRetriever()),
+        gemini_bundle=cast(
+            Any,
+            SimpleNamespace(
+                client=SimpleNamespace(models=_StubModels()),
+                mode="api_key",
+                model="gemini-2.5-flash",
+            ),
+        ),
+        valkey_url="",
+    )
+    investigator._cache = cast(
+        Any,
+        SimpleNamespace(
+            get=lambda key: in_mem_cache.get(key),
+            set=lambda key, payload: in_mem_cache.__setitem__(key, payload),
+        ),
+    )
+
+    app_store = InMemoryAppStore()
+    auth_svc = AuthService(app_store, email_sender=InMemoryEmailOutbox())
+    auth_svc.register(
+        email="minh.nguyen@finintel.vn",
+        password="ValidPassword!2026",
+        display_name="Nguyen Van Minh",
+        accepted_consent_version=CURRENT_CONSENT_POLICY_VERSION.version,
+        accept_account_core=True,
+        accept_cross_border_llm_rag=False,
+    )
+    login_res = auth_svc.login(
+        email="minh.nguyen@finintel.vn",
+        password="ValidPassword!2026",
+        client_ip="127.0.0.1",
+    )
+
+    app = create_app(
+        data_root=data_root,
+        valkey_url="",
+        rag_store=_WorkingStore(),
+        rag_investigator=investigator,
+    )
+    app.state._app_store = app_store
+    app.state._auth_service = auth_svc
+    app.state._auth_service_store = app_store
+    quota_store = InMemoryQuotaStore(
+        budget_config=QuotaBudgetConfig(
+            global_daily_gemini_cap=100,
+            circuit_breaker_ratio=0.85,
+        )
+    )
+    app.state._quota_guard = QuotaGuard(quota_store)
+
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE_NAME, login_res.session_token)
+
+        # 1. Missing CROSS_BORDER_LLM_RAG consent -> HTTP 403 with /profile hint
+        r_no_consent = client.post(
+            "/api/v2/documents/HBC/investigate",
+            json={"question": "Lỗ lũy kế tại 31/12/2023 là bao nhiêu?"},
+        )
+        assert r_no_consent.status_code == 403
+        assert "/profile" in r_no_consent.json()["detail"]
+        assert len(seen_prompts) == 0
+
+        # Grant CROSS_BORDER_LLM_RAG consent
+        r_grant = client.patch(
+            "/api/v3/auth/me",
+            headers={"X-Requested-With": "FinIntel-Web"},
+            json={"consents": {"CROSS_BORDER_LLM_RAG": True}},
+        )
+        assert r_grant.status_code == 200
+
+        # 2. Query with PII -> anonymized before prompt, 1 quota deducted
+        r_ok = client.post(
+            "/api/v2/documents/HBC/investigate",
+            json={
+                "question": "Tôi là Nguyen Van Minh (0912345678, minh.nguyen@finintel.vn): lỗ lũy kế 31/12/2023 là gì?"
+            },
+        )
+        assert r_ok.status_code == 200
+        assert len(seen_prompts) == 1
+        prompt_sent = seen_prompts[0]
+        assert "minh.nguyen@finintel.vn" not in prompt_sent
+        assert "0912345678" not in prompt_sent
+        assert "Nguyen Van Minh" not in prompt_sent
+        assert "31/12/2023" in prompt_sent
+
+        r_q1 = client.get("/api/v3/quota/me").json()
+        rag_m1 = next(m for m in r_q1["meters"] if m["meter"] == "rag_query")
+        assert rag_m1["used"] == 1
+        assert rag_m1["remaining"] == 14
+
+        # 3. Same query -> cache HIT, 0 quota deducted, 0 new LLM call
+        r_hit = client.post(
+            "/api/v2/documents/HBC/investigate",
+            json={
+                "question": "Tôi là Nguyen Van Minh (0912345678, minh.nguyen@finintel.vn): lỗ lũy kế 31/12/2023 là gì?"
+            },
+        )
+        assert r_hit.status_code == 200
+        assert r_hit.json()["cached"] is True
+        assert len(seen_prompts) == 1
+        r_q2 = client.get("/api/v3/quota/me").json()
+        rag_m2 = next(m for m in r_q2["meters"] if m["meter"] == "rag_query")
+        assert rag_m2["used"] == 1
+
+        # 4. 5xx failure -> refunds quota
+        should_fail[0] = True
+        r_err = client.post(
+            "/api/v2/documents/HBC/investigate",
+            json={
+                "question": "Nợ vay ngắn hạn năm 2023 có thay đổi gì?",
+                "use_cache": False,
+            },
+        )
+        assert r_err.status_code == 503
+        r_q3 = client.get("/api/v3/quota/me").json()
+        rag_m3 = next(m for m in r_q3["meters"] if m["meter"] == "rag_query")
+        assert rag_m3["used"] == 1
+        assert rag_m3["remaining"] == 14
+
+        # 5. Circuit breaker at 85% -> cache MISS returns 503, cache HIT still returns 200
+        quota_store.record_global_gemini_call(units=84)  # 1 + 84 = 85 / 100
+        r_cb = client.post(
+            "/api/v2/documents/HBC/investigate",
+            json={"question": "Câu hỏi mới khi chạm ngưỡng 85%", "use_cache": False},
+        )
+        assert r_cb.status_code == 503
+        r_hit_during_cb = client.post(
+            "/api/v2/documents/HBC/investigate",
+            json={
+                "question": "Tôi là Nguyen Van Minh (0912345678, minh.nguyen@finintel.vn): lỗ lũy kế 31/12/2023 là gì?"
+            },
+        )
+        assert r_hit_during_cb.status_code == 200
+        assert r_hit_during_cb.json()["cached"] is True
