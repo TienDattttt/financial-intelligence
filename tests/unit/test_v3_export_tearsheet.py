@@ -304,9 +304,20 @@ def _load_openpyxl() -> Any:
     return importlib.import_module("openpyxl")
 
 
+def test_sanitize_excel_text_formula_prefixes() -> None:
+    """Pure text sanitizer neutralizes =, +, -, @, tab, CR (and leading whitespace) without xlsxwriter."""
+    assert sanitize_excel_text("=CMD|' /C calc'!A0").startswith("'")
+    assert sanitize_excel_text("+1+1").startswith("'")
+    assert sanitize_excel_text("-SUM(A1:A2)").startswith("'")
+    assert sanitize_excel_text("@SUM(1,2)").startswith("'")
+    assert sanitize_excel_text("\t=1+1").startswith("'")
+    assert sanitize_excel_text("\r=1+1").startswith("'")
+    assert sanitize_excel_text("  =1+1").startswith("'")
+
+
 def test_company_workbook_sheets_numeric_types_null_blanks_and_compliance() -> None:
     """Company .xlsx has 4 exact sheets, numeric floats (even negative), None=blank, snapshot_id & disclaimer."""
-    importlib.import_module("xlsxwriter")
+    pytest.importorskip("xlsxwriter")
     openpyxl = _load_openpyxl()
     payload = _build_sample_company_payload(num_periods=20, inject_formula=False)
 
@@ -357,13 +368,7 @@ def test_company_workbook_sheets_numeric_types_null_blanks_and_compliance() -> N
 
 def test_excel_formula_injection_neutralized_across_all_sheets() -> None:
     """Strings starting with =, +, -, @, tab, CR are sanitized and never stored as Excel formulas."""
-    assert sanitize_excel_text("=CMD|' /C calc'!A0").startswith("'")
-    assert sanitize_excel_text("+1+1").startswith("'")
-    assert sanitize_excel_text("-SUM(A1:A2)").startswith("'")
-    assert sanitize_excel_text("@SUM(1,2)").startswith("'")
-    assert sanitize_excel_text("\t=1+1").startswith("'")
-    assert sanitize_excel_text("\r=1+1").startswith("'")
-    assert sanitize_excel_text("  =1+1").startswith("'")
+    pytest.importorskip("xlsxwriter")
 
     payload = _build_sample_company_payload(num_periods=4, inject_formula=True)
     raw_bytes = build_company_workbook_bytes(payload)
@@ -393,6 +398,7 @@ def test_excel_formula_injection_neutralized_across_all_sheets() -> None:
 
 def test_screener_workbook_685_rows_perf_and_row_cap() -> None:
     """Screener .xlsx renders 685 rows < 1000ms, preserves numeric/null types, and caps > 2000 rows."""
+    pytest.importorskip("xlsxwriter")
     n_rows = 685
     frame = pl.DataFrame(
         {

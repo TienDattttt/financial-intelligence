@@ -777,6 +777,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/exports/companies/{ticker}.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Company Xlsx */
+        get: operations["export_company_xlsx_api_v3_exports_companies__ticker__xlsx_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/exports/screener.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Screener Xlsx */
+        get: operations["export_screener_xlsx_api_v3_exports_screener_xlsx_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5192,6 +5226,121 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditLogsPageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_company_xlsx_api_v3_exports_companies__ticker__xlsx_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_type?: "QUARTER" | "ANNUAL";
+                periods_limit?: number;
+            };
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 4-sheet VAS & quantitative risk workbook (.xlsx) for one company. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+                };
+            };
+            /** @description Ticker not found in active snapshot. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_screener_xlsx_api_v3_exports_screener_xlsx_get: {
+        parameters: {
+            query?: {
+                period_type?: "QUARTER" | "ANNUAL";
+                period_end_date?: string | null;
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                icb_code_level2?: string | null;
+                exchange?: ("HOSE" | "HNX" | "UPCOM") | null;
+                min_f_score?: number | null;
+                altman_zone?: ("SAFE_ZONE" | "GREY_ZONE" | "DISTRESS_ZONE") | null;
+                risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
+                risk_tiers?: string | null;
+                beneish_flag?: ("VALID" | "HIGH_MANIPULATION_RISK_SCREEN" | "MIXED_TAXONOMY" | "MISSING_PRIOR_YEAR_BASE" | "MISSING_DEPRECIATION_DIRECT_CF" | "MISSING_OR_INVALID_INPUT") | null;
+                max_distress_prob?: number | null;
+                min_distress_prob?: number | null;
+                max_red_flags?: number | null;
+                min_red_flags?: number | null;
+                q?: string | null;
+                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "roe_parent" | "roa" | "eps_ttm_estimated" | "liabilities_to_assets" | "debt_to_equity" | "ebit_margin" | "interest_coverage" | "cfo_ttm" | "ocf_to_total_liabilities" | "revenue_growth_yoy" | "pe_ttm" | "pb_ratio" | "market_cap_vnd";
+                sort_dir?: "asc" | "desc";
+                cluster_id?: number | null;
+                anomaly_flag?: boolean | null;
+                min_roe_parent?: number | null;
+                max_roe_parent?: number | null;
+                min_roa?: number | null;
+                max_roa?: number | null;
+                min_eps_ttm_estimated?: number | null;
+                max_eps_ttm_estimated?: number | null;
+                min_liabilities_to_assets?: number | null;
+                max_liabilities_to_assets?: number | null;
+                min_debt_to_equity?: number | null;
+                max_debt_to_equity?: number | null;
+                min_cfo_ttm?: number | null;
+                max_cfo_ttm?: number | null;
+                min_ocf_to_total_liabilities?: number | null;
+                max_ocf_to_total_liabilities?: number | null;
+                min_revenue_growth_yoy?: number | null;
+                max_revenue_growth_yoy?: number | null;
+                min_pe_ttm?: number | null;
+                max_pe_ttm?: number | null;
+                min_pb_ratio?: number | null;
+                max_pb_ratio?: number | null;
+                min_market_cap_bn_vnd?: number | null;
+                max_market_cap_bn_vnd?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Filtered market screener workbook (.xlsx), capped at 2,000 rows. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
                 };
             };
             /** @description Validation Error */

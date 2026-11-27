@@ -233,7 +233,7 @@
     margin: 10mm 12mm;
   }
   aside,
-  header,
+  header:not(.tear-sheet-header),
   .no-print {
     display: none !important;
   }

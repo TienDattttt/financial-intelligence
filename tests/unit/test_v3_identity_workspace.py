@@ -604,3 +604,78 @@ def test_audit_metadata_strips_pii_and_reset_token_expiry() -> None:
         svc.confirm_password_reset(token=tok, new_password="NewExpiryPass!2026")
     assert exc_exp.value.status_code == 400
     assert isinstance(AuthenticatedUser, type)
+
+
+def test_auth_post_cooldown_resets_attempt_window_and_unifies_lockout_message() -> None:
+    """After 15m cooldown expires, failed_login_attempts resets to a fresh 5-attempt window."""
+    pytest.importorskip("argon2")
+
+    store = InMemoryAppStore()
+    limiter = AuthRateLimiter(max_attempts=5, window_seconds=900)
+    svc = AuthService(store, rate_limiter=limiter, email_sender=InMemoryEmailOutbox())
+    profile = svc.register(
+        email="cooldown@finintel.vn",
+        password="CooldownPass!2026",
+        accepted_consent_version=CURRENT_CONSENT_POLICY_VERSION.version,
+        accept_account_core=True,
+    )
+
+    # Trigger 5 consecutive failures from IP1 -> account locked for 15 minutes
+    for _ in range(4):
+        with pytest.raises(AuthError) as err_401:
+            svc.login(
+                email="cooldown@finintel.vn",
+                password="WrongPassword!1",
+                client_ip="198.51.100.1",
+            )
+        assert err_401.value.status_code == 401
+
+    with pytest.raises(AuthError) as err_lock:
+        svc.login(
+            email="cooldown@finintel.vn",
+            password="WrongPassword!1",
+            client_ip="198.51.100.1",
+        )
+    assert err_lock.value.status_code == 429
+    lock_msg = err_lock.value.detail
+
+    # Cross-IP probe while still locked must return identical 429 message (no existence leak)
+    with pytest.raises(AuthError) as err_cross_ip:
+        svc.login(
+            email="cooldown@finintel.vn",
+            password="WrongPassword!2",
+            client_ip="198.51.100.2",
+        )
+    assert err_cross_ip.value.status_code == 429
+    assert err_cross_ip.value.detail == lock_msg
+
+    # Simulate 15m cooldown expiry (locked_until <= now)
+    user_rec = store.get_user_by_id(profile.user_id)
+    assert user_rec is not None
+    store._users[profile.user_id] = type(user_rec)(
+        **{
+            **user_rec.__dict__,
+            "locked_until": datetime.now(UTC) - timedelta(seconds=1),
+        }
+    )
+
+    # User gets a fresh 5-attempt window from IP3 (4x 401 before re-lock on 5th)
+    for idx in range(4):
+        with pytest.raises(AuthError) as err_retry:
+            svc.login(
+                email="cooldown@finintel.vn",
+                password="WrongPassword!3",
+                client_ip="198.51.100.3",
+            )
+        assert err_retry.value.status_code == 401, (
+            f"Post-cooldown attempt {idx + 1} should return 401, got {err_retry.value.status_code}"
+        )
+
+    with pytest.raises(AuthError) as err_relock:
+        svc.login(
+            email="cooldown@finintel.vn",
+            password="WrongPassword!3",
+            client_ip="198.51.100.3",
+        )
+    assert err_relock.value.status_code == 429
+    assert err_relock.value.detail == lock_msg

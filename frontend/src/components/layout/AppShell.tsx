@@ -376,7 +376,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </Dialog.Root>
 
       {/* Top Sticky Header: Row 1 Brand + Global Controls, Row 2 Navigation, Row 3 3-Tier Freshness */}
-      <header className="sticky top-0 z-30 border-b border-border bg-surface">
+      <header className="no-print sticky top-0 z-30 border-b border-border bg-surface">
         {/* Row 1: Brand + Search + Global Period/Scope + Theme */}
         <div className="mx-auto flex h-[52px] max-w-[1440px] items-center justify-between gap-1 px-2 md:h-auto md:min-h-[50px] md:flex-wrap md:gap-2 md:px-6 md:py-1.5">
           <div className="flex min-w-0 items-center gap-1 sm:gap-2.5 md:flex-initial">
@@ -621,7 +621,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {children}
       </main>
 
-      <footer className="border-t border-border bg-surface px-4 py-3 text-xs text-ink-muted">
+      <footer className="no-print border-t border-border bg-surface px-4 py-3 text-xs text-ink-muted">
         <div className="mx-auto flex max-w-[1440px] flex-col justify-between gap-1 sm:flex-row sm:items-center">
           <span>
             Thông tin chỉ mang tính tham khảo, không phải khuyến nghị đầu tư.

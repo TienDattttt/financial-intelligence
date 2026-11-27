@@ -249,7 +249,7 @@ export default function CompanyTearSheetPage() {
         className="tear-sheet-page mx-auto max-w-[960px] space-y-4 rounded-lg border border-border bg-surface p-5 text-ink print:max-w-none print:rounded-none print:border-0 print:p-0"
       >
         {/* 1. Institutional Masthead & Executive Risk Conclusion (R1–R5) */}
-        <header className="border-b border-border pb-3">
+        <header className="tear-sheet-header border-b border-border pb-3">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted">

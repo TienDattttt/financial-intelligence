@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -369,5 +371,23 @@ describe("V3-15 ExportActionMenu & Institutional A4 Tear-Sheet", () => {
     // Zero forbidden NĐ 88/2014 wording & zero leaked backend tokens
     expect(text).not.toMatch(FORBIDDEN_ND88_RE);
     expect(text).not.toMatch(LEAKED_BACKEND_TOKEN_RE);
+
+    // @media print guard: Tear-Sheet header must remain printable while AppShell header/footer stay hidden
+    const tearSheetHeader = container.querySelector("header.tear-sheet-header");
+    expect(tearSheetHeader).not.toBeNull();
+    expect(tearSheetHeader?.classList.contains("no-print")).toBe(false);
+
+    const globalsCss = fs.readFileSync(
+      path.resolve(__dirname, "../../src/app/globals.css"),
+      "utf-8",
+    );
+    expect(globalsCss).toContain("header:not(.tear-sheet-header)");
+
+    const appShellSource = fs.readFileSync(
+      path.resolve(__dirname, "../../src/components/layout/AppShell.tsx"),
+      "utf-8",
+    );
+    expect(appShellSource).toMatch(/<header\s+className="no-print\b/);
+    expect(appShellSource).toMatch(/<footer\s+className="no-print\b/);
   });
 });

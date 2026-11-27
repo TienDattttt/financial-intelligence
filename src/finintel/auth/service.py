@@ -339,13 +339,18 @@ class AuthService:
             )
             raise AuthError(
                 429,
-                "Tài khoản đang tạm khóa do nhập sai nhiều lần. Vui lòng thử lại sau.",
+                "Quá nhiều lần đăng nhập thất bại. Vui lòng thử lại sau 15 phút.",
                 headers={"Retry-After": str(remaining)},
             )
 
         pw_ok = verify_password(user.password_hash, password)
         if not pw_ok or not user.is_active:
-            next_attempts = user.failed_login_attempts + 1
+            base_attempts = (
+                0
+                if (user.locked_until is not None and user.locked_until <= now)
+                else user.failed_login_attempts
+            )
+            next_attempts = base_attempts + 1
             locked_until = (
                 now + timedelta(minutes=ACCOUNT_LOCK_MINUTES)
                 if next_attempts >= MAX_CONSECUTIVE_FAILURES
