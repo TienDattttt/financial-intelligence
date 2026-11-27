@@ -1,7 +1,10 @@
 """FastAPI router for isolated private-issuer VAS parsing & credit scoring (V3-28, V3-29)."""
 
+import importlib
+import os
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
@@ -101,6 +104,41 @@ def _to_preview_response(
         processing_mode="LOCAL_SERVER_ONLY",
         created_at=rec.created_at,
     )
+
+
+def _resolve_ml_training_result(api_state: Any) -> Any | None:
+    """Resolve optional in-memory or persisted ``TrainingResult`` without failing offline mode."""
+    existing = getattr(api_state, "_ml_training_result", None)
+    if existing is not None:
+        return existing
+    if getattr(api_state, "_ml_training_checked", False):
+        return None
+    setattr(api_state, "_ml_training_checked", True)
+
+    raw_dir = os.getenv("FININTEL_ML_ARTIFACT_DIR", "").strip()
+    candidate_dir: Path | None = Path(raw_dir) if raw_dir else None
+    if candidate_dir is None:
+        svc = getattr(api_state, "query_service", None)
+        repo = getattr(svc, "repository", None)
+        source = getattr(repo, "_source", None)
+        if isinstance(source, Path):
+            from finintel.serving.freshness import resolve_serving_data_root
+
+            root = resolve_serving_data_root(source)
+            if root is not None:
+                candidate_dir = root / "ml_artifacts"
+
+    if candidate_dir is None or not candidate_dir.is_dir():
+        return None
+    try:
+        inc_mod = importlib.import_module("finintel.transform.incremental")
+        bundle = inc_mod.load_ml_artifact_bundle(candidate_dir)
+    except Exception:
+        return None
+    training = getattr(bundle, "training", None) if bundle is not None else None
+    if training is not None:
+        setattr(api_state, "_ml_training_result", training)
+    return training
 
 
 def create_private_credit_router(
@@ -307,7 +345,7 @@ def create_private_credit_router(
             raise HTTPException(
                 status_code=404, detail="Không tìm thấy hồ sơ doanh nghiệp tư nhân."
             )
-        ml_model = getattr(request.app.state, "_ml_training_result", None)
+        ml_model = _resolve_ml_training_result(request.app.state)
         try:
             result = score_private_dossier(
                 rec, request=body, ml_training_result=ml_model
@@ -358,11 +396,14 @@ def mount_private_credit_router(
     api: "FastAPI",
     *,
     private_credit_store: PrivateCreditStoreProtocol | None = None,
+    ml_training_result: Any | None = None,
 ) -> None:
     """Mount ``/api/v3/private-credit/*`` lazily sharing ``finintel_app`` store state."""
     lock = threading.Lock()
     if private_credit_store is not None:
         api.state._private_credit_store = private_credit_store
+    if ml_training_result is not None:
+        api.state._ml_training_result = ml_training_result
 
     def _resolve_app_store() -> AppStoreProtocol | None:
         resolver = getattr(api.state, "_resolve_app_store", None)
@@ -406,7 +447,9 @@ def mount_private_hitl_routers(api: "FastAPI", **kwargs: Any) -> None:
     from finintel.hitl.router import mount_hitl_router
 
     mount_private_credit_router(
-        api, private_credit_store=kwargs.get("private_credit_store")
+        api,
+        private_credit_store=kwargs.get("private_credit_store"),
+        ml_training_result=kwargs.get("ml_training_result"),
     )
     mount_hitl_router(api, hitl_store=kwargs.get("hitl_store"))
 

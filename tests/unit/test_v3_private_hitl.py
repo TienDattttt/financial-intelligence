@@ -651,3 +651,114 @@ def test_private_credit_and_hitl_offline_mvp_checks_import(
     assert hasattr(hitl_pkg, "mount_hitl_router")
     tpl = parser_mod.build_vas_template_xlsx("VAS_TT99_2025", years=(2024, 2025))
     assert tpl.startswith(b"PK\x03\x04")
+
+
+def test_private_credit_scoring_with_real_training_result_handles_null_market_features() -> (
+    None
+):
+    """Major #3: score_private_dossier handles real TrainingResult with NULL market/TT96 features."""
+    pytest.importorskip("xgboost")
+    pytest.importorskip("sklearn")
+    pytest.importorskip("pydantic")
+    import math
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    import numpy as np
+
+    from finintel.ml.supervised.train import (
+        MERTON_ABLATION_FEATURES,
+        train_distress_model,
+    )
+    from finintel.private_credit._store import PrivateCreditDossierRecord
+    from finintel.private_credit.scorer import (
+        MISSING_MARKET_TT96_FEATURES,
+        score_private_dossier,
+    )
+    from finintel.private_credit.vas_excel_parser import parse_vas_excel_workbook
+
+    def _build_fold(seed: int, n_rows: int, year_base: int) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        cols: dict[str, list[float | None]] = {}
+        roa_vals = rng.uniform(-0.18, 0.22, size=n_rows)
+        ic_vals = rng.uniform(-1.0, 12.0, size=n_rows)
+        dte_vals = rng.uniform(0.05, 4.5, size=n_rows)
+        logits = -6.0 * roa_vals - 0.35 * ic_vals + 0.7 * dte_vals - 0.3
+        targets = (logits > 0.0).astype(int).tolist()
+        for feat in MERTON_ABLATION_FEATURES:
+            if feat == "roa":
+                cols[feat] = roa_vals.tolist()
+            elif feat == "interest_coverage":
+                cols[feat] = ic_vals.tolist()
+            elif feat == "debt_to_equity":
+                cols[feat] = dte_vals.tolist()
+            else:
+                cols[feat] = rng.normal(0.15, 0.30, size=n_rows).tolist()
+        return pl.DataFrame(
+            {
+                **cols,
+                "issuer_id": [f"PRIV_TRAIN_{i:03d}" for i in range(n_rows)],
+                "accounting_regime": ["CORPORATE"] * n_rows,
+                "statement_scope": ["CONSOLIDATED"] * n_rows,
+                "period_type": ["QUARTER"] * n_rows,
+                "fiscal_year": [year_base + (i % 2) for i in range(n_rows)],
+                "fiscal_quarter": [(i % 4) + 1 for i in range(n_rows)],
+                "period_end_date": [date(year_base, 12, 31)] * n_rows,
+                "filing_id": [f"F_{seed}_{i:03d}" for i in range(n_rows)],
+                "taxonomy_version": ["VAS_TT200_2014"] * n_rows,
+                "_period_available_at": [date(year_base, 12, 31)] * n_rows,
+                "distress_target": targets,
+            }
+        )
+
+    train_df = _build_fold(seed=11, n_rows=220, year_base=2019)
+    valid_df = _build_fold(seed=22, n_rows=100, year_base=2021)
+    trained_result = train_distress_model(
+        train_df, valid_df, features=MERTON_ABLATION_FEATURES
+    )
+
+    parsed = parse_vas_excel_workbook(
+        _valid_tt99_fixture(),
+        filename="minh_long.xlsx",
+        company_name="Công ty TNHH Minh Long",
+        tax_code="0301234567",
+        icb_code_level2="1700",
+        statement_scope="SEPARATE",
+        taxonomy_version="AUTO",
+        unit_multiplier=1,
+    )
+    now = datetime.now(UTC)
+    dossier = PrivateCreditDossierRecord(
+        dossier_id=uuid4(),
+        user_id=uuid4(),
+        company_name=parsed.company_name,
+        tax_code=parsed.tax_code,
+        icb_code_level2=parsed.icb_code_level2,
+        statement_scope=parsed.statement_scope,
+        taxonomy_version=parsed.taxonomy_version,
+        unit_multiplier=parsed.unit_multiplier,
+        source_filename=parsed.source_filename,
+        source_sha256=parsed.source_sha256,
+        qg1_status=parsed.qg1.status,
+        qg1_report_json={"discrepancies": [], "warnings": [], "info_signals": []},
+        periods=parsed.periods,
+        facts=parsed.facts,
+        latest_score_json=None,
+        retention_expires_at=now + timedelta(days=30),
+        created_at=now,
+        updated_at=now,
+    )
+
+    scored = score_private_dossier(dossier, ml_training_result=trained_result)
+    assert scored.ml_assessment.ml_mode == "ACCOUNTING_ONLY_MODE"
+    assert scored.ml_assessment.model_version == "xgboost-layer4b-v2"
+    assert scored.ml_assessment.calibrated_distress_prob is not None
+    assert math.isfinite(scored.ml_assessment.calibrated_distress_prob)
+    assert 0.0 <= scored.ml_assessment.calibrated_distress_prob <= 1.0
+    assert scored.ml_assessment.risk_tier in {"R1", "R2", "R3", "R4", "R5"}
+    assert tuple(scored.ml_assessment.missing_market_tt96_features) == (
+        MISSING_MARKET_TT96_FEATURES
+    )
+    assert len(MISSING_MARKET_TT96_FEATURES) == 9
+    assert scored.ducklake_contaminated is False
+    assert scored.ml_labels_modified is False

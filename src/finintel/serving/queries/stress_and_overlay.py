@@ -148,8 +148,16 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                         "Unable to resolve latest period_end_date for stress-test inputs."
                     )
 
+            candidate_roots = build_port_candidate_roots(
+                self.repository._source, pinned._source
+            )
+            fx_stamp = tuple(
+                (p.stat().st_mtime_ns, p.stat().st_size)
+                for r in candidate_roots
+                if (p := r / "bonds" / "fx_debt_exposure.parquet").is_file()
+            )
             stress_cache_key = (
-                (*snap_key, statement_scope, period_type, resolved_date)
+                (*snap_key, statement_scope, period_type, resolved_date, fx_stamp)
                 if snap_key is not None
                 else None
             )
@@ -194,9 +202,6 @@ class StressAndOverlayQueryMixin(_QueryServiceBase):
                 ],
                 filters={"issuer_id": ratios["issuer_id"].unique().to_list()},
                 connection=connection,
-            )
-            candidate_roots = build_port_candidate_roots(
-                self.repository._source, pinned._source
             )
             fx_df = load_fx_debt_exposure_from_roots(
                 candidate_roots,

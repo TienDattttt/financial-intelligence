@@ -139,9 +139,22 @@ def _score_accounting_only_ml(
 
     if ml_training_result is not None:
         train_mod = importlib.import_module("finintel.ml.supervised.train")
+        model_features = tuple(getattr(ml_training_result, "features", ()) or ())
+        extra_missing = [
+            pl.lit(None, dtype=pl.Float64).alias(col)
+            for col in model_features
+            if col not in explicit_frame.columns
+        ]
+        if "accounting_regime" not in explicit_frame.columns:
+            extra_missing.append(pl.lit("CORPORATE").alias("accounting_regime"))
+        scored_input = (
+            explicit_frame.with_columns(*extra_missing)
+            if extra_missing
+            else explicit_frame
+        )
         scored = train_mod.score_distress_model(
             ml_training_result,
-            explicit_frame,
+            scored_input,
             model_role="PRIVATE_ACCOUNTING_ONLY",
         )
         srow = scored.row(0, named=True)
