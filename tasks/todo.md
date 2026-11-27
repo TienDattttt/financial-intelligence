@@ -412,13 +412,13 @@
 **Description:** Tạo migration `config/migrations/app_v3_002_alerts.sql` và module `src/finintel/alerts/detector.py` so sánh 2 snapshot liên tiếp bằng Polars để phát sinh 5 loại `AlertEvent` tất định (`NEW_FILING_PUBLISHED`, `RISK_TIER_UPGRADE`, `NEW_RED_FLAG_TRIGGERED`, `REGULATORY_EVENT_ISSUED`, `MERTON_DTD_BREACH`) có khóa `dedup_key` SHA-256.
 
 **Acceptance criteria:**
-- [ ] Phát hiện chính xác cả 5 loại biến động trên 2 snapshot giả lập ở `tmp_path` và trả `0` sự kiện thừa cho mã không đổi.
-- [ ] Chạy lặp detector trên cùng cặp snapshot sinh `dedup_key` giống hệt 100% (idempotent).
-- [ ] Nội dung `title_vi` tuân thủ 100% quy tắc NĐ 88/2014 & Luật CK (không khuyến nghị mua/bán).
+- [x] Phát hiện chính xác cả 5 loại biến động trên 2 snapshot giả lập ở `tmp_path` và trả `0` sự kiện thừa cho mã không đổi.
+- [x] Chạy lặp detector trên cùng cặp snapshot sinh `dedup_key` giống hệt 100% (idempotent).
+- [x] Nội dung `title_vi` tuân thủ 100% quy tắc NĐ 88/2014 & Luật CK (không khuyến nghị mua/bán).
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_early_warning_alerts.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/alerts/detector.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_early_warning_alerts.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/alerts/detector.py`
 
 **Dependencies:** `V3-11`, `V3-08`  
 **Commit type:** `feat(alerts)`  
@@ -435,13 +435,13 @@
 **Description:** Xây dựng `src/finintel/alerts/dispatcher.py` định tuyến `AlertEvent` khớp với Watchlist & `ConsentPurpose.ALERT_NOTIFICATIONS` qua In-App, **Telegram Bot (miễn phí không giới hạn)**, **Resend Free Daily Digest** (`< 80`/ngày) và **Outgoing Webhook** (ký `X-FinIntel-Signature: sha256=...`, chặn SSRF bằng `ssrf_guard`, retry backoff + dead-letter).
 
 **Acceptance criteria:**
-- [ ] Từ chối 100% Webhook trỏ IP private/loopback/metadata (`127.0.0.1`, `169.254.169.254`) hoặc redirect `3xx`.
-- [ ] Không gửi cho tài khoản thiếu `ConsentPurpose.ALERT_NOTIFICATIONS`; không gửi trùng khi retry (`dedup_key` unique constraint).
-- [ ] Chữ ký HMAC-SHA256 khớp raw bytes payload; Resend adapter tự gộp Daily Digest bảo vệ hạn mức `100` email/ngày.
+- [x] Từ chối 100% Webhook trỏ IP private/loopback/metadata (`127.0.0.1`, `169.254.169.254`) hoặc redirect `3xx`.
+- [x] Không gửi cho tài khoản thiếu `ConsentPurpose.ALERT_NOTIFICATIONS`; không gửi trùng khi retry (`dedup_key` unique constraint).
+- [x] Chữ ký HMAC-SHA256 khớp raw bytes payload; Resend adapter tự gộp Daily Digest bảo vệ hạn mức `100` email/ngày.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_early_warning_alerts.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/alerts/dispatcher.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_early_warning_alerts.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/alerts/dispatcher.py`
 
 **Dependencies:** `V3-16`  
 **Commit type:** `feat(alerts)`  
@@ -458,12 +458,12 @@
 **Description:** Tạo `src/finintel/alerts/router.py` (`/api/v3/alerts/notifications`, `/subscriptions`, `/webhooks/test`), mount vào `api.py` (`<= +2` LOC), và xây dựng trang `/alerts` + `NotificationBell.tsx` trên `AppShell`.
 
 **Acceptance criteria:**
-- [ ] Người dùng cấu hình được kênh nhận cảnh báo (In-App / Telegram / Email Digest / Webhook), bấm test webhook và đánh dấu đã đọc.
-- [ ] Chuông thông báo hiển thị số unread chính xác, hoạt động hoàn chỉnh bằng bàn phím chuẩn WCAG 2.2 AA.
+- [x] Người dùng cấu hình được kênh nhận cảnh báo (In-App / Telegram / Email Digest / Webhook), bấm test webhook và đánh dấu đã đọc.
+- [x] Chuông thông báo hiển thị số unread chính xác, hoạt động hoàn chỉnh bằng bàn phím chuẩn WCAG 2.2 AA.
 
 **Verification:**
-- [ ] Backend tests: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_early_warning_alerts.py -q`
-- [ ] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
+- [x] Backend tests: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_early_warning_alerts.py -q`
+- [x] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
 
 **Dependencies:** `V3-17`  
 **Commit type:** `feat(alerts,frontend)`  
@@ -476,7 +476,7 @@
 **Estimated scope:** Medium (4 files)
 
 ### Checkpoint 2-1: After Tasks `V3-16..V3-18` (`v3-early-warning-alerts`)
-- [ ] Toàn bộ test detector, dispatcher (SSRF/HMAC/idempotency), router và UI pass 100%.
+- [x] Toàn bộ test detector, dispatcher (SSRF/HMAC/idempotency), router và UI pass 100%.
 
 ---
 
@@ -486,13 +486,13 @@
 **Description:** Tạo migration `app_v3_003_fair_use_quota.sql` và gói `src/finintel/quota/` (`policies.py`, `guard.py`, `router.py`, `schemas.py`) áp đặt hạn mức sử dụng công bằng theo vai trò (`USER`: 15 RAG/ngày, 10 `.xlsx`/ngày; `RESEARCHER`: 50 RAG/ngày, 30 `.xlsx`/ngày) với đếm nguyên tử + Global Circuit Breaker ở `85%` Gemini Free Tier (không có code thanh toán).
 
 **Acceptance criteria:**
-- [ ] Test đồng thời 20 request với limit 15 → đúng 15 thành công, 5 trả `429` kèm `reset_at` (`00:00 Asia/Ho_Chi_Minh`).
-- [ ] Cache HIT hoặc lỗi `5xx` tuyệt đối không trừ quota của người dùng.
-- [ ] Global Circuit Breaker tự kích hoạt trả `503` thân thiện khi tổng hệ thống chạm `85%` ngân sách ngày.
+- [x] Test đồng thời 20 request với limit 15 → đúng 15 thành công, 5 trả `429` kèm `reset_at` (`00:00 Asia/Ho_Chi_Minh`).
+- [x] Cache HIT hoặc lỗi `5xx` tuyệt đối không trừ quota của người dùng.
+- [x] Global Circuit Breaker tự kích hoạt trả `503` thân thiện khi tổng hệ thống chạm `85%` ngân sách ngày.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_scaled_rag_quota.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/quota tests/unit/test_v3_scaled_rag_quota.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_scaled_rag_quota.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/quota tests/unit/test_v3_scaled_rag_quota.py`
 
 **Dependencies:** `V3-10`, `V3-08`  
 **Commit type:** `feat(quota)`  
@@ -511,12 +511,12 @@
 **Description:** Xây dựng `src/finintel/rag/batch_pipeline.py` tự động xếp hàng ưu tiên PDF Thuyết minh cho 100% DN `R4/R5` + 100% có cờ đỏ + Top 300 vốn hóa, định tuyến Text-first (`PyMuPDF` = `$0`), dedup theo `content_sha256` và dừng lịch sự ở trạng thái `DEFERRED_VISION_CAP` khi đạt `daily_vision_page_cap = 150`.
 
 **Acceptance criteria:**
-- [ ] Trang text sạch không gọi bất kỳ API Vision nào (`0` calls); PDF trùng `content_sha256` bỏ qua 100%.
-- [ ] Chạm `daily_vision_page_cap` vẫn hoàn thành index các trang text sạch và ghi `rag_usage_ledger` (không crash Dagster job).
+- [x] Trang text sạch không gọi bất kỳ API Vision nào (`0` calls); PDF trùng `content_sha256` bỏ qua 100%.
+- [x] Chạm `daily_vision_page_cap` vẫn hoàn thành index các trang text sạch và ghi `rag_usage_ledger` (không crash Dagster job).
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_scaled_rag_quota.py tests/unit/test_rag*.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/rag/batch_pipeline.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_scaled_rag_quota.py tests/unit/test_rag*.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/rag/batch_pipeline.py`
 
 **Dependencies:** `V3-19`  
 **Commit type:** `feat(rag)`  
@@ -532,12 +532,12 @@
 **Description:** Gắn `enforce_and_consume_quota("rag_query")` + kiểm tra `ConsentPurpose.CROSS_BORDER_LLM_RAG` (ẩn danh PII khỏi prompt) vào `src/finintel/rag/router.py`, mount `quota_router` vào `api.py` (`<= +2` LOC), và hiển thị `QuotaBadge.tsx` trên `DocumentInvestigationPanel`.
 
 **Acceptance criteria:**
-- [ ] Yêu cầu RAG không có `CROSS_BORDER_LLM_RAG` consent bị chặn lịch sự kèm hướng dẫn bật đồng ý trong `/profile`.
-- [ ] `QuotaBadge.tsx` hiển thị chính xác lượt còn lại/ngày và thời điểm reset, `0` lỗi a11y.
+- [x] Yêu cầu RAG không có `CROSS_BORDER_LLM_RAG` consent bị chặn lịch sự kèm hướng dẫn bật đồng ý trong `/profile`.
+- [x] `QuotaBadge.tsx` hiển thị chính xác lượt còn lại/ngày và thời điểm reset, `0` lỗi a11y.
 
 **Verification:**
-- [ ] Backend tests: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_scaled_rag_quota.py -q`
-- [ ] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
+- [x] Backend tests: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_scaled_rag_quota.py -q`
+- [x] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
 
 **Dependencies:** `V3-19`, `V3-20`  
 **Commit type:** `feat(rag,frontend)`  
@@ -550,7 +550,7 @@
 **Estimated scope:** Medium (4 files)
 
 ### Checkpoint 2-2: After Tasks `V3-19..V3-21` (`v3-scaled-rag-and-billing`)
-- [ ] Quota race tests, Vision cap tests, PDPL consent tests và Frontend check xanh 100%.
+- [x] Quota race tests, Vision cap tests, PDPL consent tests và Frontend check xanh 100%.
 
 ---
 
@@ -560,12 +560,12 @@
 **Description:** Tạo `src/finintel/analytics/qoq_and_peers.py` tính tăng trưởng `QoQ` cục bộ chỉ trên quý rời rạc liên tiếp (trả `NULL` nếu vượt biên `TT200 → TT99`), hàm gợi ý 4 đối thủ cùng `icb_code_level3` quy mô tương đương (fallback L2 khi `< 5` mã), và hàm trích top 3 tỷ số có `|sector_z|` lớn nhất cho ngoại lai đa biến Top 5%.
 
 **Acceptance criteria:**
-- [ ] `QoQ` trả `NULL` (`MIXED_TAXONOMY`) ở quý chuyển giao Q4/2025 → Q1/2026 và khi mẫu số `<= 0`.
-- [ ] Peer matcher chọn đúng 4 mã gần nhất về `market_cap_vnd` (fallback `BS_TOTAL_ASSETS`) cùng ngành L3, tự động fallback L2 kèm cờ `peer_basis = "ICB_LEVEL_2"`.
+- [x] `QoQ` trả `NULL` (`MIXED_TAXONOMY`) ở quý chuyển giao Q4/2025 → Q1/2026 và khi mẫu số `<= 0`.
+- [x] Peer matcher chọn đúng 4 mã gần nhất về `market_cap_vnd` (fallback `BS_TOTAL_ASSETS`) cùng ngành L3, tự động fallback L2 kèm cờ `peer_basis = "ICB_LEVEL_2"`.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_analyst_ops.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/analytics/qoq_and_peers.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_analyst_ops.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/analytics/qoq_and_peers.py`
 
 **Dependencies:** `V3-05`  
 **Commit type:** `feat(analytics)`  
@@ -581,13 +581,13 @@
 **Description:** Tạo migration `app_v3_004_ops_qa.sql` và gói `src/finintel/ops/` cung cấp API gợi ý peer, anomaly Z-drivers, hàng đợi duyệt `audit_quarantine` (chỉ chấp nhận nạp bản đính chính `revision_no + 1` kèm `source_url`/`raw_file_sha256`, cấm tuyệt đối UPDATE đè số cũ) và theo dõi vòng đời mã niêm yết (`INTERNAL_OPS` only).
 
 **Acceptance criteria:**
-- [ ] `USER` / `RESEARCHER` gọi `/api/v3/ops/*` nhận `403 Forbidden`.
-- [ ] Duyệt revision tạo `revision_no = 2` giữ nguyên `revision_no = 1` bất biến và ghi đầy đủ vào `user_audit_logs`.
+- [x] `USER` / `RESEARCHER` gọi `/api/v3/ops/*` nhận `403 Forbidden`.
+- [x] Duyệt revision tạo `revision_no = 2` giữ nguyên `revision_no = 1` bất biến và ghi đầy đủ vào `user_audit_logs`.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_analyst_ops.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/ops`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_analyst_ops.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/ops`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-11`, `V3-22`  
 **Commit type:** `feat(ops)`  
@@ -606,12 +606,12 @@
 **Description:** Tạo `DuPontTreeChart.tsx` (cây 5/6 nhân tố bấm mở `SourceDrawer`), nút *"Gợi ý 4 đối thủ cùng ngành"* trên `/compare`, hiển thị `QoQ` cục bộ kèm cảnh báo mùa vụ Q4 trên `FinancialTable`/`GrowthComboChart` (không đụng thanh kỳ toàn cục `M-04`), và màn hình `/ops/qa` cho `INTERNAL_OPS`.
 
 **Acceptance criteria:**
-- [ ] Click từng nút trên `DuPontTreeChart` mở đúng `SourceDrawer`; đạt WCAG 2.2 AA và dùng token màu `echarts-theme.ts` (không tím/cyan).
-- [ ] Nút gợi ý trên `/compare` nạp tự động 4 mã cùng ngành; thanh kỳ toàn cục vẫn khóa chỉ `TTM` vs `Annual` (`M-04`).
+- [x] Click từng nút trên `DuPontTreeChart` mở đúng `SourceDrawer`; đạt WCAG 2.2 AA và dùng token màu `echarts-theme.ts` (không tím/cyan).
+- [x] Nút gợi ý trên `/compare` nạp tự động 4 mã cùng ngành; thanh kỳ toàn cục vẫn khóa chỉ `TTM` vs `Annual` (`M-04`).
 
 **Verification:**
-- [ ] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-23`  
 **Commit type:** `feat(frontend)`  
@@ -625,8 +625,8 @@
 **Estimated scope:** Medium (5 files)
 
 ### Checkpoint 2-3 & PHASE 2 RELEASE GATE (`v3.0.0` GA)
-- [ ] Cả 3 nhánh Wave 2 merge sạch, toàn bộ `AGENTS.md` §3 + Playwright E2E + `wcag22aa` + `CWV` PASS 100%.
-- [ ] Cập nhật `CHANGELOG.md` và gắn tag bất biến `v3.0.0` (Free Cloud GA).
+- [x] Cả 3 nhánh Wave 2 merge sạch, toàn bộ `AGENTS.md` §3 + Playwright E2E + `wcag22aa` + `CWV` PASS 100%.
+- [x] Cập nhật `CHANGELOG.md` và gắn tag bất biến `v3.0.0` (Free Cloud GA).
 
 ---
 
