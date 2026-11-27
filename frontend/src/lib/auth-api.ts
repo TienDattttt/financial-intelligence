@@ -18,6 +18,9 @@ import type {
   B2BWebhookTestResponse,
   DataDeletionReceiptResponse,
   DeleteAccountRequest,
+  HitlFeedbackItem,
+  HitlFeedbackRequest,
+  HitlSummaryResponse,
   ImportLocalWatchlistResponse,
   LoginRequest,
   MyQuotaResponse,
@@ -32,6 +35,11 @@ import type {
   PasswordChangeBody,
   PasswordResetConfirmBody,
   PasswordResetRequestBody,
+  PrivateDossierDeleteResponse,
+  PrivateDossierListResponse,
+  PrivateDossierPreviewResponse,
+  PrivateScoreRequest,
+  PrivateScoreResponse,
   RegisterRequest,
   SavedScreenItem,
   SavedScreensListResponse,
@@ -410,4 +418,100 @@ export const b2bApi = {
       `/api/v3/b2b/webhooks/${encodeURIComponent(endpointId)}/test`,
       { method: "POST" },
     ),
+};
+
+export const privateCreditApi = {
+  getTemplateUrl: (taxonomy: "VAS_TT99_2025" | "VAS_TT200_2014" = "VAS_TT99_2025") =>
+    `/api/v3/private-credit/template.xlsx?taxonomy=${encodeURIComponent(taxonomy)}`,
+
+  downloadTemplate: async (
+    taxonomy: "VAS_TT99_2025" | "VAS_TT200_2014" = "VAS_TT99_2025",
+  ): Promise<Blob> => {
+    const res = await fetch(
+      `/api/v3/private-credit/template.xlsx?taxonomy=${encodeURIComponent(taxonomy)}`,
+      { credentials: "include" },
+    );
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const errBody = (await res.json()) as { detail?: unknown };
+        if (typeof errBody.detail === "string") {
+          detail = errBody.detail;
+        }
+      } catch {
+        detail = "";
+      }
+      throw new ApiError(res.status, sanitizeAuthDetail(detail, res.status));
+    }
+    return res.blob();
+  },
+
+  parseWorkbook: async (formData: FormData): Promise<PrivateDossierPreviewResponse> => {
+    const res = await fetch("/api/v3/private-credit/parse", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        "X-Requested-With": "FinIntel-Web",
+      },
+      body: formData,
+    });
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const errBody = (await res.json()) as { detail?: unknown };
+        if (typeof errBody.detail === "string") {
+          detail = errBody.detail;
+        } else if (Array.isArray(errBody.detail) && errBody.detail.length > 0) {
+          const first = errBody.detail[0] as { msg?: unknown } | undefined;
+          if (typeof first?.msg === "string") detail = first.msg;
+        }
+      } catch {
+        detail = "";
+      }
+      throw new ApiError(res.status, sanitizeAuthDetail(detail, res.status));
+    }
+    return (await res.json()) as PrivateDossierPreviewResponse;
+  },
+
+  listDossiers: (signal?: AbortSignal) =>
+    authFetchJson<PrivateDossierListResponse>("/api/v3/private-credit/dossiers", {
+      signal,
+      mutating: false,
+    }),
+
+  getDossier: (dossierId: string, signal?: AbortSignal) =>
+    authFetchJson<PrivateDossierPreviewResponse>(
+      `/api/v3/private-credit/dossiers/${encodeURIComponent(dossierId)}`,
+      { signal, mutating: false },
+    ),
+
+  scoreDossier: (dossierId: string, payload?: Partial<PrivateScoreRequest>) =>
+    authFetchJson<PrivateScoreResponse>(
+      `/api/v3/private-credit/dossiers/${encodeURIComponent(dossierId)}/score`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload ?? {}),
+      },
+    ),
+
+  deleteDossier: (dossierId: string) =>
+    authFetchJson<PrivateDossierDeleteResponse>(
+      `/api/v3/private-credit/dossiers/${encodeURIComponent(dossierId)}`,
+      { method: "DELETE" },
+    ),
+};
+
+export const hitlApi = {
+  submitFeedback: (payload: HitlFeedbackRequest) =>
+    authFetchJson<HitlFeedbackItem>("/api/v3/hitl/feedback", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  getSummary: (signal?: AbortSignal) =>
+    authFetchJson<HitlSummaryResponse>("/api/v3/hitl/summary", {
+      signal,
+      mutating: false,
+    }),
 };
