@@ -61,6 +61,7 @@ from finintel.storage.schemas import (
     CORE_RATIOS as CORE_RATIOS,
     EXTRA_RATIOS as EXTRA_RATIOS,
     FORENSIC_RATIOS as FORENSIC_RATIOS,
+    V3_RATIOS as V3_RATIOS,
 )
 
 
@@ -364,6 +365,14 @@ def calculate_ratios(periods: pl.DataFrame) -> pl.DataFrame:
                 CFO,
                 CURRENT_LIABILITIES,
                 prior=(CURRENT_LIABILITIES,),
+            ),
+            *_ratio(
+                "ocf_to_total_liabilities",
+                cfo,
+                c(LIABILITIES),
+                CFO,
+                LIABILITIES,
+                universal=True,
             ),
             *_ratio(
                 "liabilities_to_assets",

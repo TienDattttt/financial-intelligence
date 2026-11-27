@@ -6,7 +6,8 @@ export type ScreenerColumnGroupId =
   | "credit_risk"
   | "models"
   | "forensic"
-  | "financials";
+  | "financials"
+  | "valuation";
 
 export type ScreenerOptionalColumnId =
   | "distress"
@@ -27,10 +28,20 @@ export type ScreenerOptionalColumnId =
   | "non_core_distortion_to_assets"
   | "core_to_ebt_ratio"
   | "roe_total"
+  | "roe_parent"
   | "roa"
+  | "eps_ttm_estimated"
   | "ebit_margin"
+  | "liabilities_to_assets"
   | "debt_to_equity"
-  | "interest_coverage";
+  | "interest_coverage"
+  | "cfo_ttm"
+  | "fcf_ttm"
+  | "ocf_to_total_liabilities"
+  | "revenue_growth_yoy"
+  | "pe_ttm"
+  | "pb_ratio"
+  | "market_cap_vnd";
 
 export interface ScreenerColumnOption {
   id: ScreenerOptionalColumnId;
@@ -48,7 +59,8 @@ export const SCREENER_COLUMN_GROUPS: readonly {
   { id: "credit_risk", label: "Tín dụng & Xác suất kiệt quệ" },
   { id: "models", label: "Mô hình cổ điển & Phân cụm" },
   { id: "forensic", label: "Cờ đỏ & Chất lượng lợi nhuận" },
-  { id: "financials", label: "Sinh lời & Đòn bẩy" },
+  { id: "financials", label: "Sinh lời, Đòn bẩy & Dòng tiền" },
+  { id: "valuation", label: "Định giá & Quy mô PIT" },
 ];
 
 export const SCREENER_OPTIONAL_COLUMNS: readonly ScreenerColumnOption[] = [
@@ -182,6 +194,13 @@ export const SCREENER_OPTIONAL_COLUMNS: readonly ScreenerColumnOption[] = [
     align: "right",
   },
   {
+    id: "roe_parent",
+    label: "ROE (CĐ mẹ)",
+    group: "financials",
+    defaultVisible: false,
+    align: "right",
+  },
+  {
     id: "roa",
     label: "ROA",
     group: "financials",
@@ -189,8 +208,22 @@ export const SCREENER_OPTIONAL_COLUMNS: readonly ScreenerColumnOption[] = [
     align: "right",
   },
   {
+    id: "eps_ttm_estimated",
+    label: "EPS TTM",
+    group: "financials",
+    defaultVisible: true,
+    align: "right",
+  },
+  {
     id: "ebit_margin",
     label: "Biên EBIT",
+    group: "financials",
+    defaultVisible: true,
+    align: "right",
+  },
+  {
+    id: "liabilities_to_assets",
+    label: "Nợ/TS",
     group: "financials",
     defaultVisible: true,
     align: "right",
@@ -209,6 +242,55 @@ export const SCREENER_OPTIONAL_COLUMNS: readonly ScreenerColumnOption[] = [
     defaultVisible: true,
     align: "right",
   },
+  {
+    id: "cfo_ttm",
+    label: "CFO (Tỷ)",
+    group: "financials",
+    defaultVisible: true,
+    align: "right",
+  },
+  {
+    id: "fcf_ttm",
+    label: "FCF (Tỷ)",
+    group: "financials",
+    defaultVisible: false,
+    align: "right",
+  },
+  {
+    id: "ocf_to_total_liabilities",
+    label: "OCF/Tổng nợ",
+    group: "financials",
+    defaultVisible: false,
+    align: "right",
+  },
+  {
+    id: "revenue_growth_yoy",
+    label: "TT DT YoY",
+    group: "financials",
+    defaultVisible: false,
+    align: "right",
+  },
+  {
+    id: "pe_ttm",
+    label: "P/E",
+    group: "valuation",
+    defaultVisible: true,
+    align: "right",
+  },
+  {
+    id: "pb_ratio",
+    label: "P/B",
+    group: "valuation",
+    defaultVisible: true,
+    align: "right",
+  },
+  {
+    id: "market_cap_vnd",
+    label: "Vốn hóa (Tỷ)",
+    group: "valuation",
+    defaultVisible: true,
+    align: "right",
+  },
 ];
 
 export const DEFAULT_VISIBLE_SCREENER_COLUMNS: readonly ScreenerOptionalColumnId[] =
@@ -218,7 +300,7 @@ export const ALL_SCREENER_OPTIONAL_COLUMN_IDS: readonly ScreenerOptionalColumnId
   SCREENER_OPTIONAL_COLUMNS.map((c) => c.id);
 
 const VALID_COLUMN_ID_SET = new Set<string>(ALL_SCREENER_OPTIONAL_COLUMN_IDS);
-const ColumnPrefsSchema = z.array(z.string()).max(40);
+const ColumnPrefsSchema = z.array(z.string()).max(60);
 
 const columnPrefsListeners = new Set<() => void>();
 

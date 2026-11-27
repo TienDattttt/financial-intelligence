@@ -1225,8 +1225,8 @@ def test_suite1_happy_path_full_stack_all_10_routes_gc_and_rollback(
         assert len(benchmarks["peer_ranking"]) >= 2
         assert len(benchmarks["history"]) > 0
 
-        # Route 6: GET /api/v1/companies/{ticker}/lineage across ALL 38/38 ALL_RATIOS
-        assert len(ALL_RATIOS) == 38
+        # Route 6: GET /api/v1/companies/{ticker}/lineage across ALL 39/39 ALL_RATIOS
+        assert len(ALL_RATIOS) == 39
         for idx, ratio_name in enumerate(ALL_RATIOS):
             params = {
                 "ratio_name": ratio_name,

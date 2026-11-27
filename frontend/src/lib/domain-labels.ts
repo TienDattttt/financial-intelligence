@@ -655,6 +655,7 @@ export const ML_FEATURE_LABELS: Record<string, string> = {
   cash_ratio: "Hệ số thanh toán tiền mặt",
   interest_coverage: "Khả năng thanh toán lãi vay (EBIT / Lãi vay)",
   ocf_to_current_liabilities: "CFO / Nợ ngắn hạn",
+  ocf_to_total_liabilities: "CFO / Tổng nợ phải trả",
   fcf_to_revenue: "Dòng tiền tự do / Doanh thu",
   altman_z_double_prime: "Điểm Altman Z″ (Thị trường mới nổi)",
   piotroski_f_score: "Điểm Piotroski F-Score",

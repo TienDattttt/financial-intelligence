@@ -48,6 +48,7 @@ from finintel.storage.schemas import (
     ML_SCORES_TABLE,
     MODEL_CARD_META_TABLE,
     OPTIONAL_ANALYTICS_SCHEMAS,
+    PIT_VALUATION_MART_TABLE,
     QUALITY_SUMMARY_TABLE,
     RATIOS_TABLE,
     RED_FLAGS_TABLE,
@@ -139,6 +140,10 @@ TABLE_PHYSICAL_LAYOUT: Mapping[str, TablePhysicalLayout] = {
     MODEL_CARD_META_TABLE: TablePhysicalLayout(
         sort_by=("model_card_id",),
         row_group_size=100,
+    ),
+    PIT_VALUATION_MART_TABLE: TablePhysicalLayout(
+        sort_by=("issuer_id", "statement_scope", "period_type", "period_end_date"),
+        row_group_size=10_000,
     ),
     "issuers.parquet": TablePhysicalLayout(
         sort_by=("ticker", "issuer_id"),

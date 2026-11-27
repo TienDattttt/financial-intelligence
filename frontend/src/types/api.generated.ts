@@ -470,7 +470,7 @@ export interface components {
              * Metric Name
              * @enum {string}
              */
-            metric_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+            metric_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
             /** Display Name Vn */
             display_name_vn: string;
             /**
@@ -608,7 +608,7 @@ export interface components {
              * Metric Name
              * @enum {string}
              */
-            metric_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+            metric_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
             /** Peer Group Level */
             peer_group_level?: string | null;
             /** Icb Code Used */
@@ -1727,7 +1727,7 @@ export interface components {
              * Ratio Name
              * @enum {string}
              */
-            ratio_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+            ratio_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
             /** Display Name Vn */
             display_name_vn: string;
             /**
@@ -1788,7 +1788,7 @@ export interface components {
              * Ratio Name
              * @enum {string}
              */
-            ratio_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+            ratio_name: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
             /** Display Name Vn */
             display_name_vn: string;
             /** Formula */
@@ -1979,9 +1979,33 @@ export interface components {
         };
         /**
          * ScreenerItem
-         * @description Single issuer row matching ``DashboardQueryService.screen_market()`` (41 columns).
+         * @description Single issuer row matching ``DashboardQueryService.screen_market()`` (with V3 ratios & valuation).
          */
         ScreenerItem: {
+            /** Roe Parent */
+            roe_parent?: number | null;
+            /** Eps Ttm Estimated */
+            eps_ttm_estimated?: number | null;
+            /** Liabilities To Assets */
+            liabilities_to_assets?: number | null;
+            /** Cfo Ttm */
+            cfo_ttm?: number | null;
+            /** Fcf Ttm */
+            fcf_ttm?: number | null;
+            /** Ocf To Total Liabilities */
+            ocf_to_total_liabilities?: number | null;
+            /** Revenue Growth Yoy */
+            revenue_growth_yoy?: number | null;
+            /** Market Cap Vnd */
+            market_cap_vnd?: number | null;
+            /** Pe Ttm */
+            pe_ttm?: number | null;
+            /** Pb Ratio */
+            pb_ratio?: number | null;
+            /** Pe Flag */
+            pe_flag?: string | null;
+            /** Pb Flag */
+            pb_flag?: string | null;
             /** Issuer Id */
             issuer_id: string;
             /** Ticker */
@@ -2807,7 +2831,7 @@ export interface operations {
     get_company_benchmarks_api_v1_companies__ticker__benchmarks_get: {
         parameters: {
             query?: {
-                metric_name?: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+                metric_name?: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
                 statement_scope?: "CONSOLIDATED" | "SEPARATE";
                 period_type?: "QUARTER" | "ANNUAL";
                 period_end_date?: string | null;
@@ -2847,7 +2871,7 @@ export interface operations {
     get_company_lineage_api_v1_companies__ticker__lineage_get: {
         parameters: {
             query?: {
-                ratio_name?: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
+                ratio_name?: "gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio";
                 statement_scope?: "CONSOLIDATED" | "SEPARATE";
                 period_type?: "QUARTER" | "ANNUAL";
                 period_end_date?: string | null;
@@ -2900,10 +2924,34 @@ export interface operations {
                 max_red_flags?: number | null;
                 min_red_flags?: number | null;
                 q?: string | null;
-                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "debt_to_equity" | "ebit_margin" | "interest_coverage";
+                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "roe_parent" | "roa" | "eps_ttm_estimated" | "liabilities_to_assets" | "debt_to_equity" | "ebit_margin" | "interest_coverage" | "cfo_ttm" | "ocf_to_total_liabilities" | "revenue_growth_yoy" | "pe_ttm" | "pb_ratio" | "market_cap_vnd";
                 sort_dir?: "asc" | "desc";
                 limit?: number;
                 offset?: number;
+                cluster_id?: number | null;
+                anomaly_flag?: boolean | null;
+                min_roe_parent?: number | null;
+                max_roe_parent?: number | null;
+                min_roa?: number | null;
+                max_roa?: number | null;
+                min_eps_ttm_estimated?: number | null;
+                max_eps_ttm_estimated?: number | null;
+                min_liabilities_to_assets?: number | null;
+                max_liabilities_to_assets?: number | null;
+                min_debt_to_equity?: number | null;
+                max_debt_to_equity?: number | null;
+                min_cfo_ttm?: number | null;
+                max_cfo_ttm?: number | null;
+                min_ocf_to_total_liabilities?: number | null;
+                max_ocf_to_total_liabilities?: number | null;
+                min_revenue_growth_yoy?: number | null;
+                max_revenue_growth_yoy?: number | null;
+                min_pe_ttm?: number | null;
+                max_pe_ttm?: number | null;
+                min_pb_ratio?: number | null;
+                max_pb_ratio?: number | null;
+                min_market_cap_bn_vnd?: number | null;
+                max_market_cap_bn_vnd?: number | null;
             };
             header?: {
                 "If-None-Match"?: string | null;
@@ -2951,8 +2999,32 @@ export interface operations {
                 max_red_flags?: number | null;
                 min_red_flags?: number | null;
                 q?: string | null;
-                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "debt_to_equity" | "ebit_margin" | "interest_coverage";
+                sort_by?: "ticker" | "calibrated_distress_prob" | "altman_z_double_prime" | "piotroski_f_score" | "beneish_m8_score" | "red_flag_count" | "roe_total" | "roe_parent" | "roa" | "eps_ttm_estimated" | "liabilities_to_assets" | "debt_to_equity" | "ebit_margin" | "interest_coverage" | "cfo_ttm" | "ocf_to_total_liabilities" | "revenue_growth_yoy" | "pe_ttm" | "pb_ratio" | "market_cap_vnd";
                 sort_dir?: "asc" | "desc";
+                cluster_id?: number | null;
+                anomaly_flag?: boolean | null;
+                min_roe_parent?: number | null;
+                max_roe_parent?: number | null;
+                min_roa?: number | null;
+                max_roa?: number | null;
+                min_eps_ttm_estimated?: number | null;
+                max_eps_ttm_estimated?: number | null;
+                min_liabilities_to_assets?: number | null;
+                max_liabilities_to_assets?: number | null;
+                min_debt_to_equity?: number | null;
+                max_debt_to_equity?: number | null;
+                min_cfo_ttm?: number | null;
+                max_cfo_ttm?: number | null;
+                min_ocf_to_total_liabilities?: number | null;
+                max_ocf_to_total_liabilities?: number | null;
+                min_revenue_growth_yoy?: number | null;
+                max_revenue_growth_yoy?: number | null;
+                min_pe_ttm?: number | null;
+                max_pe_ttm?: number | null;
+                min_pb_ratio?: number | null;
+                max_pb_ratio?: number | null;
+                min_market_cap_bn_vnd?: number | null;
+                max_market_cap_bn_vnd?: number | null;
             };
             header?: {
                 "If-None-Match"?: string | null;
@@ -3183,7 +3255,7 @@ export interface operations {
                 statement_scope?: "CONSOLIDATED" | "SEPARATE";
                 period_type?: "QUARTER" | "ANNUAL";
                 period_end_date?: string | null;
-                metrics?: ("gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio")[] | null;
+                metrics?: ("gross_margin" | "ebit_margin" | "ebitda_margin" | "operating_margin" | "net_profit_margin" | "roa" | "roe_total" | "roe_parent" | "roic" | "current_ratio" | "quick_ratio" | "cash_ratio" | "ocf_to_current_liabilities" | "ocf_to_total_liabilities" | "liabilities_to_assets" | "financial_debt_to_assets" | "debt_to_equity" | "net_debt_to_equity" | "net_debt_to_ebitda" | "interest_coverage" | "asset_turnover" | "inventory_turnover" | "receivables_turnover" | "payables_turnover" | "cash_conversion_cycle" | "ocf_to_net_income" | "fcf_to_revenue" | "accruals_to_assets" | "eps_ttm_estimated" | "equity_to_assets" | "dio" | "dso" | "dpo" | "revenue_growth_yoy" | "ebit_growth_yoy" | "net_income_parent_growth_yoy" | "core_operating_margin" | "non_core_distortion_to_assets" | "core_to_ebt_ratio")[] | null;
             };
             header?: {
                 "If-None-Match"?: string | null;

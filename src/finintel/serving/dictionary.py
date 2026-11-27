@@ -208,6 +208,14 @@ RATIO_DICTIONARY_META: dict[str, RatioDictionaryMeta] = {
         "HIGHER_IS_BETTER",
         "Khả năng tạo dòng tiền kinh doanh so với nợ ngắn hạn bình quân.",
     ),
+    "ocf_to_total_liabilities": RatioDictionaryMeta(
+        "ocf_to_total_liabilities",
+        "LIQUIDITY",
+        "MULTIPLE",
+        "x",
+        "HIGHER_IS_BETTER",
+        "Khả năng tạo dòng tiền kinh doanh thuần (TTM) so với tổng nợ phải trả tại thời điểm cuối kỳ.",
+    ),
     "liabilities_to_assets": RatioDictionaryMeta(
         "liabilities_to_assets",
         "LEVERAGE",

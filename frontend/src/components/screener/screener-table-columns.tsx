@@ -5,7 +5,13 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { ArrowDown, ArrowUp, ArrowUpDown, Bookmark } from "lucide-react";
 import { RiskBadge } from "@/components/financial/RiskBadge";
 import { ALTMAN_ZONE_META, BENEISH_FLAG_META } from "@/lib/domain-labels";
-import { formatMultiple, formatNumber, formatPercent } from "@/lib/format";
+import {
+  formatMultiple,
+  formatNumber,
+  formatPercent,
+  formatVndBillions,
+  formatVndPerShare,
+} from "@/lib/format";
 import {
   formatAnomalyFlagMeta,
   formatRelativeRiskLiftLabel,
@@ -430,16 +436,54 @@ export function buildScreenerColumns({
         <span className="num">{formatPercent(row.original.roe_total)}</span>
       ),
     },
+    roe_parent: {
+      id: "roe_parent",
+      meta: { align: "right" } satisfies ScreenerColumnMeta,
+      header: () => (
+        <SortableHeader
+          label="ROE (CĐ mẹ)"
+          field="roe_parent"
+          activeField={sortBy}
+          activeDir={sortDir}
+          onSort={onSort}
+        />
+      ),
+      cell: ({ row }) => (
+        <span className="num">{formatPercent(row.original.roe_parent)}</span>
+      ),
+    },
     roa: {
       id: "roa",
       meta: { align: "right" } satisfies ScreenerColumnMeta,
       header: () => (
-        <span className="block text-right font-semibold text-ink-muted">
-          ROA
-        </span>
+        <SortableHeader
+          label="ROA"
+          field="roa"
+          activeField={sortBy}
+          activeDir={sortDir}
+          onSort={onSort}
+        />
       ),
       cell: ({ row }) => (
         <span className="num">{formatPercent(row.original.roa)}</span>
+      ),
+    },
+    eps_ttm_estimated: {
+      id: "eps_ttm_estimated",
+      meta: { align: "right" } satisfies ScreenerColumnMeta,
+      header: () => (
+        <SortableHeader
+          label="EPS TTM"
+          field="eps_ttm_estimated"
+          activeField={sortBy}
+          activeDir={sortDir}
+          onSort={onSort}
+        />
+      ),
+      cell: ({ row }) => (
+        <span className="num">
+          {formatVndPerShare(row.original.eps_ttm_estimated)}
+        </span>
       ),
     },
     ebit_margin: {
@@ -456,6 +500,24 @@ export function buildScreenerColumns({
       ),
       cell: ({ row }) => (
         <span className="num">{formatPercent(row.original.ebit_margin)}</span>
+      ),
+    },
+    liabilities_to_assets: {
+      id: "liabilities_to_assets",
+      meta: { align: "right" } satisfies ScreenerColumnMeta,
+      header: () => (
+        <SortableHeader
+          label="Nợ/TS"
+          field="liabilities_to_assets"
+          activeField={sortBy}
+          activeDir={sortDir}
+          onSort={onSort}
+        />
+      ),
+      cell: ({ row }) => (
+        <span className="num">
+          {formatPercent(row.original.liabilities_to_assets)}
+        </span>
       ),
     },
     debt_to_equity: {
@@ -491,6 +553,124 @@ export function buildScreenerColumns({
       cell: ({ row }) => (
         <span className="num">
           {formatMultiple(row.original.interest_coverage)}
+        </span>
+      ),
+    },
+    cfo_ttm: {
+      id: "cfo_ttm",
+      meta: { align: "right" } satisfies ScreenerColumnMeta,
+      header: () => (
+        <SortableHeader
+          label="CFO (Tỷ)"
+          field="cfo_ttm"
+          activeField={sortBy}
+          activeDir={sortDir}
+          onSort={onSort}
+        />
+      ),
+      cell: ({ row }) => (
+        <span className="num">
+          {formatVndBillions(row.original.cfo_ttm)}
+        </span>
+      ),
+    },
+    fcf_ttm: {
+      id: "fcf_ttm",
+      meta: { align: "right" } satisfies ScreenerColumnMeta,
+      header: () => (
+        <span className="block text-right font-semibold text-ink-muted">
+          FCF (Tỷ)
+        </span>
+      ),
+      cell: ({ row }) => (
+        <span className="num">
+          {formatVndBillions(row.original.fcf_ttm)}
+        </span>
+      ),
+    },
+    ocf_to_total_liabilities: {
+      id: "ocf_to_total_liabilities",
+      meta: { align: "right" } satisfies ScreenerColumnMeta,
+      header: () => (
+        <SortableHeader
+          label="OCF/Tổng nợ"
+          field="ocf_to_total_liabilities"
+          activeField={sortBy}
+          activeDir={sortDir}
+          onSort={onSort}
+        />
+      ),
+      cell: ({ row }) => (
+        <span className="num">
+          {formatMultiple(row.original.ocf_to_total_liabilities)}
+        </span>
+      ),
+    },
+    revenue_growth_yoy: {
+      id: "revenue_growth_yoy",
+      meta: { align: "right" } satisfies ScreenerColumnMeta,
+      header: () => (
+        <SortableHeader
+          label="TT DT YoY"
+          field="revenue_growth_yoy"
+          activeField={sortBy}
+          activeDir={sortDir}
+          onSort={onSort}
+        />
+      ),
+      cell: ({ row }) => (
+        <span className="num">
+          {formatPercent(row.original.revenue_growth_yoy, { signed: true })}
+        </span>
+      ),
+    },
+    pe_ttm: {
+      id: "pe_ttm",
+      meta: { align: "right" } satisfies ScreenerColumnMeta,
+      header: () => (
+        <SortableHeader
+          label="P/E"
+          field="pe_ttm"
+          activeField={sortBy}
+          activeDir={sortDir}
+          onSort={onSort}
+        />
+      ),
+      cell: ({ row }) => (
+        <span className="num">{formatMultiple(row.original.pe_ttm)}</span>
+      ),
+    },
+    pb_ratio: {
+      id: "pb_ratio",
+      meta: { align: "right" } satisfies ScreenerColumnMeta,
+      header: () => (
+        <SortableHeader
+          label="P/B"
+          field="pb_ratio"
+          activeField={sortBy}
+          activeDir={sortDir}
+          onSort={onSort}
+        />
+      ),
+      cell: ({ row }) => (
+        <span className="num">{formatMultiple(row.original.pb_ratio)}</span>
+      ),
+    },
+    market_cap_vnd: {
+      id: "market_cap_vnd",
+      meta: { align: "right" } satisfies ScreenerColumnMeta,
+      header: () => (
+        <SortableHeader
+          label="Vốn hóa (Tỷ)"
+          field="market_cap_vnd"
+          activeField={sortBy}
+          activeDir={sortDir}
+          onSort={onSort}
+        />
+      ),
+      cell: ({ row }) => (
+        <span className="num">
+          {formatVndBillions(row.original.market_cap_vnd, { decimals: 0 })}
         </span>
       ),
     },

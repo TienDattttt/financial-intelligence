@@ -33,6 +33,11 @@ from finintel.serving._schema_extensions import (
 from finintel.serving._schema_extensions import (
     ModelCardResponse as ModelCardResponse,
 )
+from finintel.serving.routers.screener_v3 import (
+    RatioNameV3,
+    ScreenerSortFieldV3,
+    ScreenerV3ItemFields,
+)
 from finintel.serving._schema_extensions import (
     ModelMetricsItem as ModelMetricsItem,
 )
@@ -91,61 +96,11 @@ from finintel.serving.queries import (
     StatementScope,
 )
 
-ScreenerSortField = Literal[
-    "ticker",
-    "calibrated_distress_prob",
-    "altman_z_double_prime",
-    "piotroski_f_score",
-    "beneish_m8_score",
-    "red_flag_count",
-    "roe_total",
-    "debt_to_equity",
-    "ebit_margin",
-    "interest_coverage",
-]
+ScreenerSortField = ScreenerSortFieldV3
 SortDirection = Literal["asc", "desc"]
 _TICKER_ITEM_RE = re.compile(r"^[A-Z0-9]{1,10}$")
 
-RatioName = Literal[
-    "gross_margin",
-    "ebit_margin",
-    "ebitda_margin",
-    "operating_margin",
-    "net_profit_margin",
-    "roa",
-    "roe_total",
-    "roe_parent",
-    "roic",
-    "current_ratio",
-    "quick_ratio",
-    "cash_ratio",
-    "ocf_to_current_liabilities",
-    "liabilities_to_assets",
-    "financial_debt_to_assets",
-    "debt_to_equity",
-    "net_debt_to_equity",
-    "net_debt_to_ebitda",
-    "interest_coverage",
-    "asset_turnover",
-    "inventory_turnover",
-    "receivables_turnover",
-    "payables_turnover",
-    "cash_conversion_cycle",
-    "ocf_to_net_income",
-    "fcf_to_revenue",
-    "accruals_to_assets",
-    "eps_ttm_estimated",
-    "equity_to_assets",
-    "dio",
-    "dso",
-    "dpo",
-    "revenue_growth_yoy",
-    "ebit_growth_yoy",
-    "net_income_parent_growth_yoy",
-    "core_operating_margin",
-    "non_core_distortion_to_assets",
-    "core_to_ebt_ratio",
-]
+RatioName = RatioNameV3
 
 
 class HealthResponse(BaseModel):
@@ -450,8 +405,8 @@ class RatioLineageResponse(BaseModel):
     orphan_filing_ids: list[str]
 
 
-class ScreenerItem(BaseModel):
-    """Single issuer row matching ``DashboardQueryService.screen_market()`` (41 columns)."""
+class ScreenerItem(ScreenerV3ItemFields):
+    """Single issuer row matching ``DashboardQueryService.screen_market()`` (with V3 ratios & valuation)."""
 
     issuer_id: str
     ticker: str

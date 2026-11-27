@@ -18,6 +18,12 @@ from collections.abc import Mapping
 import polars as pl
 
 from finintel.exceptions import ContractViolationError
+from finintel.storage._v3_schemas import (
+    PIT_VALUATION_MART_KEY as PIT_VALUATION_MART_KEY,
+    PIT_VALUATION_MART_SCHEMA as PIT_VALUATION_MART_SCHEMA,
+    PIT_VALUATION_MART_TABLE as PIT_VALUATION_MART_TABLE,
+    V3_RATIOS as V3_RATIOS,
+)
 
 RATIOS_TABLE = "financial_ratios.parquet"
 BENCHMARKS_TABLE = "industry_benchmarks.parquet"
@@ -139,7 +145,7 @@ FINANCIAL_RATIOS_SCHEMA = pl.Schema(
         **{name: pl.String for name in RATIO_INTERMEDIATE_FLAGS},
         **{
             column: dtype
-            for name in (*CORE_RATIOS, *EXTRA_RATIOS, *FORENSIC_RATIOS)
+            for name in (*CORE_RATIOS, *EXTRA_RATIOS, *FORENSIC_RATIOS, *V3_RATIOS)
             for column, dtype in ((name, pl.Float64), (f"{name}_flag", pl.String))
         },
         **{name: pl.Float64 for name in RATIO_DUPONT_FACTORS},
@@ -332,6 +338,7 @@ OPTIONAL_ANALYTICS_SCHEMAS = {
     AUDIT_QUARANTINE_TABLE: AUDIT_QUARANTINE_SCHEMA,
     FILINGS_MANIFEST_TABLE: FILINGS_MANIFEST_SCHEMA,
     MODEL_CARD_META_TABLE: MODEL_CARD_META_SCHEMA,
+    PIT_VALUATION_MART_TABLE: PIT_VALUATION_MART_SCHEMA,
 }
 ANALYTICS_SCHEMAS = {
     RATIOS_TABLE: FINANCIAL_RATIOS_SCHEMA,
@@ -346,6 +353,7 @@ ANALYTICS_KEYS = {
     AUDIT_QUARANTINE_TABLE: AUDIT_QUARANTINE_KEY,
     FILINGS_MANIFEST_TABLE: FILINGS_MANIFEST_KEY,
     MODEL_CARD_META_TABLE: MODEL_CARD_META_KEY,
+    PIT_VALUATION_MART_TABLE: PIT_VALUATION_MART_KEY,
 }
 
 

@@ -30,6 +30,12 @@ import polars as pl
 
 from finintel.exceptions import ContractViolationError
 from finintel.serving.observability import SPAN_DUCKDB_QUERY, trace_span
+from finintel.serving.queries._screener_filters import (
+    SCREENER_SCHEMA as SCREENER_SCHEMA,
+)
+from finintel.serving.queries._screener_filters import (
+    SCREENER_SORT_FIELDS as SCREENER_SORT_FIELDS,
+)
 from finintel.storage.ducklake_store import ensure_ducklake_attached
 from finintel.storage.repository import ParquetRepository, _normalize_table_name
 from finintel.storage.schemas import ML_SCORES_SCHEMA, QUALITY_SUMMARY_TABLE
@@ -77,18 +83,6 @@ STATEMENT_TYPES: tuple[str, ...] = (
     "BALANCE_SHEET",
     "INCOME_STATEMENT",
     "CASH_FLOW",
-)
-SCREENER_SORT_FIELDS: tuple[str, ...] = (
-    "ticker",
-    "calibrated_distress_prob",
-    "altman_z_double_prime",
-    "piotroski_f_score",
-    "beneish_m8_score",
-    "red_flag_count",
-    "roe_total",
-    "debt_to_equity",
-    "ebit_margin",
-    "interest_coverage",
 )
 
 
@@ -148,52 +142,6 @@ PEER_BAND_HISTORY_SCHEMA = pl.Schema(
         "peer_group_level": pl.String,
         "icb_code_used": pl.String,
         "peer_count": pl.UInt32,
-    }
-)
-
-SCREENER_SCHEMA = pl.Schema(
-    {
-        "issuer_id": pl.String,
-        "ticker": pl.String,
-        "company_name_vn": pl.String,
-        "exchange": pl.String,
-        "accounting_regime": pl.String,
-        "icb_code_level2": pl.String,
-        "icb_name_level2": pl.String,
-        "icb_code_level3": pl.String,
-        "icb_name_level3": pl.String,
-        "statement_scope": pl.String,
-        "period_type": pl.String,
-        "period_end_date": pl.Date,
-        "taxonomy_version": pl.String,
-        "roe_total": pl.Float64,
-        "roa": pl.Float64,
-        "ebit_margin": pl.Float64,
-        "debt_to_equity": pl.Float64,
-        "interest_coverage": pl.Float64,
-        "accruals_to_assets": pl.Float64,
-        "core_operating_margin": pl.Float64,
-        "non_core_distortion_to_assets": pl.Float64,
-        "core_to_ebt_ratio": pl.Float64,
-        "red_flag_count": pl.Int64,
-        "critical_red_flag_count": pl.Int64,
-        "altman_z_double_prime": pl.Float64,
-        "altman_em_score": pl.Float64,
-        "altman_zone": pl.String,
-        "piotroski_f_score": pl.Int8,
-        "beneish_m8_score": pl.Float64,
-        "beneish_flag": pl.String,
-        "cluster_id": pl.Int32,
-        "cluster_archetype_name": pl.String,
-        "anomaly_flag": pl.String,
-        "distress_risk_score": pl.Float64,
-        "calibrated_distress_prob": pl.Float64,
-        "risk_tier": pl.String,
-        "risk_market_percentile": pl.Float64,
-        "market_base_rate": pl.Float64,
-        "relative_risk_lift": pl.Float64,
-        "model_role": pl.String,
-        "model_version": pl.String,
     }
 )
 

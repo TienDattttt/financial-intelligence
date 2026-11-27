@@ -112,6 +112,7 @@ from finintel.serving.queries import (
     StatementScope,
 )
 from finintel.serving.queries._helpers import parse_screener_risk_tiers
+from finintel.serving.routers.screener_v3 import ScreenerExtendedQueryParams
 from finintel.serving.schemas import (
     AuditQuarantineItem,
     AuditQuarantinePageResponse,
@@ -1136,6 +1137,7 @@ def create_app(
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+        ext: ScreenerExtendedQueryParams = Depends(),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
         cache: ValkeyResponseCache = Depends(get_response_cache),
@@ -1172,6 +1174,7 @@ def create_app(
                     sort_dir=sort_dir,
                     limit=limit,
                     offset=offset,
+                    extra_params=ext.to_cache_dict(),
                 ),
             )
             if hit is not None:
@@ -1198,6 +1201,7 @@ def create_app(
                 sort_dir=sort_dir,
                 limit=limit,
                 offset=offset,
+                extra_filters=ext.to_domain(),
                 connection=cursor,
             )
             resolved_end = period_end_date
@@ -1260,6 +1264,7 @@ def create_app(
         sort_by: ScreenerSortField = Query("calibrated_distress_prob"),
         sort_dir: SortDirection = Query("desc"),
         if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+        ext: ScreenerExtendedQueryParams = Depends(),
         cursor: duckdb.DuckDBPyConnection = Depends(get_db_cursor),
         service: DashboardQueryService = Depends(get_query_service),
     ) -> Response:
@@ -1289,6 +1294,7 @@ def create_app(
                 q=q,
                 sort_by=sort_by,
                 sort_dir=sort_dir,
+                extra_filters=ext.to_domain(),
                 connection=cursor,
             )
 

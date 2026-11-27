@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/primitives";
+import { ScreenerFinancialFilters } from "@/components/screener/ScreenerFinancialFilters";
 import type { ScreenerFilterState, ScreenerRiskTier } from "@/lib/saved-screens-store";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +42,7 @@ export function ScreenerFilterDrawer({
   maxRfParam,
   toPctDisplay,
   applyFilterPreset,
+  parsedFilters,
   total,
 }: {
   mobileFiltersOpen: boolean;
@@ -74,6 +76,7 @@ export function ScreenerFilterDrawer({
   maxRfParam: string;
   toPctDisplay: (decimalStr: string) => string;
   applyFilterPreset: (filters: Partial<ScreenerFilterState>) => void;
+  parsedFilters: ScreenerFilterState;
   total: number;
 }) {
   return (
@@ -422,6 +425,13 @@ export function ScreenerFilterDrawer({
               </div>
             </div>
           </div>
+
+          {advancedFiltersOpen ? (
+            <ScreenerFinancialFilters
+              filters={parsedFilters}
+              updateParams={updateParams}
+            />
+          ) : null}
 
           <div className="flex items-center gap-2 pt-1 lg:hidden">
             <Button

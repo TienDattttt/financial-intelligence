@@ -20,6 +20,7 @@ import os
 import socket
 import threading
 import time
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -98,9 +99,10 @@ def build_screener_cache_params(
     sort_dir: str,
     limit: int,
     offset: int,
+    extra_params: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Assemble canonical Valkey L2 cache parameter dict for ``GET /api/v1/screener``."""
-    return {
+    base: dict[str, Any] = {
         "period_type": period_type,
         "period_end_date": period_end_date.isoformat() if period_end_date else None,
         "statement_scope": statement_scope,
@@ -120,6 +122,9 @@ def build_screener_cache_params(
         "limit": limit,
         "offset": offset,
     }
+    if extra_params:
+        base.update(extra_params)
+    return base
 
 
 def probe_rag_available(app_state: Any, *, ttl_seconds: float = 5.0) -> bool:

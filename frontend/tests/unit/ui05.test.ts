@@ -11,13 +11,16 @@ import {
   SCATTER_AXIS_METRICS,
 } from "@/components/charts/ScreenerScatterChart";
 import { DARK_CHART_PALETTE, LIGHT_CHART_PALETTE } from "@/lib/echarts-theme";
+import { ML_FEATURE_LABELS } from "@/lib/domain-labels";
 import { MINUS_SIGN } from "@/lib/format";
 import {
   ALL_SCREENER_OPTIONAL_COLUMN_IDS,
   BUILTIN_SCREENER_PRESETS,
   buildScreenerExportUrl,
+  countActiveScreenerFilters,
   DEFAULT_VISIBLE_SCREENER_COLUMNS,
   deleteSavedScreen,
+  filtersToApiQueryParams,
   filtersToUrlPatch,
   formatAnomalyFlagMeta,
   formatRelativeRiskLiftLabel,
@@ -493,5 +496,89 @@ describe("UI-05a Screener export URL builder, saved screens store, columns & sca
       expect(src).not.toContain("REGIME_FALLBACK");
       expect(src).not.toContain("NEGATIVE_EARNINGS");
     }
+  });
+
+  it("V3-06: parses/serializes extended financial & valuation filters, preserves legacy Saved Screens, and exposes V3 columns & OCF ratio label", () => {
+    const parsedV3 = parseScreenerFilters(
+      new URLSearchParams(
+        "cluster_id=2&anomaly_flag=true&min_roe_parent=0.15&min_pe_ttm=5&max_pb_ratio=3.5&min_market_cap_bn_vnd=1000&min_ocf_to_total_liabilities=0.2&min_cfo_ttm=50000000000&sort_by=pe_ttm&sort_dir=asc",
+      ),
+    );
+    expect(parsedV3.cluster_id).toBe("2");
+    expect(parsedV3.anomaly_flag).toBe("true");
+    expect(parsedV3.min_roe_parent).toBe("0.15");
+    expect(parsedV3.min_pe_ttm).toBe("5");
+    expect(parsedV3.max_pb_ratio).toBe("3.5");
+    expect(parsedV3.min_market_cap_bn_vnd).toBe("1000");
+    expect(parsedV3.min_ocf_to_total_liabilities).toBe("0.2");
+    expect(parsedV3.min_cfo_ttm).toBe("50000000000");
+    expect(parsedV3.sort_by).toBe("pe_ttm");
+    expect(parsedV3.sort_dir).toBe("asc");
+    expect(countActiveScreenerFilters(parsedV3)).toBe(8);
+
+    const apiParams = filtersToApiQueryParams(parsedV3, {
+      statement_scope: "CONSOLIDATED",
+      period_type: "QUARTER",
+      period_end_date: "2026-03-31",
+      limit: 50,
+      offset: 0,
+    });
+    expect(apiParams.cluster_id).toBe(2);
+    expect(apiParams.anomaly_flag).toBe(true);
+    expect(apiParams.min_roe_parent).toBe(0.15);
+    expect(apiParams.min_pe_ttm).toBe(5);
+    expect(apiParams.max_pb_ratio).toBe(3.5);
+    expect(apiParams.min_market_cap_bn_vnd).toBe(1000);
+    expect(apiParams.min_ocf_to_total_liabilities).toBe(0.2);
+    expect(apiParams.min_cfo_ttm).toBe(50_000_000_000);
+
+    const urlPatch = filtersToUrlPatch(parsedV3);
+    expect(urlPatch.min_pe_ttm).toBe("5");
+    expect(urlPatch.anomaly_flag).toBe("true");
+    expect(urlPatch.cluster_id).toBe("2");
+
+    // Backward-compatible parsing of legacy Saved Screens without V3 fields
+    const legacySaved = parseSavedScreensJson(
+      JSON.stringify([
+        {
+          id: "legacy-1",
+          name: "Old Saved Filter",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          filters: {
+            q: "FPT",
+            exchange: "HOSE",
+            icb_code_level2: "",
+            altman_zone: "SAFE_ZONE",
+            risk_tier: "R1",
+            risk_tiers: ["R1"],
+            beneish_flag: "",
+            min_f_score: "6",
+            min_distress_prob: "",
+            max_distress_prob: "",
+            min_red_flags: "",
+            max_red_flags: "",
+            sort_by: "roe_total",
+            sort_dir: "desc",
+          },
+        },
+      ]),
+    );
+    expect(legacySaved).toHaveLength(1);
+    expect(legacySaved[0].filters.cluster_id).toBe("");
+    expect(legacySaved[0].filters.min_pe_ttm).toBe("");
+
+    for (const colId of [
+      "eps_ttm_estimated",
+      "liabilities_to_assets",
+      "cfo_ttm",
+      "ocf_to_total_liabilities",
+      "pe_ttm",
+      "pb_ratio",
+      "market_cap_vnd",
+    ] as const) {
+      expect(ALL_SCREENER_OPTIONAL_COLUMN_IDS).toContain(colId);
+    }
+    expect(ML_FEATURE_LABELS.ocf_to_total_liabilities).toBeTruthy();
   });
 });

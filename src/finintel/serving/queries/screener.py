@@ -54,12 +54,21 @@ from finintel.serving.queries._helpers import (
     resolve_latest_ratio_period,
     validate_screener_filters,
 )
+from finintel.serving.queries._screener_filters import (
+    ML_SCREENER_DESIRED,
+    ML_SCREENER_JOIN_SCHEMA,
+    ScreenerExtraFilters,
+    apply_extended_screener_filters,
+    extract_extended_filters,
+    read_pit_valuation_slice,
+    validate_extended_filters,
+)
 from finintel.storage.repository import ParquetRepository
 from finintel.storage.schemas import (
     AUDIT_QUARANTINE_SCHEMA,
     AUDIT_QUARANTINE_TABLE,
     BENCHMARKS_TABLE,
-    ML_SCORES_SCHEMA,
+    PIT_VALUATION_MART_TABLE,
     QUALITY_SUMMARY_SCHEMA,
     QUALITY_SUMMARY_TABLE,
     RATIOS_TABLE,
@@ -109,6 +118,7 @@ class ScreenerQueryMixin(_QueryServiceBase):
         max_red_flags: int | None,
         min_red_flags: int | None,
         clean_q: str | None,
+        extra_filters: ScreenerExtraFilters,
         sort_by: str,
         sort_dir: Literal["asc", "desc"],
         connection: duckdb.DuckDBPyConnection | None,
@@ -148,10 +158,17 @@ class ScreenerQueryMixin(_QueryServiceBase):
             "net_revenue_ttm",
             "borrowing_cost_ttm",
             "roe_total",
+            "roe_parent",
             "roa",
+            "eps_ttm_estimated",
             "ebit_margin",
+            "liabilities_to_assets",
             "debt_to_equity",
             "interest_coverage",
+            "cfo_ttm",
+            "fcf_ttm",
+            "ocf_to_total_liabilities",
+            "revenue_growth_yoy",
             "accruals_to_assets",
             "core_operating_margin",
             "non_core_distortion_to_assets",
@@ -194,37 +211,28 @@ class ScreenerQueryMixin(_QueryServiceBase):
             connection=connection,
         )
 
-        ml_desired = (
-            "issuer_id",
-            "filing_id",
-            "altman_z_double_prime",
-            "altman_em_score",
-            "altman_zone",
-            "piotroski_f_score",
-            "beneish_m8_score",
-            "beneish_flag",
-            "cluster_id",
-            "cluster_archetype_name",
-            "anomaly_flag",
-            "distress_risk_score",
-            "calibrated_distress_prob",
-            "risk_tier",
-            "risk_market_percentile",
-            "market_base_rate",
-            "relative_risk_lift",
-            "model_role",
-            "model_version",
-        )
-        ml_join_schema = pl.Schema(
-            {name: ML_SCORES_SCHEMA[name] for name in ml_desired if name != "filing_id"}
-        )
         ml_slice = read_ml_scores_slice(
             pinned,
-            desired_cols=ml_desired,
-            target_schema=ml_join_schema,
+            desired_cols=ML_SCREENER_DESIRED,
+            target_schema=ML_SCREENER_JOIN_SCHEMA,
             statement_scope=statement_scope,
             period_type=period_type,
             period_end_date=resolved_date,
+            connection=connection,
+        )
+
+        avail_mart_cols = _available_table_columns(
+            pinned, PIT_VALUATION_MART_TABLE, connection=connection
+        )
+        mart_slice = read_pit_valuation_slice(
+            pinned,
+            avail_mart_cols=avail_mart_cols,
+            statement_scope=statement_scope,
+            period_type=period_type,
+            period_end_date=resolved_date,
+            issuer_ids=issuers["issuer_id"].unique().to_list()
+            if issuer_filter_map
+            else None,
             connection=connection,
         )
 
@@ -232,6 +240,7 @@ class ScreenerQueryMixin(_QueryServiceBase):
             ratios.join(issuers, on="issuer_id", how="inner")
             .join(rf_counts, on="issuer_id", how="left")
             .join(ml_slice, on="issuer_id", how="left")
+            .join(mart_slice, on="issuer_id", how="left")
             .with_columns(
                 # Triggered alert counts from LEFT JOIN (0 alerts triggered, not a financial metric).
                 pl.coalesce(pl.col("red_flag_count"), pl.lit(0, dtype=pl.Int64)).alias(
@@ -281,6 +290,7 @@ class ScreenerQueryMixin(_QueryServiceBase):
                 .str.to_lowercase()
                 .str.contains(clean_q, literal=True)
             )
+        joined = apply_extended_screener_filters(joined, extra_filters)
 
         desc_flag = sort_dir == "desc"
         if sort_by == "calibrated_distress_prob" and desc_flag:
@@ -321,7 +331,9 @@ class ScreenerQueryMixin(_QueryServiceBase):
         sort_dir: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         offset: int = 0,
+        extra_filters: ScreenerExtraFilters | None = None,
         connection: duckdb.DuckDBPyConnection | None = None,
+        **extra_kwargs: object,
     ) -> tuple[pl.DataFrame, int]:
         """Historical cross-sectional market screener over the latest published snapshot.
 
@@ -329,6 +341,8 @@ class ScreenerQueryMixin(_QueryServiceBase):
         so screening degrades cleanly when a snapshot has no ML or red-flag tables.
         """
         _validate_pagination(limit, offset, max_limit=200)
+        resolved_ext = extract_extended_filters(extra_filters, extra_kwargs)
+        validate_extended_filters(resolved_ext)
         clean_q, effective_risk_tiers = validate_screener_filters(
             period_type=period_type,
             statement_scope=statement_scope,
@@ -387,6 +401,7 @@ class ScreenerQueryMixin(_QueryServiceBase):
                     sort_dir,
                     limit,
                     offset,
+                    *resolved_ext.cache_tuple(),
                 )
                 if snap_key is not None and _can_use_query_result_cache(pinned)
                 else None
@@ -416,6 +431,7 @@ class ScreenerQueryMixin(_QueryServiceBase):
                 max_red_flags=max_red_flags,
                 min_red_flags=min_red_flags,
                 clean_q=clean_q,
+                extra_filters=resolved_ext,
                 sort_by=sort_by,
                 sort_dir=sort_dir,
                 connection=connection,
@@ -450,9 +466,13 @@ class ScreenerQueryMixin(_QueryServiceBase):
         q: str | None = None,
         sort_by: str = "calibrated_distress_prob",
         sort_dir: Literal["asc", "desc"] = "desc",
+        extra_filters: ScreenerExtraFilters | None = None,
         connection: duckdb.DuckDBPyConnection | None = None,
+        **extra_kwargs: object,
     ) -> pl.DataFrame:
         """Return 100% of filtered & sorted screener rows without pagination cap (UI-05a)."""
+        resolved_ext = extract_extended_filters(extra_filters, extra_kwargs)
+        validate_extended_filters(resolved_ext)
         clean_q, effective_risk_tiers = validate_screener_filters(
             period_type=period_type,
             statement_scope=statement_scope,
@@ -507,6 +527,7 @@ class ScreenerQueryMixin(_QueryServiceBase):
                 max_red_flags=max_red_flags,
                 min_red_flags=min_red_flags,
                 clean_q=clean_q,
+                extra_filters=resolved_ext,
                 sort_by=sort_by,
                 sort_dir=sort_dir,
                 connection=connection,
