@@ -252,14 +252,14 @@
 **Description:** Bổ sung DB `finintel_app`, migration `app_v3_001_identity_workspace.sql`, ghim `argon2-cffi==23.1.0` trong group `platform`, và xây dựng gói `src/finintel/auth/` (Đăng ký kèm consent `ACCOUNT_CORE`, Đăng nhập HttpOnly Secure Cookie lưu SHA-256 session, Rate-limit chống brute-force 5 lần/15p, Quên/Đổi mật khẩu qua Resend adapter, RBAC 3 vai trò `USER/RESEARCHER/INTERNAL_OPS`, Xóa tài khoản Luật 91/2025).
 
 **Acceptance criteria:**
-- [ ] Argon2id hash/verify, opaque session cookie (`HttpOnly; Secure; SameSite=Lax`), chống email enumeration (`202` trung tính), khóa brute-force sau 5 lần sai.
-- [ ] `require_role(UserRole.USER | RESEARCHER | INTERNAL_OPS)` chặn chính xác quyền truy cập; luồng khách ẩn danh cũ không bị ảnh hưởng.
-- [ ] Toàn bộ thư viện `argon2`/`psycopg`/`redis` lazy-import nên `mvp-checks` chạy xanh không cần Postgres.
+- [x] Argon2id hash/verify, opaque session cookie (`HttpOnly; Secure; SameSite=Lax`), chống email enumeration (`202` trung tính), khóa brute-force sau 5 lần sai.
+- [x] `require_role(UserRole.USER | RESEARCHER | INTERNAL_OPS)` chặn chính xác quyền truy cập; luồng khách ẩn danh cũ không bị ảnh hưởng.
+- [x] Toàn bộ thư viện `argon2`/`psycopg`/`redis` lazy-import nên `mvp-checks` chạy xanh không cần Postgres.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_identity_workspace.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/auth tests/unit/test_v3_identity_workspace.py`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_identity_workspace.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/auth tests/unit/test_v3_identity_workspace.py`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-01`  
 **Commit type:** `feat(auth)`  
@@ -278,14 +278,14 @@
 **Description:** Xây dựng gói `src/finintel/workspace/` hỗ trợ CRUD Multi-Watchlist (kèm import tự động từ `localStorage`), Ghi chú phân tích theo mã/kỳ (`analyst_notes`), Saved Screens server-side, và `record_audit_event()` ghi `user_audit_logs` bất biến (`append-only`), mount vào `api.py` (`<= +4` LOC).
 
 **Acceptance criteria:**
-- [ ] Mọi query SQL đều lọc cứng `WHERE user_id = %(user_id)s` (0% IDOR giữa các tài khoản).
-- [ ] `POST /api/v3/workspace/watchlists/import-local` chống trùng ticker và tôn trọng giới hạn vai trò (`USER` vs `RESEARCHER`).
-- [ ] `user_audit_logs` ghi vết 100% sự kiện auth & mutating actions; `/api/v3/ops/audit-logs` chỉ mở cho `INTERNAL_OPS`.
+- [x] Mọi query SQL đều lọc cứng `WHERE user_id = %(user_id)s` (0% IDOR giữa các tài khoản).
+- [x] `POST /api/v3/workspace/watchlists/import-local` chống trùng ticker và tôn trọng giới hạn vai trò (`USER` vs `RESEARCHER`).
+- [x] `user_audit_logs` ghi vết 100% sự kiện auth & mutating actions; `/api/v3/ops/audit-logs` chỉ mở cho `INTERNAL_OPS`.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_identity_workspace.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/workspace`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_identity_workspace.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/workspace`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-10`  
 **Commit type:** `feat(workspace)`  
@@ -304,13 +304,13 @@
 **Description:** Xây dựng màn hình `/auth/login`, `/auth/register` (có checkbox đồng ý Luật 91/2025), `/auth/reset-password`, `/profile` (quản lý phiên & nút xóa tài khoản), và nâng cấp `/watchlist` hỗ trợ nhiều danh mục + ghi chú phân tích + đồng bộ 1 chạm từ `localStorage`.
 
 **Acceptance criteria:**
-- [ ] Người dùng ẩn danh vẫn xem & dùng `localStorage` Watchlist bình thường; khi đăng nhập tự động chuyển sang server-backed Multi-Watchlist + Notes.
-- [ ] Toàn bộ form Auth/Profile/Watchlist đạt WCAG 2.2 AA (`aria-describedby` lỗi trường nhập, focus management, Light & Dark Mode).
-- [ ] `0` lưu token vào `localStorage` (100% dùng HttpOnly Cookie).
+- [x] Người dùng ẩn danh vẫn xem & dùng `localStorage` Watchlist bình thường; khi đăng nhập tự động chuyển sang server-backed Multi-Watchlist + Notes.
+- [x] Toàn bộ form Auth/Profile/Watchlist đạt WCAG 2.2 AA (`aria-describedby` lỗi trường nhập, focus management, Light & Dark Mode).
+- [x] `0` lưu token vào `localStorage` (100% dùng HttpOnly Cookie).
 
 **Verification:**
-- [ ] API types & FE check: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check`
-- [ ] Unit tests: `fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
+- [x] API types & FE check: `fnm exec --using=default -- npm.cmd --prefix frontend run gen:api-types && fnm exec --using=default -- npm.cmd --prefix frontend run check`
+- [x] Unit tests: `fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
 
 **Dependencies:** `V3-11`  
 **Commit type:** `feat(frontend)`  
@@ -324,7 +324,7 @@
 **Estimated scope:** Medium (5 files)
 
 ### Checkpoint 1B-1: After Tasks `V3-10..V3-12` (`v3-identity-and-workspace`)
-- [ ] Kiểm thử toàn luồng Đăng ký → Đăng nhập → Tạo 2 Watchlist + Ghi chú → Xem Audit Log → Xóa tài khoản pass 100%.
+- [x] Kiểm thử toàn luồng Đăng ký → Đăng nhập → Tạo 2 Watchlist + Ghi chú → Xem Audit Log → Xóa tài khoản pass 100%.
 
 ---
 
@@ -334,13 +334,13 @@
 **Description:** Ghim `xlsxwriter==3.2.2` vào group `platform` (lazy-import) và xây dựng `src/finintel/serving/exports/excel_builder.py` xuất workbook `.xlsx` 4 sheet cho 1 doanh nghiệp (`Tong_Quan_Rui_Ro`, `BCTC_Chuan_Hoa`, `Chi_So_Va_DuPont`, `Co_Do_Va_Nguon_Du_Lieu`) và 1 sheet cho Screener, bảo toàn kiểu số numeric (`None` = ô trống, không `0`), chống Excel Formula Injection và gắn footer miễn trừ từ `v3-compliance-and-mrm`.
 
 **Acceptance criteria:**
-- [ ] Đọc lại file `.xlsx` sinh ra xác nhận đủ 4 sheet, số âm lưu dạng numeric float (không thành text), ô trống cho giá trị `NULL`.
-- [ ] Chuỗi độc hại bắt đầu bằng `=`, `+`, `-`, `@` bị trung hòa hoàn toàn; footer chứa `snapshot_id` và `COMPLIANCE_DISCLAIMER_VI`.
-- [ ] Sinh file 1 DN 20 kỳ `< 300ms` trong `BytesIO` (không ghi đĩa).
+- [x] Đọc lại file `.xlsx` sinh ra xác nhận đủ 4 sheet, số âm lưu dạng numeric float (không thành text), ô trống cho giá trị `NULL`.
+- [x] Chuỗi độc hại bắt đầu bằng `=`, `+`, `-`, `@` bị trung hòa hoàn toàn; footer chứa `snapshot_id` và `COMPLIANCE_DISCLAIMER_VI`.
+- [x] Sinh file 1 DN 20 kỳ `< 300ms` trong `BytesIO` (không ghi đĩa).
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_export_tearsheet.py -q`
-- [ ] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/serving/exports`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_export_tearsheet.py -q`
+- [x] Static checks: `.\.venv\Scripts\python.exe -m mypy --strict src/finintel/serving/exports`
 
 **Dependencies:** `V3-01`, `V3-05`  
 **Commit type:** `feat(serving)`  
@@ -358,12 +358,12 @@
 **Description:** Tạo `src/finintel/serving/exports/router.py` cung cấp `GET /api/v3/exports/companies/{ticker}.xlsx` và `GET /api/v3/exports/screener.xlsx` (chặn trần `<= 2.000` dòng chống OOM), đính kèm `X-Snapshot-ID`, `Content-Disposition` an toàn và mount vào `api.py` (`<= +2` LOC).
 
 **Acceptance criteria:**
-- [ ] Cả 2 endpoint trả đúng MIME `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `X-Snapshot-ID` và tên file chứa mã CK + snapshot rút gọn.
-- [ ] Mã CK không tồn tại trả `404` chuẩn sạch (không lộ traceback); giới hạn cứng `2.000` dòng trên Screener export.
+- [x] Cả 2 endpoint trả đúng MIME `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `X-Snapshot-ID` và tên file chứa mã CK + snapshot rút gọn.
+- [x] Mã CK không tồn tại trả `404` chuẩn sạch (không lộ traceback); giới hạn cứng `2.000` dòng trên Screener export.
 
 **Verification:**
-- [ ] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_export_tearsheet.py tests/unit/test_layer5_fastapi_serving.py -q`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] Tests pass: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_v3_export_tearsheet.py tests/unit/test_layer5_fastapi_serving.py -q`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-13`  
 **Commit type:** `feat(serving)`  
@@ -380,13 +380,13 @@
 **Description:** Xây dựng `frontend/src/components/export/ExportActionMenu.tsx` (tải `.xlsx` / `.csv` / in Tear-Sheet) và trang `/companies/[ticker]/tear-sheet` với CSS `@media print` chuẩn A4 (1–2 trang, Light Mode cứng khi in, đầy đủ 6 khối định lượng, nhãn rủi ro hợp chuẩn NĐ 88/2014 và tuyên bố miễn trừ).
 
 **Acceptance criteria:**
-- [ ] Menu xuất file gắn gọn trên `CompanyHeader` và `/screener` không làm vỡ layout ở `375px` & `1366px`.
-- [ ] `/companies/[ticker]/tear-sheet` hiển thị đủ kết luận rủi ro `R1–R5`, chỉ số vs ngành, TreeSHAP, cờ đỏ `RF_01..RF_10`, định giá PIT, `snapshot_id` và `COMPLIANCE_DISCLAIMER_VI`.
-- [ ] `0` từ cấm NĐ 88/2014, `0` lỗi `axe-core` và `vitest` pass 100%.
+- [x] Menu xuất file gắn gọn trên `CompanyHeader` và `/screener` không làm vỡ layout ở `375px` & `1366px`.
+- [x] `/companies/[ticker]/tear-sheet` hiển thị đủ kết luận rủi ro `R1–R5`, chỉ số vs ngành, TreeSHAP, cờ đỏ `RF_01..RF_10`, định giá PIT, `snapshot_id` và `COMPLIANCE_DISCLAIMER_VI`.
+- [x] `0` từ cấm NĐ 88/2014, `0` lỗi `axe-core` và `vitest` pass 100%.
 
 **Verification:**
-- [ ] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
-- [ ] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
+- [x] FE check & tests: `fnm exec --using=default -- npm.cmd --prefix frontend run check && fnm exec --using=default -- npm.cmd --prefix frontend run test:unit`
+- [x] Constraints: `.\.venv\Scripts\python.exe scripts/check_constraints.py`
 
 **Dependencies:** `V3-03`, `V3-14`  
 **Commit type:** `feat(frontend)`  
@@ -399,8 +399,8 @@
 **Estimated scope:** Medium (4 files)
 
 ### Checkpoint 1B-2 & PHASE 1 RELEASE GATE (`v3.0.0-beta.1`)
-- [ ] Cả 5 module Giai đoạn 1 đã merge xanh 100% (`pytest -q`, `mypy --strict`, `ruff`, `check_constraints.py`, `frontend check`, `test:unit`, `test:e2e`).
-- [ ] Cập nhật `CHANGELOG.md` và gắn tag bất biến `v3.0.0-beta.1` (Public Beta sẵn sàng deploy lên OCI Always Free + Vercel Hobby + Cloudflare R2).
+- [x] Cả 5 module Giai đoạn 1 đã merge xanh 100% (`pytest -q`, `mypy --strict`, `ruff`, `check_constraints.py`, `frontend check`, `test:unit`, `test:e2e`).
+- [x] Cập nhật `CHANGELOG.md` và gắn tag bất biến `v3.0.0-beta.1` (Public Beta sẵn sàng deploy lên OCI Always Free + Vercel Hobby + Cloudflare R2).
 
 ---
 
