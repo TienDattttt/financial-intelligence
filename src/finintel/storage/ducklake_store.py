@@ -42,6 +42,7 @@ import polars as pl
 
 from finintel.exceptions import ContractViolationError
 from finintel.pipeline.state_store import StateStore
+from finintel.storage.object_store import ObjectStoreConfig
 from finintel.storage.schemas import (
     AUDIT_QUARANTINE_TABLE,
     BENCHMARKS_TABLE,
@@ -222,6 +223,7 @@ class StorageConfig:
     retention: StorageRetentionConfig = StorageRetentionConfig()
     publish_unmapped: bool = False
     override_data_path: bool = False
+    object_store: ObjectStoreConfig = ObjectStoreConfig()
 
     @classmethod
     def from_mapping(
@@ -332,6 +334,7 @@ class StorageConfig:
             ),
             publish_unmapped=publish_unmapped,
             override_data_path=override_data_path,
+            object_store=ObjectStoreConfig.from_mapping(raw.get("object_store")),
         )
 
 
@@ -682,6 +685,7 @@ class DuckLakeStore:
         min_snapshot_age_seconds: int = 3600,
         lock_path: Path | None = None,
         override_data_path: bool = False,
+        object_store: ObjectStoreConfig | None = None,
     ) -> None:
         if type(keep_snapshots) is not int or keep_snapshots < 2:
             raise ValueError("keep_snapshots must be an integer >= 2.")
@@ -703,6 +707,7 @@ class DuckLakeStore:
             else state_store.path.with_name("pipeline.lock").resolve()
         )
         self.override_data_path = override_data_path
+        self.object_store = object_store or ObjectStoreConfig()
         self._set_sorted_by_supported: bool | None = None
 
     @classmethod
@@ -720,9 +725,12 @@ class DuckLakeStore:
             keep_snapshots=config.retention.keep_snapshots,
             min_snapshot_age_seconds=config.retention.min_snapshot_age_seconds,
             override_data_path=config.override_data_path,
+            object_store=config.object_store,
         )
 
     def _open_rw_connection(self) -> duckdb.DuckDBPyConnection:
+        if self.object_store.is_remote:
+            return self.object_store.open_rw_connection(self)
         self.data_path.mkdir(parents=True, exist_ok=True)
         if self.catalog_driver == "sqlite":
             configure_sqlite_catalog(self.catalog_path)
