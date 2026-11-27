@@ -980,7 +980,7 @@ def test_postgres_alert_store_preserves_empty_event_types_and_defaults_on_null()
     from finintel.alerts._store import DEFAULT_SUBSCRIPTION_EVENT_TYPES
 
     now = datetime.now(UTC)
-    row_empty = (
+    row_empty: tuple[object, ...] = (
         str(uuid4()),
         str(uuid4()),
         None,
@@ -1001,7 +1001,7 @@ def test_postgres_alert_store_preserves_empty_event_types_and_defaults_on_null()
     sub_empty = PostgresAlertStore._row_to_subscription(row_empty)
     assert sub_empty.event_types == ()
 
-    row_null = (
+    row_null: tuple[object, ...] = (
         str(uuid4()),
         str(uuid4()),
         None,
