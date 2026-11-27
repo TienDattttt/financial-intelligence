@@ -485,7 +485,9 @@ class StressScenarioRequest(BaseModel):
     )
     dso_shock_days: float = Field(0.0, ge=-90.0, le=180.0, allow_inf_nan=False)
     dio_shock_days: float = Field(0.0, ge=-90.0, le=180.0, allow_inf_nan=False)
-    fx_depreciation_pct: float = Field(0.0, ge=-0.30, le=0.50, allow_inf_nan=False)
+    fx_depreciation_pct: float = Field(
+        default=0.0, ge=-0.30, le=0.50, allow_inf_nan=False
+    )
     top_n: int = Field(50, ge=1, le=200)
     include_all_newly_distressed: bool | None = None
     tickers: list[str] | None = Field(default=None, max_length=200)
