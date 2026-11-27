@@ -11,6 +11,7 @@ import { authApi, workspaceApi } from "@/lib/auth-api";
 
 export const AUTH_SESSION_QUERY_KEY = ["auth", "session"] as const;
 export const WORKSPACE_WATCHLISTS_QUERY_KEY = ["workspace", "watchlists"] as const;
+export const MY_QUOTA_QUERY_KEY = ["quota", "me"] as const;
 
 const FALLBACK_QUERY_CLIENT = new QueryClient({
   defaultOptions: { queries: { retry: false, enabled: false } },
@@ -91,6 +92,20 @@ export function useMyAuditActivity(enabled: boolean) {
   );
 }
 
+export function useMyQuota(enabled = true) {
+  const client = useOptionalQueryClient();
+  return useQuery(
+    {
+      queryKey: MY_QUOTA_QUERY_KEY,
+      queryFn: ({ signal }) => authApi.getMyQuota(signal),
+      enabled: enabled && client !== undefined,
+      retry: false,
+      staleTime: 15_000,
+    },
+    client ?? FALLBACK_QUERY_CLIENT,
+  );
+}
+
 export function useInvalidateAuthAndWorkspace() {
   const queryClient = useOptionalQueryClient();
   return async () => {
@@ -98,6 +113,7 @@ export function useInvalidateAuthAndWorkspace() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: AUTH_SESSION_QUERY_KEY }),
       queryClient.invalidateQueries({ queryKey: WORKSPACE_WATCHLISTS_QUERY_KEY }),
+      queryClient.invalidateQueries({ queryKey: MY_QUOTA_QUERY_KEY }),
       queryClient.invalidateQueries({ queryKey: ["auth", "sessions"] }),
       queryClient.invalidateQueries({ queryKey: ["audit", "my-activity"] }),
     ]);

@@ -1,8 +1,8 @@
-"""Standalone FastAPI APIRouter for Port 2 Grounded Document AI (UI-08b).
+"""Standalone FastAPI APIRouter for Port 2 Grounded Document AI (UI-08b / V3-21).
 
-This router is intentionally NOT mounted in ``src/finintel/serving/api.py`` on this branch
-to maintain 0% merge conflict with parallel Wave 5 serving work. All ``fastapi`` / ``pydantic``
-imports are lazy inside ``create_rag_router`` so CI ``mvp-checks`` stays green (M-03).
+All ``fastapi`` / ``pydantic`` imports are lazy inside ``create_rag_router`` so CI
+``mvp-checks`` stays green (M-03). Enforces PDPL ``CROSS_BORDER_LLM_RAG`` consent,
+PII prompt anonymization, and Fair-Use Quota / Global Circuit Breaker guards.
 """
 
 from __future__ import annotations
@@ -11,9 +11,22 @@ import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from finintel.auth.dependencies import extract_client_ip, get_optional_user
+from finintel.domain.compliance import ConsentPurpose
+from finintel.quota.guard import (
+    CircuitBreakerOpenError,
+    QuotaExceededError,
+    QuotaReceipt,
+    RagUsageLedgerEntry,
+    anonymize_rag_prompt_pii,
+    hash_actor_subject,
+)
+from finintel.quota.policies import current_quota_window
+from finintel.quota.router import resolve_quota_guard_from_app
 from finintel.rag.investigator import (
     GroundedDocumentInvestigator,
     PromptInjectionError,
+    sanitize_user_question,
 )
 from finintel.rag.store import PgVectorRagStore
 
@@ -27,7 +40,7 @@ def create_rag_router(
     get_investigator: Callable[[], GroundedDocumentInvestigator],
 ) -> APIRouter:
     """Build standalone FastAPI router for ``/api/v2/documents/{ticker}/*`` endpoints."""
-    from fastapi import APIRouter, HTTPException
+    from fastapi import APIRouter, HTTPException, Request
     from pydantic import BaseModel, Field
 
     class InvestigateRequest(BaseModel):
@@ -122,38 +135,139 @@ def create_rag_router(
         )
 
     async def investigate_company_documents(
+        request: Request,
         ticker: str,
         body: InvestigateRequest,
     ) -> InvestigateResponse:
         clean_ticker = ticker.strip().upper()
         if not clean_ticker or not clean_ticker.isalnum() or len(clean_ticker) > 16:
             raise HTTPException(status_code=422, detail="Invalid ticker symbol.")
+
+        user = get_optional_user(request)
+        if (
+            user is not None
+            and ConsentPurpose.CROSS_BORDER_LLM_RAG not in user.consents
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Bạn cần bật đồng ý 'Đối chiếu thuyết minh BCTC (Điều 20 Luật 91/2025)' "
+                    "trong trang Hồ sơ (/profile) trước khi truy vấn mô hình phân tích."
+                ),
+            )
+
+        try:
+            sanitized_question = sanitize_user_question(body.question)
+        except PromptInjectionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+        anonymized_question = anonymize_rag_prompt_pii(sanitized_question, user=user)
         investigator = await asyncio.to_thread(get_investigator)
+        quota_guard = resolve_quota_guard_from_app(request.app)
+        actor_raw = (
+            f"user:{user.user_id}"
+            if user is not None
+            else f"guest:{extract_client_ip(request)}"
+        )
+        actor_hash = hash_actor_subject(actor_raw)
+        qdate, _ = current_quota_window()
+
+        if body.use_cache:
+            peek_fn = getattr(investigator, "peek_cached_result", None)
+            if callable(peek_fn):
+                cached_hit = await peek_fn(
+                    ticker=clean_ticker,
+                    question=anonymized_question,
+                    statement_scope=body.statement_scope,
+                    fiscal_year=body.fiscal_year,
+                    top_k=body.top_k,
+                )
+                if cached_hit is not None:
+                    quota_guard.record_rag_usage(
+                        RagUsageLedgerEntry(
+                            usage_date=qdate,
+                            actor_subject_hash=actor_hash,
+                            operation="rag_query",
+                            ticker=clean_ticker,
+                            llm_calls=0,
+                            cache_hit=True,
+                            status="CACHE_HIT",
+                        )
+                    )
+                    return InvestigateResponse(**cached_hit.to_dict())
+
+        receipt: QuotaReceipt | None = None
+        try:
+            if user is not None:
+                receipt = quota_guard.enforce_and_consume(
+                    user=user, meter="rag_query", units=1
+                )
+            else:
+                receipt = quota_guard.enforce_guest_rag(
+                    client_ip=extract_client_ip(request), units=1
+                )
+        except CircuitBreakerOpenError as exc:
+            raise HTTPException(
+                status_code=503, detail=exc.detail, headers=exc.headers
+            ) from None
+        except QuotaExceededError as exc:
+            raise HTTPException(
+                status_code=429, detail=exc.detail, headers=exc.headers
+            ) from None
+
         try:
             result = await investigator.investigate(
                 ticker=clean_ticker,
-                question=body.question,
+                question=anonymized_question,
                 statement_scope=body.statement_scope,
                 fiscal_year=body.fiscal_year,
                 top_k=body.top_k,
                 use_cache=body.use_cache,
             )
         except PromptInjectionError as exc:
+            quota_guard.refund(receipt)
             raise HTTPException(status_code=400, detail=str(exc)) from None
         except TimeoutError:
+            quota_guard.refund(receipt)
             raise HTTPException(
                 status_code=503,
                 detail="Hệ thống điều tra tài liệu đang quá tải, vui lòng thử lại sau.",
                 headers={"Retry-After": "5"},
             ) from None
         except ValueError as exc:
+            quota_guard.refund(receipt)
             raise HTTPException(status_code=422, detail=str(exc)) from None
+        except Exception:
+            quota_guard.refund(receipt)
+            raise
+
+        is_cached = bool(getattr(result, "cached", False))
+        used_model = getattr(result, "model_used", None) is not None
+        if is_cached:
+            quota_guard.refund(receipt)
+        elif used_model:
+            quota_guard.record_global_gemini_call(units=1)
+
+        quota_guard.record_rag_usage(
+            RagUsageLedgerEntry(
+                usage_date=qdate,
+                actor_subject_hash=actor_hash,
+                operation="rag_query",
+                ticker=clean_ticker,
+                llm_calls=1 if (not is_cached and used_model) else 0,
+                cache_hit=is_cached,
+                status="CACHE_HIT" if is_cached else "COMPLETED",
+            )
+        )
 
         payload: dict[str, Any] = result.to_dict()
         return InvestigateResponse(**payload)
 
     # Resolve local Pydantic annotations eagerly so FastAPI builds OpenAPI schemas
     # cleanly even with ``from __future__ import annotations``.
+    investigate_company_documents.__annotations__["request"] = Request
     investigate_company_documents.__annotations__["ticker"] = str
     investigate_company_documents.__annotations__["body"] = InvestigateRequest
     investigate_company_documents.__annotations__["return"] = InvestigateResponse

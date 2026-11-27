@@ -140,3 +140,7 @@ export type AlertSubscriptionResponse = Schema["AlertSubscriptionResponse"];
 export type AlertSubscriptionUpdateRequest = Schema["AlertSubscriptionUpdateRequest"];
 export type WebhookTestRequest = Schema["WebhookTestRequest"];
 export type WebhookTestResponse = Schema["WebhookTestResponse"];
+
+export type QuotaMeterStatus = Schema["QuotaMeterStatus"];
+export type MyQuotaResponse = Schema["MyQuotaResponse"];
+export type SystemBudgetResponse = Schema["SystemBudgetResponse"];

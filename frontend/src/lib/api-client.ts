@@ -134,7 +134,9 @@ function sanitizeClientMessage(raw: string, status: number): string {
     return "Không tìm thấy dữ liệu cho yêu cầu này trong kỳ hiện hành.";
   }
   if (!cleaned || INTERNAL_LEAK_RE.test(cleaned)) {
+    if (status === 403) return "Bạn cần bật đồng ý đối chiếu thuyết minh trong trang Hồ sơ (/profile).";
     if (status === 422) return "Tham số truy vấn không hợp lệ.";
+    if (status === 429) return "Bạn đã dùng hết lượt tra cứu miễn phí hôm nay.";
     if (status === 503) return "Dịch vụ tra cứu hiện tạm thời chưa sẵn sàng, vui lòng thử lại sau giây lát.";
     return "Không thể tải dữ liệu từ máy chủ phân tích.";
   }
@@ -344,6 +346,7 @@ export const apiClient = {
       `/api/v2/documents/${encodeURIComponent(ticker.trim().toUpperCase())}/investigate`,
       {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",

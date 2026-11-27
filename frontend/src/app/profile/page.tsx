@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Dialog } from "@base-ui/react/dialog";
 import { LogOut, ShieldAlert, Trash2, UserCheck } from "lucide-react";
 import { EmptyState, TableSkeleton } from "@/components/layout/StateBlocks";
+import { QuotaBadge } from "@/components/quota/QuotaBadge";
 import { Badge, Input } from "@/components/ui/primitives";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +15,7 @@ import {
   useAuthSessionsList,
   useInvalidateAuthAndWorkspace,
   useMyAuditActivity,
+  useMyQuota,
 } from "@/hooks/use-auth-workspace";
 import { ApiError } from "@/lib/api-client";
 import { authApi } from "@/lib/auth-api";
@@ -46,6 +48,7 @@ export default function ProfilePage() {
 
   const sessionsQuery = useAuthSessionsList(isAuthenticated);
   const activityQuery = useMyAuditActivity(isAuthenticated);
+  const quotaQuery = useMyQuota(isAuthenticated);
 
   const [displayNameDraft, setDisplayNameDraft] = React.useState<string | null>(null);
   const displayName = displayNameDraft ?? user?.display_name ?? "";
@@ -208,6 +211,11 @@ export default function ProfilePage() {
           <p className="mt-0.5 text-xs text-ink-muted">
             Quản lý tài khoản, lựa chọn đồng ý theo Luật 91/2025/QH15 và phiên đăng nhập.
           </p>
+          <QuotaBadge
+            quota={quotaQuery.data}
+            isLoading={quotaQuery.isLoading}
+            className="mt-2"
+          />
         </div>
         <div className="flex items-center gap-2">
           <Badge className="border border-border bg-surface-muted text-ink">
