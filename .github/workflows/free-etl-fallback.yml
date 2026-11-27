@@ -1,0 +1,60 @@
+name: Free Cloud ETL & R2 Snapshot Publish (Serverless Fallback)
+
+# Fallback workflow for Option 2 (Zero-Card Serverless Hybrid: Vercel + HF Spaces + Neon + Upstash + Cloudflare R2).
+# Disabled cron by default — trigger manually via workflow_dispatch or uncomment `schedule:` when Option 2 is active.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run backup & snapshot validation in dry-run mode"
+        required: false
+        default: true
+        type: boolean
+  # schedule:
+  #   - cron: "0 19 * * 1-5" # 02:00 Asia/Ho_Chi_Minh (disabled by default)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: free-etl-fallback
+  cancel-in-progress: true
+
+jobs:
+  publish-and-backup-r2:
+    name: Serverless ETL & R2 Sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python 3.11
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.30"
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --group ml --group platform --no-dev
+
+      - name: Run R2 backup / retention check
+        env:
+          FININTEL_OBJECT_STORE_BACKEND: r2
+          FININTEL_OBJECT_STORE_BUCKET: ${{ secrets.FININTEL_OBJECT_STORE_BUCKET }}
+          FININTEL_R2_ENDPOINT_URL: ${{ secrets.FININTEL_R2_ENDPOINT_URL }}
+          FININTEL_S3_ACCESS_KEY_ID: ${{ secrets.FININTEL_S3_ACCESS_KEY_ID }}
+          FININTEL_S3_SECRET_ACCESS_KEY: ${{ secrets.FININTEL_S3_SECRET_ACCESS_KEY }}
+          FININTEL_DUCKLAKE_PG_DSN: ${{ secrets.FININTEL_DUCKLAKE_PG_DSN }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ] || [ -z "$FININTEL_OBJECT_STORE_BUCKET" ]; then
+            uv run --no-sync python scripts/backup_to_r2.py --dry-run \
+              --bucket "${FININTEL_OBJECT_STORE_BUCKET:-finintel-r2-dryrun}" \
+              --endpoint-url "${FININTEL_R2_ENDPOINT_URL:-https://example-account.r2.cloudflarestorage.com}"
+          else
+            uv run --no-sync python scripts/backup_to_r2.py
+          fi

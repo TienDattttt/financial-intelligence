@@ -459,3 +459,163 @@ def test_v3_08_two_query_service_instances_evict_l1b_on_pg_snapshot_rollover(
         assert r2_after.status_code == 200
         assert r1_after.headers.get("X-Snapshot-ID") == "snap_roll_002"
         assert r2_after.headers.get("X-Snapshot-ID") == "snap_roll_002"
+
+
+def _parse_mem_limit_bytes(raw: str) -> int:
+    text = raw.strip().lower()
+    if text.endswith("g") or text.endswith("gb"):
+        num = text.removesuffix("gb").removesuffix("g")
+        return int(float(num) * (1024**3))
+    if text.endswith("m") or text.endswith("mb"):
+        num = text.removesuffix("mb").removesuffix("m")
+        return int(float(num) * (1024**2))
+    raise ValueError(f"Unsupported mem_limit unit: {raw!r}")
+
+
+def test_v3_09_docker_compose_free_budget_and_network_isolation() -> None:
+    import importlib
+    from typing import Any
+
+    yaml_mod: Any = importlib.import_module("yaml")
+
+    repo_root = Path(__file__).resolve().parents[2]
+    compose_path = repo_root / "docker-compose.free.yml"
+    caddy_path = repo_root / "config" / "gateway" / "Caddyfile.free"
+    workflow_path = repo_root / ".github" / "workflows" / "free-etl-fallback.yml"
+    runbook_path = repo_root / "docs" / "runbooks" / "free_cloud_deploy.md"
+
+    assert compose_path.is_file()
+    assert caddy_path.is_file()
+    assert workflow_path.is_file()
+    assert runbook_path.is_file()
+
+    data = yaml_mod.safe_load(compose_path.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    services = data["services"]
+    networks = data["networks"]
+
+    assert networks["internal_net"]["internal"] is True
+    assert set(services.keys()) >= {
+        "caddy",
+        "api",
+        "postgres",
+        "valkey",
+        "dagster-daemon",
+        "dagster-webserver",
+    }
+    assert services["postgres"]["image"] == "pgvector/pgvector:pg16"
+    assert services["valkey"]["image"] == "valkey/valkey:8-alpine"
+
+    total_mem_bytes = 0
+    for svc_name, svc in services.items():
+        assert "mem_limit" in svc, f"{svc_name} missing mem_limit"
+        total_mem_bytes += _parse_mem_limit_bytes(str(svc["mem_limit"]))
+        if svc_name == "caddy":
+            ports = [str(p) for p in svc.get("ports", [])]
+            assert any(":80" in p for p in ports)
+            assert any(":443" in p for p in ports)
+        else:
+            assert "ports" not in svc, f"{svc_name} must not expose public ports"
+            assert "internal_net" in svc.get("networks", [])
+
+    # Total container mem_limit MUST remain strictly < 8 GB for OCI 12 GB RAM.
+    assert total_mem_bytes < 8 * (1024**3)
+    assert str(services["api"]["environment"]["FININTEL_WORKERS"]) == "1"
+
+    caddy_text = caddy_path.read_text(encoding="utf-8")
+    assert "respond /metrics 403" in caddy_text
+    assert "reverse_proxy api:8000" in caddy_text
+    assert "Strict-Transport-Security" in caddy_text
+
+    wf = yaml_mod.safe_load(workflow_path.read_text(encoding="utf-8"))
+    assert wf["permissions"]["contents"] == "read"
+    on_cfg = wf["on"] if "on" in wf else wf[True]
+    assert "workflow_dispatch" in on_cfg
+    assert "schedule" not in on_cfg  # Cron disabled by default per spec.
+
+    runbook_text = runbook_path.read_text(encoding="utf-8")
+    assert "OCI" in runbook_text and "Vercel" in runbook_text and "R2" in runbook_text
+    assert (
+        "Hugging Face" in runbook_text
+        and "Neon" in runbook_text
+        and "Upstash" in runbook_text
+    )
+
+
+def test_v3_09_backup_to_r2_retention_and_dry_run_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    from scripts.backup_to_r2 import (
+        R2_WARN_BYTES,
+        BackupArtifact,
+        main as backup_main,
+        plan_backup_retention,
+    )
+
+    now = datetime(2026, 11, 27, 0, 0, tzinfo=UTC)
+    gb = 1024**3
+    existing = [
+        BackupArtifact(
+            key="backups/2026-11-18/pg.dump",
+            size_bytes=3 * gb,
+            created_at=now - timedelta(days=9),
+        ),
+        BackupArtifact(
+            key="backups/2026-11-24/pg.dump",
+            size_bytes=3 * gb,
+            created_at=now - timedelta(days=3),
+        ),
+        BackupArtifact(
+            key="backups/2026-11-26/pg.dump",
+            size_bytes=3 * gb,
+            created_at=now - timedelta(days=1),
+        ),
+    ]
+    new_artifact = BackupArtifact(
+        key="backups/2026-11-27/pg.dump",
+        size_bytes=2 * gb,
+        created_at=now,
+    )
+    plan = plan_backup_retention(
+        existing_objects=existing,
+        new_artifact=new_artifact,
+        retention_days=7,
+        max_total_bytes=R2_WARN_BYTES,
+        now=now,
+    )
+    assert "backups/2026-11-18/pg.dump" in plan.delete_keys
+    assert (
+        "backups/2026-11-24/pg.dump" in plan.delete_keys
+    )  # Exceeds 8 GB cap with new 2 GB!
+    assert "backups/2026-11-26/pg.dump" in plan.keep_keys
+    assert plan.projected_total_bytes <= R2_WARN_BYTES
+
+    data_root = tmp_path / "data"
+    (data_root / "metadata").mkdir(parents=True)
+    (data_root / "metadata" / "state.sqlite").write_bytes(b"sqlite-dummy")
+    monkeypatch.setenv("FININTEL_S3_ACCESS_KEY_ID", "SECRET_KEY_MUST_NOT_PRINT")
+    monkeypatch.setenv("FININTEL_S3_SECRET_ACCESS_KEY", "SECRET_VAL_MUST_NOT_PRINT")
+
+    rc = backup_main(
+        [
+            "--dry-run",
+            "--data-root",
+            str(data_root),
+            "--bucket",
+            "finintel-r2-free",
+            "--endpoint-url",
+            "https://acct123.r2.cloudflarestorage.com",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "SECRET_KEY_MUST_NOT_PRINT" not in out
+    assert "SECRET_VAL_MUST_NOT_PRINT" not in out
+    payload = json.loads(out)
+    assert payload["dry_run"] is True
+    assert payload["target_bucket"] == "finintel-r2-free"
+    assert payload["max_total_bytes"] == R2_WARN_BYTES
