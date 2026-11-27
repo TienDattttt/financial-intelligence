@@ -485,6 +485,7 @@ class StressScenarioRequest(BaseModel):
     )
     dso_shock_days: float = Field(0.0, ge=-90.0, le=180.0, allow_inf_nan=False)
     dio_shock_days: float = Field(0.0, ge=-90.0, le=180.0, allow_inf_nan=False)
+    fx_depreciation_pct: float = Field(0.0, ge=-0.30, le=0.50, allow_inf_nan=False)
     top_n: int = Field(50, ge=1, le=200)
     include_all_newly_distressed: bool | None = None
     tickers: list[str] | None = Field(default=None, max_length=200)
@@ -556,6 +557,9 @@ class StressIssuerItem(BaseModel):
     baseline_debt_at_risk: bool | None = None
     stressed_debt_at_risk: bool | None = None
     newly_distressed_under_shock: bool | None = None
+    net_fx_debt_vnd: float | None = None
+    fx_revaluation_loss_vnd: float | None = None
+    fx_coverage_status: Literal["REPORTED", "NOT_DISCLOSED"] = "NOT_DISCLOSED"
 
 
 class StressTestResponse(BaseModel):
@@ -566,6 +570,8 @@ class StressTestResponse(BaseModel):
     statement_scope: StatementScope
     period_type: PeriodType
     period_end_date: date | None = None
+    fx_depreciation_pct: float = 0.0
+    fx_disclosed_issuers_count: int = 0
     total_issuers_evaluated: int
     total_debt_sum: float
     baseline_debt_at_risk_pct: float

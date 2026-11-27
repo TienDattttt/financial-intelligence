@@ -1379,6 +1379,7 @@ def create_app(
                 gross_margin_shock_pp=payload.gross_margin_shock_pp,
                 dso_shock_days=payload.dso_shock_days,
                 dio_shock_days=payload.dio_shock_days,
+                fx_depreciation_pct=payload.fx_depreciation_pct,
             )
 
             if inputs_df.is_empty():
@@ -1389,6 +1390,7 @@ def create_app(
                         statement_scope=payload.statement_scope,
                         period_type=payload.period_type,
                         period_end_date=payload.period_end_date,
+                        fx_depreciation_pct=scenario.fx_depreciation_pct,
                     )
                 )
                 return _store_cached_model(
@@ -1433,6 +1435,7 @@ def create_app(
                     top_n=payload.top_n,
                     include_all_newly_distressed=payload.include_all_newly_distressed,
                     reference_icrs=payload.reference_icrs,
+                    fx_depreciation_pct=scenario.fx_depreciation_pct,
                 )
             )
             return _store_cached_model(
@@ -2035,10 +2038,12 @@ def create_app(
     from finintel.auth.router import mount_identity_workspace_routers
     from finintel.ops.router import mount_ops_routers
     from finintel.quota.router import mount_quota_router
+    from finintel.serving.routers.bonds_v3 import create_bonds_v3_router
 
     mount_identity_workspace_routers(api, valkey_url=valkey_url)
     mount_alerts_router(api)
     api.include_router(create_exports_router())
+    api.include_router(create_bonds_v3_router())
     mount_quota_router(api, valkey_url=valkey_url)
     mount_ops_routers(api)
 

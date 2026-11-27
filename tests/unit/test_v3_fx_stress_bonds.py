@@ -435,3 +435,326 @@ def test_hnx_cbonds_collector_ssrf_guard_sha256_and_pit_aggregation() -> None:
             source_provider="hnx_cbonds",
             source_url="",
         )
+
+
+def _stress_fixture_frame() -> pl.DataFrame:
+    bn = 1_000_000_000.0
+    return pl.DataFrame(
+        {
+            "issuer_id": ["FX_DISCLOSED", "FX_UNDISCLOSED", "FX_BANK"],
+            "ticker": ["NVL", "FPT", "VCB"],
+            "company_name_vn": ["Novaland", "FPT", "Vietcombank"],
+            "icb_code_level2": ["8600", "9500", "8300"],
+            "icb_name_level2": ["Bat dong san", "Cong nghe", "Ngan hang"],
+            "accounting_regime": ["CORPORATE", "CORPORATE", "BANK"],
+            "statement_scope": ["CONSOLIDATED", "CONSOLIDATED", "CONSOLIDATED"],
+            "period_type": ["QUARTER", "QUARTER", "QUARTER"],
+            "period_end_date": [date(2026, 3, 31)] * 3,
+            "net_revenue_ttm": [5_000.0 * bn, 10_000.0 * bn, 20_000.0 * bn],
+            "gross_profit_ttm": [1_500.0 * bn, 4_000.0 * bn, 10_000.0 * bn],
+            "cogs_ttm": [3_500.0 * bn, 6_000.0 * bn, 10_000.0 * bn],
+            "cfo_ttm": [400.0 * bn, 1_500.0 * bn, 3_000.0 * bn],
+            "borrowing_cost_ttm": [100.0 * bn, 50.0 * bn, 200.0 * bn],
+            "total_debt": [3_000.0 * bn, 1_000.0 * bn, 5_000.0 * bn],
+            "ebit_ttm": [180.0 * bn, 800.0 * bn, 2_000.0 * bn],
+            "gross_margin": [0.30, 0.40, 0.50],
+            "effective_tax_rate": [0.20, 0.20, 0.20],
+            "interest_coverage": [1.8, 16.0, None],
+            "interest_coverage_flag": ["VALID", "VALID", "NOT_APPLICABLE_FOR_REGIME"],
+            "net_fx_debt_vnd": pl.Series(
+                [1_000.0 * bn, None, 500.0 * bn], dtype=pl.Float64
+            ),
+        }
+    )
+
+
+def test_fx_stress_test_zero_regression_exact_math_and_null_preservation() -> None:
+    """V3-32: fx=0.0 matches V2 exactly; fx=0.10 computes 100B loss on 1000B FX debt; undisclosed stays NULL/NOT_DISCLOSED."""
+    import math
+
+    from finintel.analytics.stress_fx import evaluate_bond_liquidity_signal
+    from finintel.analytics.stress_test import StressScenario, simulate_financial_stress
+
+    bn = 1_000_000_000.0
+    df = _stress_fixture_frame()
+    df_no_fx_col = df.drop("net_fx_debt_vnd")
+
+    # 1. Bounds validation on fx_depreciation_pct
+    for bad_fx in (-0.31, 0.51, float("nan"), float("inf")):
+        with pytest.raises(ContractViolationError):
+            StressScenario(name="bad_fx", fx_depreciation_pct=bad_fx)
+
+    # 2. 0% regression at fx_depreciation_pct = 0.0
+    v2_baseline = simulate_financial_stress(
+        df_no_fx_col,
+        StressScenario(
+            name="v2",
+            interest_rate_shock_bps=100.0,
+            revenue_shock_pct=-0.05,
+        ),
+    )
+    v3_zero_fx = simulate_financial_stress(
+        df,
+        StressScenario(
+            name="v2",
+            interest_rate_shock_bps=100.0,
+            revenue_shock_pct=-0.05,
+            fx_depreciation_pct=0.0,
+        ),
+    )
+    for col in (
+        "stressed_net_revenue_ttm",
+        "stressed_ebit_ttm",
+        "stressed_borrowing_cost_ttm",
+        "stressed_interest_coverage",
+        "stressed_cfo_ttm",
+        "baseline_debt_at_risk",
+        "stressed_debt_at_risk",
+        "newly_distressed_under_shock",
+    ):
+        assert v3_zero_fx[col].to_list() == v2_baseline[col].to_list()
+
+    # 3. fx_depreciation_pct = 0.10 on net_fx_debt_vnd = 1,000 tỷ -> loss = 100 tỷ
+    fx10 = simulate_financial_stress(
+        df,
+        StressScenario(name="fx10", fx_depreciation_pct=0.10),
+    )
+    rows = {r["issuer_id"]: r for r in fx10.to_dicts()}
+
+    disclosed = rows["FX_DISCLOSED"]
+    assert disclosed["fx_coverage_status"] == "REPORTED"
+    assert disclosed["net_fx_debt_vnd"] == pytest.approx(1_000.0 * bn)
+    assert disclosed["fx_revaluation_loss_vnd"] == pytest.approx(100.0 * bn)
+    # Borrowing cost: 100B + 100B = 200B; EBIT: 180B -> ICR = 180 / 200 = 0.90x < 1.0 -> newly distressed!
+    assert disclosed["stressed_borrowing_cost_ttm"] == pytest.approx(200.0 * bn)
+    assert disclosed["stressed_interest_coverage"] == pytest.approx(0.90)
+    assert disclosed["baseline_debt_at_risk"] is False
+    assert disclosed["stressed_debt_at_risk"] is True
+    assert disclosed["newly_distressed_under_shock"] is True
+
+    # Undisclosed issuer: NULL preserved, NOT_DISCLOSED, zero NaN, zero FX impact
+    undisclosed = rows["FX_UNDISCLOSED"]
+    assert undisclosed["fx_coverage_status"] == "NOT_DISCLOSED"
+    assert undisclosed["net_fx_debt_vnd"] is None
+    assert undisclosed["fx_revaluation_loss_vnd"] is None
+    assert undisclosed["stressed_borrowing_cost_ttm"] == pytest.approx(50.0 * bn)
+    assert undisclosed["stressed_interest_coverage"] == pytest.approx(16.0)
+    for val in undisclosed.values():
+        if isinstance(val, float):
+            assert math.isfinite(val)
+
+    # Non-corporate BANK row: ineligible, fx_revaluation_loss_vnd stays None
+    bank = rows["FX_BANK"]
+    assert bank["fx_revaluation_loss_vnd"] is None
+    assert bank["stressed_interest_coverage_flag"] == "NOT_APPLICABLE_FOR_REGIME"
+
+    # 4. Bond liquidity signal calculation
+    covered = evaluate_bond_liquidity_signal(
+        outstanding_bond_vnd=500.0 * bn,
+        bond_maturity_12m_vnd=100.0 * bn,
+        bond_payment_delay_flag=False,
+        total_cash_and_st_investments_vnd=400.0 * bn,
+    )
+    assert covered.bond_maturity_to_cash_ratio == pytest.approx(0.25)
+    assert covered.liquidity_pressure_status == "COVERED"
+
+    delayed = evaluate_bond_liquidity_signal(
+        outstanding_bond_vnd=500.0 * bn,
+        bond_maturity_12m_vnd=300.0 * bn,
+        bond_payment_delay_flag=True,
+        total_cash_and_st_investments_vnd=0.0,
+    )
+    assert delayed.bond_maturity_to_cash_ratio is None
+    assert delayed.liquidity_pressure_status == "PAYMENT_DELAY"
+
+
+def test_serving_fx_stress_and_v3_bond_signals_endpoint(tmp_path: Path) -> None:
+    """V3-32 Serving: POST /api/v1/stress-test FX propagation and GET /api/v3/companies/{ticker}/bond-signals."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("pydantic")
+
+    from fastapi.testclient import TestClient
+
+    from finintel.analytics.tables import RATIOS_TABLE, build_analytics_tables
+    from finintel.quality.gate import evaluate_quality_gate
+    from finintel.serving.api import create_app
+    from finintel.storage.snapshot_publisher import SnapshotPublisher
+
+    issuers = _sample_issuers()
+    vn_bn = 1_000_000_000.0
+    period_rows: list[dict[str, object]] = []
+    for issuer_id, rev, gp, ebit, bc, debt, cash in (
+        (
+            "VN_NVL",
+            2_000.0 * vn_bn,
+            600.0 * vn_bn,
+            180.0 * vn_bn,
+            100.0 * vn_bn,
+            3_000.0 * vn_bn,
+            2_000.0 * vn_bn,
+        ),
+        (
+            "VN_HPG",
+            5_000.0 * vn_bn,
+            1_200.0 * vn_bn,
+            800.0 * vn_bn,
+            50.0 * vn_bn,
+            1_000.0 * vn_bn,
+            3_000.0 * vn_bn,
+        ),
+    ):
+        for q_idx, (p_start, p_end) in enumerate(
+            [
+                (date(2025, 1, 1), date(2025, 3, 31)),
+                (date(2025, 4, 1), date(2025, 6, 30)),
+                (date(2025, 7, 1), date(2025, 9, 30)),
+                (date(2025, 10, 1), date(2025, 12, 31)),
+            ],
+            start=1,
+        ):
+            metrics = {
+                "BS_TOTAL_ASSETS": 10_000.0 * vn_bn,
+                "BS_TOTAL_EQUITY": 4_000.0 * vn_bn,
+                "BS_TOTAL_LIABILITIES": 6_000.0 * vn_bn,
+                "BS_CURRENT_ASSETS": 5_000.0 * vn_bn,
+                "BS_CURRENT_LIABILITIES": 2_500.0 * vn_bn,
+                "BS_CASH_AND_EQUIVALENTS": cash,
+                "BS_SHORT_TERM_BORROWINGS": debt / 2.0,
+                "BS_LONG_TERM_BORROWINGS": debt / 2.0,
+                "IS_NET_REVENUE": rev / 4.0,
+                "IS_COST_OF_GOODS_SOLD": (rev - gp) / 4.0,
+                "IS_GROSS_PROFIT": gp / 4.0,
+                "IS_OPERATING_PROFIT": ebit / 4.0,
+                "IS_PROFIT_BEFORE_TAX": (ebit - bc) / 4.0,
+                "IS_INTEREST_EXPENSE": bc / 4.0,
+                "IS_CURRENT_INCOME_TAX": max(0.0, (ebit - bc) * 0.2 / 4.0),
+                "IS_DEFERRED_INCOME_TAX": 0.0,
+                "IS_NET_INCOME": (ebit - bc) * 0.8 / 4.0,
+                "IS_NET_INCOME_PARENT": (ebit - bc) * 0.8 / 4.0,
+                "CF_OPERATING_CASH_FLOW": 100.0 * vn_bn,
+                "CF_DEPRECIATION_AMORTIZATION": 20.0 * vn_bn,
+            }
+            for metric_id, val in metrics.items():
+                period_rows.append(
+                    {
+                        "issuer_id": issuer_id,
+                        "statement_scope": "CONSOLIDATED",
+                        "period_type": "QUARTER",
+                        "fiscal_year": 2025,
+                        "fiscal_quarter": q_idx,
+                        "fiscal_year_start_date": date(2025, 1, 1),
+                        "period_start_date": p_start,
+                        "period_end_date": p_end,
+                        "published_at": date(2026, 1, 25),
+                        "effective_available_at": date(2026, 1, 25),
+                        "published_at_basis": "EXACT_FILING",
+                        "revision_no": 1,
+                        "filing_id": f"{issuer_id}-2025-Q{q_idx}",
+                        "source_filing_ids": [f"{issuer_id}-2025-Q{q_idx}"],
+                        "source_provider": "fhsc",
+                        "taxonomy_version": "VAS_TT200_2014",
+                        "revision_reason": "ORIGINAL",
+                        "audit_status": "UNAUDITED",
+                        "audit_opinion": "UNMODIFIED",
+                        "derivation_method": "REPORTED_DIRECTLY",
+                        "metric_id": metric_id,
+                        "value": val,
+                        "value_type": "STOCK"
+                        if metric_id.startswith("BS_")
+                        else "FLOW",
+                        "comparable_across_taxonomy": True,
+                        "is_filed_late": False,
+                    }
+                )
+
+    facts = pl.DataFrame(period_rows)
+    qg1 = evaluate_quality_gate(facts, issuers=issuers)
+    tables = build_analytics_tables(qg1.clean_facts, issuers, as_of=date(2026, 4, 1))
+    data_root = tmp_path / "data"
+    state = StateStore(data_root / "metadata" / "state.sqlite")
+    state.initialize()
+    state.start_run("run-srv-1", "CLI_MANUAL", {}, None)
+    pub = SnapshotPublisher(data_root / "published" / "snapshots", state_store=state)
+    pub.publish(
+        "snap_srv_001",
+        {
+            "issuers.parquet": issuers,
+            "financial_facts.parquet": qg1.clean_facts,
+            **tables,
+        },
+        run_id="run-srv-1",
+    )
+    state.finish_run("run-srv-1", "SUCCEEDED", "snap_srv_001")
+
+    bonds_dir = data_root / "bonds"
+    bonds_dir.mkdir(parents=True, exist_ok=True)
+    # NVL has bond signals; HPG has no bond row -> NO_BONDS empty state.
+    _sample_bond_signals().with_columns(
+        pl.lit(date(2025, 12, 31)).alias("as_of_date")
+    ).write_parquet(bonds_dir / CORPORATE_BOND_SIGNALS_TABLE)
+    _sample_fx_debt().with_columns(
+        pl.lit(date(2025, 12, 31)).alias("as_of_date")
+    ).write_parquet(bonds_dir / FX_DEBT_EXPOSURE_TABLE)
+
+    app = create_app(data_root=data_root)
+    with TestClient(app) as client:
+        # 1. Stress test with fx_depreciation_pct=0.10
+        r_fx = client.post(
+            "/api/v1/stress-test",
+            json={
+                "scenario_name": "FX +10%",
+                "statement_scope": "CONSOLIDATED",
+                "period_type": "QUARTER",
+                "period_end_date": "2025-12-31",
+                "fx_depreciation_pct": 0.10,
+            },
+        )
+        assert r_fx.status_code == 200
+        body = r_fx.json()
+        assert body["fx_depreciation_pct"] == pytest.approx(0.10)
+        assert body["fx_disclosed_issuers_count"] == 1
+        by_ticker = {it["ticker"]: it for it in body["top_stressed_issuers"]}
+        assert by_ticker["NVL"]["fx_coverage_status"] == "REPORTED"
+        assert by_ticker["NVL"]["net_fx_debt_vnd"] == pytest.approx(1_000.0 * vn_bn)
+        assert by_ticker["NVL"]["fx_revaluation_loss_vnd"] == pytest.approx(
+            100.0 * vn_bn
+        )
+        assert by_ticker["HPG"]["fx_coverage_status"] == "NOT_DISCLOSED"
+        assert by_ticker["HPG"]["net_fx_debt_vnd"] is None
+        assert by_ticker["HPG"]["fx_revaluation_loss_vnd"] is None
+
+        # Out-of-bounds fx_depreciation_pct -> 422
+        r_bad = client.post(
+            "/api/v1/stress-test",
+            json={"scenario_name": "Invalid FX", "fx_depreciation_pct": 0.75},
+        )
+        assert r_bad.status_code == 422
+
+        # 2. GET /api/v3/companies/{ticker}/bond-signals (disclosed vs NO_BONDS vs 404 vs 304)
+        r_nvl = client.get("/api/v3/companies/NVL/bond-signals")
+        assert r_nvl.status_code == 200
+        nvl_bond = r_nvl.json()
+        assert nvl_bond["ticker"] == "NVL"
+        assert nvl_bond["has_outstanding_bonds"] is True
+        assert nvl_bond["outstanding_bond_vnd"] == pytest.approx(12_000.0 * vn_bn)
+        assert nvl_bond["bond_maturity_12m_vnd"] == pytest.approx(4_500.0 * vn_bn)
+        assert nvl_bond["bond_maturity_to_cash_ratio"] == pytest.approx(2.25)
+        assert nvl_bond["bond_payment_delay_flag"] is True
+        assert nvl_bond["liquidity_pressure_status"] == "PAYMENT_DELAY"
+        assert nvl_bond["source_url"].startswith("https://cbonds.hnx.vn/")
+
+        r_hpg = client.get("/api/v3/companies/HPG/bond-signals")
+        assert r_hpg.status_code == 200
+        hpg_bond = r_hpg.json()
+        assert hpg_bond["has_outstanding_bonds"] is False
+        assert hpg_bond["liquidity_pressure_status"] == "NO_BONDS"
+
+        r_304 = client.get(
+            "/api/v3/companies/NVL/bond-signals",
+            headers={"If-None-Match": r_nvl.headers["ETag"]},
+        )
+        assert r_304.status_code == 304
+
+        r_404 = client.get("/api/v3/companies/NOPE/bond-signals")
+        assert r_404.status_code == 404
+        _ = RATIOS_TABLE

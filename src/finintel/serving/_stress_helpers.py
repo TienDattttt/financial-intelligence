@@ -44,6 +44,7 @@ def build_empty_stress_response_kwargs(
     statement_scope: str,
     period_type: str,
     period_end_date: date | None,
+    fx_depreciation_pct: float = 0.0,
 ) -> dict[str, Any]:
     """Assemble ``StressTestResponse`` kwargs when no issuers match the slice."""
     return {
@@ -52,6 +53,8 @@ def build_empty_stress_response_kwargs(
         "statement_scope": statement_scope,
         "period_type": period_type,
         "period_end_date": period_end_date,
+        "fx_depreciation_pct": float(fx_depreciation_pct),
+        "fx_disclosed_issuers_count": 0,
         "total_issuers_evaluated": 0,
         "total_debt_sum": 0.0,
         "baseline_debt_at_risk_pct": 0.0,
@@ -79,6 +82,7 @@ def build_stress_response_kwargs(
     top_n: int,
     include_all_newly_distressed: bool | None,
     reference_icrs: Mapping[str, float | None] | None = None,
+    fx_depreciation_pct: float = 0.0,
 ) -> dict[str, Any]:
     """Assemble ``StressTestResponse`` kwargs from simulated Polars DataFrames."""
     guarded_df = apply_d8_ratio_guards(stressed_df)
@@ -103,6 +107,9 @@ def build_stress_response_kwargs(
         "stressed_debt_at_risk",
         "newly_distressed_under_shock",
     ]
+    for fx_col in ("net_fx_debt_vnd", "fx_revaluation_loss_vnd", "fx_coverage_status"):
+        if fx_col in guarded_df.columns:
+            issuer_cols.append(fx_col)
     newly_limit = 1000 if include_all_newly_distressed else top_n
     newly_df = (
         guarded_df.filter(
@@ -147,6 +154,11 @@ def build_stress_response_kwargs(
         return items
 
     newly_count = int(market_row["newly_distressed_count"])
+    fx_disclosed_count = (
+        int(guarded_df.filter(pl.col("fx_coverage_status") == "REPORTED").height)
+        if "fx_coverage_status" in guarded_df.columns
+        else 0
+    )
     return {
         "snapshot_id": snapshot_id,
         "scenario_name": scenario_name,
@@ -155,6 +167,8 @@ def build_stress_response_kwargs(
         "period_end_date": (
             resolved_end if isinstance(resolved_end, date) else fallback_period_end_date
         ),
+        "fx_depreciation_pct": float(fx_depreciation_pct),
+        "fx_disclosed_issuers_count": fx_disclosed_count,
         "total_issuers_evaluated": int(market_row["issuer_count"]),
         "total_debt_sum": float(market_row["total_debt_sum"]),
         "baseline_debt_at_risk_pct": float(market_row["baseline_debt_at_risk_pct"]),
