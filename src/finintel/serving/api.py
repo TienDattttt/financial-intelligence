@@ -93,6 +93,7 @@ from finintel.serving.observability import (
     trace_span,
 )
 from finintel.serving.dictionary import StatementType
+from finintel.serving.exports.router import create_exports_router
 from finintel.serving.freshness import (
     build_composite_cache_token,
     build_freshness_item,
@@ -2025,6 +2026,7 @@ def create_app(
         rag_store=rag_store,
         rag_investigator=rag_investigator,
     )
+    api.include_router(create_exports_router())
 
     return api
 
