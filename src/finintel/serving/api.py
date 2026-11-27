@@ -37,10 +37,8 @@ import duckdb
 import polars as pl
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi import Path as PathParam
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from finintel.alerts.router import mount_alerts_router
 from finintel.analytics.stress_test import (
     StressScenario,
     simulate_financial_stress,
@@ -49,8 +47,6 @@ from finintel.analytics.stress_test import (
 from finintel.exceptions import ContractViolationError
 from finintel.serving._api_helpers import (
     STRESS_CACHE_CONTROL_HEADER,
-    RagAvailabilityMiddleware,
-    StressBulkheadMiddleware,
     _dataframe_to_safe_csv_bytes,
     _extract_snapshot_id,
     _extract_storage_backend,
@@ -79,22 +75,17 @@ from finintel.serving.dependencies import (
     DEFAULT_API_PORT,
     DEFAULT_STRESS_MAX_CONCURRENCY,
     DEFAULT_STRESS_SEMAPHORE_TIMEOUT,
-    SecurityHeadersMiddleware,
     build_lifespan,
     get_db_cursor,
     get_query_service,
     get_response_cache,
     get_stress_semaphore,
-    resolve_cors_allow_credentials,
-    resolve_cors_origins,
 )
 from finintel.serving.observability import (
     SPAN_ANALYTICS_STRESS_TEST,
-    attach_observability,
     trace_span,
 )
 from finintel.serving.dictionary import StatementType
-from finintel.serving.exports.router import create_exports_router
 from finintel.serving.freshness import (
     build_composite_cache_token,
     build_freshness_item,
@@ -115,6 +106,10 @@ from finintel.serving.queries import (
 )
 from finintel.serving.queries._helpers import parse_screener_risk_tiers
 from finintel.serving.routers.screener_v3 import ScreenerExtendedQueryParams
+from finintel.serving.routers.v3 import (
+    configure_app_middlewares,
+    mount_v3_routers,
+)
 from finintel.serving.schemas import (
     AuditQuarantineItem,
     AuditQuarantinePageResponse,
@@ -453,10 +448,6 @@ def create_app(
     rag_investigator: Any | None = None,
 ) -> FastAPI:
     """Create a configured read-only analytical FastAPI application."""
-    allow_cors_credentials = resolve_cors_allow_credentials()
-    allowed_origins = resolve_cors_origins(
-        cors_origins, allow_credentials=allow_cors_credentials
-    )
     base_lifespan = build_lifespan(
         data_root=data_root,
         repository=repository,
@@ -485,34 +476,7 @@ def create_app(
         lifespan=app_lifespan,
     )
 
-    api.add_middleware(SecurityHeadersMiddleware)
-    api.add_middleware(StressBulkheadMiddleware)
-    api.add_middleware(RagAvailabilityMiddleware)
-    attach_observability(api)
-
-    # Deny-by-default CORS: only attach CORSMiddleware when explicit origins are configured.
-    if allowed_origins:
-        api.add_middleware(
-            CORSMiddleware,
-            allow_origins=list(allowed_origins),
-            allow_credentials=allow_cors_credentials,
-            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            allow_headers=[
-                "If-None-Match",
-                "Content-Type",
-                "X-Request-ID",
-                "X-Requested-With",
-            ],
-            expose_headers=[
-                "ETag",
-                "Cache-Control",
-                "X-Request-ID",
-                "X-Snapshot-ID",
-                "X-Dagster-Run-ID",
-                "X-Git-Commit-SHA",
-                "X-Cache",
-            ],
-        )
+    configure_app_middlewares(api, cors_origins=cors_origins)
 
     @api.exception_handler(ResourceNotFoundError)
     def _handle_not_found(
@@ -2035,21 +1999,7 @@ def create_app(
         rag_store=rag_store,
         rag_investigator=rag_investigator,
     )
-    from finintel.api_gateway.router import mount_api_gateway_router
-    from finintel.auth.router import mount_identity_workspace_routers
-    from finintel.ops.router import mount_ops_routers
-    from finintel.private_credit.router import mount_private_hitl_routers
-    from finintel.quota.router import mount_quota_router
-    from finintel.serving.routers.bonds_v3 import create_bonds_v3_router
-
-    mount_identity_workspace_routers(api, valkey_url=valkey_url)
-    mount_alerts_router(api)
-    api.include_router(create_exports_router())
-    api.include_router(create_bonds_v3_router())
-    mount_quota_router(api, valkey_url=valkey_url)
-    mount_ops_routers(api)
-    mount_api_gateway_router(api, valkey_url=valkey_url)
-    mount_private_hitl_routers(api)
+    mount_v3_routers(api, valkey_url=valkey_url)
 
     return api
 
