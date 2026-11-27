@@ -1,6 +1,5 @@
 """FastAPI router for isolated private-issuer VAS parsing & credit scoring (V3-28, V3-29)."""
 
-import importlib
 import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -404,11 +403,12 @@ def mount_private_credit_router(
 
 def mount_private_hitl_routers(api: "FastAPI", **kwargs: Any) -> None:
     """Mount both private-credit and HITL routers onto ``api`` in a single call."""
+    from finintel.hitl.router import mount_hitl_router
+
     mount_private_credit_router(
         api, private_credit_store=kwargs.get("private_credit_store")
     )
-    hitl_mod = importlib.import_module("finintel.hitl.router")
-    hitl_mod.mount_hitl_router(api, hitl_store=kwargs.get("hitl_store"))
+    mount_hitl_router(api, hitl_store=kwargs.get("hitl_store"))
 
 
 __all__ = [
