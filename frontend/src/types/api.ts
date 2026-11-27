@@ -161,3 +161,17 @@ export type IssuerLifecycleItem = Schema["IssuerLifecycleItem"];
 export type OpsIssuerLifecycleResponse = Schema["OpsIssuerLifecycleResponse"];
 export type OpsIssuerSyncRequest = Schema["OpsIssuerSyncRequest"];
 export type OpsIssuerSyncResponse = Schema["OpsIssuerSyncResponse"];
+
+export type ApiKeyCreateRequest = Schema["ApiKeyCreateRequest"];
+export type ApiKeyMetadataItem = Schema["ApiKeyMetadataItem"];
+export type ApiKeyCreateResponse = Schema["ApiKeyCreateResponse"];
+export type ApiKeyListResponse = Schema["ApiKeyListResponse"];
+export type ApiKeyRevokeResponse = Schema["ApiKeyRevokeResponse"];
+export type ApiUsageDailyPoint = Schema["ApiUsageDailyPoint"];
+export type ApiUsageSummaryResponse = Schema["ApiUsageSummaryResponse"];
+export type B2BWebhookCreateRequest = Schema["B2BWebhookCreateRequest"];
+export type B2BWebhookItem = Schema["B2BWebhookItem"];
+export type B2BWebhookCreateResponse = Schema["B2BWebhookCreateResponse"];
+export type B2BWebhookListResponse = Schema["B2BWebhookListResponse"];
+export type B2BWebhookDeleteResponse = Schema["B2BWebhookDeleteResponse"];
+export type B2BWebhookTestResponse = Schema["B2BWebhookTestResponse"];

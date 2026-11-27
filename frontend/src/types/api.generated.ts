@@ -1067,6 +1067,195 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/b2b/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Api Keys */
+        get: operations["list_api_keys_api_v3_b2b_keys_get"];
+        put?: never;
+        /** Create Api Key */
+        post: operations["create_api_key_api_v3_b2b_keys_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/keys/{key_id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rotate Api Key */
+        post: operations["rotate_api_key_api_v3_b2b_keys__key_id__rotate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/keys/{key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Api Key */
+        delete: operations["revoke_api_key_api_v3_b2b_keys__key_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Api Usage */
+        get: operations["get_api_usage_api_v3_b2b_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/webhooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List B2B Webhooks */
+        get: operations["list_b2b_webhooks_api_v3_b2b_webhooks_get"];
+        put?: never;
+        /** Create B2B Webhook */
+        post: operations["create_b2b_webhook_api_v3_b2b_webhooks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/webhooks/{endpoint_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete B2B Webhook */
+        delete: operations["delete_b2b_webhook_api_v3_b2b_webhooks__endpoint_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/b2b/webhooks/{endpoint_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test B2B Webhook */
+        post: operations["test_b2b_webhook_api_v3_b2b_webhooks__endpoint_id__test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/open/companies/{ticker}/risk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Open Company Risk */
+        get: operations["get_open_company_risk_api_v3_open_companies__ticker__risk_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/open/screener": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Open Screener */
+        get: operations["get_open_screener_api_v3_open_screener_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/open/stress-test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Post Open Stress Test */
+        post: operations["post_open_stress_test_api_v3_open_stress_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/open/companies/{ticker}/statements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Open Raw Statements */
+        get: operations["get_open_raw_statements_api_v3_open_companies__ticker__statements_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1314,6 +1503,129 @@ export interface components {
             /** Drivers */
             drivers: components["schemas"]["AnomalyDriverItem"][];
         };
+        /** ApiKeyCreateRequest */
+        ApiKeyCreateRequest: {
+            /** Name */
+            name: string;
+            /**
+             * Prefix Mode
+             * @default res
+             * @enum {string}
+             */
+            prefix_mode: "res" | "live";
+            /** Scopes */
+            scopes?: ("read:derived_risk" | "write:webhooks" | "read:rag" | "read:raw_statements")[];
+            /** Expires In Days */
+            expires_in_days?: number | null;
+        };
+        /** ApiKeyCreateResponse */
+        ApiKeyCreateResponse: {
+            key: components["schemas"]["ApiKeyMetadataItem"];
+            /** Plaintext Key */
+            plaintext_key: string;
+        };
+        /** ApiKeyListResponse */
+        ApiKeyListResponse: {
+            /** Items */
+            items: components["schemas"]["ApiKeyMetadataItem"][];
+            /** Raw Redistribution Enabled */
+            raw_redistribution_enabled: boolean;
+            /** Default Rate Limit Per Min */
+            default_rate_limit_per_min: number;
+            /** Default Daily Limit */
+            default_daily_limit: number;
+        };
+        /** ApiKeyMetadataItem */
+        ApiKeyMetadataItem: {
+            /**
+             * Key Id
+             * Format: uuid
+             */
+            key_id: string;
+            /** Name */
+            name: string;
+            /** Key Prefix */
+            key_prefix: string;
+            /** Scopes */
+            scopes: string[];
+            /** Rate Limit Per Min */
+            rate_limit_per_min: number;
+            /** Daily Limit */
+            daily_limit: number;
+            /** Is Active */
+            is_active: boolean;
+            /** Last Used At */
+            last_used_at?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Revoked At */
+            revoked_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** ApiKeyRevokeResponse */
+        ApiKeyRevokeResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "REVOKED";
+            /**
+             * Key Id
+             * Format: uuid
+             */
+            key_id: string;
+            /**
+             * Revoked At
+             * Format: date-time
+             */
+            revoked_at: string;
+        };
+        /** ApiUsageDailyPoint */
+        ApiUsageDailyPoint: {
+            /**
+             * Usage Date
+             * Format: date
+             */
+            usage_date: string;
+            /**
+             * Key Id
+             * Format: uuid
+             */
+            key_id: string;
+            /** Key Prefix */
+            key_prefix: string;
+            /** Endpoint */
+            endpoint: string;
+            /** Status Class */
+            status_class: string;
+            /** Request Count */
+            request_count: number;
+            /** Cache Hits */
+            cache_hits: number;
+        };
+        /** ApiUsageSummaryResponse */
+        ApiUsageSummaryResponse: {
+            /**
+             * From Date
+             * Format: date
+             */
+            from_date: string;
+            /**
+             * To Date
+             * Format: date
+             */
+            to_date: string;
+            /** Total Requests */
+            total_requests: number;
+            /** Total Cache Hits */
+            total_cache_hits: number;
+            /** Daily */
+            daily: components["schemas"]["ApiUsageDailyPoint"][];
+        };
         /** AuditLogItemResponse */
         AuditLogItemResponse: {
             /** Audit Id */
@@ -1409,6 +1721,84 @@ export interface components {
             status: "OK" | "ACCEPTED";
             /** Message */
             message: string;
+        };
+        /** B2BWebhookCreateRequest */
+        B2BWebhookCreateRequest: {
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Url */
+            url: string;
+            /** Secret Hmac */
+            secret_hmac?: string | null;
+            /** Event Types */
+            event_types?: string[];
+        };
+        /** B2BWebhookCreateResponse */
+        B2BWebhookCreateResponse: {
+            webhook: components["schemas"]["B2BWebhookItem"];
+            /** Secret Hmac */
+            secret_hmac: string;
+        };
+        /** B2BWebhookDeleteResponse */
+        B2BWebhookDeleteResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "DELETED";
+            /**
+             * Endpoint Id
+             * Format: uuid
+             */
+            endpoint_id: string;
+        };
+        /** B2BWebhookItem */
+        B2BWebhookItem: {
+            /**
+             * Endpoint Id
+             * Format: uuid
+             */
+            endpoint_id: string;
+            /** Label */
+            label: string;
+            /** Url */
+            url: string;
+            /** Event Types */
+            event_types: string[];
+            /** Secret Configured */
+            secret_configured: boolean;
+            /** Is Active */
+            is_active: boolean;
+            /** Last Status */
+            last_status?: number | null;
+            /** Last Error */
+            last_error?: string | null;
+            /** Last Delivered At */
+            last_delivered_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** B2BWebhookListResponse */
+        B2BWebhookListResponse: {
+            /** Items */
+            items: components["schemas"]["B2BWebhookItem"][];
+        };
+        /** B2BWebhookTestResponse */
+        B2BWebhookTestResponse: {
+            /** Delivered */
+            delivered: boolean;
+            /** Http Status */
+            http_status?: number | null;
+            /** Signature Header Prefix */
+            signature_header_prefix?: string | null;
+            /** Detail */
+            detail: string;
         };
         /**
          * BenchmarkSummaryItem
@@ -2748,6 +3138,169 @@ export interface components {
             limit: number;
             /** Offset */
             offset: number;
+        };
+        /** OpenDerivedRiskResponse */
+        OpenDerivedRiskResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** License Scope */
+            license_scope: string;
+            /** Ticker */
+            ticker: string;
+            /** Company Name Vn */
+            company_name_vn: string;
+            /** Accounting Regime */
+            accounting_regime: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period View */
+            period_view: string;
+            /** Latest Taxonomy Version */
+            latest_taxonomy_version?: string | null;
+            /** Latest Quality Status */
+            latest_quality_status?: string | null;
+            /** Ml Scores */
+            ml_scores: {
+                [key: string]: unknown;
+            }[];
+            /** Red Flags */
+            red_flags: {
+                [key: string]: unknown;
+            }[];
+            /** Ratios */
+            ratios: {
+                [key: string]: unknown;
+            }[];
+            /** Disclaimer Vi */
+            disclaimer_vi: string;
+        };
+        /** OpenRawStatementsResponse */
+        OpenRawStatementsResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** License Scope */
+            license_scope: string;
+            /** Ticker */
+            ticker: string;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Statement Type */
+            statement_type: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /** Periods */
+            periods: {
+                [key: string]: unknown;
+            }[];
+            /** Rows */
+            rows: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** OpenScreenerResponse */
+        OpenScreenerResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** License Scope */
+            license_scope: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Items */
+            items: {
+                [key: string]: unknown;
+            }[];
+            /** Disclaimer Vi */
+            disclaimer_vi: string;
+        };
+        /** OpenStressTestRequest */
+        OpenStressTestRequest: {
+            /**
+             * Scenario Name
+             * @default Kịch bản sốc lãi suất +200bps
+             */
+            scenario_name: string;
+            /**
+             * Statement Scope
+             * @default CONSOLIDATED
+             * @enum {string}
+             */
+            statement_scope: "CONSOLIDATED" | "SEPARATE";
+            /**
+             * Period Type
+             * @default QUARTER
+             * @enum {string}
+             */
+            period_type: "QUARTER" | "ANNUAL";
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Tickers */
+            tickers?: string[] | null;
+            /**
+             * Interest Rate Shock Bps
+             * @default 0
+             */
+            interest_rate_shock_bps: number;
+            /**
+             * Revenue Shock Pct
+             * @default 0
+             */
+            revenue_shock_pct: number;
+            /**
+             * Gross Margin Shock Pp
+             * @default 0
+             */
+            gross_margin_shock_pp: number;
+            /**
+             * Dso Shock Days
+             * @default 0
+             */
+            dso_shock_days: number;
+            /**
+             * Dio Shock Days
+             * @default 0
+             */
+            dio_shock_days: number;
+        };
+        /** OpenStressTestResponse */
+        OpenStressTestResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** License Scope */
+            license_scope: string;
+            /** Scenario Name */
+            scenario_name: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Issuers Stressed */
+            issuers_stressed: number;
+            /** Newly Distressed Count */
+            newly_distressed_count: number;
+            /** Sectors */
+            sectors: {
+                [key: string]: unknown;
+            }[];
+            /** Issuers */
+            issuers: {
+                [key: string]: unknown;
+            }[];
+            /** Disclaimer Vi */
+            disclaimer_vi: string;
         };
         /** OpsAssignTicketRequest */
         OpsAssignTicketRequest: {
@@ -6747,6 +7300,412 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OpsIssuerSyncResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_api_keys_api_v3_b2b_keys_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyListResponse"];
+                };
+            };
+        };
+    };
+    create_api_key_api_v3_b2b_keys_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApiKeyCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyCreateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rotate_api_key_api_v3_b2b_keys__key_id__rotate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyCreateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_api_key_api_v3_b2b_keys__key_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyRevokeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_usage_api_v3_b2b_usage_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiUsageSummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_b2b_webhooks_api_v3_b2b_webhooks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["B2BWebhookListResponse"];
+                };
+            };
+        };
+    };
+    create_b2b_webhook_api_v3_b2b_webhooks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["B2BWebhookCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["B2BWebhookCreateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_b2b_webhook_api_v3_b2b_webhooks__endpoint_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["B2BWebhookDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_b2b_webhook_api_v3_b2b_webhooks__endpoint_id__test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                endpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["B2BWebhookTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_open_company_risk_api_v3_open_companies__ticker__risk_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_view?: "TTM" | "Quarterly" | "Annual";
+            };
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenDerivedRiskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_open_screener_api_v3_open_screener_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_type?: "QUARTER" | "ANNUAL";
+                period_end_date?: string | null;
+                exchange?: ("HOSE" | "HNX" | "UPCOM") | null;
+                risk_tier?: ("R1" | "R2" | "R3" | "R4" | "R5") | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                "If-None-Match"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenScreenerResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_open_stress_test_api_v3_open_stress_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenStressTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenStressTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_open_raw_statements_api_v3_open_companies__ticker__statements_get: {
+        parameters: {
+            query?: {
+                statement_type?: string;
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_type?: "QUARTER" | "ANNUAL";
+                periods_limit?: number;
+            };
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenRawStatementsResponse"];
                 };
             };
             /** @description Validation Error */
