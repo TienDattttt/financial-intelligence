@@ -38,18 +38,22 @@ class PostgresAlertStore:
 
     @staticmethod
     def _row_to_subscription(row: tuple[Any, ...]) -> AlertSubscriptionRecord:
-        raw_types = row[3] if isinstance(row[3], list) else []
-        parsed_types: list[AlertEventType] = []
-        for item in raw_types:
-            try:
-                parsed_types.append(AlertEventType(str(item)))
-            except ValueError:
-                continue
+        raw_types = row[3]
+        if isinstance(raw_types, list):
+            parsed_types: list[AlertEventType] = []
+            for item in raw_types:
+                try:
+                    parsed_types.append(AlertEventType(str(item)))
+                except ValueError:
+                    continue
+            event_types: tuple[AlertEventType, ...] = tuple(parsed_types)
+        else:
+            event_types = DEFAULT_SUBSCRIPTION_EVENT_TYPES
         return AlertSubscriptionRecord(
             subscription_id=UUID(str(row[0])),
             user_id=UUID(str(row[1])),
             watchlist_id=UUID(str(row[2])) if row[2] is not None else None,
-            event_types=tuple(parsed_types) or DEFAULT_SUBSCRIPTION_EVENT_TYPES,
+            event_types=event_types,
             in_app_enabled=bool(row[4]),
             email_digest_enabled=bool(row[5]),
             email_frequency="INSTANT" if str(row[6]) == "INSTANT" else "DAILY_DIGEST",

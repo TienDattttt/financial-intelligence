@@ -854,3 +854,159 @@ def test_rag_router_consent_pii_anonymization_cache_hit_and_5xx_refund(
         )
         assert r_hit_during_cb.status_code == 200
         assert r_hit_during_cb.json()["cached"] is True
+
+
+def test_valkey_backed_quota_store_shares_subject_and_global_budgets_across_instances() -> (
+    None
+):
+    """V3-19: Two ValkeyBackedQuotaStore instances share subject usage, Gemini breaker, and Vision cap without split-brain."""
+    from finintel.quota.guard import (
+        CircuitBreakerOpenError,
+        QuotaExceededError,
+        QuotaGuard,
+        ValkeyBackedQuotaStore,
+    )
+    from finintel.quota.policies import QuotaBudgetConfig
+
+    class _FakeValkeyClient:
+        def __init__(self) -> None:
+            self.data: dict[str, str] = {}
+            self.ttls: dict[str, int] = {}
+
+        def get(self, key: str) -> str | None:
+            return self.data.get(key)
+
+        def set(self, key: str, value: Any) -> bool:
+            self.data[key] = str(value)
+            return True
+
+        def decrby(self, key: str, amount: int) -> int:
+            cur = int(self.data.get(key, "0"))
+            nxt = cur - int(amount)
+            self.data[key] = str(nxt)
+            return nxt
+
+        def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> list[int]:
+            assert numkeys == 1
+            key = str(keys_and_args[0])
+            arg1 = int(keys_and_args[1])
+            arg2 = int(keys_and_args[2])
+            ttl = int(keys_and_args[3])
+            cur = int(self.data.get(key, "0"))
+            if "granted" in script:
+                # _VALKEY_CAP_GRANT_LUA(requested=arg1, cap=arg2, ttl=ttl)
+                available = max(0, arg2 - cur)
+                granted = min(arg1, available)
+                updated = cur
+                if granted > 0:
+                    updated = cur + granted
+                    self.data[key] = str(updated)
+                    if ttl > 0:
+                        self.ttls[key] = ttl
+                return [granted, updated]
+            # _VALKEY_CONSUME_LUA(units=arg1, limit=arg2, ttl=ttl)
+            if arg2 >= 0 and (cur + arg1) > arg2:
+                return [0, cur]
+            updated = cur + arg1
+            self.data[key] = str(updated)
+            if ttl > 0:
+                self.ttls[key] = ttl
+            return [1, updated]
+
+    shared_redis = _FakeValkeyClient()
+    cfg = QuotaBudgetConfig(
+        global_daily_gemini_cap=100,
+        circuit_breaker_ratio=0.85,
+        daily_vision_page_cap=150,
+    )
+    store_api = ValkeyBackedQuotaStore(
+        valkey_url="redis://fake:6379/0", budget_config=cfg
+    )
+    store_dagster = ValkeyBackedQuotaStore(
+        valkey_url="redis://fake:6379/0", budget_config=cfg
+    )
+    store_api._redis_client = shared_redis
+    store_dagster._redis_client = shared_redis
+
+    user = _make_user(UserRole.USER)
+    now = datetime(2026, 11, 27, 10, 0, tzinfo=UTC)
+    subject_key = f"user:{user.user_id}"
+
+    # 1. Store A consumes 3 -> Store B sees used=3 (not split-brain 0)
+    receipt = store_api.check_and_consume_subject(
+        subject_key=subject_key,
+        meter="rag_query",
+        limit=15,
+        unlimited=False,
+        units=3,
+        now=now,
+    )
+    assert receipt.used == 3
+    assert (
+        store_dagster.get_subject_used(
+            subject_key=subject_key, meter="rag_query", now=now
+        )
+        == 3
+    )
+
+    snap_b = store_dagster.get_user_status(user=user, now=now)
+    rag_b = next(m for m in snap_b.meters if m.meter == "rag_query")
+    assert rag_b.used == 3
+    assert rag_b.remaining == 12
+
+    # 2. Refund 1 on Store A -> Store B sees used=2
+    store_api.refund_subject(
+        type(receipt)(
+            subject_key=receipt.subject_key,
+            meter=receipt.meter,
+            quota_date=receipt.quota_date,
+            units=1,
+            used=receipt.used,
+            limit=receipt.limit,
+            remaining=receipt.remaining,
+            unlimited=receipt.unlimited,
+            reset_at=receipt.reset_at,
+        )
+    )
+    assert (
+        store_dagster.get_subject_used(
+            subject_key=subject_key, meter="rag_query", now=now
+        )
+        == 2
+    )
+
+    # 3. Exceeding limit via Store B raises QuotaExceededError
+    with pytest.raises(QuotaExceededError):
+        store_dagster.check_and_consume_subject(
+            subject_key=subject_key,
+            meter="rag_query",
+            limit=15,
+            unlimited=False,
+            units=14,
+            now=now,
+        )
+
+    # 4. Shared Vision page cap across Dagster and API stores (100 + 80 against cap=150 -> 50 granted)
+    g1, b1 = store_dagster.consume_vision_pages(requested=100, now=now)
+    assert g1 == 100
+    assert b1.vision_pages_used == 100
+    assert b1.vision_pages_remaining == 50
+
+    g2, b2 = store_api.consume_vision_pages(requested=80, now=now)
+    assert g2 == 50
+    assert b2.vision_pages_used == 150
+    assert b2.vision_pages_remaining == 0
+
+    g3, b3 = store_dagster.consume_vision_pages(requested=10, now=now)
+    assert g3 == 0
+    assert b3.vision_pages_used == 150
+
+    # 5. Shared Global Gemini Circuit Breaker at 85% across instances
+    store_dagster.record_global_gemini_call(units=85, now=now)
+    budget_api = store_api.get_system_budget(now=now)
+    assert budget_api.gemini_requests_used == 85
+    assert budget_api.circuit_breaker_open is True
+    assert budget_api.vision_pages_used == 150
+
+    with pytest.raises(CircuitBreakerOpenError):
+        QuotaGuard(store_api).enforce_and_consume(user=user, meter="rag_query", now=now)

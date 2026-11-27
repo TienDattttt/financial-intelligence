@@ -552,6 +552,7 @@ def test_dispatcher_consent_idempotency_retry_dead_letter_and_daily_digest(
 ) -> None:
     """V3-17: Enforce PDPL consent, idempotent fan-out, Telegram, Daily Digest cap, and dead-letter."""
     _ = tmp_path
+    pytest.importorskip("argon2")
     from finintel.alerts._store import AlertSubscriptionUpsert, InMemoryAlertStore
     from finintel.alerts.detector import AlertEvent, AlertEventType
     from finintel.alerts.dispatcher import AlertDispatcher
@@ -770,6 +771,8 @@ def test_dispatcher_consent_idempotency_retry_dead_letter_and_daily_digest(
 
 def test_alerts_router_endpoints_idor_ssrf_and_mark_read(tmp_path: Path) -> None:
     """V3-18: Alerts HTTP router enforces auth, CSRF, zero IDOR, SSRF check, and mark-read."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("argon2")
     from fastapi.testclient import TestClient
 
     from finintel.alerts._store import InMemoryAlertStore
@@ -964,3 +967,57 @@ def test_alerts_router_endpoints_idor_ssrf_and_mark_read(tmp_path: Path) -> None
 
     wh_client.close()
     _ = u1, u2
+
+
+def test_postgres_alert_store_preserves_empty_event_types_and_defaults_on_null() -> (
+    None
+):
+    """Minor Verifier fix: explicit empty event_types=[] stays empty; NULL falls back to defaults."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from finintel.alerts._pg_store import PostgresAlertStore
+    from finintel.alerts._store import DEFAULT_SUBSCRIPTION_EVENT_TYPES
+
+    now = datetime.now(UTC)
+    row_empty = (
+        str(uuid4()),
+        str(uuid4()),
+        None,
+        [],
+        True,
+        False,
+        "DAILY_DIGEST",
+        False,
+        None,
+        False,
+        None,
+        None,
+        1.5,
+        True,
+        now,
+        now,
+    )
+    sub_empty = PostgresAlertStore._row_to_subscription(row_empty)
+    assert sub_empty.event_types == ()
+
+    row_null = (
+        str(uuid4()),
+        str(uuid4()),
+        None,
+        None,
+        True,
+        False,
+        "DAILY_DIGEST",
+        False,
+        None,
+        False,
+        None,
+        None,
+        1.5,
+        True,
+        now,
+        now,
+    )
+    sub_null = PostgresAlertStore._row_to_subscription(row_null)
+    assert sub_null.event_types == DEFAULT_SUBSCRIPTION_EVENT_TYPES

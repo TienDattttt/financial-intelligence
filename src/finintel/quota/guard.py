@@ -318,12 +318,10 @@ class InMemoryQuotaStore:
         with self._lock:
             return self._usage.get((qdate, subject_key, meter), 0)
 
-    def _build_budget_locked(
-        self, bdate: date, reset_at: datetime
+    def _build_budget_values(
+        self, bdate: date, reset_at: datetime, *, g_used: int, v_used: int
     ) -> SystemBudgetSnapshot:
-        g_used = self._gemini_used.get(bdate, 0)
         g_cap = self.budget_config.global_daily_gemini_cap
-        v_used = self._vision_used.get(bdate, 0)
         v_cap = self.budget_config.daily_vision_page_cap
         trip_at = self.budget_config.circuit_breaker_trip_count()
         ratio = round(g_used / max(1, g_cap), 4)
@@ -339,6 +337,16 @@ class InMemoryQuotaStore:
             vision_pages_used=v_used,
             vision_pages_cap=v_cap,
             vision_pages_remaining=max(0, v_cap - v_used),
+        )
+
+    def _build_budget_locked(
+        self, bdate: date, reset_at: datetime
+    ) -> SystemBudgetSnapshot:
+        return self._build_budget_values(
+            bdate,
+            reset_at,
+            g_used=self._gemini_used.get(bdate, 0),
+            v_used=self._vision_used.get(bdate, 0),
         )
 
     def get_system_budget(self, *, now: datetime | None = None) -> SystemBudgetSnapshot:
@@ -401,6 +409,30 @@ if ttl > 0 then
     redis.call('EXPIRE', key, ttl)
 end
 return {1, updated}
+"""
+
+_VALKEY_CAP_GRANT_LUA = """
+local key = KEYS[1]
+local requested = tonumber(ARGV[1])
+local cap = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+local current = tonumber(redis.call('GET', key) or '0')
+local available = cap - current
+if available < 0 then
+    available = 0
+end
+local granted = requested
+if granted > available then
+    granted = available
+end
+local updated = current
+if granted > 0 then
+    updated = redis.call('INCRBY', key, granted)
+    if ttl > 0 then
+        redis.call('EXPIRE', key, ttl)
+    end
+end
+return {granted, updated}
 """
 
 
@@ -506,6 +538,108 @@ class ValkeyBackedQuotaStore(InMemoryQuotaStore):
             except Exception:
                 pass
         super().refund_subject(receipt)
+
+    def get_subject_used(
+        self,
+        *,
+        subject_key: str,
+        meter: QuotaMeter,
+        now: datetime | None = None,
+    ) -> int:
+        client = self._get_redis()
+        if client is not None:
+            qdate, _ = current_quota_window(now)
+            rkey = f"finintel:quota:{qdate.isoformat()}:{subject_key}:{meter}"
+            try:
+                raw = client.get(rkey)
+                if raw is not None:
+                    return max(0, int(raw))
+            except Exception:
+                pass
+        return super().get_subject_used(subject_key=subject_key, meter=meter, now=now)
+
+    @staticmethod
+    def _global_budget_keys(bdate: date) -> tuple[str, str]:
+        prefix = f"finintel:quota:{bdate.isoformat()}:global"
+        return f"{prefix}:gemini_requests", f"{prefix}:vision_pages"
+
+    def get_system_budget(self, *, now: datetime | None = None) -> SystemBudgetSnapshot:
+        client = self._get_redis()
+        if client is not None:
+            bdate, reset_at = current_quota_window(now)
+            gemini_key, vision_key = self._global_budget_keys(bdate)
+            try:
+                g_raw = client.get(gemini_key)
+                v_raw = client.get(vision_key)
+                if g_raw is not None or v_raw is not None:
+                    fallback = super().get_system_budget(now=now)
+                    g_used = (
+                        max(0, int(g_raw))
+                        if g_raw is not None
+                        else fallback.gemini_requests_used
+                    )
+                    v_used = (
+                        max(0, int(v_raw))
+                        if v_raw is not None
+                        else fallback.vision_pages_used
+                    )
+                    return self._build_budget_values(
+                        bdate, reset_at, g_used=g_used, v_used=v_used
+                    )
+            except Exception:
+                pass
+        return super().get_system_budget(now=now)
+
+    def record_global_gemini_call(
+        self, *, units: int = 1, now: datetime | None = None
+    ) -> SystemBudgetSnapshot:
+        client = self._get_redis()
+        if client is not None:
+            bdate, reset_at = current_quota_window(now)
+            gemini_key, vision_key = self._global_budget_keys(bdate)
+            ttl = seconds_until_reset(reset_at, now) + 300
+            try:
+                if units > 0:
+                    res = client.eval(
+                        _VALKEY_CONSUME_LUA, 1, gemini_key, units, -1, ttl
+                    )
+                    g_used = max(0, int(res[1]))
+                else:
+                    g_used = max(0, int(client.get(gemini_key) or 0))
+                v_raw = client.get(vision_key)
+                v_used = max(0, int(v_raw)) if v_raw is not None else 0
+                return self._build_budget_values(
+                    bdate, reset_at, g_used=g_used, v_used=v_used
+                )
+            except Exception:
+                pass
+        return super().record_global_gemini_call(units=units, now=now)
+
+    def consume_vision_pages(
+        self, *, requested: int, now: datetime | None = None
+    ) -> tuple[int, SystemBudgetSnapshot]:
+        if requested <= 0:
+            return 0, self.get_system_budget(now=now)
+        client = self._get_redis()
+        if client is not None:
+            bdate, reset_at = current_quota_window(now)
+            gemini_key, vision_key = self._global_budget_keys(bdate)
+            ttl = seconds_until_reset(reset_at, now) + 300
+            cap = int(self.budget_config.daily_vision_page_cap)
+            try:
+                res = client.eval(
+                    _VALKEY_CAP_GRANT_LUA, 1, vision_key, requested, cap, ttl
+                )
+                granted = max(0, int(res[0]))
+                v_used = max(0, int(res[1]))
+                g_raw = client.get(gemini_key)
+                g_used = max(0, int(g_raw)) if g_raw is not None else 0
+                return granted, self._build_budget_values(
+                    bdate, reset_at, g_used=g_used, v_used=v_used
+                )
+            except Exception:
+                pass
+        return super().consume_vision_pages(requested=requested, now=now)
 
     def record_rag_usage(self, entry: RagUsageLedgerEntry) -> None:
         super().record_rag_usage(entry)

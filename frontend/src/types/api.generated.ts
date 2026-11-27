@@ -897,6 +897,176 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/quota/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get My Quota */
+        get: operations["get_my_quota_api_v3_quota_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/quota/system-budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get System Budget */
+        get: operations["get_system_budget_api_v3_ops_quota_system_budget_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/companies/{ticker}/suggested-peers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Suggested Peers */
+        get: operations["get_suggested_peers_api_v3_companies__ticker__suggested_peers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/companies/{ticker}/anomaly-drivers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Anomaly Drivers */
+        get: operations["get_anomaly_drivers_api_v3_companies__ticker__anomaly_drivers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/qa-queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Qa Queue */
+        get: operations["get_qa_queue_api_v3_ops_qa_queue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/qa-queue/{ticket_id}/assign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Assign Qa Ticket */
+        post: operations["assign_qa_ticket_api_v3_ops_qa_queue__ticket_id__assign_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/qa-queue/{ticket_id}/submit-revision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Qa Revision */
+        post: operations["submit_qa_revision_api_v3_ops_qa_queue__ticket_id__submit_revision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/qa-queue/{ticket_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Qa Ticket */
+        post: operations["decide_qa_ticket_api_v3_ops_qa_queue__ticket_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/issuers/lifecycle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Issuers Lifecycle */
+        get: operations["get_issuers_lifecycle_api_v3_ops_issuers_lifecycle_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/ops/issuers/sync-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Issuer Sync */
+        post: operations["request_issuer_sync_api_v3_ops_issuers_sync_request_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1089,6 +1259,60 @@ export interface components {
             ticker: string;
             /** Notes */
             notes: components["schemas"]["AnalystNoteItem"][];
+        };
+        /** AnomalyDriverItem */
+        AnomalyDriverItem: {
+            /** Metric Name */
+            metric_name: string;
+            /** Display Name Vn */
+            display_name_vn: string;
+            /** Company Value */
+            company_value: number;
+            /** Peer Median */
+            peer_median?: number | null;
+            /** Sector Z */
+            sector_z: number;
+            /** Abs Sector Z */
+            abs_sector_z: number;
+            /**
+             * Direction Vs Sector
+             * @enum {string}
+             */
+            direction_vs_sector: "ABOVE_MEDIAN" | "BELOW_MEDIAN" | "AT_MEDIAN";
+            /** Peer Group Level */
+            peer_group_level?: string | null;
+            /**
+             * Peer Count
+             * @default 0
+             */
+            peer_count: number;
+        };
+        /** AnomalyDriversResponse */
+        AnomalyDriversResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Ticker */
+            ticker: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Anomaly Percentile Rank */
+            anomaly_percentile_rank?: number | null;
+            /**
+             * Statistical Outlier Flag
+             * @default false
+             */
+            statistical_outlier_flag: boolean;
+            /**
+             * Is Multivariate Outlier
+             * @default false
+             */
+            is_multivariate_outlier: boolean;
+            /** Drivers */
+            drivers: components["schemas"]["AnomalyDriverItem"][];
         };
         /** AuditLogItemResponse */
         AuditLogItemResponse: {
@@ -1806,12 +2030,22 @@ export interface components {
             fiscal_year?: number | null;
             /** Fiscal Quarter */
             fiscal_quarter?: number | null;
+            /** Taxonomy Version */
+            taxonomy_version?: string | null;
             /** Is Net Revenue */
             IS_NET_REVENUE?: number | null;
             /** Is Net Income */
             IS_NET_INCOME?: number | null;
             /** Cf Operating Cash Flow */
             CF_OPERATING_CASH_FLOW?: number | null;
+            /** Revenue Growth Qoq */
+            revenue_growth_qoq?: number | null;
+            /** Revenue Growth Qoq Flag */
+            revenue_growth_qoq_flag?: string | null;
+            /** Net Income Growth Qoq */
+            net_income_growth_qoq?: number | null;
+            /** Net Income Growth Qoq Flag */
+            net_income_growth_qoq_flag?: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1981,6 +2215,80 @@ export interface components {
             industry_snapshot_date?: string | null;
             /** Delisted Date */
             delisted_date?: string | null;
+        };
+        /** IssuerLifecycleEventItem */
+        IssuerLifecycleEventItem: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /**
+             * Exchange
+             * @enum {string}
+             */
+            exchange: "HOSE" | "HNX" | "UPCOM" | "DELISTED";
+            /**
+             * Event Type
+             * @enum {string}
+             */
+            event_type: "IPO_LISTING" | "EXCHANGE_TRANSFER" | "DELISTING" | "FY_END_CHANGE" | "METADATA_SYNC";
+            /**
+             * Effective Date
+             * Format: date
+             */
+            effective_date: string;
+            /** Fy End Month */
+            fy_end_month: number;
+            /** Previous Exchange */
+            previous_exchange?: string | null;
+            /**
+             * Source Url
+             * @default
+             */
+            source_url: string;
+            /**
+             * Notes
+             * @default
+             */
+            notes: string;
+            /** Status */
+            status: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** IssuerLifecycleItem */
+        IssuerLifecycleItem: {
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Company Name Vn */
+            company_name_vn?: string | null;
+            /** Exchange */
+            exchange: string;
+            /** Accounting Regime */
+            accounting_regime: string;
+            /** Icb Name Level2 */
+            icb_name_level2?: string | null;
+            /** Icb Name Level3 */
+            icb_name_level3?: string | null;
+            /** Delisted Date */
+            delisted_date?: string | null;
+            /**
+             * Fy End Month
+             * @default 12
+             */
+            fy_end_month: number;
+            /** Recent Events */
+            recent_events?: components["schemas"]["IssuerLifecycleEventItem"][];
         };
         /**
          * IssuersPageResponse
@@ -2386,6 +2694,36 @@ export interface components {
             relative_risk_lift?: number | null;
             drawdowns?: components["schemas"]["MarkerDrawdownBundleItem"] | null;
         };
+        /** MyQuotaResponse */
+        MyQuotaResponse: {
+            /** Authenticated */
+            authenticated: boolean;
+            /** Role */
+            role: components["schemas"]["UserRole"] | "ANONYMOUS";
+            /**
+             * Quota Date
+             * Format: date
+             */
+            quota_date: string;
+            /**
+             * Timezone
+             * @constant
+             */
+            timezone: "Asia/Ho_Chi_Minh";
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
+            /** Cross Border Rag Consent */
+            cross_border_rag_consent: boolean;
+            /** Circuit Breaker Open */
+            circuit_breaker_open: boolean;
+            /** Circuit Breaker Reopen At */
+            circuit_breaker_reopen_at?: string | null;
+            /** Meters */
+            meters: components["schemas"]["QuotaMeterStatus"][];
+        };
         /** NotificationReadResponse */
         NotificationReadResponse: {
             /**
@@ -2410,6 +2748,204 @@ export interface components {
             limit: number;
             /** Offset */
             offset: number;
+        };
+        /** OpsAssignTicketRequest */
+        OpsAssignTicketRequest: {
+            /** Assigned To User Id */
+            assigned_to_user_id?: string | null;
+            /**
+             * Root Cause Note
+             * @default
+             */
+            root_cause_note: string;
+        };
+        /** OpsDecisionRequest */
+        OpsDecisionRequest: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "APPROVE_REINGEST" | "KEEP_QUARANTINED";
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /** OpsIssuerLifecycleResponse */
+        OpsIssuerLifecycleResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Total */
+            total: number;
+            /** Items */
+            items: components["schemas"]["IssuerLifecycleItem"][];
+        };
+        /** OpsIssuerSyncRequest */
+        OpsIssuerSyncRequest: {
+            /** Ticker */
+            ticker: string;
+            /** Issuer Id */
+            issuer_id?: string | null;
+            /**
+             * Exchange
+             * @enum {string}
+             */
+            exchange: "HOSE" | "HNX" | "UPCOM" | "DELISTED";
+            /**
+             * Event Type
+             * @enum {string}
+             */
+            event_type: "IPO_LISTING" | "EXCHANGE_TRANSFER" | "DELISTING" | "FY_END_CHANGE" | "METADATA_SYNC";
+            /**
+             * Effective Date
+             * Format: date
+             */
+            effective_date: string;
+            /**
+             * Fy End Month
+             * @default 12
+             */
+            fy_end_month: number;
+            /** Previous Exchange */
+            previous_exchange?: string | null;
+            /**
+             * Source Url
+             * @default
+             */
+            source_url: string;
+            /**
+             * Notes
+             * @default
+             */
+            notes: string;
+        };
+        /** OpsIssuerSyncResponse */
+        OpsIssuerSyncResponse: {
+            /** Status */
+            status: string;
+            event: components["schemas"]["IssuerLifecycleEventItem"];
+        };
+        /** OpsQaQueueResponse */
+        OpsQaQueueResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Total */
+            total: number;
+            /** Items */
+            items: components["schemas"]["OpsQuarantineTicketItem"][];
+        };
+        /** OpsQuarantineTicketItem */
+        OpsQuarantineTicketItem: {
+            /**
+             * Ticket Id
+             * Format: uuid
+             */
+            ticket_id: string;
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Filing Id */
+            filing_id: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /**
+             * Period End Date
+             * Format: date
+             */
+            period_end_date: string;
+            /** Taxonomy Version */
+            taxonomy_version: string;
+            /** Rule Code */
+            rule_code: string;
+            /** Severity */
+            severity: string;
+            /** Details Json */
+            details_json: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "OPEN" | "IN_REVIEW" | "RESOLVED";
+            /** Decision */
+            decision?: ("APPROVE_REINGEST" | "KEEP_QUARANTINED") | null;
+            /** Assigned To User Id */
+            assigned_to_user_id?: string | null;
+            /**
+             * Root Cause Note
+             * @default
+             */
+            root_cause_note: string;
+            /** Latest Revision No */
+            latest_revision_no: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /** Revisions */
+            revisions?: components["schemas"]["OpsRevisionItem"][];
+        };
+        /** OpsRevisionItem */
+        OpsRevisionItem: {
+            /**
+             * Submission Id
+             * Format: uuid
+             */
+            submission_id: string;
+            /**
+             * Ticket Id
+             * Format: uuid
+             */
+            ticket_id: string;
+            /** Revision No */
+            revision_no: number;
+            /** Source Url */
+            source_url?: string | null;
+            /** Raw File Sha256 */
+            raw_file_sha256?: string | null;
+            /** Reason */
+            reason: string;
+            /** Reingest Status */
+            reingest_status: string;
+            /** Dagster Run Id */
+            dagster_run_id?: string | null;
+            /** Submitted By User Id */
+            submitted_by_user_id?: string | null;
+            /**
+             * Submitted At
+             * Format: date-time
+             */
+            submitted_at: string;
+        };
+        /** OpsSubmitRevisionRequest */
+        OpsSubmitRevisionRequest: {
+            /** Source Url */
+            source_url?: string | null;
+            /** Raw File Sha256 */
+            raw_file_sha256?: string | null;
+            /** Reason */
+            reason: string;
+            /** Payload Summary */
+            payload_summary?: {
+                [key: string]: unknown;
+            };
+        };
+        /** OpsTicketMutationResponse */
+        OpsTicketMutationResponse: {
+            /** Status */
+            status: string;
+            ticket: components["schemas"]["OpsQuarantineTicketItem"];
         };
         /** PasswordChangeBody */
         PasswordChangeBody: {
@@ -2572,6 +3108,30 @@ export interface components {
             offset: number;
             /** Items */
             items: components["schemas"]["QualitySummaryItem"][];
+        };
+        /** QuotaMeterStatus */
+        QuotaMeterStatus: {
+            /**
+             * Meter
+             * @enum {string}
+             */
+            meter: "rag_query" | "xlsx_export" | "api_call";
+            /** Used */
+            used: number;
+            /** Limit */
+            limit?: number | null;
+            /** Remaining */
+            remaining?: number | null;
+            /**
+             * Unlimited
+             * @default false
+             */
+            unlimited: boolean;
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
         };
         /**
          * RatioDictionaryItem
@@ -3253,6 +3813,14 @@ export interface components {
             values: {
                 [key: string]: number | null;
             };
+            /** Qoq Values */
+            qoq_values?: {
+                [key: string]: number | null;
+            };
+            /** Qoq Flags */
+            qoq_flags?: {
+                [key: string]: string | null;
+            };
         };
         /**
          * StressIssuerItem
@@ -3424,6 +3992,90 @@ export interface components {
             newly_distressed_issuers: components["schemas"]["StressIssuerItem"][];
             /** Top Stressed Issuers */
             top_stressed_issuers: components["schemas"]["StressIssuerItem"][];
+        };
+        /** SuggestedPeerItem */
+        SuggestedPeerItem: {
+            /** Issuer Id */
+            issuer_id: string;
+            /** Ticker */
+            ticker: string;
+            /** Company Name Vn */
+            company_name_vn?: string | null;
+            /** Exchange */
+            exchange?: string | null;
+            /** Icb Code Level2 */
+            icb_code_level2?: string | null;
+            /** Icb Name Level2 */
+            icb_name_level2?: string | null;
+            /** Icb Code Level3 */
+            icb_code_level3?: string | null;
+            /** Icb Name Level3 */
+            icb_name_level3?: string | null;
+            /** Peer Basis */
+            peer_basis: string;
+            /** Size Metric */
+            size_metric: string;
+            /** Size Ratio */
+            size_ratio?: number | null;
+            /** Market Cap Vnd */
+            market_cap_vnd?: number | null;
+            /** Bs Total Assets */
+            bs_total_assets?: number | null;
+            /** Risk Tier */
+            risk_tier?: string | null;
+            /** Calibrated Distress Prob */
+            calibrated_distress_prob?: number | null;
+        };
+        /** SuggestedPeersResponse */
+        SuggestedPeersResponse: {
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Ticker */
+            ticker: string;
+            /** Statement Scope */
+            statement_scope: string;
+            /** Period Type */
+            period_type: string;
+            /** Period End Date */
+            period_end_date?: string | null;
+            /** Peer Basis */
+            peer_basis: string;
+            /** Peers */
+            peers: components["schemas"]["SuggestedPeerItem"][];
+        };
+        /** SystemBudgetResponse */
+        SystemBudgetResponse: {
+            /**
+             * Budget Date
+             * Format: date
+             */
+            budget_date: string;
+            /**
+             * Timezone
+             * @constant
+             */
+            timezone: "Asia/Ho_Chi_Minh";
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
+            /** Gemini Requests Used */
+            gemini_requests_used: number;
+            /** Gemini Requests Cap */
+            gemini_requests_cap: number;
+            /** Gemini Utilization Ratio */
+            gemini_utilization_ratio: number;
+            /** Circuit Breaker Ratio */
+            circuit_breaker_ratio: number;
+            /** Circuit Breaker Open */
+            circuit_breaker_open: boolean;
+            /** Vision Pages Used */
+            vision_pages_used: number;
+            /** Vision Pages Cap */
+            vision_pages_cap: number;
+            /** Vision Pages Remaining */
+            vision_pages_remaining: number;
         };
         /**
          * TT99MrmGateItem
@@ -5780,6 +6432,321 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_my_quota_api_v3_quota_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyQuotaResponse"];
+                };
+            };
+        };
+    };
+    get_system_budget_api_v3_ops_quota_system_budget_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemBudgetResponse"];
+                };
+            };
+        };
+    };
+    get_suggested_peers_api_v3_companies__ticker__suggested_peers_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_type?: "QUARTER" | "ANNUAL";
+                period_end_date?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestedPeersResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_anomaly_drivers_api_v3_companies__ticker__anomaly_drivers_get: {
+        parameters: {
+            query?: {
+                statement_scope?: "CONSOLIDATED" | "SEPARATE";
+                period_type?: "QUARTER" | "ANNUAL";
+                period_end_date?: string | null;
+                top_k?: number;
+            };
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnomalyDriversResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_qa_queue_api_v3_ops_qa_queue_get: {
+        parameters: {
+            query?: {
+                status?: ("OPEN" | "IN_REVIEW" | "RESOLVED") | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsQaQueueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assign_qa_ticket_api_v3_ops_qa_queue__ticket_id__assign_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpsAssignTicketRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsTicketMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_qa_revision_api_v3_ops_qa_queue__ticket_id__submit_revision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpsSubmitRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsTicketMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_qa_ticket_api_v3_ops_qa_queue__ticket_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpsDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsTicketMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_issuers_lifecycle_api_v3_ops_issuers_lifecycle_get: {
+        parameters: {
+            query?: {
+                exchange?: string | null;
+                q?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsIssuerLifecycleResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_issuer_sync_api_v3_ops_issuers_sync_request_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpsIssuerSyncRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsIssuerSyncResponse"];
                 };
             };
             /** @description Validation Error */
