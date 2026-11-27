@@ -22,6 +22,7 @@ import { ScreenerScatterChart } from "@/components/charts/ScreenerScatterChart";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/layout/StateBlocks";
 import { useAppState } from "@/components/providers/app-providers";
 import { ScreenerFilterDrawer } from "@/components/screener/ScreenerFilterDrawer";
+import { ScreenerV3FilterChips } from "@/components/screener/ScreenerFinancialFilters";
 import { ScreenerSavedBar } from "@/components/screener/ScreenerSavedBar";
 import {
   buildScreenerColumns,
@@ -41,6 +42,8 @@ import {
 import {
   BUILTIN_SCREENER_PRESETS,
   buildScreenerExportUrl,
+  countActiveScreenerFilters,
+  filtersToApiQueryParams,
   filtersToUrlPatch,
   formatScreenerExportError,
   getSavedScreensServerSnapshot,
@@ -224,39 +227,7 @@ function ScreenerContent() {
     setQDraft(qParam);
   }, [qParam]);
 
-  const currentFilterState = React.useMemo<ScreenerFilterState>(
-    () => ({
-      q: qParam,
-      exchange: exchangeParam,
-      icb_code_level2: sectorParam,
-      altman_zone: altmanParam,
-      risk_tier: riskTiersParam.length === 1 ? riskTiersParam[0] : "",
-      risk_tiers: riskTiersParam,
-      beneish_flag: beneishParam,
-      min_f_score: minFParam,
-      min_distress_prob: minProbParam,
-      max_distress_prob: maxProbParam,
-      min_red_flags: minRfParam,
-      max_red_flags: maxRfParam,
-      sort_by: sortBy,
-      sort_dir: sortDir,
-    }),
-    [
-      altmanParam,
-      beneishParam,
-      exchangeParam,
-      maxProbParam,
-      maxRfParam,
-      minFParam,
-      minProbParam,
-      minRfParam,
-      qParam,
-      riskTiersParam,
-      sectorParam,
-      sortBy,
-      sortDir,
-    ],
-  );
+  const currentFilterState = parsedFilters;
 
   const updateParams = React.useCallback(
     (patch: Record<string, string | null>, resetPage = true) => {
@@ -309,54 +280,17 @@ function ScreenerContent() {
     [updateParams],
   );
 
-  const queryParams = React.useMemo<ScreenerQueryParams>(() => {
-    const numOrNull = (raw: string) => {
-      if (!raw) return null;
-      const n = Number(raw);
-      return Number.isFinite(n) ? n : null;
-    };
-    return {
-      statement_scope: statementScope,
-      period_type: periodType,
-      period_end_date: queryPeriodEndDate,
-      q: qParam || null,
-      exchange: (exchangeParam || null) as ScreenerQueryParams["exchange"],
-      icb_code_level2: sectorParam || null,
-      altman_zone: (altmanParam || null) as ScreenerQueryParams["altman_zone"],
-      risk_tier: (riskTiersParam.length === 1
-        ? riskTiersParam[0]
-        : null) as ScreenerQueryParams["risk_tier"],
-      risk_tiers: riskTiersParam.length >= 2 ? riskTiersParam.join(",") : null,
-      beneish_flag: (beneishParam || null) as ScreenerQueryParams["beneish_flag"],
-      min_f_score: numOrNull(minFParam),
-      min_distress_prob: numOrNull(minProbParam),
-      max_distress_prob: numOrNull(maxProbParam),
-      min_red_flags: numOrNull(minRfParam),
-      max_red_flags: numOrNull(maxRfParam),
-      sort_by: sortBy,
-      sort_dir: sortDir,
-      limit: PAGE_SIZE,
-      offset: (page - 1) * PAGE_SIZE,
-    };
-  }, [
-    altmanParam,
-    beneishParam,
-    exchangeParam,
-    maxProbParam,
-    maxRfParam,
-    minFParam,
-    minProbParam,
-    minRfParam,
-    page,
-    periodType,
-    qParam,
-    queryPeriodEndDate,
-    riskTiersParam,
-    sectorParam,
-    sortBy,
-    sortDir,
-    statementScope,
-  ]);
+  const queryParams = React.useMemo<ScreenerQueryParams>(
+    () =>
+      filtersToApiQueryParams(parsedFilters, {
+        statement_scope: statementScope,
+        period_type: periodType,
+        period_end_date: queryPeriodEndDate,
+        limit: PAGE_SIZE,
+        offset: (page - 1) * PAGE_SIZE,
+      }),
+    [page, parsedFilters, periodType, queryPeriodEndDate, statementScope],
+  );
 
   const screenerQuery = useScreener(queryParams, cacheSnapshotKey);
 
@@ -496,33 +430,8 @@ function ScreenerContent() {
   };
 
   const activeFilterCount = React.useMemo(
-    () =>
-      [
-        qParam,
-        exchangeParam,
-        sectorParam,
-        riskTiersParam.length > 0 ? riskTiersParam.join(",") : "",
-        altmanParam,
-        beneishParam,
-        minFParam,
-        minProbParam,
-        maxProbParam,
-        minRfParam,
-        maxRfParam,
-      ].filter(Boolean).length,
-    [
-      altmanParam,
-      beneishParam,
-      exchangeParam,
-      maxProbParam,
-      maxRfParam,
-      minFParam,
-      minProbParam,
-      minRfParam,
-      qParam,
-      riskTiersParam,
-      sectorParam,
-    ],
+    () => countActiveScreenerFilters(parsedFilters),
+    [parsedFilters],
   );
 
   const exchangeOptions = React.useMemo<ComboboxOption[]>(
@@ -719,6 +628,7 @@ function ScreenerContent() {
           maxRfParam={maxRfParam}
           toPctDisplay={toPctDisplay}
           applyFilterPreset={applyFilterPreset}
+          parsedFilters={parsedFilters}
           total={total}
         />
 
@@ -836,6 +746,10 @@ function ScreenerContent() {
                 <X className="size-3 text-ink-muted" />
               </button>
             ) : null}
+            <ScreenerV3FilterChips
+              filters={parsedFilters}
+              updateParams={updateParams}
+            />
           </div>
         ) : null}
 

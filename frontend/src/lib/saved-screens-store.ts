@@ -3,10 +3,12 @@ import type { RiskTone } from "@/lib/domain-labels";
 import { formatNumber } from "@/lib/format";
 import type {
   ExchangeCode,
+  PeriodType,
   ScreenerItem,
   ScreenerQueryParams,
   ScreenerSortField,
   SortDirection,
+  StatementScope,
 } from "@/types/api";
 
 const SAVED_SCREENS_KEY = "finintel:saved-screens:v1";
@@ -42,10 +44,26 @@ export const VALID_SORT_FIELDS = [
   "beneish_m8_score",
   "red_flag_count",
   "roe_total",
+  "roe_parent",
+  "roa",
+  "eps_ttm_estimated",
   "ebit_margin",
+  "liabilities_to_assets",
   "debt_to_equity",
   "interest_coverage",
+  "cfo_ttm",
+  "ocf_to_total_liabilities",
+  "revenue_growth_yoy",
+  "pe_ttm",
+  "pb_ratio",
+  "market_cap_vnd",
 ] as const satisfies readonly ScreenerSortField[];
+
+const OPT_NUM_STR = z
+  .string()
+  .max(24)
+  .regex(/^$|^-?\d+(\.\d{1,6})?$/)
+  .default("");
 
 export const ScreenerFilterStateSchema = z.object({
   q: z.string().max(80).default(""),
@@ -75,6 +93,33 @@ export const ScreenerFilterStateSchema = z.object({
     .string()
     .regex(/^$|^([0-9]|10)$/)
     .default(""),
+  cluster_id: z
+    .string()
+    .regex(/^$|^\d{1,2}$/)
+    .default(""),
+  anomaly_flag: z.enum(["", "true", "false"]).default(""),
+  min_roe_parent: OPT_NUM_STR,
+  max_roe_parent: OPT_NUM_STR,
+  min_roa: OPT_NUM_STR,
+  max_roa: OPT_NUM_STR,
+  min_eps_ttm_estimated: OPT_NUM_STR,
+  max_eps_ttm_estimated: OPT_NUM_STR,
+  min_liabilities_to_assets: OPT_NUM_STR,
+  max_liabilities_to_assets: OPT_NUM_STR,
+  min_debt_to_equity: OPT_NUM_STR,
+  max_debt_to_equity: OPT_NUM_STR,
+  min_cfo_ttm: OPT_NUM_STR,
+  max_cfo_ttm: OPT_NUM_STR,
+  min_ocf_to_total_liabilities: OPT_NUM_STR,
+  max_ocf_to_total_liabilities: OPT_NUM_STR,
+  min_revenue_growth_yoy: OPT_NUM_STR,
+  max_revenue_growth_yoy: OPT_NUM_STR,
+  min_pe_ttm: OPT_NUM_STR,
+  max_pe_ttm: OPT_NUM_STR,
+  min_pb_ratio: OPT_NUM_STR,
+  max_pb_ratio: OPT_NUM_STR,
+  min_market_cap_bn_vnd: OPT_NUM_STR,
+  max_market_cap_bn_vnd: OPT_NUM_STR,
   sort_by: z.enum(VALID_SORT_FIELDS).default("calibrated_distress_prob"),
   sort_dir: z.enum(["asc", "desc"] as const).default("desc"),
 });
@@ -94,6 +139,30 @@ export const DEFAULT_SCREENER_FILTERS: ScreenerFilterState = {
   max_distress_prob: "",
   min_red_flags: "",
   max_red_flags: "",
+  cluster_id: "",
+  anomaly_flag: "",
+  min_roe_parent: "",
+  max_roe_parent: "",
+  min_roa: "",
+  max_roa: "",
+  min_eps_ttm_estimated: "",
+  max_eps_ttm_estimated: "",
+  min_liabilities_to_assets: "",
+  max_liabilities_to_assets: "",
+  min_debt_to_equity: "",
+  max_debt_to_equity: "",
+  min_cfo_ttm: "",
+  max_cfo_ttm: "",
+  min_ocf_to_total_liabilities: "",
+  max_ocf_to_total_liabilities: "",
+  min_revenue_growth_yoy: "",
+  max_revenue_growth_yoy: "",
+  min_pe_ttm: "",
+  max_pe_ttm: "",
+  min_pb_ratio: "",
+  max_pb_ratio: "",
+  min_market_cap_bn_vnd: "",
+  max_market_cap_bn_vnd: "",
   sort_by: "calibrated_distress_prob",
   sort_dir: "desc",
 };
@@ -678,6 +747,38 @@ export function parseScreenerFilters(
       searchParams.get("max_red_flags") ?? "",
       DEFAULT_SCREENER_FILTERS.max_red_flags,
     ),
+    cluster_id: parseField(
+      shape.cluster_id,
+      searchParams.get("cluster_id") ?? "",
+      DEFAULT_SCREENER_FILTERS.cluster_id,
+    ),
+    anomaly_flag: parseField(
+      shape.anomaly_flag,
+      searchParams.get("anomaly_flag") ?? "",
+      DEFAULT_SCREENER_FILTERS.anomaly_flag,
+    ),
+    min_roe_parent: parseField(shape.min_roe_parent, searchParams.get("min_roe_parent") ?? "", ""),
+    max_roe_parent: parseField(shape.max_roe_parent, searchParams.get("max_roe_parent") ?? "", ""),
+    min_roa: parseField(shape.min_roa, searchParams.get("min_roa") ?? "", ""),
+    max_roa: parseField(shape.max_roa, searchParams.get("max_roa") ?? "", ""),
+    min_eps_ttm_estimated: parseField(shape.min_eps_ttm_estimated, searchParams.get("min_eps_ttm_estimated") ?? "", ""),
+    max_eps_ttm_estimated: parseField(shape.max_eps_ttm_estimated, searchParams.get("max_eps_ttm_estimated") ?? "", ""),
+    min_liabilities_to_assets: parseField(shape.min_liabilities_to_assets, searchParams.get("min_liabilities_to_assets") ?? "", ""),
+    max_liabilities_to_assets: parseField(shape.max_liabilities_to_assets, searchParams.get("max_liabilities_to_assets") ?? "", ""),
+    min_debt_to_equity: parseField(shape.min_debt_to_equity, searchParams.get("min_debt_to_equity") ?? "", ""),
+    max_debt_to_equity: parseField(shape.max_debt_to_equity, searchParams.get("max_debt_to_equity") ?? "", ""),
+    min_cfo_ttm: parseField(shape.min_cfo_ttm, searchParams.get("min_cfo_ttm") ?? "", ""),
+    max_cfo_ttm: parseField(shape.max_cfo_ttm, searchParams.get("max_cfo_ttm") ?? "", ""),
+    min_ocf_to_total_liabilities: parseField(shape.min_ocf_to_total_liabilities, searchParams.get("min_ocf_to_total_liabilities") ?? "", ""),
+    max_ocf_to_total_liabilities: parseField(shape.max_ocf_to_total_liabilities, searchParams.get("max_ocf_to_total_liabilities") ?? "", ""),
+    min_revenue_growth_yoy: parseField(shape.min_revenue_growth_yoy, searchParams.get("min_revenue_growth_yoy") ?? "", ""),
+    max_revenue_growth_yoy: parseField(shape.max_revenue_growth_yoy, searchParams.get("max_revenue_growth_yoy") ?? "", ""),
+    min_pe_ttm: parseField(shape.min_pe_ttm, searchParams.get("min_pe_ttm") ?? "", ""),
+    max_pe_ttm: parseField(shape.max_pe_ttm, searchParams.get("max_pe_ttm") ?? "", ""),
+    min_pb_ratio: parseField(shape.min_pb_ratio, searchParams.get("min_pb_ratio") ?? "", ""),
+    max_pb_ratio: parseField(shape.max_pb_ratio, searchParams.get("max_pb_ratio") ?? "", ""),
+    min_market_cap_bn_vnd: parseField(shape.min_market_cap_bn_vnd, searchParams.get("min_market_cap_bn_vnd") ?? "", ""),
+    max_market_cap_bn_vnd: parseField(shape.max_market_cap_bn_vnd, searchParams.get("max_market_cap_bn_vnd") ?? "", ""),
     sort_by: parseField(
       shape.sort_by,
       searchParams.get("sort_by") ?? DEFAULT_SCREENER_FILTERS.sort_by,
@@ -723,9 +824,133 @@ export function filtersToUrlPatch(
     max_distress_prob: merged.max_distress_prob || null,
     min_red_flags: merged.min_red_flags || null,
     max_red_flags: merged.max_red_flags || null,
+    cluster_id: merged.cluster_id || null,
+    anomaly_flag: merged.anomaly_flag || null,
+    min_roe_parent: merged.min_roe_parent || null,
+    max_roe_parent: merged.max_roe_parent || null,
+    min_roa: merged.min_roa || null,
+    max_roa: merged.max_roa || null,
+    min_eps_ttm_estimated: merged.min_eps_ttm_estimated || null,
+    max_eps_ttm_estimated: merged.max_eps_ttm_estimated || null,
+    min_liabilities_to_assets: merged.min_liabilities_to_assets || null,
+    max_liabilities_to_assets: merged.max_liabilities_to_assets || null,
+    min_debt_to_equity: merged.min_debt_to_equity || null,
+    max_debt_to_equity: merged.max_debt_to_equity || null,
+    min_cfo_ttm: merged.min_cfo_ttm || null,
+    max_cfo_ttm: merged.max_cfo_ttm || null,
+    min_ocf_to_total_liabilities: merged.min_ocf_to_total_liabilities || null,
+    max_ocf_to_total_liabilities: merged.max_ocf_to_total_liabilities || null,
+    min_revenue_growth_yoy: merged.min_revenue_growth_yoy || null,
+    max_revenue_growth_yoy: merged.max_revenue_growth_yoy || null,
+    min_pe_ttm: merged.min_pe_ttm || null,
+    max_pe_ttm: merged.max_pe_ttm || null,
+    min_pb_ratio: merged.min_pb_ratio || null,
+    max_pb_ratio: merged.max_pb_ratio || null,
+    min_market_cap_bn_vnd: merged.min_market_cap_bn_vnd || null,
+    max_market_cap_bn_vnd: merged.max_market_cap_bn_vnd || null,
     sort_by: merged.sort_by || "calibrated_distress_prob",
     sort_dir: merged.sort_dir || "desc",
   };
+}
+
+const numOrNull = (raw: string): number | null => {
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+};
+
+export function filtersToApiQueryParams(
+  filters: ScreenerFilterState,
+  meta: {
+    statement_scope: StatementScope;
+    period_type: PeriodType;
+    period_end_date: string | null;
+    limit: number;
+    offset: number;
+  },
+): ScreenerQueryParams {
+  const tiers = filters.risk_tiers ?? [];
+  return {
+    statement_scope: meta.statement_scope,
+    period_type: meta.period_type,
+    period_end_date: meta.period_end_date,
+    q: filters.q || null,
+    exchange: (filters.exchange || null) as ScreenerQueryParams["exchange"],
+    icb_code_level2: filters.icb_code_level2 || null,
+    altman_zone: (filters.altman_zone || null) as ScreenerQueryParams["altman_zone"],
+    risk_tier: (tiers.length === 1 ? tiers[0] : null) as ScreenerQueryParams["risk_tier"],
+    risk_tiers: tiers.length >= 2 ? tiers.join(",") : null,
+    beneish_flag: (filters.beneish_flag || null) as ScreenerQueryParams["beneish_flag"],
+    min_f_score: numOrNull(filters.min_f_score),
+    min_distress_prob: numOrNull(filters.min_distress_prob),
+    max_distress_prob: numOrNull(filters.max_distress_prob),
+    min_red_flags: numOrNull(filters.min_red_flags),
+    max_red_flags: numOrNull(filters.max_red_flags),
+    cluster_id: numOrNull(filters.cluster_id),
+    anomaly_flag:
+      filters.anomaly_flag === "true"
+        ? true
+        : filters.anomaly_flag === "false"
+          ? false
+          : null,
+    min_roe_parent: numOrNull(filters.min_roe_parent),
+    max_roe_parent: numOrNull(filters.max_roe_parent),
+    min_roa: numOrNull(filters.min_roa),
+    max_roa: numOrNull(filters.max_roa),
+    min_eps_ttm_estimated: numOrNull(filters.min_eps_ttm_estimated),
+    max_eps_ttm_estimated: numOrNull(filters.max_eps_ttm_estimated),
+    min_liabilities_to_assets: numOrNull(filters.min_liabilities_to_assets),
+    max_liabilities_to_assets: numOrNull(filters.max_liabilities_to_assets),
+    min_debt_to_equity: numOrNull(filters.min_debt_to_equity),
+    max_debt_to_equity: numOrNull(filters.max_debt_to_equity),
+    min_cfo_ttm: numOrNull(filters.min_cfo_ttm),
+    max_cfo_ttm: numOrNull(filters.max_cfo_ttm),
+    min_ocf_to_total_liabilities: numOrNull(filters.min_ocf_to_total_liabilities),
+    max_ocf_to_total_liabilities: numOrNull(filters.max_ocf_to_total_liabilities),
+    min_revenue_growth_yoy: numOrNull(filters.min_revenue_growth_yoy),
+    max_revenue_growth_yoy: numOrNull(filters.max_revenue_growth_yoy),
+    min_pe_ttm: numOrNull(filters.min_pe_ttm),
+    max_pe_ttm: numOrNull(filters.max_pe_ttm),
+    min_pb_ratio: numOrNull(filters.min_pb_ratio),
+    max_pb_ratio: numOrNull(filters.max_pb_ratio),
+    min_market_cap_bn_vnd: numOrNull(filters.min_market_cap_bn_vnd),
+    max_market_cap_bn_vnd: numOrNull(filters.max_market_cap_bn_vnd),
+    sort_by: filters.sort_by,
+    sort_dir: filters.sort_dir,
+    limit: meta.limit,
+    offset: meta.offset,
+  };
+}
+
+export function countActiveScreenerFilters(filters: ScreenerFilterState): number {
+  const tiers = filters.risk_tiers ?? [];
+  const entries: Array<string> = [
+    filters.q,
+    filters.exchange ?? "",
+    filters.icb_code_level2,
+    tiers.length > 0 ? tiers.join(",") : "",
+    filters.altman_zone,
+    filters.beneish_flag,
+    filters.min_f_score,
+    filters.min_distress_prob,
+    filters.max_distress_prob,
+    filters.min_red_flags,
+    filters.max_red_flags,
+    filters.cluster_id,
+    filters.anomaly_flag,
+    filters.min_roe_parent || filters.max_roe_parent,
+    filters.min_roa || filters.max_roa,
+    filters.min_eps_ttm_estimated || filters.max_eps_ttm_estimated,
+    filters.min_liabilities_to_assets || filters.max_liabilities_to_assets,
+    filters.min_debt_to_equity || filters.max_debt_to_equity,
+    filters.min_cfo_ttm || filters.max_cfo_ttm,
+    filters.min_ocf_to_total_liabilities || filters.max_ocf_to_total_liabilities,
+    filters.min_revenue_growth_yoy || filters.max_revenue_growth_yoy,
+    filters.min_pe_ttm || filters.max_pe_ttm,
+    filters.min_pb_ratio || filters.max_pb_ratio,
+    filters.min_market_cap_bn_vnd || filters.max_market_cap_bn_vnd,
+  ];
+  return entries.filter(Boolean).length;
 }
 
 // Re-export unused types cleanly for callers
