@@ -49,6 +49,7 @@ from finintel.normalization.mapper import FACT_SCHEMA
 from finintel.storage.schemas import (
     CORE_RATIOS,
     EXTRA_RATIOS,
+    V3_RATIOS,
 )
 
 
@@ -370,9 +371,9 @@ def test_hi11_disjoint_ml_inputs_no_duplicate_error_and_38_benchmark_ratios() ->
     benchmarks = benchmark_ratios(ratios)
     bench_2025 = benchmarks.filter(pl.col("period_end_date") == date(2025, 12, 31))
     observed_metrics = set(bench_2025["metric_or_ratio_name"].to_list())
-    expected_38 = set((*CORE_RATIOS, *EXTRA_RATIOS, *FORENSIC_RATIOS))
-    assert len(expected_38) == 38
-    assert observed_metrics == expected_38
+    expected_39 = set((*CORE_RATIOS, *EXTRA_RATIOS, *FORENSIC_RATIOS, *V3_RATIOS))
+    assert len(expected_39) == 39
+    assert observed_metrics == expected_39
 
 
 def test_core_earnings_signed_expense_reversal_and_pre_ttm_missing_selling_rule() -> (
