@@ -16,6 +16,10 @@ export interface NormalizedGrowthPoint {
   revenueRaw: number | null;
   netIncomeRaw: number | null;
   cfoRaw: number | null;
+  revenueGrowthQoq: number | null;
+  revenueGrowthQoqFlag: string | null;
+  netIncomeGrowthQoq: number | null;
+  netIncomeGrowthQoqFlag: string | null;
 }
 
 function toBillions(raw: number | null | undefined): number | null {
@@ -48,6 +52,18 @@ export function transformGrowthSeries(
         Number.isFinite(pt.CF_OPERATING_CASH_FLOW)
           ? pt.CF_OPERATING_CASH_FLOW
           : null,
+      revenueGrowthQoq:
+        typeof pt.revenue_growth_qoq === "number" &&
+        Number.isFinite(pt.revenue_growth_qoq)
+          ? pt.revenue_growth_qoq
+          : null,
+      revenueGrowthQoqFlag: pt.revenue_growth_qoq_flag ?? null,
+      netIncomeGrowthQoq:
+        typeof pt.net_income_growth_qoq === "number" &&
+        Number.isFinite(pt.net_income_growth_qoq)
+          ? pt.net_income_growth_qoq
+          : null,
+      netIncomeGrowthQoqFlag: pt.net_income_growth_qoq_flag ?? null,
     }));
 }
 
@@ -63,17 +79,23 @@ export function buildGrowthChartTitle(
   const viewTag = localView === "Quarterly" ? "Quý rời rạc" : localView === "Annual" ? "Năm" : "TTM";
   const revText =
     latest.revenueRaw !== null ? `${formatVndBillions(latest.revenueRaw)} tỷ` : "N/A";
-  let yoyText = "";
-  if (
+  let deltaText = "";
+  if (localView === "Quarterly") {
+    if (latest.revenueGrowthQoq !== null) {
+      deltaText = ` (QoQ ${formatPercent(latest.revenueGrowthQoq, { signed: true, decimals: 1 })})`;
+    } else if (latest.revenueGrowthQoqFlag === "MIXED_TAXONOMY") {
+      deltaText = " (Khóa QoQ qua TT200 → TT99)";
+    }
+  } else if (
     latest.revenueRaw !== null &&
     prev?.revenueRaw !== null &&
     prev?.revenueRaw !== undefined &&
     Math.abs(prev.revenueRaw) > 1e-6
   ) {
     const chg = (latest.revenueRaw - prev.revenueRaw) / Math.abs(prev.revenueRaw);
-    yoyText = ` (${formatPercent(chg, { signed: true, decimals: 1 })} so kỳ liền trước)`;
+    deltaText = ` (${formatPercent(chg, { signed: true, decimals: 1 })} so kỳ liền trước)`;
   }
-  return `Tăng trưởng (${viewTag}): Doanh thu ${latest.label} đạt ${revText}${yoyText}`;
+  return `Tăng trưởng (${viewTag}): Doanh thu ${latest.label} đạt ${revText}${deltaText}`;
 }
 
 export function GrowthComboChart({
@@ -128,12 +150,25 @@ export function GrowthComboChart({
           const first = list[0] as { dataIndex?: number } | undefined;
           const row = rows[first?.dataIndex ?? -1];
           if (!row) return "";
+          const qoqLine =
+            localPeriodView === "Quarterly"
+              ? `<div>Tăng trưởng QoQ doanh thu: <b>${
+                  row.revenueGrowthQoq !== null
+                    ? formatPercent(row.revenueGrowthQoq, { signed: true, decimals: 1 })
+                    : row.revenueGrowthQoqFlag === "MIXED_TAXONOMY"
+                      ? "N/A (Chuyển TT200 → TT99)"
+                      : "N/A"
+                }</b></div>`
+              : "";
           return [
             `<div style="font-weight:600;margin-bottom:4px">${ticker} · ${row.label}</div>`,
             `<div>Doanh thu thuần: <b>${formatVndBillions(row.revenueRaw)} tỷ</b></div>`,
+            qoqLine,
             `<div>Lợi nhuận sau thuế: <b>${formatVndBillions(row.netIncomeRaw, { accountingNegative: true })} tỷ</b></div>`,
             `<div>Dòng tiền KD (CFO): <b>${formatVndBillions(row.cfoRaw, { accountingNegative: true })} tỷ</b></div>`,
-          ].join("");
+          ]
+            .filter(Boolean)
+            .join("");
         },
       },
       xAxis: {
@@ -190,7 +225,7 @@ export function GrowthComboChart({
         },
       ],
     };
-  }, [palette.border, palette.company, palette.inkMuted, palette.peerBandFill, palette.riskLow, palette.riskMid, rows, ticker]);
+  }, [localPeriodView, palette.border, palette.company, palette.inkMuted, palette.peerBandFill, palette.riskLow, palette.riskMid, rows, ticker]);
 
   const tableHeaders = [
     "Kỳ",
@@ -207,7 +242,7 @@ export function GrowthComboChart({
 
   const subtitle =
     localPeriodView === "Quarterly"
-      ? "Đơn vị: tỷ đồng · Dữ liệu quý rời rạc theo từng kỳ công bố"
+      ? "Đơn vị: tỷ đồng · Quý rời rạc — Lưu ý mùa vụ Q4 và khóa QoQ qua ranh giới TT200 → TT99"
       : localPeriodView === "Annual"
         ? "Đơn vị: tỷ đồng · Dữ liệu theo năm tài chính"
         : "Đơn vị: tỷ đồng · Dữ liệu lũy kế 4 quý trượt (TTM)";

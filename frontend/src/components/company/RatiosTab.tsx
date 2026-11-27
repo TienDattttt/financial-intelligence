@@ -10,6 +10,7 @@ import {
   type PillarGroupId,
   type RatioTableSortField,
 } from "@/components/charts/HealthRadarChart";
+import { DuPontTreeChart } from "@/components/charts/DuPontTreeChart";
 import { PeerBandChart } from "@/components/charts/PeerBandChart";
 import { SectorBoxPlotChart } from "@/components/charts/SectorBoxPlotChart";
 import { PercentileBar } from "@/components/financial/PercentileBar";
@@ -575,6 +576,20 @@ export function RatiosTab({
             </p>
           ) : (
             <>
+              <DuPontTreeChart
+                dupontSeries={profile.dupont_series}
+                ratiosTable={profile.ratios_table}
+                periodType={periodType}
+                onSelectMetric={(ratioName, ped) =>
+                  onOpenSourceDrawer({
+                    ticker: profile.ticker,
+                    ratioName,
+                    statementScope,
+                    periodType,
+                    periodEndDate: ped,
+                  })
+                }
+              />
               <p className="mb-1.5 px-3 pt-2 text-[11px] text-ink-subtle md:hidden">
                 Vuốt ngang để xem đầy đủ 5 nhân tố DuPont →
               </p>

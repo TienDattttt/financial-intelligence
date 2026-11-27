@@ -2033,12 +2033,14 @@ def create_app(
         rag_investigator=rag_investigator,
     )
     from finintel.auth.router import mount_identity_workspace_routers
+    from finintel.ops.router import mount_ops_routers
     from finintel.quota.router import mount_quota_router
 
     mount_identity_workspace_routers(api, valkey_url=valkey_url)
     mount_alerts_router(api)
     api.include_router(create_exports_router())
     mount_quota_router(api, valkey_url=valkey_url)
+    mount_ops_routers(api)
 
     return api
 

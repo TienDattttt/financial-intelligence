@@ -11,6 +11,14 @@ import type {
   ImportLocalWatchlistResponse,
   LoginRequest,
   MyQuotaResponse,
+  OpsAssignTicketRequest,
+  OpsDecisionRequest,
+  OpsIssuerLifecycleResponse,
+  OpsIssuerSyncRequest,
+  OpsIssuerSyncResponse,
+  OpsQaQueueResponse,
+  OpsSubmitRevisionRequest,
+  OpsTicketMutationResponse,
   PasswordChangeBody,
   PasswordResetConfirmBody,
   PasswordResetRequestBody,
@@ -281,4 +289,54 @@ export const workspaceApi = {
       `/api/v3/workspace/saved-screens/${encodeURIComponent(screenId)}`,
       { method: "DELETE" },
     ),
+};
+
+export const opsApi = {
+  getQaQueue: (status?: "OPEN" | "IN_REVIEW" | "RESOLVED" | null, signal?: AbortSignal) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return authFetchJson<OpsQaQueueResponse>(`/api/v3/ops/qa-queue${qs}`, {
+      signal,
+      mutating: false,
+    });
+  },
+
+  assignTicket: (ticketId: string, payload: OpsAssignTicketRequest) =>
+    authFetchJson<OpsTicketMutationResponse>(
+      `/api/v3/ops/qa-queue/${encodeURIComponent(ticketId)}/assign`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+
+  submitRevision: (ticketId: string, payload: OpsSubmitRevisionRequest) =>
+    authFetchJson<OpsTicketMutationResponse>(
+      `/api/v3/ops/qa-queue/${encodeURIComponent(ticketId)}/submit-revision`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+
+  decideTicket: (ticketId: string, payload: OpsDecisionRequest) =>
+    authFetchJson<OpsTicketMutationResponse>(
+      `/api/v3/ops/qa-queue/${encodeURIComponent(ticketId)}/decision`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+
+  getIssuerLifecycle: (
+    opts?: { exchange?: string; q?: string; limit?: number; offset?: number },
+    signal?: AbortSignal,
+  ) => {
+    const params = new URLSearchParams();
+    if (opts?.exchange) params.set("exchange", opts.exchange);
+    if (opts?.q) params.set("q", opts.q);
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.offset !== undefined) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return authFetchJson<OpsIssuerLifecycleResponse>(
+      `/api/v3/ops/issuers/lifecycle${qs ? `?${qs}` : ""}`,
+      { signal, mutating: false },
+    );
+  },
+
+  requestIssuerSync: (payload: OpsIssuerSyncRequest) =>
+    authFetchJson<OpsIssuerSyncResponse>("/api/v3/ops/issuers/sync-request", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };

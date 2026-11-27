@@ -222,9 +222,14 @@ class GrowthPoint(BaseModel):
     period_end_date: date
     fiscal_year: int | None = None
     fiscal_quarter: int | None = None
+    taxonomy_version: str | None = None
     IS_NET_REVENUE: float | None = None
     IS_NET_INCOME: float | None = None
     CF_OPERATING_CASH_FLOW: float | None = None
+    revenue_growth_qoq: float | None = None
+    revenue_growth_qoq_flag: str | None = None
+    net_income_growth_qoq: float | None = None
+    net_income_growth_qoq_flag: str | None = None
 
 
 class CapitalStructurePoint(BaseModel):
@@ -730,6 +735,8 @@ class StatementRowItem(BaseModel):
     comparable_across_taxonomy: bool
     sort_order: int
     values: dict[str, float | None]
+    qoq_values: dict[str, float | None] = Field(default_factory=dict)
+    qoq_flags: dict[str, str | None] = Field(default_factory=dict)
 
 
 class CompanyStatementsResponse(BaseModel):

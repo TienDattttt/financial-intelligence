@@ -21,7 +21,7 @@ import type {
   StatementType,
 } from "@/types/api";
 
-type ViewMode = "VALUE" | "COMMON_SIZE" | "YOY";
+type ViewMode = "VALUE" | "COMMON_SIZE" | "YOY" | "QOQ";
 
 export interface StatementRowHierarchy {
   depth: 0 | 1 | 2 | 3;
@@ -302,6 +302,9 @@ export function FinancialTable({
     return versions.size > 1;
   }, [periods]);
 
+  const effectiveViewMode: ViewMode =
+    periodType !== "QUARTER" && viewMode === "QOQ" ? "VALUE" : viewMode;
+
   const selectedRow = React.useMemo(
     () =>
       selectedMetricId
@@ -387,6 +390,9 @@ export function FinancialTable({
                     : "Tỷ trọng (% Doanh thu)",
                 ],
                 ["YOY", "Tăng trưởng YoY (%)"],
+                ...(periodType === "QUARTER"
+                  ? ([["QOQ", "Tăng trưởng QoQ (%)"]] as const)
+                  : []),
               ] as const
             ).map(([mode, label]) => (
               <button
@@ -395,7 +401,7 @@ export function FinancialTable({
                 onClick={() => setViewMode(mode)}
                 className={cn(
                   "rounded-md px-2.5 py-1 font-medium transition-colors duration-150",
-                  viewMode === mode
+                  effectiveViewMode === mode
                     ? "bg-primary text-primary-foreground shadow-xs"
                     : "text-ink-muted hover:text-ink",
                 )}
@@ -417,6 +423,15 @@ export function FinancialTable({
           </div>
         ) : null}
       </div>
+
+      {effectiveViewMode === "QOQ" ? (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/35 bg-amber-50/70 px-3 py-1.5 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+          <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
+          <span>
+            Cảnh báo mùa vụ Q4: Tăng trưởng quý liền trước (QoQ) chịu ảnh hưởng mùa vụ cuối năm và bị khóa (N/A) qua ranh giới TT200 → TT99 hoặc khi kỳ gốc không dương.
+          </span>
+        </div>
+      ) : null}
 
       {selectedRow ? (
         <div
@@ -624,12 +639,13 @@ export function FinancialTable({
 
                     let display = "N/A";
                     let colorClass = "text-ink";
+                    let cellTitle: string | undefined;
 
-                    if (viewMode === "VALUE") {
+                    if (effectiveViewMode === "VALUE") {
                       display = isPerShare
                         ? formatVndPerShare(val)
                         : formatVndBillions(val, { accountingNegative: true });
-                    } else if (viewMode === "COMMON_SIZE") {
+                    } else if (effectiveViewMode === "COMMON_SIZE") {
                       if (isPerShare || !baseRow) {
                         display = "–";
                       } else {
@@ -637,6 +653,23 @@ export function FinancialTable({
                         if (val !== null && baseVal !== null && Math.abs(baseVal) > 1e-6) {
                           display = formatPercent(val / baseVal, { decimals: 1 });
                         }
+                      }
+                    } else if (effectiveViewMode === "QOQ") {
+                      const qoqVal = row.qoq_values?.[p.period_end_date] ?? null;
+                      const qoqFlag = row.qoq_flags?.[p.period_end_date] ?? null;
+                      if (qoqVal !== null && Number.isFinite(qoqVal)) {
+                        display = formatPercent(qoqVal, { signed: true, decimals: 1 });
+                        if (qoqVal > 0.001) colorClass = "text-up";
+                        else if (qoqVal < -0.001) colorClass = "text-down";
+                      } else if (qoqFlag === "MIXED_TAXONOMY") {
+                        display = "N/A";
+                        colorClass = "text-risk-mid";
+                        cellTitle =
+                          "Không tính QoQ qua ranh giới chuyển chuẩn mực kế toán TT200 → TT99.";
+                      } else if (qoqFlag === "NON_POSITIVE_BASE_PERIOD") {
+                        display = "N/A";
+                        colorClass = "text-ink-muted";
+                        cellTitle = "Không tính QoQ khi giá trị kỳ liền trước ≤ 0.";
                       }
                     } else {
                       const priorDate = priorYearDateMap.get(p.period_end_date);
@@ -656,6 +689,7 @@ export function FinancialTable({
                     return (
                       <td
                         key={p.period_end_date}
+                        title={cellTitle}
                         className={cn(
                           "num px-3 text-right",
                           rowHeightClass,
