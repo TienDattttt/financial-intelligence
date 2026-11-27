@@ -362,7 +362,7 @@ export default function WatchlistPage() {
             ) : (
               <>
                 Lưu trữ cục bộ trên trình duyệt ·{" "}
-                <Link href="/auth/login?next=/watchlist" className="text-accent-ink hover:underline">
+                <Link href="/auth/login?next=/watchlist" className="font-medium text-accent-ink underline underline-offset-2 hover:text-primary">
                   Đăng nhập để đồng bộ đa danh mục &amp; ghi chú
                 </Link>
               </>
