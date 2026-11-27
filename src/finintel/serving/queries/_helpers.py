@@ -23,6 +23,7 @@ from typing import Any, Literal, cast
 import duckdb
 import polars as pl
 
+from finintel.analytics.qoq_and_peers import compute_statement_row_qoq_map
 from finintel.serving.queries._cache import (
     _LATEST_RATIO_PERIOD_CACHE,
     _MAX_QUERY_CACHE_SIZE,
@@ -791,6 +792,11 @@ def build_statement_periods_and_rows(
             )
             non_null_comp = sub.get_column("comparable_across_taxonomy").drop_nulls()
             comp_val = bool(non_null_comp[0]) if not non_null_comp.is_empty() else True
+        qoq_vals, qoq_flags = compute_statement_row_qoq_map(
+            periods=periods_out,
+            values=values,
+            period_type=period_type,
+        )
         rows_out.append(
             {
                 "metric_id": mid,
@@ -802,6 +808,8 @@ def build_statement_periods_and_rows(
                 "comparable_across_taxonomy": comp_val,
                 "sort_order": mmeta.sort_order if mmeta else 99_999,
                 "values": values,
+                "qoq_values": qoq_vals,
+                "qoq_flags": qoq_flags,
             }
         )
     rows_out.sort(key=lambda r: (int(cast(int, r["sort_order"])), str(r["metric_id"])))

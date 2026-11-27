@@ -2035,6 +2035,9 @@ def create_app(
 
     mount_identity_workspace_routers(api, valkey_url=valkey_url)
     api.include_router(create_exports_router())
+    from finintel.ops.router import mount_ops_routers
+
+    mount_ops_routers(api)
 
     return api
 

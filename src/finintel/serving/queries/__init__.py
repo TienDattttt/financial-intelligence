@@ -32,6 +32,7 @@ from finintel.analytics.stress_test import (
 )
 from finintel.exceptions import ContractViolationError
 from finintel.serving.dictionary import load_statement_metric_catalog
+from finintel.analytics.qoq_and_peers import compute_discrete_qoq_growth
 from finintel.serving.queries._cache import (
     _ACTIVE_L1B_SNAPSHOT_BY_ROOT,
     _ALL_L1B_CACHES,
@@ -374,16 +375,29 @@ class DashboardQueryService(
                 company_facts.filter(pl.col("metric_id").is_in(growth_metrics))
                 .group_by(["period_end_date", "fiscal_year", "fiscal_quarter"])
                 .agg(
+                    (
+                        pl.col("taxonomy_version").last().alias("taxonomy_version")
+                        if "taxonomy_version" in company_facts.columns
+                        else pl.lit(None, dtype=pl.String).alias("taxonomy_version")
+                    ),
                     *(
                         pl.col(flow_value_col)
                         .filter(pl.col("metric_id") == metric)
                         .last()
                         .alias(metric)
                         for metric in growth_metrics
-                    )
+                    ),
                 )
                 .sort("period_end_date")
             )
+            if period_view == "Quarterly" and not growth_series.is_empty():
+                growth_series = compute_discrete_qoq_growth(
+                    growth_series.with_columns(pl.lit("QUARTER").alias("period_type")),
+                    metric_columns=(
+                        ("IS_NET_REVENUE", "revenue_growth_qoq"),
+                        ("IS_NET_INCOME", "net_income_growth_qoq"),
+                    ),
+                ).drop("period_type")
 
             bs_series = (
                 company_facts.filter(pl.col("metric_id").is_in(bs_metrics))
