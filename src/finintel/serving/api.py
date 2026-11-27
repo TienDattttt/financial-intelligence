@@ -494,8 +494,13 @@ def create_app(
             CORSMiddleware,
             allow_origins=list(allowed_origins),
             allow_credentials=allow_cors_credentials,
-            allow_methods=["GET", "POST"],
-            allow_headers=["If-None-Match", "Content-Type", "X-Request-ID"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=[
+                "If-None-Match",
+                "Content-Type",
+                "X-Request-ID",
+                "X-Requested-With",
+            ],
             expose_headers=[
                 "ETag",
                 "Cache-Control",
@@ -2025,6 +2030,9 @@ def create_app(
         rag_store=rag_store,
         rag_investigator=rag_investigator,
     )
+    from finintel.auth.router import mount_identity_workspace_routers
+
+    mount_identity_workspace_routers(api, valkey_url=valkey_url)
 
     return api
 
